@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>$page_title</title>
+<style>
+$css
+.cols { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } .player { max-width: 360px; margin: 0 auto; width: 100%; } }
+video { width: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: var(--radius); display: block; }
+.fileinfo { color: var(--muted); font-size: var(--fs-s); margin: 8px 0 0; }
+.field { margin: 0 0 16px; }
+.field .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+.field label { font-weight: 600; }
+.copytext { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; margin: 0; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.copied { color: var(--ok); font-size: var(--fs-s); margin-left: 8px; }
+.summary { padding: 12px 14px; border-radius: var(--radius); font-weight: 600; }
+.summary.ok { background: var(--ok-bg); color: var(--ok); }
+.summary.bad { background: var(--err-bg); color: var(--err); }
+.summary.meh { background: var(--warn-bg); color: var(--warn); }
+.findings { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+.finding { padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.sev { display: inline-block; font-size: var(--fs-s); font-weight: 700; padding: 0 9px; border-radius: 99px; margin-right: 6px; }
+.error .sev { color: var(--err); background: var(--err-bg); }
+.warning .sev { color: var(--warn); background: var(--warn-bg); }
+.where { color: var(--muted); font-size: var(--fs-s); }
+</style>
+</head>
+<body>
+<main class="page">
+<header class="top">
+  <p class="step">Final video to approve</p>
+  <h1>$title</h1>
+  <p class="lead">Watch it through, check the notes below, then tell Claude if it is good to go or what to change.</p>
+</header>
+
+<div class="cols">
+  <div class="player">
+$player
+    <p class="fileinfo">$fileinfo</p>
+  </div>
+  <div>
+    <h2 style="margin-top:0">Post text</h2>
+$post
+  </div>
+</div>
+
+<h2>Checks</h2>
+$checks
+$rules
+
+<h2>Credits</h2>
+$credits
+</main>
+<script>
+(function () {
+  function flash(btn, msg) {
+    var s = document.createElement('span'); s.className = 'copied'; s.textContent = msg;
+    btn.parentNode.appendChild(s); setTimeout(function () { s.remove(); }, 3000);
+  }
+  function selectText(el) {
+    var r = document.createRange(); r.selectNodeContents(el);
+    var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('button[data-copy]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var el = document.getElementById(btn.getAttribute('data-copy'));
+      var text = el.textContent;
+      function fallback() {
+        selectText(el);
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        flash(btn, ok ? 'Copied' : 'Text selected: press Ctrl+C (or Cmd+C) to copy');
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { flash(btn, 'Copied'); }, fallback);
+      } else { fallback(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

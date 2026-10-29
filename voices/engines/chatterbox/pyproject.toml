@@ -1,0 +1,25 @@
+# Chatterbox and Chatterbox Turbo (Resemble AI, MIT). Both need an NVIDIA GPU.
+[project]
+name = "bsa-engine-chatterbox"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "chatterbox-tts==0.1.7",
+    "soundfile==0.14.0",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+]
+
+[tool.uv]
+package = false
+# chatterbox-tts pins torch 2.6, which has no kernels for RTX 50-series (sm_120) cards; use a CUDA 12.8 build.
+override-dependencies = ["torch==2.11.0", "torchaudio==2.11.0"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }
+torchaudio = { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

@@ -1,0 +1,106 @@
+{
+ "aerial_asphalt_01": {
+  "type": 1,
+  "tags": [
+   "road",
+   "flat",
+   "cracked"
+  ],
+  "date_published": 1597061145,
+  "name": "Aerial Asphalt 01",
+  "categories": [
+   "asphalt",
+   "outdoor",
+   "floor",
+   "road",
+   "man made",
+   "aerial"
+  ],
+  "dimensions": [
+   30000,
+   30000
+  ],
+  "authors": {
+   "Rob Tuytel": "All"
+  },
+  "max_resolution": [
+   8192,
+   8192
+  ],
+  "category": "Asphalt & Bitumen/Asphalt/Worn Road Surface",
+  "download_count": 148303
+ },
+ "aerial_beach_01": {
+  "type": 1,
+  "tags": [
+   "beach",
+   "wavy",
+   "costal",
+   "ocean",
+   "seaside"
+  ],
+  "date_published": 1601489165,
+  "name": "Aerial Beach 01",
+  "categories": [
+   "terrain",
+   "sand",
+   "outdoor",
+   "natural",
+   "aerial"
+  ],
+  "dimensions": [
+   30000,
+   30000
+  ],
+  "authors": {
+   "Rob Tuytel": "All"
+  },
+  "max_resolution": [
+   8192,
+   8192
+  ],
+  "category": "Ground & Terrain/Sand/Beach & Coastal Sand",
+  "download_count": 160732
+ },
+ "rock_boulder_dry": {
+  "type": 1,
+  "tags": [
+   "weathered",
+   "chipped",
+   "rocks",
+   "boulder",
+   "stone",
+   "flat",
+   "damaged",
+   "eroded",
+   "cracked",
+   "rough",
+   "uneven"
+  ],
+  "name": "Rock Boulder Dry",
+  "categories": [
+   "rock",
+   "outdoor",
+   "natural",
+   "terrain"
+  ],
+  "authors": {
+   "Dimitrios Savva": "Photography",
+   "Rico Cilliers": "Processing"
+  },
+  "date_published": 1635811200,
+  "sponsors": [
+   "540619"
+  ],
+  "dimensions": [
+   1799.9999523162842,
+   1800.0001907348633
+  ],
+  "max_resolution": [
+   16384,
+   16384
+  ],
+  "category": "Stone/Rock & Cliffs/Boulder Surfaces",
+  "download_count": 143724
+ }
+}

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>$page_title</title>
+<style>
+$css
+.tl { display: flex; gap: 3px; margin: 8px 0 0; }
+.seg {
+  min-width: 26px; padding: 6px 4px; text-align: center; text-decoration: none; color: var(--accent-ink);
+  background: var(--accent); border-radius: 6px; font-size: var(--fs-s); font-weight: 600; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis;
+}
+.seg:nth-child(even) { filter: brightness(.82); }
+.tlscale { display: flex; justify-content: space-between; color: var(--muted); font-size: var(--fs-s); margin-top: 2px; }
+.strip { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); align-items: start; margin-top: 14px; }
+.shot { scroll-margin-top: 12px; }
+.shot:target, .shot.flash { outline: 3px solid var(--accent); }
+.shot .meta { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin: 10px 0 4px; }
+.shot .time { color: var(--muted); font-size: var(--fs-s); white-space: nowrap; }
+.thumb { padding: 0; border: 0; background: none; width: 100%; display: block; cursor: zoom-in; border-radius: 8px; overflow: hidden; }
+.still { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; display: block; background: var(--soft); }
+.line { margin: 8px 0 0; }
+.cards { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.card { font-size: var(--fs-s); background: var(--soft); border-radius: 6px; padding: 1px 7px; color: var(--muted); }
+#zoom { position: fixed; inset: 0; background: rgba(0,0,0,.94); display: none; z-index: 10; padding: 12px; overflow: auto; }
+#zoom.open { display: block; }
+.zwrap { display: flex; flex-direction: column; align-items: center; gap: 10px; min-height: 100%; justify-content: center; }
+.frame { position: relative; width: min(94vw, calc(80vh * 0.5625)); container-type: inline-size; background: #000; }
+.frame img { width: 100%; display: block; aspect-ratio: 9 / 16; object-fit: cover; }
+.safe { position: absolute; left: $safe_l%; top: $safe_t%; width: $safe_w%; height: $safe_h%;
+  border: 2px dashed rgba(255,255,255,.7); display: none; pointer-events: none; }
+.frame.showsafe .safe { display: block; }
+.cap { position: absolute; left: $cap_l%; top: $cap_t%; width: $cap_w%; height: $cap_h%; display: flex;
+  align-items: flex-end; justify-content: center; text-align: center; pointer-events: none; }
+.cap span { font-size: calc(var(--cap-px) * 100cqw / 1080); line-height: 1.25; font-weight: 700; color: #fff;
+  text-shadow: 0 0 6px #000, 0 2px 4px #000, 0 0 2px #000; }
+.zbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; color: #fff; }
+.zbar .zt { max-width: 46ch; text-align: center; }
+#zoom button.ghost { background: #fff; color: #1f5fbf; }
+</style>
+</head>
+<body>
+<main class="page">
+<header class="top">
+  <p class="step">Storyboard to approve</p>
+  <h1>$title</h1>
+  <p class="lead">$lead</p>
+</header>
+
+<h2>Timeline</h2>
+<nav class="tl" aria-label="Shots on the timeline">
+$segments
+</nav>
+<div class="tlscale"><span>0.0 s</span><span>$total_s s</span></div>
+$rules
+
+<h2>Shots</h2>
+<p class="lead">Click a picture to enlarge it and see its captions where they will appear on screen.</p>
+<ol class="strip">
+$shots
+</ol>
+</main>
+
+<div id="zoom" role="dialog" aria-modal="true" aria-label="Enlarged shot" hidden>
+  <div class="zwrap">
+    <div class="frame" id="frame" style="--cap-px:$cap_px">
+      <img id="zimg" alt="">
+      <div class="safe"></div>
+      <div class="cap"><span id="zcap"></span></div>
+    </div>
+    <div class="zbar">
+      <button class="ghost" id="zprevcard" type="button">Previous caption</button>
+      <button class="ghost" id="znextcard" type="button">Next caption</button>
+      <button class="ghost" id="zsafe" type="button">Show safe area</button>
+      <button id="zclose" type="button">Close</button>
+    </div>
+    <div class="zbar"><span class="zt" id="ztitle"></span></div>
+  </div>
+</div>
+<script>
+(function () {
+  var zoom = document.getElementById('zoom'), frame = document.getElementById('frame');
+  var zimg = document.getElementById('zimg'), zcap = document.getElementById('zcap');
+  var ztitle = document.getElementById('ztitle');
+  var cards = [], idx = 0;
+  function showCard() { zcap.textContent = cards.length ? cards[idx] : ''; }
+  function open(btn) {
+    var shot = btn.closest('.shot');
+    zimg.src = btn.getAttribute('data-src');
+    ztitle.textContent = shot.getAttribute('data-title') + ' (' + shot.getAttribute('data-time') + ')';
+    cards = JSON.parse(shot.getAttribute('data-cards')); idx = 0; showCard();
+    zoom.hidden = false; zoom.classList.add('open'); document.getElementById('zclose').focus();
+  }
+  function close() { zoom.classList.remove('open'); zoom.hidden = true; }
+  function step(d) { if (cards.length) { idx = (idx + d + cards.length) % cards.length; showCard(); } }
+  Array.prototype.forEach.call(document.querySelectorAll('.thumb'), function (b) {
+    b.addEventListener('click', function () { open(b); });
+  });
+  document.getElementById('zclose').addEventListener('click', close);
+  document.getElementById('znextcard').addEventListener('click', function () { step(1); });
+  document.getElementById('zprevcard').addEventListener('click', function () { step(-1); });
+  document.getElementById('zsafe').addEventListener('click', function () {
+    var on = frame.classList.toggle('showsafe');
+    this.textContent = on ? 'Hide safe area' : 'Show safe area';
+  });
+  zoom.addEventListener('click', function (e) { if (e.target === zoom || e.target.className === 'zwrap') close(); });
+  document.addEventListener('keydown', function (e) {
+    if (zoom.hidden) return;
+    if (e.key === 'Escape') close(); else if (e.key === 'ArrowRight') step(1); else if (e.key === 'ArrowLeft') step(-1);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.seg'), function (a) {
+    a.addEventListener('click', function (e) {
+      e.preventDefault();
+      var el = document.getElementById(a.getAttribute('href').slice(1));
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('flash'); setTimeout(function () { el.classList.remove('flash'); }, 1600);
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('img.still'), function (img) {
+    img.addEventListener('error', function () {
+      var d = document.createElement('div'); d.className = 'ph'; d.textContent = 'Picture not made yet';
+      img.replaceWith(d);
+    });
+  });
+})();
+</script>
+</body>
+</html>

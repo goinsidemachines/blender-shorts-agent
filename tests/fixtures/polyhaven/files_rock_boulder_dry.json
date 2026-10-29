@@ -1,0 +1,66 @@
+{
+ "Diffuse": {
+  "1k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_diff_1k.jpg",
+    "size": 859211,
+    "md5": "da794cd9be3db91e3160cf081109f322"
+   }
+  },
+  "2k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/rock_boulder_dry/rock_boulder_dry_diff_2k.jpg",
+    "size": 3437626,
+    "md5": "fbc9cf377db427f54381f463c0639e1f"
+   }
+  }
+ },
+ "Rough": {
+  "1k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_rough_1k.jpg",
+    "size": 668127,
+    "md5": "0c8b15df3e31c15256da5f8e1b0d0759"
+   }
+  },
+  "2k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/rock_boulder_dry/rock_boulder_dry_rough_2k.jpg",
+    "size": 2706723,
+    "md5": "f69a2caafb58d427cb17cab31c202e0e"
+   }
+  }
+ },
+ "nor_gl": {
+  "1k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_nor_gl_1k.jpg",
+    "size": 802497,
+    "md5": "6f1c575ceed560ae253f65518cf748e2"
+   }
+  },
+  "2k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/rock_boulder_dry/rock_boulder_dry_nor_gl_2k.jpg",
+    "size": 3307320,
+    "md5": "513ef3fdaadd106c38a9c40919918cc0"
+   }
+  }
+ },
+ "Displacement": {
+  "1k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_disp_1k.jpg",
+    "size": 246228,
+    "md5": "a1d49d14ad2948ccdeb692d53b0664a8"
+   }
+  },
+  "2k": {
+   "jpg": {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/rock_boulder_dry/rock_boulder_dry_disp_2k.jpg",
+    "size": 785931,
+    "md5": "bea116eb30df0faed0748c69d57b460d"
+   }
+  }
+ }
+}

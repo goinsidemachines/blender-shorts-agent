@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "slug": "pendulum",
+  "title": "Why a pendulum keeps perfect time",
+  "topic": "simple pendulum",
+  "audience": "curious general viewers",
+  "field": "physics",
+  "length_s": 15,
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "style": {
+    "name": "workshop dusk",
+    "palette": {"accent": "#E8B33A"},
+    "font": "Segoe UI",
+    "caption": {"size": 64}
+  },
+  "facts": [
+    {
+      "id": "f-period",
+      "claim": "For small swings, a pendulum's period depends on its length and gravity, not on its mass",
+      "source": "https://en.wikipedia.org/wiki/Pendulum_(mechanics)"
+    }
+  ],
+  "lines": [
+    {"id": "l01", "text": "A pendulum swings like clockwork.", "shot": "s01", "facts": []},
+    {"id": "l02", "text": "Length sets the beat.", "shot": "s02", "facts": ["f-period"]},
+    {"id": "l03", "text": "Four times longer, twice slower.", "shot": "s02", "facts": ["f-period"]},
+    {"id": "l04", "text": "Clocks kept time this way.", "shot": "s03", "facts": []}
+  ],
+  "shots": [
+    {
+      "id": "s01",
+      "title": "Hook",
+      "picture": "A brass bob on a thin string swings slowly across a dark workshop, warm rim light.",
+      "scene": "Workshop",
+      "min_s": 4.0,
+      "still_at": 0.5,
+      "labels": [],
+      "badge": null
+    },
+    {
+      "id": "s02",
+      "title": "Length not weight",
+      "picture": "Two pendulums of different weight swing in step; a longer one swings visibly slower.",
+      "scene": "Workshop",
+      "min_s": 6.0,
+      "still_at": 0.6,
+      "labels": ["same length, same beat", {"text": "Longer", "near": "Pendulum C bob"}],
+      "badge": null
+    },
+    {
+      "id": "s03",
+      "title": "Clockwork",
+      "picture": "The pendulum drives an escapement and gear train of an old clock, close camera.",
+      "scene": "Clock",
+      "min_s": 4.0,
+      "still_at": 0.5,
+      "labels": [],
+      "badge": "Motion simplified"
+    }
+  ],
+  "sfx": [
+    {"kind": "whoosh", "shot": "s02", "at_s": 0.2, "dur_s": 0.8, "level_db": -18}
+  ],
+  "assets": [],
+  "post": {
+    "title": "Why a pendulum keeps perfect time",
+    "description": "Length, not weight, sets a pendulum's beat. Made in Blender.",
+    "hashtags": ["#physics", "#pendulum", "#blender", "#science"]
+  }
+}

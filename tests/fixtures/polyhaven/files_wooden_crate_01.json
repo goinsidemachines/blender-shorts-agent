@@ -1,0 +1,62 @@
+{
+ "blend": {
+  "1k": {
+   "blend": {
+    "include": {
+     "textures/wooden_crate_01_diff_1k.jpg": {
+      "size": 711292,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/wooden_crate_01/wooden_crate_01_diff_1k.jpg",
+      "md5": "266e0462d06e77c5745f66e89820544f"
+     },
+     "textures/wooden_crate_01_metal_1k.exr": {
+      "size": 55934,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/1k/wooden_crate_01/wooden_crate_01_metal_1k.exr",
+      "md5": "3af06f4aaa67aedfb83bbacbf10da52c"
+     },
+     "textures/wooden_crate_01_rough_1k.exr": {
+      "size": 689186,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/1k/wooden_crate_01/wooden_crate_01_rough_1k.exr",
+      "md5": "c0ef08246cb948880e0b3eade3423f91"
+     },
+     "textures/wooden_crate_01_nor_gl_1k.exr": {
+      "size": 1340062,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/1k/wooden_crate_01/wooden_crate_01_nor_gl_1k.exr",
+      "md5": "efdaa82c290404c056522985d104fc90"
+     }
+    },
+    "size": 263450,
+    "url": "https://dl.polyhaven.org/file/ph-assets/Models/blend/1k/wooden_crate_01/wooden_crate_01_1k.blend",
+    "md5": "9e8dbf019a10a3eb3c09ed678993b322"
+   }
+  },
+  "2k": {
+   "blend": {
+    "include": {
+     "textures/wooden_crate_01_nor_gl_2k.exr": {
+      "size": 6069816,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/wooden_crate_01/wooden_crate_01_nor_gl_2k.exr",
+      "md5": "ef1a1e8150768ff37de217f07188ed2b"
+     },
+     "textures/wooden_crate_01_diff_2k.jpg": {
+      "size": 2728494,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/wooden_crate_01/wooden_crate_01_diff_2k.jpg",
+      "md5": "d4e0552359a0e8fddcb15827f9781cef"
+     },
+     "textures/wooden_crate_01_metal_2k.exr": {
+      "size": 122318,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/wooden_crate_01/wooden_crate_01_metal_2k.exr",
+      "md5": "466c3d2aae9f908e12709edc43acbb30"
+     },
+     "textures/wooden_crate_01_rough_2k.exr": {
+      "size": 2453665,
+      "url": "https://dl.polyhaven.org/file/ph-assets/Models/exr/2k/wooden_crate_01/wooden_crate_01_rough_2k.exr",
+      "md5": "e6c9082c683c2fe9ead18527d22f071c"
+     }
+    },
+    "size": 263309,
+    "url": "https://dl.polyhaven.org/file/ph-assets/Models/blend/2k/wooden_crate_01/wooden_crate_01_2k.blend",
+    "md5": "15de5e5d7f86f557ffb23aea87fb4683"
+   }
+  }
+ }
+}

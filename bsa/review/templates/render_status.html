@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>$page_title</title>
+$refresh
+<style>
+$css
+.pill { display: inline-block; font-size: var(--fs-s); font-weight: 700; padding: 2px 12px; border-radius: 99px; vertical-align: 4px; margin-left: 8px; }
+.pill.running { background: var(--soft); color: var(--accent); }
+.pill.done { background: var(--ok-bg); color: var(--ok); }
+.pill.bad { background: var(--err-bg); color: var(--err); }
+.pill.meh { background: var(--warn-bg); color: var(--warn); }
+.notice { padding: 12px 14px; border-radius: var(--radius); margin: 0 0 16px; font-weight: 600; }
+.notice.bad { background: var(--err-bg); color: var(--err); }
+.notice.meh { background: var(--warn-bg); color: var(--warn); }
+.notice code { font-weight: 400; overflow-wrap: anywhere; }
+.bar { height: 14px; background: var(--soft); border-radius: 99px; overflow: hidden; display: flex; }
+.bar span { display: block; height: 100%; }
+.bar .reused { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.bar .fresh { background: var(--accent); }
+.bar.big { height: 22px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 14px 0 0; padding: 0; list-style: none; }
+.stats li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.stats .k { display: block; font-size: var(--fs-s); color: var(--muted); }
+.stats .v { font-size: var(--fs-l); font-weight: 650; font-variant-numeric: tabular-nums; }
+.stats .s { display: block; font-size: var(--fs-s); color: var(--muted); }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; list-style: none; padding: 0; margin: 0; }
+.shot { padding: 10px; }
+.shot.rendering { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.shot img, .shot .ph { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 8px; display: block; background: var(--soft); margin-bottom: 8px; }
+.shot h3 { display: flex; justify-content: space-between; gap: 6px; }
+.shot .state { font-size: var(--fs-s); color: var(--muted); font-weight: 400; }
+.shot p { margin: 6px 0 0; font-size: var(--fs-s); color: var(--muted); font-variant-numeric: tabular-nums; }
+.shot .flag { color: var(--warn); }
+.shot .flag.err { color: var(--err); }
+.findings { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.finding { padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.sev { display: inline-block; font-size: var(--fs-s); font-weight: 700; padding: 0 9px; border-radius: 99px; margin-right: 6px; }
+.error .sev { color: var(--err); background: var(--err-bg); }
+.warning .sev { color: var(--warn); background: var(--warn-bg); }
+.where { color: var(--muted); font-size: var(--fs-s); }
+.foot { color: var(--muted); font-size: var(--fs-s); margin-top: 28px; }
+#stall { display: none; }
+.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.step-row { display: grid; grid-template-columns: 2.2em 1fr auto; gap: 4px 12px; align-items: baseline; padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.step-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.step-row .name { font-weight: 650; }
+.step-row .st { font-size: var(--fs-s); font-weight: 700; padding: 0 9px; border-radius: 99px; background: var(--soft); color: var(--muted); }
+.step-row .sum { grid-column: 2 / 4; font-size: var(--fs-s); color: var(--muted); overflow-wrap: anywhere; }
+.step-row.done .st { background: var(--ok-bg); color: var(--ok); }
+.step-row.running .st { background: var(--soft); color: var(--accent); }
+.step-row.failed .st { background: var(--err-bg); color: var(--err); }
+.step-row.stopped .st { background: var(--warn-bg); color: var(--warn); }
+.step-row.pending { opacity: .65; }
+.step-row.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.now { margin-bottom: 16px; }
+.now h2 { margin-top: 0; }
+.items { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.items li { font-size: var(--fs-s); color: var(--muted); font-variant-numeric: tabular-nums; }
+.items li.checking { color: var(--accent); font-weight: 650; }
+.prev { color: var(--muted); font-size: var(--fs-s); margin: 0 0 16px; }
+</style>
+</head>
+<body>
+<main class="page">
+<header class="top">
+  <p class="step">$step</p>
+  <h1>$title<span class="pill $pill_class">$pill</span></h1>
+  <p class="lead">$lead</p>
+</header>
+$notice
+<div class="notice meh" id="stall">No update for <span id="stall-for"></span>. It may have stopped: ask Claude where it is (it checks with <code>CLI render-status</code>).</div>
+$body
+
+<p class="foot">Updated <span id="updated" data-t="$updated_epoch" data-stall="$stall_after">$updated</span>. $foot</p>
+</main>
+<script>
+(function () {
+  var el = document.getElementById('updated');
+  var t = parseFloat(el.getAttribute('data-t')), stall = parseFloat(el.getAttribute('data-stall'));
+  var running = $running_js;
+  function fmt(s) {
+    s = Math.max(0, Math.round(s));
+    if (s < 60) return s + ' s';
+    if (s < 3600) return Math.floor(s / 60) + ' min';
+    return Math.floor(s / 3600) + ' h ' + Math.floor((s % 3600) / 60) + ' min';
+  }
+  function tick() {
+    var ago = Date.now() / 1000 - t;
+    el.title = fmt(ago) + ' ago';
+    if (running && ago > stall) {
+      document.getElementById('stall').style.display = 'block';
+      document.getElementById('stall-for').textContent = fmt(ago);
+    }
+  }
+  tick(); setInterval(tick, 5000);
+  $reload_js
+})();
+</script>
+</body>
+</html>

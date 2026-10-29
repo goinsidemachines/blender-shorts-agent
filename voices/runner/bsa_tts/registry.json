@@ -1,0 +1,710 @@
+{
+  "version": 1,
+  "output": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "format": "wav/pcm16"
+  },
+  "exit_codes": {
+    "0": "ok",
+    "1": "error",
+    "2": "bad arguments or lines file",
+    "3": "GPU busy before start",
+    "4": "CUDA out of memory",
+    "5": "not installed"
+  },
+  "ref_script": [
+    {
+      "id": "ref",
+      "text": "Every great structure begins with a simple question. How do you keep something standing, when the world around it refuses to stay still? Engineers answer with patience, careful measurement, and a little imagination. The result is often hidden in plain sight."
+    }
+  ],
+  "clone_refs": {
+    "kokoro_am_michael.wav": "am_michael",
+    "kokoro_bm_george.wav": "bm_george",
+    "kokoro_af_heart.wav": "af_heart",
+    "kokoro_bf_emma.wav": "bf_emma"
+  },
+  "environments": {
+    "_note": "Disk space each uv environment takes once installed, measured on Windows with an RTX 5070 Ti (CUDA 12.8 torch). Shown to the user before installing.",
+    "runner": {
+      "bytes": 153674546,
+      "repo": "PyPI (numpy, scipy, soundfile)",
+      "licence": "BSD-3-Clause and other open-source licences"
+    },
+    "kokoro": {
+      "bytes": 4841523554,
+      "repo": "PyPI and download.pytorch.org (torch, kokoro, misaki, spaCy)",
+      "licence": "various open-source licences (BSD, Apache-2.0, MIT)"
+    },
+    "chatterbox": {
+      "bytes": 5153506229,
+      "repo": "PyPI and download.pytorch.org (torch, torchaudio, chatterbox-tts)",
+      "licence": "various open-source licences (BSD, Apache-2.0, MIT)"
+    },
+    "whisper": {
+      "bytes": 4711178871,
+      "repo": "PyPI and download.pytorch.org (torch, transformers)",
+      "licence": "various open-source licences (BSD, Apache-2.0, MIT)"
+    },
+    "python-3.12": {
+      "bytes": 65366155,
+      "repo": "github.com/astral-sh/python-build-standalone (fetched by uv)",
+      "licence": "PSF-2.0"
+    }
+  },
+  "models": {
+    "kokoro": {
+      "kind": "tts",
+      "engine": "kokoro",
+      "label": "Kokoro-82M",
+      "licence": "Apache-2.0",
+      "source": "https://huggingface.co/hexgrad/Kokoro-82M",
+      "env": "kokoro",
+      "devices": [
+        "cuda",
+        "cpu"
+      ],
+      "min_free_vram_mb": 1000,
+      "native_sample_rate": 24000,
+      "speed": "native",
+      "default_voice": "am_michael",
+      "weights": {
+        "repo": "hexgrad/Kokoro-82M",
+        "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+        "bytes": 341870408,
+        "files": {
+          "config.json": {
+            "bytes": 2351,
+            "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f"
+          },
+          "kokoro-v1_0.pth": {
+            "bytes": 327212226,
+            "sha256": "496dba118d1a58f5f3db2efc88dbdc216e0483fc89fe6e47ee1f2c53f18ad1e4"
+          },
+          "voices/af_alloy.pt": {
+            "bytes": 523425,
+            "sha256": "6d877149dd8b348fbad12e5845b7e43d975390e9f3b68a811d1d86168bef5aa3"
+          },
+          "voices/af_aoede.pt": {
+            "bytes": 523425,
+            "sha256": "c03bd1a4c3716c2d8eaa3d50022f62d5c31cfbd6e15933a00b17fefe13841cc4"
+          },
+          "voices/af_bella.pt": {
+            "bytes": 523425,
+            "sha256": "8cb64e02fcc8de0327a8e13817e49c76c945ecf0052ceac97d3081480e8e48d6"
+          },
+          "voices/af_heart.pt": {
+            "bytes": 523425,
+            "sha256": "0ab5709b8ffab19bfd849cd11d98f75b60af7733253ad0d67b12382a102cb4ff"
+          },
+          "voices/af_jessica.pt": {
+            "bytes": 523435,
+            "sha256": "cdfdccb8cc975aa34ee6b89642963b0064237675de0e41a30ae64cc958dd4e87"
+          },
+          "voices/af_kore.pt": {
+            "bytes": 523420,
+            "sha256": "8bfbc512321c3db49dff984ac675fa5ac7eaed5a96cc31104d3a9080e179d69d"
+          },
+          "voices/af_nicole.pt": {
+            "bytes": 523430,
+            "sha256": "c5561808bcf5250fe8c5f5de32caf2d94f27e57e95befdb098c5c85991d4c5da"
+          },
+          "voices/af_nova.pt": {
+            "bytes": 523420,
+            "sha256": "e0233676ddc21908c37a1f102f6b88a59e4e5c1bd764983616eb9eda629dbcd2"
+          },
+          "voices/af_river.pt": {
+            "bytes": 523425,
+            "sha256": "e149459bd9c084416b74756b9bd3418256a8b839088abb07d463730c369dab8f"
+          },
+          "voices/af_sarah.pt": {
+            "bytes": 523425,
+            "sha256": "49bd364ea3be9eb3e9685e8f9a15448c4883112a7c0ff7ab139fa4088b08cef9"
+          },
+          "voices/af_sky.pt": {
+            "bytes": 523351,
+            "sha256": "c799548aed06e0cb0d655a85a01b48e7f10484d71663f9a3045a5b9362e8512c"
+          },
+          "voices/am_adam.pt": {
+            "bytes": 523420,
+            "sha256": "ced7e284aba12472891be1da3ab34db84cc05cc02b5889535796dbf2d8b0cb34"
+          },
+          "voices/am_echo.pt": {
+            "bytes": 523420,
+            "sha256": "8bcfdc852bc985fb45c396c561e571ffb9183930071f962f1b50df5c97b161e8"
+          },
+          "voices/am_eric.pt": {
+            "bytes": 523420,
+            "sha256": "ada66f0eefff34ec921b1d7474d7ac8bec00cd863c170f1c534916e9b8212aae"
+          },
+          "voices/am_fenrir.pt": {
+            "bytes": 523430,
+            "sha256": "98e507eca1db08230ae3b6232d59c10aec9630022d19accac4f5d12fcec3c37a"
+          },
+          "voices/am_liam.pt": {
+            "bytes": 523420,
+            "sha256": "c82550757ddb31308b97f30040dda8c2d609a9e2de6135848d0a948368138518"
+          },
+          "voices/am_michael.pt": {
+            "bytes": 523435,
+            "sha256": "9a443b79a4b22489a5b0ab7c651a0bcd1a30bef675c28333f06971abbd47bd37"
+          },
+          "voices/am_onyx.pt": {
+            "bytes": 523420,
+            "sha256": "e8452be16cd0f6da7b4579eaf7b1e4506e92524882053d86d72b96b9a7fed584"
+          },
+          "voices/am_puck.pt": {
+            "bytes": 523420,
+            "sha256": "dd1d8973f4ce4b7d8ae407c77a435f485dabc052081b80ea75c4f30b84f36223"
+          },
+          "voices/am_santa.pt": {
+            "bytes": 523425,
+            "sha256": "7f2f7582fa2b1f160e90aafe6d0b442a685e773608b6667e545d743b073e97a7"
+          },
+          "voices/bf_alice.pt": {
+            "bytes": 523425,
+            "sha256": "d292651b6af6c0d81705c2580dcb4463fccc0ff7b8d618a471dbb4e45655b3f3"
+          },
+          "voices/bf_emma.pt": {
+            "bytes": 523420,
+            "sha256": "d0a423deabf4a52b4f49318c51742c54e21bb89bbbe9a12141e7758ddb5da701"
+          },
+          "voices/bf_isabella.pt": {
+            "bytes": 523440,
+            "sha256": "cdd4c37003805104d1d08fb1e05855c8fb2c68de24ca6e71f264a30aaa59eefd"
+          },
+          "voices/bf_lily.pt": {
+            "bytes": 523420,
+            "sha256": "6e09c2e481e2d53004d7e5ae7d3a325369e130a6f45c35a6002de75084be9285"
+          },
+          "voices/bm_daniel.pt": {
+            "bytes": 523430,
+            "sha256": "fc3fce4e9c12ed4dbc8fa9680cfe51ee190a96444ce7c3ad647549a30823fc5d"
+          },
+          "voices/bm_fable.pt": {
+            "bytes": 523425,
+            "sha256": "d44935f3135257a9064df99f007fc1342ff1aa767552b4a4fa4c3b2e6e59079c"
+          },
+          "voices/bm_george.pt": {
+            "bytes": 523430,
+            "sha256": "f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b"
+          },
+          "voices/bm_lewis.pt": {
+            "bytes": 523425,
+            "sha256": "b5204750dcba01029d2ac9cec17aec3b20a6d64073c579d694a23cb40effbd0e"
+          }
+        }
+      },
+      "voices": {
+        "af_heart": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_heart.pt",
+          "grade": "A",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade A"
+        },
+        "af_bella": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_bella.pt",
+          "grade": "A-",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade A-"
+        },
+        "af_nicole": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_nicole.pt",
+          "grade": "B-",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade B-"
+        },
+        "af_aoede": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_aoede.pt",
+          "grade": "C+",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C+"
+        },
+        "af_kore": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_kore.pt",
+          "grade": "C+",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C+"
+        },
+        "af_sarah": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_sarah.pt",
+          "grade": "C+",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C+"
+        },
+        "af_alloy": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_alloy.pt",
+          "grade": "C",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C"
+        },
+        "af_nova": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_nova.pt",
+          "grade": "C",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C"
+        },
+        "af_sky": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_sky.pt",
+          "grade": "C-",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C-"
+        },
+        "af_jessica": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_jessica.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "af_river": {
+          "gender": "female",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/af_river.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "am_fenrir": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_fenrir.pt",
+          "grade": "C+",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade C+"
+        },
+        "am_michael": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_michael.pt",
+          "grade": "C+",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade C+"
+        },
+        "am_puck": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_puck.pt",
+          "grade": "C+",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C+"
+        },
+        "am_echo": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_echo.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "am_eric": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_eric.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "am_liam": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_liam.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "am_onyx": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_onyx.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "am_santa": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_santa.pt",
+          "grade": "D-",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D-"
+        },
+        "am_adam": {
+          "gender": "male",
+          "language": "en-US",
+          "engine_lang": "a",
+          "file": "voices/am_adam.pt",
+          "grade": "F+",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade F+"
+        },
+        "bf_emma": {
+          "gender": "female",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bf_emma.pt",
+          "grade": "B-",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade B-"
+        },
+        "bf_isabella": {
+          "gender": "female",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bf_isabella.pt",
+          "grade": "C",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade C"
+        },
+        "bf_alice": {
+          "gender": "female",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bf_alice.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "bf_lily": {
+          "gender": "female",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bf_lily.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        },
+        "bm_fable": {
+          "gender": "male",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bm_fable.pt",
+          "grade": "C",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade C"
+        },
+        "bm_george": {
+          "gender": "male",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bm_george.pt",
+          "grade": "C",
+          "narrator": true,
+          "description": "Kokoro built-in voice, grade C"
+        },
+        "bm_lewis": {
+          "gender": "male",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bm_lewis.pt",
+          "grade": "D+",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D+"
+        },
+        "bm_daniel": {
+          "gender": "male",
+          "language": "en-GB",
+          "engine_lang": "b",
+          "file": "voices/bm_daniel.pt",
+          "grade": "D",
+          "narrator": false,
+          "description": "Kokoro built-in voice, grade D"
+        }
+      }
+    },
+    "chatterbox": {
+      "kind": "tts",
+      "engine": "chatterbox",
+      "variant": "base",
+      "label": "Chatterbox (Resemble AI)",
+      "licence": "MIT",
+      "source": "https://huggingface.co/ResembleAI/chatterbox",
+      "env": "chatterbox",
+      "devices": [
+        "cuda"
+      ],
+      "min_free_vram_mb": 4000,
+      "native_sample_rate": 24000,
+      "speed": "time-stretch after generation",
+      "default_voice": "default",
+      "watermark": "Resemble Perth imperceptible watermark on every output",
+      "params": {
+        "exaggeration": 0.5,
+        "cfg_weight": 0.5,
+        "temperature": 0.8
+      },
+      "weights": {
+        "repo": "ResembleAI/chatterbox",
+        "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+        "bytes": 3191966992,
+        "files": {
+          "conds.pt": {
+            "bytes": 107374,
+            "sha256": "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e"
+          },
+          "s3gen.safetensors": {
+            "bytes": 1056484620,
+            "sha256": "2b78103c654207393955e4900aac14a12de8ef25f4b09424f1ef91941f161d4e"
+          },
+          "t3_cfg.safetensors": {
+            "bytes": 2129653744,
+            "sha256": "914cb1696f47527fe8852ca8f1fe1fa63cb34f76f9c715e84e067b744dd0da81"
+          },
+          "tokenizer.json": {
+            "bytes": 25470,
+            "sha256": "d71e3a44eabb1784df9a68e9f95b251ecbf1a7af6a9f50835856b2ca9d8c14a5"
+          },
+          "ve.safetensors": {
+            "bytes": 5695784,
+            "sha256": "f0921cab452fa278bc25cd23ffd59d36f816d7dc5181dd1bef9751a7fb61f63c"
+          }
+        }
+      },
+      "voices": {
+        "default": {
+          "gender": "male",
+          "language": "en-US",
+          "ref": null,
+          "description": "the model's own built-in voice"
+        },
+        "michael": {
+          "gender": "male",
+          "language": "en-US",
+          "ref": "kokoro_am_michael.wav",
+          "description": "cloned from a Kokoro am_michael clip made on this machine (accent only partly carries over)"
+        },
+        "george": {
+          "gender": "male",
+          "language": "en-GB",
+          "ref": "kokoro_bm_george.wav",
+          "description": "cloned from a Kokoro bm_george clip made on this machine (accent only partly carries over)"
+        },
+        "heart": {
+          "gender": "female",
+          "language": "en-US",
+          "ref": "kokoro_af_heart.wav",
+          "description": "cloned from a Kokoro af_heart clip made on this machine (accent only partly carries over)"
+        },
+        "emma": {
+          "gender": "female",
+          "language": "en-GB",
+          "ref": "kokoro_bf_emma.wav",
+          "description": "cloned from a Kokoro bf_emma clip made on this machine (accent only partly carries over)"
+        },
+        "me": {
+          "gender": "any",
+          "language": "en",
+          "ref": "me.wav",
+          "optional": true,
+          "description": "your own voice: add a 10-20 s recording as voices/refs/me.wav"
+        }
+      }
+    },
+    "chatterbox-turbo": {
+      "kind": "tts",
+      "engine": "chatterbox",
+      "variant": "turbo",
+      "label": "Chatterbox Turbo (Resemble AI)",
+      "licence": "MIT",
+      "source": "https://huggingface.co/ResembleAI/chatterbox-turbo",
+      "env": "chatterbox",
+      "devices": [
+        "cuda"
+      ],
+      "min_free_vram_mb": 3500,
+      "native_sample_rate": 24000,
+      "speed": "time-stretch after generation",
+      "default_voice": "default",
+      "watermark": "Resemble Perth imperceptible watermark on every output",
+      "params": {
+        "temperature": 0.8
+      },
+      "weights": {
+        "repo": "ResembleAI/chatterbox-turbo",
+        "revision": "749d1c1a46eb10492095d68fbcf55691ccf137cd",
+        "bytes": 2987680596,
+        "files": {
+          "added_tokens.json": {
+            "bytes": 418,
+            "sha256": "72e4ab6acb0d9309ac3df4b526ae5fd80a2da5bc5ab7bb02d85096a374f69193"
+          },
+          "conds.pt": {
+            "bytes": 169454,
+            "sha256": "b1852099306fd6a7814eb9d0bd10186caba7249596cc23868f78a0eefbfa5033"
+          },
+          "merges.txt": {
+            "bytes": 456318,
+            "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+          },
+          "s3gen_meanflow.safetensors": {
+            "bytes": 1064875036,
+            "sha256": "d65cb687a2ed581ee6cc297e919ffefa63386944f42364ae13b78a594945514f"
+          },
+          "special_tokens_map.json": {
+            "bytes": 470,
+            "sha256": "92ba8063bf40aa163eadebbfe0de07c2aebe44cf0d4a9e8726580b0781fd2640"
+          },
+          "t3_turbo_v1.safetensors": {
+            "bytes": 1915480052,
+            "sha256": "fcf1f8c1d651bb7e3acd69ee5be269b4ac10c02980b7708213d598bc9f7cdf87"
+          },
+          "tokenizer_config.json": {
+            "bytes": 3878,
+            "sha256": "bca16a2ac1ddbd78b8d6228f0031884cc74b6ea54b967d6f6d2ebae9ccde23e6"
+          },
+          "ve.safetensors": {
+            "bytes": 5695784,
+            "sha256": "f0921cab452fa278bc25cd23ffd59d36f816d7dc5181dd1bef9751a7fb61f63c"
+          },
+          "vocab.json": {
+            "bytes": 999186,
+            "sha256": "f6bd25a65e4e63ca31360e9fb11c7e4f9a391a78385d640acd814092dd6eee4f"
+          }
+        }
+      },
+      "voices": {
+        "default": {
+          "gender": "female",
+          "language": "en-US",
+          "ref": null,
+          "description": "the model's own built-in voice"
+        },
+        "michael": {
+          "gender": "male",
+          "language": "en-US",
+          "ref": "kokoro_am_michael.wav",
+          "description": "cloned from a Kokoro am_michael clip made on this machine (accent only partly carries over)"
+        },
+        "george": {
+          "gender": "male",
+          "language": "en-GB",
+          "ref": "kokoro_bm_george.wav",
+          "description": "cloned from a Kokoro bm_george clip made on this machine (accent only partly carries over)"
+        },
+        "heart": {
+          "gender": "female",
+          "language": "en-US",
+          "ref": "kokoro_af_heart.wav",
+          "description": "cloned from a Kokoro af_heart clip made on this machine (accent only partly carries over)"
+        },
+        "emma": {
+          "gender": "female",
+          "language": "en-GB",
+          "ref": "kokoro_bf_emma.wav",
+          "description": "cloned from a Kokoro bf_emma clip made on this machine (accent only partly carries over)"
+        },
+        "me": {
+          "gender": "any",
+          "language": "en",
+          "ref": "me.wav",
+          "optional": true,
+          "description": "your own voice: add a 10-20 s recording as voices/refs/me.wav"
+        }
+      }
+    },
+    "whisper-small.en": {
+      "kind": "asr",
+      "engine": "whisper",
+      "label": "Whisper small.en (OpenAI)",
+      "licence": "MIT",
+      "source": "https://huggingface.co/openai/whisper-small.en",
+      "env": "whisper",
+      "devices": [
+        "cuda",
+        "cpu"
+      ],
+      "min_free_vram_mb": 1000,
+      "weights": {
+        "repo": "openai/whisper-small.en",
+        "revision": "e8727524f962ee844a7319d92be39ac1bd25655a",
+        "bytes": 970930930,
+        "files": {
+          "added_tokens.json": {
+            "bytes": 34604,
+            "sha256": "560be47bea388757f8d4cc185c5d82067426cbb6361e38016dd90ddc01ab203a"
+          },
+          "config.json": {
+            "bytes": 1943,
+            "sha256": "3441094addfb2a31ef62ea117e95bd6e437bbad8e93d3697fe420a4a6d3603a5"
+          },
+          "generation_config.json": {
+            "bytes": 1931,
+            "sha256": "aad4e18c0fb1d063c5b38b4080cec3c4c8cdfff95e1de4797013470654a5a72a"
+          },
+          "merges.txt": {
+            "bytes": 456318,
+            "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+          },
+          "model.safetensors": {
+            "bytes": 966992008,
+            "sha256": "6014ac49b506df900f66f4aca6b0801eed7245594ace97bcaf73e0ae5b863066"
+          },
+          "normalizer.json": {
+            "bytes": 52666,
+            "sha256": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd"
+          },
+          "preprocessor_config.json": {
+            "bytes": 184990,
+            "sha256": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666"
+          },
+          "special_tokens_map.json": {
+            "bytes": 1830,
+            "sha256": "014f8f802366ed818919550be0ad9e35907327cb9e142e8aaa102420f460bda8"
+          },
+          "tokenizer.json": {
+            "bytes": 2405679,
+            "sha256": "5eb60cec1e77aeeb6869a2bb5a8e01a84c3fe5d072d75369343021fe6f5310d0"
+          },
+          "tokenizer_config.json": {
+            "bytes": 805,
+            "sha256": "14f84bdf4b9ecdbd4738ddc81c17a1baedfc02bb93c6e049c951e15a1b40b70d"
+          },
+          "vocab.json": {
+            "bytes": 798156,
+            "sha256": "3ba3c3109ff33976c4bd966589c11ee14fcaa1f4c9e5e154c2ed7f99d80709e7"
+          }
+        }
+      },
+      "voices": {}
+    }
+  }
+}

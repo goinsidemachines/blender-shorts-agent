@@ -1,0 +1,8 @@
+.superpowers/
+shorts/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.blend1
+docs/superpowers/
