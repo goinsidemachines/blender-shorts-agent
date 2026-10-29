@@ -52,6 +52,7 @@ effects (about -18 for a feature sound, -24 to -30 for a bed). Kinds:
 | `rumble` | storms, heavy machinery, the ground | yes |
 | `hiss` | hydraulics, air, steam | yes |
 | `wind` | weather, height, open air | yes |
+| `water` | water lapping, flowing or splashing, rain | yes |
 | `whoosh` | camera moves, something passing fast | synthetic |
 | `blip` | a label or number popping in (a designed tone) | synthetic |
 | `hum` | motors, electrics (a designed tone) | synthetic |
@@ -83,6 +84,7 @@ before you get that far; fix them by changing the kind or downloading recordings
 Designed UI packs (`kenney-ui-sfx`: interface clicks and switches, tonal and partly synthesised) are flagged
 `designed` in search results, under the plan table and in the library. Under natural-only the mix never uses their
 clips, even ones tagged `click`: plan a natural pack (`oga-metal-wood`, `kenney-rpg`) or a recording for those kinds.
+For water and wind, plan `pack:oga-water` and `pack:oga-wind`: they need no Commons and no key.
 Each library clip also has a `flatness` score (near 0 tonal, near 1 noisy) to look at; it does not decide picking,
 because real knocks ring as well.
 

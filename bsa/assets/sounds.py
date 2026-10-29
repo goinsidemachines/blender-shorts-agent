@@ -3,8 +3,9 @@
 Sources, all CC0 (public domain dedication: commercial use, no attribution required):
 
 - **Curated packs** (`pack:<id>`): known CC0 packs hosted as plain files on OpenGameArt, including Kenney's, at
-  stable URLs. Downloaded as a zip; the audio files are extracted into the cache and tagged with sfx kinds from
-  their file names ("impactWood_heavy" -> impact, thud).
+  stable URLs: hits and doors, UI clicks, and natural water and wind for outdoor shorts. Downloaded as a zip; the
+  audio files are extracted into the cache and tagged with sfx kinds from their file names ("impactWood_heavy" ->
+  impact, thud), or with the pack's own kind when it holds one subject (wind).
 - **Wikimedia Commons** (`commons:<file name>`): keyless public API; each file's licence is read from its metadata
   and anything but CC0 is refused; downloads are checked against the file's SHA-1.
 - **Freesound** (`freesound:<id>`): only with an API key (`settings set freesound.api_key KEY`, or
@@ -73,9 +74,23 @@ PACKS = {
         "tags": "door creak metal latch click cloth footstep chop knife slide drag wood coins book",
         "kinds": ["thud", "click", "slide", "creak"],
     },
+    "oga-water": {
+        "name": "40 CC0 water / splash / slime SFX", "author": "rubberduck", "license": "CC0",
+        "approx_bytes": 2_300_000, "page": "https://opengameart.org/content/40-cc0-water-splash-slime-sfx",
+        "url": "https://opengameart.org/sites/default/files/water-splash-slime-sfx.zip",
+        "tags": "water splash bubble bubbles rain loop liquid drip lapping river canal sea lake nature ambience slime",
+        "kinds": ["water"],  # its bubble, splash and water / rain loops; the slime clips get no kind
+    },
+    "oga-wind": {
+        "name": "Wind", "author": "IgnasD", "license": "CC0", "approx_bytes": 264_000,
+        "page": "https://opengameart.org/content/wind", "url": "https://opengameart.org/sites/default/files/wind.zip",
+        "tags": "wind blow gust breeze air weather outdoor nature ambience",
+        "kinds": ["wind"], "fallback_kinds": ["wind"],  # every clip in it is wind, whatever its file name says
+    },
 }  # fmt: skip
 # `tags` are words a search matches. `kinds` are the sfx kinds the pack's clips get when indexed (auto_kinds of its
 # file names): search shows these, never kinds read off the tags, so it promises no kind the library will not have.
+# `fallback_kinds` (a pack of one subject only) tag a clip whose file name suggests no kind.
 
 # File-name words -> sfx kind (a clip can have several). Order: the kinds' order in the result.
 KIND_WORDS = {
@@ -88,6 +103,8 @@ KIND_WORDS = {
     "rumble": ("rumble", "quake", "earthquake"),
     "hiss": ("hiss", "steam", "spray", "air"),
     "wind": ("wind", "gust", "breeze"),
+    "water": ("water", "splash", "splashes", "bubble", "bubbles", "drip", "drips", "rain", "stream", "river", "wave",
+              "waves", "lapping", "liquid", "flowing", "pour"),
     "whoosh": ("whoosh", "swish", "swoosh", "woosh", "swing"),
 }
 
@@ -124,6 +141,11 @@ def auto_kinds(name: str) -> list[str]:
     """The sfx kinds a clip's file name suggests (["impact", "thud"] for "impactWood_heavy_003.ogg")."""
     words = set(_words(name))
     return [kind for kind, keys in KIND_WORDS.items() if words & set(keys)]
+
+
+def pack_clip_kinds(pid: str, name: str) -> list[str]:
+    """The kinds a pack's clip is tagged with: what its file name suggests, else the pack's `fallback_kinds`."""
+    return auto_kinds(name) or list(PACKS.get(pid, {}).get("fallback_kinds", []))
 
 
 def _safe(text: str) -> str:
@@ -494,7 +516,7 @@ def adopt_legacy(cache_dir: Path) -> list[str]:
         rels = _extract(polyhaven._target(cache_dir, f["path"]), pid, cache_dir)
         if rels:
             _index(lib, f"sfx-{pid}", f"OpenGameArt ({p['author']})", p["license"], f,
-                   [(rel, auto_kinds(rel)) for rel in rels])
+                   [(rel, pack_clip_kinds(pid, rel)) for rel in rels])
             added.append(f"sfx-{pid}")
     if added:
         lib.save()
@@ -512,8 +534,9 @@ def download(plans: list[Asset], cache_dir: Path, http=_urlopen) -> dict[str, li
         paths = []
         for f in a.files:
             if f["role"] == "archive":
-                rels = _extract(polyhaven._target(cache_dir, f["path"]), a.id.removeprefix("sfx-"), cache_dir)
-                clips = [(rel, auto_kinds(rel)) for rel in rels]
+                pid = a.id.removeprefix("sfx-")
+                rels = _extract(polyhaven._target(cache_dir, f["path"]), pid, cache_dir)
+                clips = [(rel, pack_clip_kinds(pid, rel)) for rel in rels]
             else:
                 clips = [(f["path"], list(f.get("kinds") or auto_kinds(f["path"])))]
             _index(lib, a.id, a.source, a.license, f, clips)

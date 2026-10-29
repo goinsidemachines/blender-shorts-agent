@@ -293,3 +293,33 @@ def test_search_reports_a_cached_packs_kinds_from_the_library(tmp_path):
     out = sounds.search("thud", http=FakeHttp({q: _commons_json()}), freesound_key=None, cache_dir=cache)
     (hit,) = [r for r in out["results"] if r["id"] == "pack:oga-metal-wood"]
     assert hit["kinds"] == ["impact", "creak"] and hit["kinds_from"] == "library"
+
+
+def test_natural_packs_cover_water_and_wind_with_no_commons_and_no_key():
+    """With Commons unreachable and no Freesound key, a water or wind search still finds a CC0 pack to plan."""
+    from bsa.audio.sfx import KINDS
+
+    assert "water" in KINDS and "water" not in recorded.SYNTHETIC_KINDS
+    for query, kind in (("water splash", "water"), ("wind", "wind")):
+        q = sounds.commons_search_url(query)
+        out = sounds.search(query, http=FakeHttp({q: OSError("offline")}), freesound_key=None)
+        packs = [r for r in out["results"] if r["provider"] == "pack" and kind in r["kinds"]]
+        assert packs and not any(r.get("designed") for r in packs), query
+        assert all(sounds.PACKS[r["id"].removeprefix("pack:")]["page"].startswith("https://opengameart.org/content/")
+                   for r in packs)  # fmt: skip
+    assert sounds.auto_kinds("splash_03.ogg") == ["water"] and sounds.auto_kinds("loop_rain.ogg") == ["water"]
+    assert sounds.auto_kinds("bubble_1.wav") == ["water"]
+
+
+def test_a_single_subject_pack_tags_every_clip_with_its_kind(tmp_path):
+    """A clip in the wind pack whose file name says nothing (ambience_02) is still a wind clip."""
+    pid = next(p for p, v in sounds.PACKS.items() if v.get("fallback_kinds") == ["wind"])
+    pack = sounds.PACKS[pid]
+    archive = _zip({"Wind.ogg": b"OggS fake", "ambience_02.wav": _wav_bytes(120)})
+    http = FakeHttp({pack["url"]: archive}, sizes={pack["url"]: len(archive)})
+    (plan,) = sounds.plan([f"pack:{pid}"], http=http, head=http.head)
+    assert [c[0] for c in http.calls] == ["HEAD " + pack["url"]]  # the plan only asks the size: nothing downloaded
+    cache = tmp_path / ".assets-cache"
+    sounds.download([plan], cache, http=http)
+    lib = recorded.Library(cache)
+    assert sorted(c["name"] for c in lib.clips_for("wind")) == ["Wind", "ambience_02"]

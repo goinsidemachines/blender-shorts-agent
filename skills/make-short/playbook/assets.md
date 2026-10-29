@@ -46,8 +46,10 @@ yes to an exact list.
 
 - **Curated packs** on OpenGameArt, at stable direct-file URLs, all CC0: rubberduck's "100 CC0 metal and wood SFX"
   (`pack:oga-metal-wood`: hits, drops, doors, locks, tools), Kenney's "51 UI sound effects" (`pack:kenney-ui-sfx`:
-  clicks and switches) and Kenney's "50 RPG sound effects" (`pack:kenney-rpg`: doors, creaks, latches, metal, cloth,
-  a blade drawn).
+  clicks and switches), Kenney's "50 RPG sound effects" (`pack:kenney-rpg`: doors, creaks, latches, metal, cloth,
+  a blade drawn), rubberduck's "40 CC0 water / splash / slime SFX" (`pack:oga-water`: splashes, bubbles, water and
+  rain loops) and IgnasD's "Wind" (`pack:oga-wind`). The last two give an outdoor short water and wind with no
+  Commons and no Freesound key.
 - **Wikimedia Commons**: no key. The licence is read from each file's own page; anything but CC0 is refused at plan
   time.
 - **Freesound**: a large library, searched for CC0 only, and each sound's licence is checked again at plan time. It
