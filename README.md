@@ -196,6 +196,8 @@ Everything runs on your own computer. The plugin sends no telemetry and has no s
   packages through [uv](https://docs.astral.sh/uv/).
 - **What it sends:** search words to those asset sources, and, only if you choose ElevenLabs for narration, your
   narration lines to ElevenLabs with your own API key.
+- **Plugin feedback:** when the plugin gets something wrong, Claude notes it in the short's folder. Only if you
+  choose, it opens a prefilled GitHub issue for you to review and submit yourself. Nothing is sent otherwise.
 - **What it keeps:** your settings in `~/.blender-shorts-agent/` (workspace, voice, hard rules, handle) and each
   short in its own folder in your workspace. Nothing leaves your machine besides the requests above.
 
