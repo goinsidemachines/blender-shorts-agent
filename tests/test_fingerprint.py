@@ -13,6 +13,7 @@ def test_fingerprints_in_blender(blender_run):
         "test_save_and_reload_without_a_change_keeps_every_fingerprint",
         "test_a_camera_change_in_shot_2_changes_only_shot_2",
         "test_parts_say_which_kind_of_data_changed",
+        "test_a_tag_changes_the_tags_part_but_not_the_fingerprint",
         "test_a_material_only_shot_1_uses_changes_only_shot_1",
         "test_a_shared_material_changes_both_shots",
         "test_geometry_modifiers_lights_world_render_settings_and_images_count",

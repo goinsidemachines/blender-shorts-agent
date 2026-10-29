@@ -89,7 +89,8 @@ renders again that did not need to. The fingerprints of a saved .blend are cache
 `blend/short.fingerprints.json`; it is kept current by itself (never edit or copy it).
 
 `BLENDER check SHORT` works the same way: it re-checks only shots whose fingerprint, frames, short.json `scene` or
-`labels`, or list of shots changed, or (when a hard rule scans scene names) whose rules changed, and keeps the
+`labels`, list of shots or objects' tags (`contact:`, `hero`, `grounded`, `overlay`, `surface`: a tag changes no
+pixel, so it re-checks without rendering again) changed, or (when a hard rule scans scene names) whose rules changed, and keeps the
 other shots' findings (its result's `checked` and `kept`); a change
 to the checks' own code (a plugin update) re-checks everything, and `--full` does so on demand. Nothing else counts:
 the post text, sound levels (`sfx`, `source/sound.py`, `CLI mix`), the end-card text and a shot's `title`,

@@ -302,6 +302,18 @@ def _inputs(fp="fp1", span=None, shot=None, ids=("s01", "s02"), parts=None):
 _PARTS = {"data:Camera": "c0", "data:Object": "o1", "animation": "a1", "code": "x"}
 
 
+def test_a_tag_change_alone_makes_the_checks_run_again(sdir):
+    """Tags (a contact:<other> tag added in build.py) change what the checks find but not a pixel, so they are not
+    in the fingerprint: the checks key on the fingerprint's "tags" part instead, and say it changed."""
+    _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs(parts={**_PARTS, "tags": "t1"})}, 5))
+    retagged = _inputs(parts={**_PARTS, "tags": "t2"})
+    assert freshness.reusable_checks(sdir, freshness.checks_stamp("h", {"s01": retagged}, 5)) == {}
+    with pytest.raises(freshness.StaleError, match=r"shot s01's tags changed"):
+        freshness.require_checks(sdir, "h", {"s01": retagged})
+    same = _inputs(parts={**_PARTS, "tags": "t1", "data:Camera": "c9"})  # other parts are information only
+    freshness.require_checks(sdir, "h", {"s01": same})
+
+
 def test_check_inputs_ignore_fields_the_checks_never_read(sdir):
     """The title, picture, still_at and badge are not checked: rewording them keeps the checks current."""
     _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))

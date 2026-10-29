@@ -12,7 +12,9 @@ Two parts:
   own (geometry nodes reading the scene time or simulating, physics, wave and build modifiers).
 
 So a key moved inside shot 2 changes shot 2 (and shot 1 only if the curve moves there too), and a material that only
-shot 1's scene uses changes shot 1 only. When unsure the walk includes a property: a false "changed" costs a render,
+shot 1's scene uses changes shot 1 only. The objects' bsa_* custom properties (bsa_tags: hero, contact, grounded,
+overlay, surface) change what the checks find but not a pixel: they are not in the fingerprint, only in its "tags"
+part, which the checks key on. When unsure the walk includes a property: a false "changed" costs a render,
 a false "unchanged" would ship stale frames. Runs inside Blender (bpy + numpy)."""
 
 from __future__ import annotations
@@ -508,6 +510,16 @@ def _short(h) -> str:
     return h.hexdigest()[:16]
 
 
+def _tags(scene) -> str:
+    """A hash of every object's bsa_* custom properties in `scene` (the tags the checks read)."""
+    h = hashlib.sha256()
+    for obj in sorted(scene.objects, key=lambda o: o.name):
+        props = sorted((k, str(obj[k])) for k in obj.keys() if k.startswith("bsa_"))  # noqa: SIM118 - an ID, not a dict
+        if props:
+            h.update(repr((obj.name, props)).encode("utf-8", "replace"))
+    return _short(h)
+
+
 def _static_parts(hasher: _Hasher, ids) -> dict[str, str]:
     """{"data:<type>": hash} of the static part per datablock type (Object, Camera, Material...), so a changed
     fingerprint can say what kind of data changed. Information only: the fingerprint does not use it."""
@@ -545,7 +557,7 @@ def scene_fingerprints(scene, spans, hasher: _Hasher | None = None, reached=None
     tee = _Tee(head, drivers)
     for idb in ids:
         _driver_digest(idb, tee)
-    common = {**_static_parts(hasher, ids), "drivers": _short(drivers), "code": _short(code)}
+    common = {**_static_parts(hasher, ids), "drivers": _short(drivers), "code": _short(code), "tags": _tags(scene)}
     objects = sorted(scene.objects, key=lambda o: o.name)
     in_scene = {o.name for o in objects}  # their motion is sampled as evaluated matrices below
     channels = [(idb, path, index, fc) for idb in ids for path, index, fc in _anim_channels(idb)

@@ -154,7 +154,7 @@ _PART_WORDS = {"Object": "objects", "Camera": "camera", "Material": "materials",
                "World": "world", "Scene": "scene settings", "Image": "images", "VectorFont": "fonts",
                "TextCurve": "text", "Curve": "curves", "Collection": "collections", "Texture": "textures",
                "ParticleSettings": "particles", "Armature": "armatures", "Key": "shape keys",
-               "animation": "animation", "drivers": "drivers"}  # fmt: skip
+               "animation": "animation", "drivers": "drivers", "tags": "tags"}  # fmt: skip
 RENDER_CODE_CHANGED = "the plugin's render code or Blender version changed"
 
 
@@ -455,12 +455,15 @@ def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=
     of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture, still_at or badge), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
     text, sound levels and other settings are not in it. `parts` is information (which part of the fingerprint
-    changed), not part of the key."""
+    changed), not part of the key, except its "tags" part: the objects' tags (contact, hero...) change what the checks
+    find but are not in the fingerprint, since they change no pixel."""
     out = {"fingerprint": fingerprint, "frames": [span.f0, span.f1],
            "entry": {k: shot.get(k) for k in CHECKED_FIELDS}, "shot_ids": sorted(shot_ids),
            "parts": dict(parts or {}), "legacy": shot_check_key(fingerprint, span, shot)}  # fmt: skip
     if rules:
         out["rules"] = rules
+    if parts and parts.get("tags") is not None:
+        out["tags"] = parts["tags"]
     return out
 
 
@@ -511,6 +514,8 @@ def _changes(old: dict, sid: str, now) -> list[str]:
     out = []
     if had.get("fingerprint") != now.get("fingerprint"):
         out.append(describe_change(sid, changed_parts(had.get("parts"), now.get("parts"))))
+    if had.get("tags") != now.get("tags"):
+        out.append(f"shot {sid}'s tags changed (contact, hero, grounded, overlay or surface)")
     if had.get("frames") != now.get("frames"):
         a, b = had.get("frames") or ["?", "?"], now["frames"]
         out.append(f"shot {sid}'s frames changed ({a[0]}-{a[1]}, now {b[0]}-{b[1]})")
