@@ -227,3 +227,41 @@ def test_cli_setting_off_and_never(cli_short):
     assert lst["pending"] == 1 and not lst["ask"]
     bad = run(home, "feedback", "add", sdir, "--severity", "huge", "--summary", "x")
     assert bad.returncode != 0
+
+
+# --------------------------------------------------------------------------- docs and issue form
+
+
+def _flat(path: Path) -> str:
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_skill_says_when_to_note_feedback():
+    text = _flat(ROOT / "skills" / "make-short" / "SKILL.md")
+    assert "feedback add" in text and "never stop the short" in text
+    assert "your own scene" in text or "the user's own" in text
+
+
+def test_post_chapter_asks_once_and_never_submits():
+    text = _flat(ROOT / "skills" / "make-short" / "playbook" / "09-post.md")
+    for words in ("feedback list", "feedback report SHORT --open", "feedback decline", "Submit", "Never submit"):
+        assert words in text, words
+
+
+def test_first_run_mentions_the_setting_without_asking():
+    text = _flat(ROOT / "skills" / "make-short" / "playbook" / "00-first-run.md")
+    assert "settings set feedback never|off" in text
+
+
+def test_readme_says_nothing_is_sent():
+    text = _flat(ROOT / "README.md")
+    assert "prefilled GitHub issue" in text
+
+
+def test_issue_form_matches_the_report():
+    form = (ROOT / ".github" / "ISSUE_TEMPLATE" / feedback.TEMPLATE).read_text(encoding="utf-8")
+    assert "labels: [plugin-feedback]" in form
+    for field in ("id: entries", "id: environment"):
+        assert field in form, field
+    for words in ("blocking", "wrong-output", "rough-edge", "Workaround", "Error line"):
+        assert words in form, words
