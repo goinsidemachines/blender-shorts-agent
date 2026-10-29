@@ -84,7 +84,8 @@ A look is a few decisions held consistently across every shot:
   Read it in build.py's result and tell the user then (change exposure= or look=, or accept that colour), not when
   the stills check finds the background off. Put the backdrop colour in `style.palette.background`
   (or the brand's `brand.background`): `BLENDER stills SHORT` then warns when a still's background is more than
-  ΔE 5 from it.
+  ΔE 5 from it. It checks only shots whose world is a flat backdrop (`paper_world` or a plain colour). A sky, an
+  HDRI or a gradient world is an environment, not a backdrop: those shots get no background warning.
 - **Brand view:** `brand.exposure` (stops, e.g. `0.3`) and `brand.look` (e.g. `Punchy`) in the settings set the
   view for every brand short: `paper_world` applies them, and `look.brand_view(scene)` does on its own. A fresh
   short never gets them.
