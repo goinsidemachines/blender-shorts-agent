@@ -1,7 +1,8 @@
 {
   "name": "blender-shorts-agent",
   "owner": {
-    "name": "goinsidemachines"
+    "name": "Inside Machines",
+    "url": "https://goinsidemachines.com"
   },
   "description": "Make finished, narrated vertical explainer shorts entirely in Blender.",
   "plugins": [

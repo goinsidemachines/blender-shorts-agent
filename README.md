@@ -1,5 +1,11 @@
 # blender-shorts-agent
 
+[![CI](https://github.com/goinsidemachines/blender-shorts-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/goinsidemachines/blender-shorts-agent/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/goinsidemachines/blender-shorts-agent)](https://github.com/goinsidemachines/blender-shorts-agent/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-d97757)](https://code.claude.com/docs/en/plugins)
+[![Blender 4.5+](https://img.shields.io/badge/Blender-4.5%2B-e87d0d)](https://www.blender.org/download/)
+
 **Tell Claude Code what you want explained. Get back a finished, narrated vertical short made entirely in Blender.**
 
 A Claude Code plugin that takes one idea ("why does a bike wheel tick when you coast?") to a ready-to-post 1080×1920
@@ -207,6 +213,14 @@ Everything runs on your own computer. The plugin sends no telemetry and has no s
 uv run pytest        # 660+ tests, including Blender scene tests
 uv run ruff check .
 ```
+
+## Community
+
+- **Made a short with it?** Post it in [Show and tell](https://github.com/goinsidemachines/blender-shorts-agent/discussions/categories/show-and-tell).
+- **Questions and ideas:** [Discussions](https://github.com/goinsidemachines/blender-shorts-agent/discussions).
+- **Bugs:** [Issues](https://github.com/goinsidemachines/blender-shorts-agent/issues), using the bug report form.
+- **Security problems:** report them privately, as [SECURITY.md](SECURITY.md) explains.
+- **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Licence
 
