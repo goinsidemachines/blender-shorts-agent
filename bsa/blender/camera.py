@@ -9,8 +9,10 @@ of one long mesh, with no helper object.
 
 An answer that cannot be right comes with a warning (`FramingWarning`, and in the result's "warnings"): the camera
 sent more than FAR_FACTOR times the framed box's distance or size away (the objects were not where it looked: a
-parent moved or turned them), the box ending up outside the view, behind the clip start or past the clip end, or
-the fit not settling. A box with no size (no geometry) is refused with ValueError.
+parent moved or turned them), the box ending up outside the view, behind the clip start or past the clip end, the
+camera ending up under the ground or inside a solid (the first surface straight above it faces up, or nothing is
+below it: centring slides the camera along its own up axis, so a camera aimed up from low down sinks), or the fit
+not settling. A box with no size (no geometry) is refused with ValueError.
 
 The objects are measured as the scene they are in places them (keys, parents, drivers), also in a scene that is not
 the window's (script mode builds each scene in turn). Without `scene=`, the camera's scene that holds every object is
@@ -26,6 +28,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
+from bsa.blender.bake import is_overlay
 from bsa.layout import H, Rect, W, caption_band, frame_area
 
 _DEFAULT = object()
@@ -250,6 +253,9 @@ def _frame(cam, pts, scene, what, safe_rect, avoid, margin, aim, center, key) ->
     x, y, depth = project(m, pts)
     box = (float(x.min()), float(y.min()), float(x.max()), float(y.max()))
     found = _absurd(cam, what, pts, start, m[:3, 3], box, depth, settled, ortho)
+    below = _under(scene, m[:3, 3], what)
+    if below:
+        found.insert(len(found) - (not settled), below)
     for w in found:
         warnings.warn(w, FramingWarning, stacklevel=3)
     return {
@@ -259,6 +265,36 @@ def _frame(cam, pts, scene, what, safe_rect, avoid, margin, aim, center, key) ->
         "distance": float(np.mean(depth)),
         "warnings": found,
     }
+
+
+def _first_hit(scene, depsgraph, origin: Vector, direction: Vector):
+    """(location, normal, object) of the first surface along the ray that is not an overlay, or None."""
+    for _ in range(32):
+        hit, loc, normal, _index, obj, _m = scene.ray_cast(depsgraph, origin, direction)
+        if not hit:
+            return None
+        if obj is None or not is_overlay(obj.original):
+            return loc, normal, obj
+        origin = loc + direction * max(1e-4, 1e-6 * abs(loc.z))  # a glow or guide line: look through it
+    return None
+
+
+def _under(scene, pos: np.ndarray, what: str) -> str | None:
+    """Why a camera at `pos` is under the ground or inside a solid, or None: the first surface straight above it
+    faces up (it is seen from below), or there is a surface above it and none below (it is under all the scenery; a
+    camera under a bridge still has the ground or water below it)."""
+    depsgraph = _depsgraph(scene)
+    origin = Vector(pos.tolist())
+    above = _first_hit(scene, depsgraph, origin, Vector((0.0, 0.0, 1.0)))
+    if above is None:
+        return None
+    loc, normal, obj = above
+    if normal.z <= 0 and _first_hit(scene, depsgraph, origin, Vector((0.0, 0.0, -1.0))) is not None:
+        return None  # a ceiling or the underside of a bridge, with ground below
+    name = obj.original.name if obj is not None else "a surface"
+    return (f"frame_objects: the camera ends up under {name!r} (at {_fmt(pos)}, {loc.z - pos[2]:.2f} m below it): it "
+            f"sees {what} from under the ground or from inside a solid. Start the camera higher than the box's "
+            "centre (centring slides it along its own up axis), or use center=False")  # fmt: skip
 
 
 def _absurd(cam, what, pts, start, end, box, depth, settled, ortho) -> list[str]:

@@ -202,7 +202,8 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   following it; in the world without `of`): a part of one long mesh, with no helper object. Read the result's
   `warnings` (also printed as a `FramingWarning`): the camera sent far off (more than 5 times the box's size or new
   distance: the objects are not where the camera looked, often because a parent moved or turned them), the box
-  outside the view or past the clip end, or the fit not settling. Fix the cause, never ignore it: such a camera
+  outside the view or past the clip end, the camera under the ground or inside a solid (centring slides it along
+  its own up axis: aim from above the box's centre, or use `center=False`), or the fit not settling. Fix the cause, never ignore it: such a camera
   renders black or empty stills. A box with no size (an object with no geometry) is refused. It measures the objects
   in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
   camera's) scene does not have are refused instead of measured at the origin.

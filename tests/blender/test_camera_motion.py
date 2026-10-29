@@ -213,6 +213,35 @@ def test_frame_objects_measures_parented_objects_in_a_scene_that_is_not_the_wind
         raise AssertionError("objects that scene 'Tank' does not have were measured anyway")
 
 
+def test_framing_warns_when_the_camera_ends_up_under_the_ground():
+    """Aimed up at a tall wheel from low down, centring the wheel above the caption band slides the camera down along
+    its own up axis, under the ground: the box is in view, seen from under the terrain. The result says so."""
+    import warnings
+
+    from mathutils import Vector
+
+    _sc, cam = _scene()
+    _box("Ground", (400.0, 400.0, 6.9), (0, 0, -2.65))  # a closed bank, its top at z=0.8
+    wheel = _box("Wheel", (35.0, 12.0, 35.0), (0, 0, 12))
+
+    def aim(pos, target):
+        cam.location = Vector(pos)
+        cam.rotation_euler = (Vector(target) - Vector(pos)).to_track_quat("-Z", "Y").to_euler()
+
+    aim((16, 58, 4), (0, 0, 8))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = camera.frame_objects(cam, [wheel])
+    assert cam.location.z < 0.8, tuple(cam.location)
+    under = [w for w in out["warnings"] if "under" in w and "'Ground'" in w]
+    assert under and caught, out["warnings"]
+    aim((16, 58, 30), (0, 0, 12))  # from above the wheel's centre: centring keeps it above the bank
+    out = camera.frame_objects(cam, [wheel])
+    assert cam.location.z > 0.8 and not [w for w in out["warnings"] if "under" in w], (tuple(cam.location), out)
+    out = camera.frame_box(cam, (-17.5, -6, -5.5), (17.5, 6, 29.5))
+    assert not [w for w in out["warnings"] if "under" in w], out
+
+
 def test_frame_box_frames_a_region_of_one_long_mesh():
     """frame_box: a part of one long mesh (in its own coordinates, following it) without a helper object."""
     sc, cam = _scene()
