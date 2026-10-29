@@ -156,8 +156,10 @@ The checks pass geometry that is wrong to the eye if you excuse it, so build it 
 13. **Build openings into the mesh; no live Booleans.** A Boolean modifier (an EXACT cut on a hand-built or
     non-manifold mesh above all) is evaluated again for every render and can come out differently: a window that
     shows in the stills can be gone in the final render. Leave the faces out and close the edges in the mesh
-    itself; if a Boolean is unavoidable, apply it in build.py and check the face count. The checks warn on any
-    live Boolean on a rendered mesh.
+    itself; if a Boolean is unavoidable, apply it in build.py and check the face count. Apply it only to a closed,
+    single solid and keep other parts as their own objects: a mesh left with holes or open parts has no inside, and
+    the overlap check then says it is not closed instead of giving a depth. The checks warn on any live Boolean on a
+    rendered mesh.
 14. **Parts in contact share the moving parent.** When two parts touch (a rod in its cylinder, a part on a moving
     deck), parent both to the moving part that carries them. When you replace a part's constructor, keep its
     parenting: have part builders return parented parts. A dropped parent leaves one part standing while the other

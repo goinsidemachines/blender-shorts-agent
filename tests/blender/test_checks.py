@@ -466,6 +466,31 @@ def test_resting_on_floor_is_not_overlap():
     _cube("Deep", (0, 2, 0.4))  # 10 cm into the floor
     found = _found(sc, "overlap", severity="error")
     assert len(found) == 1 and "Deep" in found[0].message, found
+    assert "10 cm inside 'Floor'" in found[0].message, found  # a flat open sheet: its one-sided depth is right
+
+
+def test_depth_into_a_mesh_that_is_not_closed_is_not_given():
+    """A mesh with holes or open parts (a Boolean applied to a mesh that also held other parts) has no inside: a
+    depth measured into it can be any number (49 m). The finding says the mesh is not closed instead."""
+    sc = _scene()
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=2.0)
+    top = [f for f in bm.faces if f.normal.z > 0.9]
+    bmesh.ops.delete(bm, geom=top, context="FACES_ONLY")  # an open box
+    ring = bmesh.ops.create_cube(bm, size=0.5)["verts"]
+    bmesh.ops.translate(bm, vec=(3.0, 0, 0), verts=ring)  # and a closed part beside it, in the same mesh
+    me = bpy.data.meshes.new("Shell")
+    bm.to_mesh(me)
+    bm.free()
+    shell = bpy.data.objects.new("Shell", me)
+    sc.collection.objects.link(shell)
+    shell.location = (0, 4, 1.01)
+    _material(shell)
+    _cube("Block", (0.9, 4, 1.0), size=0.8)  # through the open box's side wall
+    found = [f for f in _found(sc, "overlap", severity="error") if "Block" in f.message]
+    assert len(found) == 1, found
+    msg = found[0].message
+    assert "'Shell'" in msg and "not closed" in msg and "4 open edges" in msg and " inside 'Shell'" not in msg, msg
 
 
 def test_hero_leaving_frame_found():

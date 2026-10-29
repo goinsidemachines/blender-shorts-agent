@@ -16,6 +16,7 @@ def test_checks_in_blender(blender_run):
         "test_zfighting_found",
         "test_contact_tag_allows_touching",
         "test_resting_on_floor_is_not_overlap",
+        "test_depth_into_a_mesh_that_is_not_closed_is_not_given",
         "test_hero_leaving_frame_found",
         "test_per_shot_hero_only_checked_in_its_shots",
         "test_pop_found",

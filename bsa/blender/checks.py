@@ -46,9 +46,10 @@ Tolerances (scene units are metres):
   the other object and the deepest distance to its surface is kept, both ways round. Inside a closed mesh (every
   edge between two faces) a point is one that lies straight behind the nearest face, or, near edges and corners,
   one that an odd number of surface crossings separates from the outside (ray parity, majority of three rays; two
-  crossings closer together than RAY_STEP times their distance from the world origin count as one hit). An
-  open mesh (a plane, a shell with holes) has no inside: a point counts only when it lies straight behind the
-  nearest face (one-sided, like a floor).
+  crossings closer together than RAY_STEP times their distance from the world origin count as one hit). A flat
+  open mesh (a floor plane) is one-sided: a point counts when it lies straight behind the nearest face. Any other
+  open mesh (a shell with holes, a Boolean applied to a mesh that also held other parts) has no inside, so a depth
+  into it can be any number: the finding says the mesh is not closed, with its count of open edges, instead.
 - self_overlap: a hero mesh whose loose parts (connected pieces of one mesh) pass into each other deeper than the
   contact allowance: they read as one solid. Parts that only touch are fine. Detail sunk into a big body is how
   things are modelled (ledges set into a building's wall, a pin seated in a block), so a pair where one part's
@@ -181,6 +182,8 @@ class _Local:
     mat: np.ndarray | None = None  # (n,) material slot index per triangle
     poly: np.ndarray | None = None  # (n,) the polygon each triangle comes from
     radius: float = 0.0  # the farthest vertex from the object's origin
+    open_edges: int = 0  # edges not shared by exactly two triangles
+    flat: bool = False  # every vertex within OVERLAP_TOL of one plane (a floor, a wall plane)
 
 
 @dataclass
@@ -197,6 +200,8 @@ class _Geo:
     local_key: int = 0
     m: np.ndarray | None = field(default=None, repr=False)
     radius: float = 0.0  # the farthest vertex from the object's origin, in its own coordinates
+    open_edges: int = 0
+    flat: bool = False
     _tree: BVHTree | None = field(default=None, repr=False)
     _bounds: tuple[np.ndarray, np.ndarray] | None = field(default=None, repr=False)
 
@@ -224,6 +229,7 @@ class _Contact:
     inner: str | None = None
     outer: str | None = None
     zfight_at: tuple | None = None  # (world point, gap in metres) of one pair of z-fighting faces
+    outer_open: int = 0  # the outer object is open and not flat (its open edges): the depth means nothing
 
 
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
@@ -699,6 +705,9 @@ class _Run:
             deepest = max(frames, key=lambda f: (frames[f].depth, -f))
             res = frames[deepest]
             how = f"{res.inner!r} is {_metres(res.depth)} inside {res.outer!r}" if res.depth > 0 else ""
+            if res.depth > 0 and res.outer_open:
+                how = (f"{res.inner!r} reaches into {res.outer!r}, whose mesh is not closed ({res.outer_open} open "
+                       "edges), so how deep cannot be measured. Close it, or keep its open parts as their own object")
             at = f" (deepest at frame {deepest})" if res.depth > 0 and len(frames) > 1 else ""
             where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}{at}"
             if kind == "penetrate":
@@ -917,14 +926,33 @@ def _local_mesh(obj, depsgraph) -> _Local | None:
         ev.to_mesh_clear()
     co64, idx64 = co.reshape(nv, 3).astype(np.float64), idx.reshape(n, 3).astype(np.int64)
     radius = float(np.sqrt((co64**2).sum(1).max()))
-    return _Local(co64, idx64, hash((co.tobytes(), idx.tobytes())), _closed(idx64), mat, poly, radius)
+    gaps = _open_edges(idx64)
+    return _Local(co64, idx64, hash((co.tobytes(), idx.tobytes())), gaps == 0, mat, poly, radius, gaps,
+                  bool(gaps) and _flat(co64[np.unique(idx64)]))  # only an open mesh needs to know
+
+
+def _open_edges(idx: np.ndarray) -> int:
+    """How many edges of these triangles are not shared by exactly two of them (0: a closed, manifold surface; -1
+    for no triangles)."""
+    if not len(idx):
+        return -1
+    e = np.sort(np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]]), axis=1)
+    _, counts = np.unique(e[:, 0] * (int(idx.max()) + 1) + e[:, 1], return_counts=True)
+    return int(np.count_nonzero(counts != 2))
 
 
 def _closed(idx: np.ndarray) -> bool:
     """Is every edge of these triangles shared by exactly two of them (a closed, manifold surface)?"""
-    e = np.sort(np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]]), axis=1)
-    _, counts = np.unique(e[:, 0] * (int(idx.max()) + 1) + e[:, 1], return_counts=True)
-    return bool(len(counts)) and bool(np.all(counts == 2))
+    return _open_edges(idx) == 0
+
+
+def _flat(co: np.ndarray) -> bool:
+    """Do these points lie within OVERLAP_TOL of one plane?"""
+    if len(co) < 4:
+        return True
+    d = co - co.mean(0)
+    normal = np.linalg.eigh(d.T @ d)[1][:, 0]  # the direction they spread least along
+    return float(np.abs(d @ normal).max()) <= OVERLAP_TOL
 
 
 def _place(name: str, local: _Local, matrix) -> _Geo:
@@ -935,7 +963,8 @@ def _place(name: str, local: _Local, matrix) -> _Geo:
     flat = tris.reshape(-1, 3)
     dims = (local.co.max(0) - local.co.min(0)) * np.linalg.norm(m[:3, :3], axis=0)
     key = hash((local.key, (np.round(m, 9) + 0.0).tobytes()))
-    return _Geo(name, tris, flat.min(0), flat.max(0), key, float(dims.min()), local.closed, local.key, m, local.radius)
+    return _Geo(name, tris, flat.min(0), flat.max(0), key, float(dims.min()), local.closed, local.key, m, local.radius,
+                local.open_edges, local.flat)
 
 
 def _world_geo(obj, depsgraph) -> _Geo | None:
@@ -1242,7 +1271,10 @@ def _pair(ga: _Geo, gb: _Geo, limit: float | None = None, zfight_tol: float = CO
         return _Contact(kinds, zfight_at=at)
     if limit is not None:
         kinds = set()
-    return _Contact(kinds, *_depth(ga, gb), zfight_at=at)
+    depth, inner, outer = _depth(ga, gb)
+    og = ga if outer == ga.name else gb
+    unsure = 0 if og.closed or og.flat else max(og.open_edges, 1)
+    return _Contact(kinds, depth, inner, outer, zfight_at=at, outer_open=unsure)
 
 
 def _depth(ga: _Geo, gb: _Geo) -> tuple[float, str, str]:
@@ -1375,7 +1407,8 @@ def _parts(local: _Local, matrix) -> list[_Geo]:
         lo, hi = flat.min(0), flat.max(0)
         c = (lo + hi) / 2
         name = f"part around ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})"
-        parts.append(_Geo(name, tris, lo, hi, 0, float((hi - lo).min()), _closed(corners)))
+        gaps = _open_edges(corners)
+        parts.append(_Geo(name, tris, lo, hi, 0, float((hi - lo).min()), gaps == 0, open_edges=gaps, flat=_flat(flat)))
     return parts
 
 
