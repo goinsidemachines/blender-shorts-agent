@@ -270,6 +270,7 @@ FLICKER_MIN_SIDE = 3  # ... and this many cells each way: thin moving edges (rod
 # ... and a solid 3 x 3 block of cells somewhere in it: a thin line (a string, a turning spoke), however long or
 # crooked, is aliasing, not a surface that flickers
 FLICKER_SMALL = 0.005  # a flicker under this share of the frame, on a frame where something moves, is a small spot
+FLICKER_UNSEEN = 0.002  # a lone one-frame spot under this share, where something moves, is too small to see
 FLICKER_SPOTS_LISTED = 3  # a shot with more small spots than this gets one finding for all of them, with a count
 FLICKER_REACH = 0.12  # an area found again shifted up to this share of the frame width is a moving object
 FLICKER_MATCH = 0.35  # the shifted area counts as found when it differs this much less than the area in place
@@ -396,9 +397,16 @@ def collapse_spots(findings: list[Finding], moving: set[int] | None) -> list[Fin
     """One shot's findings with its small flicker spots (each under FLICKER_SMALL of the frame, at frames where
     something moves) made into one finding with their count, when there are more than FLICKER_SPOTS_LISTED: thin or
     fast moving parts (strings, spokes, edges) alias in spots like these, a few pixels wide, all through the motion;
-    real z-fighting covers a surface. Without `moving` nothing is collapsed (where things move is not known)."""
+    real z-fighting covers a surface. A lone spot under FLICKER_UNSEEN (0.2%) of the frame, at a frame where something
+    moves, is dropped: it shows for one frame, too small to see. A spot that comes back at the same place on another
+    frame (a small part that z-fights) is kept. Without `moving` nothing is collapsed or dropped (where things move
+    is not known)."""
     if not moving:
         return findings
+    flickers = [f for f in findings if isinstance(f, FlickerFinding) and f.frame is not None]
+    unseen = [f for f in flickers if f.frame in moving and f.share < FLICKER_UNSEEN
+              and not any(g.frame != f.frame and _boxes_meet(f.box, g.box) for g in flickers)]  # fmt: skip
+    findings = [f for f in findings if not any(f is u for u in unseen)]
     spots = [f for f in findings if isinstance(f, FlickerFinding) and f.frame in moving
              and f.share < FLICKER_SMALL]  # fmt: skip
     if len(spots) <= FLICKER_SPOTS_LISTED:
@@ -416,3 +424,8 @@ def collapse_spots(findings: list[Finding], moving: set[int] | None) -> list[Fin
     first = findings.index(spots[0])
     rest = [f for f in findings if not any(f is s for s in spots)]
     return [*rest[:first], one, *rest[first:]]
+
+
+def _boxes_meet(a: tuple, b: tuple) -> bool:
+    """Do two boxes (x0, y0, x1, y1, fractions of the frame) overlap or touch?"""
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]

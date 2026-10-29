@@ -148,7 +148,8 @@ The single steps, when you need one on its own:
    screen). Thin lines (a string, a turning spoke) do not count: they alias as they move. More than three small
    spots (each under 0.5% of the frame) at frames where something moves are one finding for the shot, with their
    count and frames and the largest one's place: usually thin or fast parts aliasing. Look at that frame; a still
-   surface flickering there is z-fighting. Fix any error (`07-checks.md`); redo flagged frames as above.
+   surface flickering there is z-fighting. A lone spot under 0.2% of the frame at a frame where something moves is
+   not reported: it shows for one frame, too small to see. One that comes back at the same place still is. Fix any error (`07-checks.md`); redo flagged frames as above.
 3. **Look at the frames yourself** (`07-checks.md`, "Look at the images yourself"): first, middle and last frame of
    every shot plus the key moments.
 4. `BLENDER edit SHORT --preset preview` (no .blend needed): captions, badges, labels (near labels just above their object, inside the safe
