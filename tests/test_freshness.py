@@ -218,6 +218,21 @@ def test_reusable_checks_keep_unchanged_shots_findings(sdir):
     assert set(freshness.reusable_checks(sdir, freshness.checks_stamp("h", keys, 5))) == {"s01", "s02"}
 
 
+def test_reusable_checks_keep_findings_listed_once_and_pairs_held_back(sdir):
+    """A finding listed once for two shots is kept for whichever of them did not change; findings the overlap cap
+    held back are kept too, and the "not listed" finding is not (the cap runs again over every shot)."""
+    keys = {"s01": "k1", "s02": "k2"}
+    both = {"check": "overlap", "severity": "error", "frame": None, "shot": "s01", "shots": ["s01", "s02"],
+            "pair": ["A", "B"]}
+    held = {"check": "overlap", "severity": "error", "frame": 50, "shot": "s02", "shots": ["s02"], "pair": ["C", "D"]}
+    summary = {"check": "overlap", "severity": "error", "frame": None, "shot": "s02", "shots": ["s02"], "capped": 1}
+    data = {"stamp": freshness.checks_stamp("h", keys, 5), "errors": 2, "warnings": 0, "findings": [both, summary],
+            "held_back": [held]}
+    (sdir / "review" / "checks.json").write_text(json.dumps(data), encoding="utf-8")
+    now = freshness.checks_stamp("h", {**keys, "s01": "changed"}, 5)
+    assert freshness.reusable_checks(sdir, now) == {"s02": [{**both, "shot": "s02"}, held]}
+
+
 def test_anchors_must_exist_and_match_the_shot_and_timing(sdir):
     fps = {"s01": "a", "s02": "b"}
     with pytest.raises(freshness.StaleError, match="run BLENDER anchors SHORT"):

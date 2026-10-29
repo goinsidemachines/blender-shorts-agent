@@ -376,6 +376,28 @@ def test_every_offending_pair_is_listed_up_to_a_cap():
     assert len(hidden) == 1 and "4 more" in hidden[0].message, hidden
 
 
+def test_a_static_overlap_is_one_finding_for_every_shot_it_is_in():
+    """A pair that overlaps the same way in every frame (scenery that never moves) is one finding naming the pair,
+    the same in each shot, so the CLI lists it once with its shots. A pair that overlaps only in some frames still
+    says which shot and frames."""
+    sc = _scene()
+    _cube("Pier", (0, 4, 0.5))
+    _cube("Bank", (0.3, 4.2, 0.6))  # 30 cm into the pier, never moving
+    rod = _cube("Rod", (-6, 4, 0.5), size=0.4)
+    _cube("Post", (-3, 4, 0.5))
+    _move_x(rod, [-6 + 3 * i / (N - 1) for i in range(N)])  # reaches the post near the end
+    spans = [Span("s1", 1, 10), Span("s2", 11, 20), Span("s3", 21, N)]
+    found = [f for f in checks.run_checks(sc, Timeline(30, N, spans, [], [])) if f.check == "overlap"]
+    static = [f for f in found if {"Pier", "Bank"} <= set(f.pair)]
+    assert len(static) == 1 and static[0].frame is None and "shot" not in static[0].message, found
+    assert "every frame" in static[0].message and "30 cm" in static[0].message, static
+    moving = [f for f in found if set(f.pair) == {"Post", "Rod"}]
+    assert moving and all("in shot 's3'" in f.message for f in moving), found
+    each = [[f for f in checks.run_checks(sc, Timeline(30, N, [s], [], [])) if f.check == "overlap"
+             and "Pier" in f.pair] for s in spans]  # fmt: skip
+    assert all(len(f) == 1 and f[0].message == static[0].message for f in each), each
+
+
 def test_renamed_duplicates_are_warned():
     sc = _scene()
     _cube("Person", (0, 0, 0.5))

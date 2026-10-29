@@ -572,8 +572,23 @@ def cmd_check(args) -> dict:
     return out
 
 
+def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dict]]:
+    """(the rows with every finding of the first `most` overlapping pairs over every shot, and one more row saying
+    how many pairs were not listed and in which shots; the rows of those pairs, kept apart so a later check that
+    keeps their shots still has them)."""
+    from bsa import findings
+
+    listed, held, more = findings.cap_pairs(rows, most)
+    if not more:
+        return rows, []
+    shots = sorted({s for r in held for s in r.get("shots") or [r.get("shot")] if s})
+    summary = {**asdict(findings.not_listed(more)), findings.CAPPED: more, "shots": shots,
+               "shot": shots[0] if shots else None, "scene": held[0].get("scene")}  # fmt: skip
+    return [*listed, summary], held
+
+
 def _cmd_check(args, sdir: Path, short, run) -> dict:
-    from bsa.blender.checks import run_checks
+    from bsa.blender.checks import OVERLAP_MAX_FINDINGS, run_checks
 
     tl, tl_hash = _timeline(sdir, short)
     data = _open_blend(sdir)
@@ -604,13 +619,14 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
             run.progress(counted[0] + done, total, current=where)
 
         found = run_checks(scene, replace(tl, shots=[span]), sample_every=args.every, short=short,
-                           progress=_progress_cb(on_frame), rules=hard_rules)  # fmt: skip
+                           progress=_progress_cb(on_frame), rules=hard_rules, cap=False)  # fmt: skip
         item["state"], item["done"] = "done", item["total"]
         counted[0] += item["total"]
         rows += [_check_row(f, shot.id, scene.name) for f in found]
         checked.append(shot.id)
     run.progress(counted[0], total, current=None, force=True)
-    out = _write_findings(sdir / "review" / "checks.json", _merge_findings(rows), stamp, checked=checked, kept=kept)
+    listed, held = _cap_overlap_rows(_merge_findings(rows), OVERLAP_MAX_FINDINGS)
+    out = _write_findings(sdir / "review" / "checks.json", listed, stamp, checked=checked, kept=kept, held_back=held)
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
     jobstate.mark_done(sdir, "checks", warnings=out["warnings"])

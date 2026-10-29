@@ -554,7 +554,9 @@ def read_checks(short_dir: Path) -> dict | None:
 
 def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     """{shot id: its findings} from review/checks.json for every shot whose checks still hold for `stamp` (same
-    checks code, timing, --every and shot key): `BLENDER check` re-checks only the others."""
+    checks code, timing, --every and shot key): `BLENDER check` re-checks only the others. A finding listed once
+    for several shots ("shots") goes to each of them; findings the overlap cap held back ("held_back") count too,
+    and the row that says how many it held back does not (the cap runs again)."""
     data = read_checks(short_dir) or {}
     old = data.get("stamp")
     if not isinstance(old, dict) or not _code_current(old.get("code")) or stamp.get("code") != checks_code():
@@ -564,9 +566,13 @@ def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     inputs = stamp.get("inputs") if isinstance(stamp.get("inputs"), dict) else {}
     out: dict[str, list] = {sid: [] for sid, key in (stamp.get("shots") or {}).items()
                             if _shot_current(old, sid, inputs.get(sid, key))}  # fmt: skip
-    for f in data.get("findings") or []:
-        if isinstance(f, dict) and f.get("shot") in out:
-            out[f["shot"]].append(f)
+    for f in [*(data.get("findings") or []), *(data.get("held_back") or [])]:
+        if not isinstance(f, dict) or "capped" in f:
+            continue
+        shots = f.get("shots") if isinstance(f.get("shots"), list) else [f.get("shot")]
+        for sid in shots:
+            if sid in out:
+                out[sid].append(f if f.get("shot") == sid else {**f, "shot": sid})
     return out
 
 

@@ -39,6 +39,7 @@ def test_checks_in_blender(blender_run):
         "test_hero_loose_parts_passing_into_each_other_found",
         "test_every_frame_of_a_moving_object_is_checked",
         "test_every_offending_pair_is_listed_up_to_a_cap",
+        "test_a_static_overlap_is_one_finding_for_every_shot_it_is_in",
         "test_renamed_duplicates_are_warned",
         "test_tags_must_name_objects_in_the_scene",
         "test_near_labels_and_hero_shots_must_exist",
