@@ -87,6 +87,9 @@ class Short:
     # This short's end card, over the `end_card` setting: "line", or {"text": line, "second": a line under the handle
     # such as the user's site}. None = the setting's line. Shown with the user's @handle, or on its own without one.
     end_card: str | dict | None = None
+    # This short's closing card (bsa.closing), over the `website` and `closing` settings: false = none, or
+    # {"image", "seconds", "voice_line", "website"} to change those for this short. None = the settings.
+    closing: bool | dict | None = None
     # This short's look, over the brand.mode setting: "fresh" = its own style only (the settings' brand is off for
     # this short: background check, captions, view), "brand" = the brand, None = the setting.
     look: str | None = None
@@ -259,6 +262,11 @@ def validate(short: Short) -> list[str]:
     elif card is not None and not isinstance(card, str):
         errors.append(f"end_card must be a line of text or {{\"text\": ..., \"second\": ...}}, got {card!r}")
 
+    from bsa import closing
+
+    errors += closing.problems(short)
+    if any(ln.id == closing.LINE_ID for ln in short.lines):
+        errors.append(f"line id {closing.LINE_ID!r} is kept for the closing line: give the line another id")
     if short.look not in (None, "fresh", "brand"):
         errors.append(f"look must be \"fresh\" (this short's own style, the brand off) or \"brand\", got {short.look!r}")
     if short.sound_policy not in SOUND_POLICIES:

@@ -394,8 +394,11 @@ def build_edit(
     anchors: dict | None = None,
     hero_boxes: dict | None = None,
     label_heroes: dict | None = None,
+    closing: dict | None = None,
 ):
-    """Create the `Edit` scene: shot frames, captions, badges, labels, optional @handle end card and sound. `anchors`
+    """Create the `Edit` scene: shot frames, captions, badges, labels, optional @handle end card, the closing card
+    and sound. `closing` ({"png", "f0", "n_frames"}, bsa.closing.plan) holds the closing card's PNG after the story,
+    from frame f0 (the frame after the timeline) for n_frames; the mix already covers them. `anchors`
     ({shot: {object: {"f0", "points"}}}, from source/anchors.json) places labels that are near an object; `hero_boxes`
     (the last shot's {"f0", "boxes", "scenery"} from anchors.json) keeps the end card off its heroes, then off its
     other meshes; `label_heroes` ({shot: {"f0", "boxes"}}) keeps near labels off the other heroes of their shot."""
@@ -403,10 +406,13 @@ def build_edit(
     if old is not None:
         bpy.data.scenes.remove(old)
     scene = bpy.data.scenes.new("Edit")
-    scene.frame_start, scene.frame_end = 1, tl.n_frames
+    scene.frame_start, scene.frame_end = 1, tl.n_frames + (closing["n_frames"] if closing else 0)
     _configure_output(scene, Path(out_mp4), preset)  # first: the image strips fit to this resolution
     seq = scene.sequence_editor_create()
     _add_shots(short, tl, Path(frames_root), seq.strips)
+    if closing:
+        card = seq.strips.new_image("Closing card", str(closing["png"]), 1, closing["f0"], fit_method="FIT")
+        card.frame_final_duration = closing["n_frames"]
     font, used, note = _load_font(short.style.get("font"))
     if note:
         scene[FONT_NOTE_PROP] = note

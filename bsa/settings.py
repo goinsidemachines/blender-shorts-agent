@@ -18,6 +18,11 @@ DEFAULTS = {
     "brand": {"mode": None},
     "handle": None,
     "end_card": "Follow for more",  # the line above the @handle on the end card; "" = no line
+    "website": None,  # the user's site, said on the closing card (bsa.closing)
+    # The still every short ends on (bsa.closing): the user's own 1080x1920 image, or none for one made from the brand
+    # with the website and @handle; held `seconds`, with `voice_line` narrated over it.
+    "closing": {"image": None, "seconds": 2.5, "voice_line": None},
+    "closing_asked": False,  # the closing-card question was answered (asked once, existing users too)
     "sound_policy": "any",  # "natural-only": no synthetic sfx kinds and no synthesis, recordings only
     "freesound": {"api_key": None},  # optional: lets `assets search sounds` include Freesound's CC0 sounds
     "rules": [],  # the user's hard rules for every video, in their own words (bsa.rules; CLI settings rule add)
@@ -162,7 +167,12 @@ def _text(value) -> str | None:
 def end_card(s: dict, short=None) -> dict:
     """What the end card shows: {"handle", "text", "second"} (each None when absent). The short's own `end_card`
     ("line", or {"text", "second"}) wins over the `end_card` setting. With no handle and no card of the short's own
-    there is no end card at all (every value None): the setting's line never shows on its own."""
+    there is no end card at all (every value None): the setting's line never shows on its own. A short that ends on a
+    closing card (bsa.closing) has no end card: the card says it."""
+    from bsa import closing
+
+    if closing.active(s, short):
+        return {"handle": None, "text": None, "second": None}
     handle = str(s.get("handle") or "").strip().lstrip("@") or None
     own = getattr(short, "end_card", None)
     if own is not None:
@@ -214,6 +224,9 @@ def missing(s: dict) -> list[str]:
         out.append("rules")
     if s.get("handle") is None:  # never asked; "" means asked and the user wants no handle
         out.append("handle")
+    closing = s.get("closing") if isinstance(s.get("closing"), dict) else {}
+    if not s.get("closing_asked") and not s.get("website") and not closing.get("image"):
+        out.append("closing")
     return out
 
 
@@ -282,6 +295,10 @@ def summary_line(s: dict) -> str:
     handle = s.get("handle")
     handle = "handle not set" if handle is None else f"@{handle}" if handle else "no handle"
     workspace = s.get("workspace") or "workspace not set"
-    line = f"{narrator} · {engine} · {handle} · saving to {workspace}"
+    from bsa import closing
+
+    card = closing.resolve(s)
+    ends = "" if card is None else " · ends on your card" if card["image"] else f" · ends on {card['website']}"
+    line = f"{narrator} · {engine} · {handle}{ends} · saving to {workspace}"
     n = len([r for r in (s.get("rules") or []) if isinstance(r, dict)])
     return line + (f" · {n} hard rule{'s' if n != 1 else ''}" if n else "")

@@ -191,6 +191,40 @@ def _hard_rules(short) -> list[dict]:
     return rules.effective(settings.load_settings(), short)
 
 
+def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str]]:
+    """(the short's closing card settings, its PNG in stills/, warnings), made fresh each time (one sequencer frame):
+    the user's image scaled to fill 1080x1920, or the card made from the brand. (None, None, warnings) when the short
+    has no closing card. The warnings (and what made the card) are kept in stills/closing.json for the review pages."""
+    from bsa import closing
+    from bsa.blender import closing_card
+    from bsa.blender.pixels import read_png
+
+    s = settings.load_settings()
+    cfg = closing.resolve(s, short)
+    png, info = sdir / "stills" / closing.CARD_FILE, sdir / "stills" / closing.INFO_FILE
+    warnings = []
+    if cfg is not None and cfg["image"] and not Path(cfg["image"]).is_file():
+        made = "a card made from your brand and website" if cfg["website"] else "no closing card"
+        warnings.append(f"the closing image {cfg['image']} is missing, so this short ends on {made}: set "
+                        "closing.image again")  # fmt: skip
+        cfg = {**cfg, "image": None}
+        if not cfg["website"]:
+            cfg = None
+    if cfg is None:
+        png.unlink(missing_ok=True)
+        info.unlink(missing_ok=True)
+        return None, None, warnings
+    if cfg["image"]:
+        aspect = closing.aspect_warning(*closing_card.image_size(Path(cfg["image"])))
+        if aspect:
+            warnings.append(aspect)
+    brand = settings.brand_for(s, short)
+    closing_card.make_card(cfg, brand, png, short.style.get("font") or brand.get("font"))
+    warnings += closing.zone_warnings(read_png(png))
+    info.write_text(json.dumps({**cfg, "warnings": warnings}, indent=2, ensure_ascii=False), encoding="utf-8")
+    return cfg, png, warnings
+
+
 # --------------------------------------------------------------------------- commands
 
 
@@ -213,6 +247,11 @@ def cmd_stills(args) -> dict:
         written.append((shot.id, out))
     result = {"stills": [str(p) for _, p in written]}
     warnings = _background_warnings(short, written)
+    if not args.shot:  # the storyboard shows the closing card too
+        _, card, card_warnings = _closing_card(sdir, short)
+        if card is not None:
+            result["closing"] = str(card)
+        warnings += card_warnings
     return {**result, "warnings": warnings} if warnings else result
 
 
@@ -790,13 +829,16 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
             warnings.append(f"the end card stays in the upper third without checking it is clear of the heroes ({exc})")
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     mix = sdir / "audio" / "mix.wav"
+    end, card_warnings = _closing_plan(sdir, short, tl, mix)
+    warnings += card_warnings
+    n_frames = tl.n_frames + (end["n_frames"] if end else 0)
     scene = edit.build_edit(short, tl, sdir / "frames" / args.preset, mix if mix.is_file() else None, out_mp4,
                             settings.load_settings(), preset=args.preset, anchors=anchors, hero_boxes=heroes,
-                            label_heroes=label_heroes)  # fmt: skip
-    run.progress(0, tl.n_frames, current="encoding the MP4", force=True)
+                            label_heroes=label_heroes, closing=end)  # fmt: skip
+    run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
     info = edit.probe(path)
-    want = {"width": short.width, "height": short.height, "frames": tl.n_frames}
+    want = {"width": short.width, "height": short.height, "frames": n_frames}
     wrong = {k: (info.get(k), v) for k, v in want.items() if info.get(k) != v}
     if abs(float(info.get("fps") or 0) - short.fps) > 0.01:
         wrong["fps"] = (info.get("fps"), short.fps)
@@ -809,6 +851,40 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
     out = {"mp4": str(path), **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    return {**out, "warnings": warnings} if warnings else out
+
+
+def _closing_plan(sdir: Path, short, tl, mix: Path) -> tuple[dict | None, list[str]]:
+    """(where the closing card goes in the edit, with its "png"; or None, warnings). The mix must already hold the
+    card's frames (CLI mix lays the closing line over them), else the video and its sound would differ in length."""
+    import wave
+
+    from bsa import closing
+    from bsa.narrate.run import takes_durations
+
+    cfg, png, warnings = _closing_card(sdir, short)
+    if cfg is None:
+        return None, warnings
+    takes = sdir / "audio" / "vo" if takes_durations(sdir, short) is not None else None
+    end = closing.plan(cfg, tl.n_frames + 1, tl.fps, closing.take_seconds(takes))
+    if mix.is_file():
+        with wave.open(str(mix), "rb") as w:
+            frames = round(w.getnframes() / w.getframerate() * tl.fps)
+        if abs(frames - (tl.n_frames + end["n_frames"])) > 1:
+            raise CliError("audio/mix.wav was made without this closing card (or for another one): run CLI mix SHORT "
+                           "again, then the edit")  # fmt: skip
+    if cfg["voice_line"] and takes is not None and end["line_f0"] is None:
+        warnings.append("the closing line has no take yet, so the closing card is silent: run CLI narrate SHORT "
+                        "again (it makes only the missing take), then CLI mix SHORT and the edit")  # fmt: skip
+    return {**end, "png": str(png)}, warnings
+
+
+def cmd_closing(args) -> dict:
+    """Make the short's closing card (stills/closing.png) and say what it will be: for the review pages and setup."""
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    cfg, png, warnings = _closing_card(sdir, short)
+    out = {"closing": None if cfg is None else {**cfg, "png": str(png)}}
     return {**out, "warnings": warnings} if warnings else out
 
 
@@ -1136,6 +1212,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--every", type=int, default=5, help="check every Nth frame (as BLENDER check)")
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
     sp.set_defaults(fn=cmd_preview)
+
+    sp = sub.add_parser("closing", help="make the closing card (stills/closing.png) and say what the short ends on")
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_closing)
 
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")

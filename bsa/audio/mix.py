@@ -146,15 +146,24 @@ def _bed(tl: Timeline, short: Short, n: int, extra_bed: np.ndarray | None, libra
 
 
 def mix(tl: Timeline, short: Short, takes_dir: Path | None, extra_bed: np.ndarray | None = None, library=None,
-        policy: str = "any"):  # fmt: skip
+        policy: str = "any", closing: tuple[int, Path | None, int | None] | None = None):  # fmt: skip
     """(stereo float64 mix in [-1, 1] of shape (n_samples, 2), levels). n_samples = round(n_frames / fps * SR).
     levels: voice_dbfs (the mix while speaking, None without a voice), bed_dbfs (the mix where the bed sounds clear of
     speech, else where it sounds; None without a bed) and peak_dbfs. `library` (bsa.audio.recorded.Library): sfx
     events play cached recordings of their kind, else synthesis; `policy` "natural-only" leaves out synthetic kinds
-    and synthesis (recorded.resolve says what each event used)."""
-    n = round(tl.n_frames / tl.fps * SR)
+    and synthesis (recorded.resolve says what each event used). `closing` (frames, take or None, the take's first
+    frame) adds the closing card's frames after the story (bsa.closing): the closing line in the voice, normalised
+    with the story's lines, and no bed at all there (the card brings no sound of its own)."""
+    n_story = round(tl.n_frames / tl.fps * SR)
+    n = round((tl.n_frames + (closing[0] if closing else 0)) / tl.fps * SR)
     bed = _bed(tl, short, n, extra_bed, library, policy)
+    bed[n_story:] = 0.0
     vo = _voice(tl, takes_dir, n)
+    if closing and closing[1] is not None and closing[2] is not None:
+        x = _read_take(Path(closing[1]))
+        st = _idx(closing[2], tl.fps)
+        x = x[: max(0, n - st)]
+        vo[st : st + len(x)] += x
 
     speech = _envelope(vo) > _SPEECH_THRESHOLD
     if speech.any():

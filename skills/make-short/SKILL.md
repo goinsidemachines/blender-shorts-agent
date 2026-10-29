@@ -11,6 +11,11 @@ engine in chat (with both time estimates); after that you run to the end on your
 
 ## 1. Find the plugin and Blender first
 
+**Where it runs:** this skill needs a shell and Blender on the user's computer, as in Claude Code. If you have no
+tool that runs shell commands (claude.ai chat, or a Cowork session that doesn't run on the user's computer), say so
+plainly once: this plugin makes shorts from Claude Code with Blender 4.5 or newer installed. Then stop; don't
+pretend to build or render anything.
+
 The **plugin root** is this skill's base directory's grandparent: Claude Code announces "Base directory for this
 skill: `<root>/skills/make-short`", so the root is `<root>`. Every command below uses absolute paths, so it works
 from any current folder, including paths with spaces (always quote them).

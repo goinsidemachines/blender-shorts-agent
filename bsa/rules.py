@@ -314,7 +314,10 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
             errors.append(f"rules_check {r.get('id')} cleared must map each word to why it keeps the rule, got {c!r}")
     for rid in sorted(set(rc) - ids):
         warnings.append(f"rules_check has an entry for {rid!r}, which is not a rule (any more): remove it")
-    places = _places(short)
+    from bsa import closing
+
+    card = closing.resolve(s, short)
+    places = _places(short) + closing.places(card)
     for r in rules:
         kind = KINDS.get(str(r.get("kind") or ""))
         if kind is None:
@@ -334,6 +337,10 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
             if any(settings.end_card(s, short).values()):
                 warnings.append(f"hard rule {describe(r)}: the end card shows text (the handle or its line): ask the "
                                 "user whether the end card is allowed")  # fmt: skip
+            if card is not None:
+                warnings.append(f"hard rule {describe(r)}: the closing card shows text (the website or the user's "
+                                "image): ask the user whether the closing card is allowed, or turn it off for this "
+                                'short ("closing": false)')  # fmt: skip
     return errors, warnings
 
 

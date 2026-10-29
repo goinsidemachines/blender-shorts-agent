@@ -134,7 +134,7 @@ def test_settings_set_and_summary(home, workspace):
     line = ok(run(home, "settings", "summary"))["summary"]
     assert "Kokoro" in line and "Cycles" in line and "@myhandle" in line and str(workspace) in line
     missing = ok(run(home, "settings", "missing"))
-    assert missing["missing"] == ["brand.mode", "rules"]  # handle answered above
+    assert missing["missing"] == ["brand.mode", "rules", "closing"]  # handle answered above
     assert missing["default_workspace"]
 
 

@@ -74,7 +74,7 @@ def built_timeline(sdir: Path, short):
     return tl, from_takes
 
 
-_STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "narrator.provider", "narrator.voice", "narrator.command",
+_STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command",
                 "narrator.label", "render.engine",
                 "brand.mode", "sound_policy", "freesound.api_key"}  # fmt: skip
 
@@ -179,6 +179,19 @@ def cmd_settings(args) -> dict:
         value = settings.check_value(args.key, _parse_value(args.key, args.value))
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    if args.key == "closing.image" and isinstance(value, str) and value.strip():
+        path = Path(value.strip()).expanduser().resolve()
+        if not path.is_file() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+            raise CliError(f"closing.image must be a PNG or JPG file (1080x1920); {path} is not one")
+        value = str(path)
+    if args.key == "closing.seconds":
+        from bsa import closing
+
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise CliError(f"closing.seconds must be a number of seconds, e.g. 2.5, got {args.value!r}")
+        value = closing.clamp_seconds(value)
+    if args.key in ("website", "closing.image", "closing.voice_line") and isinstance(value, str):
+        value = value.strip() or None  # "" = none
     if args.key in ("workspace", "blender_exe") and isinstance(value, str):
         value = str(Path(value).expanduser().resolve())
     if args.key == "workspace":
@@ -378,8 +391,11 @@ def cmd_narrate(args) -> dict:
                        "yes first (then CLI state SHORT done storyboard).")  # fmt: skip
     short = load(sdir)
     s = settings.load_settings()
-    clear_stale_takes(sdir / "audio" / "vo", short, s.get("narrator") or {})
-    result = narrate(sdir, short, s)
+    from bsa import closing
+
+    voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
+    clear_stale_takes(sdir / "audio" / "vo", voiced, s.get("narrator") or {})
+    result = narrate(sdir, voiced, s)
     out = {"status": result.status, "durations": result.durations, "message": result.message}
     try:
         out["timeline"] = cmd_timeline(args)
@@ -423,13 +439,25 @@ def cmd_mix(args) -> dict:
     bed = _sound_bed(sdir, short, tl)
     takes = sdir / "audio" / "vo" if from_takes else None
     library = _sound_library(sdir)  # recorded clips by sfx kind; synthesis is the fallback
-    policy = recorded.sound_policy(short, settings.load_settings())
-    stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy)
+    s = settings.load_settings()
+    policy = recorded.sound_policy(short, s)
+    from bsa import closing
+
+    card = closing.resolve(s, short)
+    end = closing.plan(card, tl.n_frames + 1, tl.fps, closing.take_seconds(takes))
+    tail = (end["n_frames"], closing.take(takes), end["line_f0"]) if end else None
+    stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail)
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
-    return {"path": str(path), "n_frames": tl.n_frames, "voice": from_takes, "sound_py": bed is not None,
-            "events": len(built), "levels": levels, "sound_policy": policy,
-            "sfx": recorded.report(recorded.resolve(short, library, policy))}  # fmt: skip
+    out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,
+           "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
+           "sfx": recorded.report(recorded.resolve(short, library, policy))}  # fmt: skip
+    if end:
+        out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"])}
+        if card["voice_line"] and from_takes and not end["line_f0"]:
+            out["warnings"] = [("the closing line has no take yet, so the closing card is silent: run CLI narrate "
+                                "SHORT again (it makes only the missing take), then mix")]  # fmt: skip
+    return out
 
 
 def _pending_assets(sdir: Path) -> list:
