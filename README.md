@@ -175,6 +175,21 @@ your hard rules, your handle) and remembers the answers.
 use the [Blender MCP](docs/mcp-setup.md) add-on, it can build in your open Blender instead, so you watch the scene
 come together.
 
+## What it runs and connects to
+
+Everything runs on your own computer. The plugin sends no telemetry and has no server of its own.
+
+- **What it runs:** Python scripts in this repository, with Blender in the background (or your open Blender through
+  the Blender MCP add-on), and your own voice command if you set one.
+- **What it fetches, only after you approve a list of what, from where, its licence and its size:** sound effects
+  from OpenGameArt, Wikimedia Commons and Freesound (with your own Freesound key); textures, HDRIs and models from
+  Poly Haven; fonts from Google Fonts; and, for the optional local voices, model weights from Hugging Face and Python
+  packages through [uv](https://docs.astral.sh/uv/).
+- **What it sends:** search words to those asset sources, and, only if you choose ElevenLabs for narration, your
+  narration lines to ElevenLabs with your own API key.
+- **What it keeps:** your settings in `~/.blender-shorts-agent/` (workspace, voice, hard rules, handle) and each
+  short in its own folder in your workspace. Nothing leaves your machine besides the requests above.
+
 ## Under the hood
 
 - `skills/make-short/`: the skill and its playbook, one chapter per stage, plus craft, honesty, sound, look and
