@@ -857,6 +857,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
     out = {"mp4": str(path), **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    if end:
+        out["closing"] = end["hold"]  # its "note" says when the voice line held the card past closing.seconds
     return {**out, "warnings": warnings} if warnings else out
 
 
@@ -882,7 +884,12 @@ def _closing_plan(sdir: Path, short, tl, mix: Path) -> tuple[dict | None, list[s
     if cfg["voice_line"] and takes is not None and end["line_f0"] is None:
         warnings.append("the closing line has no take yet, so the closing card is silent: run CLI narrate SHORT "
                         "again (it makes only the missing take), then CLI mix SHORT and the edit")  # fmt: skip
-    return {**end, "png": str(png)}, warnings
+    held = closing.hold(cfg, end, tl.fps)
+    info = png.with_name(closing.INFO_FILE)  # the final page shows how long the card holds, and why
+    data = json.loads(info.read_text(encoding="utf-8"))
+    data.update(held_s=held["seconds"], hold_note=held.get("note"))
+    info.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {**end, "png": str(png), "hold": held}, warnings
 
 
 def cmd_closing(args) -> dict:

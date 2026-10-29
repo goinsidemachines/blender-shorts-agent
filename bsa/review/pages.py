@@ -259,11 +259,15 @@ def _closing_html(card: dict | None, out: Path, tag: str = "div") -> str:
     warns = "".join(f'<li class="finding warning"><span class="sev">Warning</span> <div>{_esc(w)}</div></li>'
                     for w in card.get("warnings") or [])  # fmt: skip
     secs = float(card.get("seconds") or 0)
+    held = card.get("held_s")  # the edit's hold: longer than closing.seconds when the voice line needs it
+    when = f"held {float(held):.1f} s" if held else f"at least {secs:.1f} s"
+    if card.get("hold_note"):
+        said += f'<p class="line">{_esc(card["hold_note"])}.</p>'
     return (f'<{tag} class="shot panel closing" id="closing" data-title="Closing card" data-time="the end" '
             f"data-cards='[]'>"
             f'<button class="thumb" type="button" data-src="{src}" aria-label="Enlarge the closing card">'
             f'<img class="still" src="{src}" alt="Closing card" loading="lazy"></button>'
-            f'<div class="meta"><h3>Closing card</h3><span class="time">at least {secs:.1f} s</span></div>'
+            f'<div class="meta"><h3>Closing card</h3><span class="time">{when}</span></div>'
             f'<p class="line">The video ends on this ({made}) after the story\'s last line. It adds no music or '
             f"sound.</p>{said}" + (f'<ul class="findings">{warns}</ul>' if warns else "") + f"</{tag}>")  # fmt: skip
 

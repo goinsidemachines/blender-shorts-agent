@@ -471,7 +471,8 @@ def cmd_mix(args) -> dict:
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
            "sfx": recorded.report(recorded.resolve(short, library, policy))}  # fmt: skip
     if end:
-        out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"])}
+        out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"]),
+                          **closing.hold(card, end, tl.fps)}  # "note" when the line holds it past closing.seconds
         if card["voice_line"] and from_takes and not end["line_f0"]:
             out["warnings"] = [("the closing line has no take yet, so the closing card is silent: run CLI narrate "
                                 "SHORT again (it makes only the missing take), then mix")]  # fmt: skip

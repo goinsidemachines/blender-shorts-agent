@@ -39,6 +39,10 @@ with their end-card line above it (the `end_card` setting, e.g. "Follow for more
   narrated over it (it is narrated with the story's lines, as take `closing`; no caption, no music, no sound effects).
   It replaces the overlay end card. `BLENDER closing SHORT` makes it (`stills/closing.png`) and reports warnings;
   `BLENDER stills` and the edit make it too, and the storyboard and final pages show it for approval.
+- `closing.seconds` is the shortest hold, not a cut-off. When the voice line needs longer, the card holds for the
+  line plus a short lead-in (0.2 s) and pause (0.5 s), on purpose, so the line is never cut. The mix and edit results
+  then say so under `closing.note` ("closing card held 4.5 s so the voice line fits ..."), and the final page shows
+  the hold: tell the user. To keep the card short, shorten the voice line.
 - Look at the card against the user's hard rules like any other picture (no humans, faces and so on). The rule word
   checks in `CLI validate` read its voice line and website.
 - Warnings say when its text sits in the bottom 18% or right 12%, where YouTube's title and buttons cover it.
