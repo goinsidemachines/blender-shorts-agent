@@ -12,7 +12,8 @@ the end on your own.
 4. **Show both times and recommend one**, in plain words:
    - **Cycles** (path tracing): the best light, glass, metal and shadows; slower. The default for a polished short
      when the time is reasonable (a few hours at most).
-   - **EEVEE** (real-time): much faster; fine for stylised or matte looks, weaker on reflections and glass.
+   - **EEVEE** (real-time): much faster; fine for stylised or matte looks, weaker on reflections and glass. Its
+     presets turn ray tracing on, so water, glass and metal still reflect the scene.
    - Example: "Cycles: about 2 h 10 min. EEVEE: about 18 min. This short is mostly glossy metal and glass, so I'd use
      Cycles. Go with Cycles?"
 5. **Video memory:** run `CLI machine --need-gb 6` before recommending a GPU render (use about 4 GB for EEVEE). If it

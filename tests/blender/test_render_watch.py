@@ -159,5 +159,5 @@ def test_flicker_is_caught_by_the_live_checks():
         found += check_frame(png, f, sdir / "thumb.jpg", flicker)[0]
     hits = [f for f in found if f.check == "flicker"]
     assert [f.frame for f in hits] == [3], found
-    x0, _y0, x1, y1 = hits[0].box
-    assert y1 < 0.6 and x0 < 0.5 < x1, hits[0].box
+    x0, y0, x1, y1 = hits[0].box
+    assert (y0 + y1) / 2 < 0.5 and x0 < 0.5 < x1, hits[0].box  # its glow lights the floor below it too (ray tracing)

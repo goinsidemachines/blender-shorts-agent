@@ -132,6 +132,16 @@ def test_estimate_positive():
     assert render.estimate_seconds(sc, 1, "eevee", 10, percent=5) > 0
 
 
+def test_eevee_presets_turn_ray_tracing_on():
+    """Glossy water, glass and metal reflect the scene only with EEVEE's ray tracing: every preset turns it on."""
+    for preset in ("still", "preview", "final"):
+        sc = _tiny_scene(engine="eevee", preset=preset)
+        assert sc.eevee.use_raytracing, preset
+        sc.eevee.use_raytracing = False
+        render.estimate_seconds(sc, 1, "eevee", 2, percent=5)  # a preset applied and undone: as it was
+        assert not sc.eevee.use_raytracing, preset
+
+
 def test_presets_and_look_helpers():
     from bsa.blender import look
 
