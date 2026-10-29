@@ -27,6 +27,7 @@ DEFAULTS = {
     "freesound": {"api_key": None},  # optional: lets `assets search sounds` include Freesound's CC0 sounds
     "rules": [],  # the user's hard rules for every video, in their own words (bsa.rules; CLI settings rule add)
     "rules_asked": False,  # the hard-rules question was answered (asked once, existing users too)
+    "feedback": "ask",  # problems in the plugin itself (bsa.feedback): "ask" at the end, "never" ask, or "off"
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -38,6 +39,7 @@ ENUMS = {
     "render.engine": ("cycles", "eevee", "ask-always"),
     "brand.mode": ("brand", "fresh"),
     "sound_policy": ("any", "natural-only"),
+    "feedback": ("ask", "never", "off"),
 }
 
 _PROVIDER_NAMES = {

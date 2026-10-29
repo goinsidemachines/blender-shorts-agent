@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Plugin feedback</title>
+<style>
+$css
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.actions a, .actions button { display: inline-block; padding: 8px 14px; border-radius: 8px; font: inherit; font-weight: 600;
+  border: 1px solid var(--line); background: var(--panel); color: inherit; text-decoration: none; cursor: pointer; }
+.note { padding: 12px 14px; border-radius: var(--radius); background: var(--warn-bg); color: var(--warn); }
+.copytext { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: var(--fs-s); }
+.copied { color: var(--ok); font-size: var(--fs-s); align-self: center; }
+</style>
+</head>
+<body>
+<main class="page">
+<header class="top">
+  <p class="step">Plugin feedback</p>
+  <h1>$title</h1>
+  <p class="lead">Claude noted $count problem(s) in the plugin itself while making this short ($severity).
+  Nothing has been sent. Paths, keys and your settings are left out. Read it, change anything you like, and only if
+  you want to, open it on GitHub, review it there and click Submit yourself.</p>
+</header>
+$shortened
+<div class="actions">
+  <a href="$url" target="_blank" rel="noopener noreferrer">Open on GitHub</a>
+  <button type="button" id="copy">Copy</button>
+</div>
+<pre class="copytext" id="report">$body</pre>
+</main>
+<script>
+(function () {
+  var btn = document.getElementById('copy'), el = document.getElementById('report');
+  function flash(msg) {
+    var s = document.createElement('span'); s.className = 'copied'; s.textContent = msg;
+    btn.parentNode.appendChild(s); setTimeout(function () { s.remove(); }, 3000);
+  }
+  function fallback() {
+    var r = document.createRange(); r.selectNodeContents(el);
+    var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    flash(ok ? 'Copied' : 'Text selected: press Ctrl+C (or Cmd+C) to copy');
+  }
+  btn.addEventListener('click', function () {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(el.textContent).then(function () { flash('Copied'); }, fallback);
+    } else { fallback(); }
+  });
+})();
+</script>
+</body>
+</html>
