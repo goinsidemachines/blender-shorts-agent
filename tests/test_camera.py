@@ -18,5 +18,6 @@ def test_camera_and_motion_in_blender(blender_run):
         "test_frame_objects_refuses_a_box_with_no_size",
         "test_frame_objects_warns_when_the_answer_is_absurd",
         "test_frame_box_frames_a_region_of_one_long_mesh",
+        "test_frame_objects_measures_parented_objects_in_a_scene_that_is_not_the_windows",
     ):
         assert f"PASS {name}" in result.stdout

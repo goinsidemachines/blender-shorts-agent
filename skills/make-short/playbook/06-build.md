@@ -203,7 +203,9 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   `warnings` (also printed as a `FramingWarning`): the camera sent far off (more than 5 times the box's size or new
   distance: the objects are not where the camera looked, often because a parent moved or turned them), the box
   outside the view or past the clip end, or the fit not settling. Fix the cause, never ignore it: such a camera
-  renders black or empty stills. A box with no size (an object with no geometry) is refused.
+  renders black or empty stills. A box with no size (an object with no geometry) is refused. It measures the objects
+  in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
+  camera's) scene does not have are refused instead of measured at the origin.
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject
   fills the 1080 px width and only a third of the height, and looks small. Instead:
   - Shoot it at a 3/4 angle **along the row** (camera 30-45 degrees off its long axis, a little above): the row

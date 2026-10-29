@@ -11,6 +11,11 @@ An answer that cannot be right comes with a warning (`FramingWarning`, and in th
 sent more than FAR_FACTOR times the framed box's distance or size away (the objects were not where it looked: a
 parent moved or turned them), the box ending up outside the view, behind the clip start or past the clip end, or
 the fit not settling. A box with no size (no geometry) is refused with ValueError.
+
+The objects are measured as the scene they are in places them (keys, parents, drivers), also in a scene that is not
+the window's (script mode builds each scene in turn). Without `scene=`, the camera's scene that holds every object is
+used (a camera can be in several scenes). Objects the scene does not have are refused with ValueError: their own
+unevaluated place (often the origin) would give a wrong camera with no warning.
 """
 
 from __future__ import annotations
@@ -35,11 +40,29 @@ class FramingWarning(UserWarning):
 
 
 def _depsgraph(scene):
-    view_layer = bpy.context.view_layer if bpy.context.scene == scene else scene.view_layers[0]
+    """The evaluated depsgraph of `scene` (its first view layer when it is not the context scene)."""
     if bpy.context.scene == scene:
-        return bpy.context.evaluated_depsgraph_get()
-    with bpy.context.temp_override(scene=scene, view_layer=view_layer):
-        return bpy.context.evaluated_depsgraph_get()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+    else:
+        with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+    if depsgraph.scene != scene:
+        raise RuntimeError(f"frame_objects: asked for scene {scene.name!r}, Blender evaluated "
+                           f"{depsgraph.scene.name!r}: pass scene= explicitly")  # fmt: skip
+    return depsgraph
+
+
+def _scene_of(cam, objs, scene):
+    """`scene`, else the first of the camera's scenes that holds every object (else its first, or the context's)."""
+    if scene is not None:
+        return scene
+    scenes = list(cam.users_scene) or [bpy.context.scene]
+    return next((sc for sc in scenes if all(sc.objects.get(o.name) == o for o in objs)), scenes[0])
+
+
+def _not_evaluated(objs, depsgraph) -> list[str]:
+    """Names of the objects `depsgraph` does not evaluate (not in its scene or view layer)."""
+    return [o.name for o in objs if not o.evaluated_get(depsgraph).is_evaluated]
 
 
 def _corners(objs, scene, frames, box=None) -> np.ndarray:
@@ -52,6 +75,11 @@ def _corners(objs, scene, frames, box=None) -> np.ndarray:
     if box is not None:
         lo, hi = np.asarray(box[0], dtype=np.float64), np.asarray(box[1], dtype=np.float64)
         local = np.array([(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    missing = _not_evaluated(objs, depsgraph)
+    if missing:
+        raise ValueError(f"frame_objects: scene {scene.name!r} does not have {', '.join(repr(n) for n in missing)} "
+                         "(or hides it in its view layer), so where it is is not known: pass scene= the scene it is "
+                         "in, or frame a box with frame_box")  # fmt: skip
     try:
         for frame in frames:
             if frame is not None:
@@ -140,8 +168,8 @@ def frame_objects(cam, objs, frames=None, safe_rect: Rect | None = None, avoid=_
     px of everything framed), "area" (x0, y0, x1, y1 px), "distance" (along the view axis to the boxes' centre),
     "warnings" (why the answer cannot be right, each also a FramingWarning; empty when it is fine)}. A box with no
     size (objects with no geometry) raises ValueError."""
-    scene = scene or (cam.users_scene[0] if cam.users_scene else bpy.context.scene)
     objs = list(objs)
+    scene = _scene_of(cam, objs, scene)
     pose = _pose(cam)  # the pose now: frame changes while measuring would snap a keyed camera back to its keys
     pts = _corners(objs, scene, list(frames) if frames else [None])
     _set_pose(cam, pose)
@@ -154,7 +182,7 @@ def frame_box(cam, lo, hi, of=None, frames=None, safe_rect: Rect | None = None, 
     """`frame_objects` for the box with corners `lo` and `hi`: in the world, or with `of` (an object) in that object's
     own coordinates, following it at each of `frames` (keys, parents, constraints). Frames a part of one long mesh
     (the last metre of a rail, one end of a beam) without a helper object. Same options and result."""
-    scene = scene or (cam.users_scene[0] if cam.users_scene else bpy.context.scene)
+    scene = _scene_of(cam, [of] if of is not None else [], scene)
     box = (tuple(lo), tuple(hi))
     if of is None:
         lo_, hi_ = np.asarray(box[0], dtype=np.float64), np.asarray(box[1], dtype=np.float64)
