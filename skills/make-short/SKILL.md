@@ -114,6 +114,13 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    `BLENDER frame-check SHORT --preset final`, `BLENDER preview SHORT`, `BLENDER extremes SHORT`, and `BLENDER check
    SHORT` on a long short. If one was cut off
    anyway, run the same command again: renders resume from the frames on disk and narration keeps finished takes.
+11. **Note problems in the plugin itself.** When the plugin gets something wrong (a check that is wrong, a helper
+   that misbehaves, a misleading doc or message, a crash), note it with `CLI feedback add SHORT --severity
+   blocking|wrong-output|rough-edge --summary "..."` plus `--happened`, `--expected`, `--command`, `--error` and
+   `--workaround` where you have them (and `--blender`, `--mode script|mcp` if known). Only the plugin's own
+   problems, never the user's own scene or your own mistakes. Note it and carry on: never stop the short for it,
+   and don't mention it until the post stage (`playbook/09-post.md`). With the setting `feedback off` it notes
+   nothing. Nothing is ever sent by the plugin.
 
 ## 3. Stages, chapters and who marks them done
 

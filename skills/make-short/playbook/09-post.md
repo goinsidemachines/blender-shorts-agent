@@ -27,3 +27,13 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
    and hashtags ready to copy, any warnings you accepted and why, and (if the short is captions-only because a voice
    failed) that a voice can be added later (`05-narration.md`). The same file works for YouTube Shorts, Instagram
    Reels and TikTok.
+6. **Plugin feedback, at the very end.** Run `CLI feedback list SHORT`. Only when `ask` is true (the setting is
+   `ask`, there are notes nobody has seen yet, and this short has not been asked before), ask once, in one line:
+   "I noted 2 problems in the plugin itself while making this (1 blocking, 1 rough edge). Want to see them and
+   maybe send them to the plugin's authors?"
+   - **Yes:** `CLI feedback report SHORT --open`. Say that the page shows exactly what would be sent, with paths,
+     keys and their settings left out; "Open on GitHub" opens a prefilled issue, and they review it and click
+     Submit themselves (or just close it). If `shortened` is true, say the full text is on the page to copy and
+     paste.
+   - **No:** `CLI feedback decline SHORT`, and leave it there.
+   Never submit for them, never open GitHub yourself, and never ask again for this short.
