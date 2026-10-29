@@ -661,7 +661,9 @@ def cmd_assets(args) -> dict:
         if len(args.args) < 2:
             raise CliError("usage: assets search textures|hdris|models|sounds QUERY")
         if args.args[0] == "sounds":
-            return sounds.search(" ".join(args.args[1:]), http=sounds._urlopen, freesound_key=settings.freesound_key())
+            ws = settings.load_settings().get("workspace")  # a cached pack's kinds come from the library
+            return sounds.search(" ".join(args.args[1:]), http=sounds._urlopen, freesound_key=settings.freesound_key(),
+                                 cache_dir=Path(ws) / ".assets-cache" if ws else None)
         from bsa import rules
 
         found, hidden = polyhaven.search_with_rules(args.args[0], " ".join(args.args[1:]),

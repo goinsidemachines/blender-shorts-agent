@@ -245,3 +245,51 @@ def test_record_and_short_round_trip(tmp_path):
     back = load_short(tmp_path / "short.json")
     assert back.assets[0].license == "CC0" and back.assets[0].kind == "sounds"
     assert Path(back.assets[0].files[0]["path"]).name.endswith(".zip")
+
+
+# The real file names of two curated packs (as their zips hold them), to check the catalogue's kinds against.
+OGA_METAL_WOOD_NAMES = (
+    ["door_open_01", "lock_open_01", "metal_close_01", "metal_open_01", "metal_slam_01", "misc_01", "tools_01",
+     "wood_close_01", "wood_misc_01", "wood_slam_01", "wood_squeak_01", "wood_squeak_02"]
+    + [f"hammer_0{i}" for i in range(1, 5)] + [f"keys_0{i}" for i in range(1, 8)]
+    + [f"metal_falling_0{i}" for i in (1, 2)] + [f"metal_hit_0{i}" for i in range(1, 6)]
+    + [f"metal_sheet_0{i}" for i in range(1, 7)] + [f"metal_spring_0{i}" for i in (1, 2)]
+    + [f"wood_breaking_0{i}" for i in (1, 2)] + [f"wood_cracking_0{i}" for i in range(1, 5)]
+    + [f"wood_falling_0{i}" for i in range(1, 7)] + [f"wood_hammer_0{i}" for i in (1, 2)]
+    + [f"wood_hit_0{i}" for i in range(1, 10)]
+)  # fmt: skip
+KENNEY_UI_NAMES = ([f"click{i}" for i in range(1, 6)] + ["mouseclick1", "mouserelease1"]
+                   + [f"rollover{i}" for i in range(1, 7)] + [f"switch{i}" for i in range(1, 39)])  # fmt: skip
+
+
+def _kinds_of(names):
+    return {k for n in names for k in sounds.auto_kinds(n + ".ogg")}
+
+
+@pytest.mark.parametrize("pid,names", [("oga-metal-wood", OGA_METAL_WOOD_NAMES), ("kenney-ui-sfx", KENNEY_UI_NAMES)])
+def test_a_packs_search_kinds_are_the_kinds_its_clips_get(pid, names):
+    """Search must not promise a kind (thud) that indexing the pack's files never tags."""
+    assert set(sounds.PACKS[pid]["kinds"]) == _kinds_of(names)
+    q = sounds.commons_search_url(sounds.PACKS[pid]["name"])
+    out = sounds.search(sounds.PACKS[pid]["name"], http=FakeHttp({q: _commons_json()}), freesound_key=None)
+    (hit,) = [r for r in out["results"] if r["id"] == f"pack:{pid}"]
+    assert set(hit["kinds"]) == _kinds_of(names) and hit["kinds_from"] == "catalogue"
+
+
+def test_every_pack_lists_only_valid_kinds():
+    from bsa.audio.sfx import KINDS
+
+    for pid, pack in sounds.PACKS.items():
+        assert pack["kinds"] and set(pack["kinds"]) <= set(KINDS), pid
+
+
+def test_search_reports_a_cached_packs_kinds_from_the_library(tmp_path):
+    cache = tmp_path / ".assets-cache"
+    lib = recorded.Library(cache)
+    lib.add([{"path": f"sounds/oga-metal-wood/{n}.wav", "kinds": k, "asset": "sfx-oga-metal-wood"}
+             for n, k in (("wood_hit_01", ["impact"]), ("wood_squeak_01", ["creak"]), ("misc_01", []))])
+    lib.save()
+    q = sounds.commons_search_url("thud")
+    out = sounds.search("thud", http=FakeHttp({q: _commons_json()}), freesound_key=None, cache_dir=cache)
+    (hit,) = [r for r in out["results"] if r["id"] == "pack:oga-metal-wood"]
+    assert hit["kinds"] == ["impact", "creak"] and hit["kinds_from"] == "library"

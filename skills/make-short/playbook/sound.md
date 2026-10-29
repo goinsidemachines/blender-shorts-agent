@@ -13,7 +13,8 @@ for sfx kind(s) ...". For those kinds:
 1. `CLI assets search sounds "<words>"` (for example `"wood thud"`, `"metal scrape"`, `"switch click"`). Results
    come from curated CC0 packs (`pack:...`, the cheapest start: one download covers many kinds), Wikimedia Commons
    (`commons:...`) and, when the user has a Freesound API key, Freesound (`freesound:...`). Each result shows its
-   licence (always CC0), source and the kinds its file name suggests. A source that could not be reached (no
+   licence (always CC0), source and the kinds its file name suggests. A pack shows the kinds its clips are tagged
+   with: from the library when it is already cached (`kinds_from: library`), else from the catalogue. A source that could not be reached (no
    connection, DNS) is listed in `skipped` with a plain error ("can't reach commons.wikimedia.org (network or
    DNS)") and a retry hint, and the note says the other sources only were searched: tell the user which source was
    left out and that the same search may find more in a minute; never present the results as everything there is.
