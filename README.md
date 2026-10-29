@@ -226,3 +226,7 @@ uv run ruff check .
 
 MIT. Sound packs, fonts, textures and voices the plugin downloads keep their own licences, which are shown before
 anything is downloaded.
+
+---
+
+Made by Inside Machines, a studio of Mojood.
