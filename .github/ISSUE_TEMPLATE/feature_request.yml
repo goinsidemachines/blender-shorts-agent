@@ -1,0 +1,16 @@
+name: Idea or request
+description: A check, helper, look or workflow you'd like the plugin to have.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: What it should do, and the short you were making when you wanted it.
+    validations:
+      required: true
+  - type: textarea
+    id: now
+    attributes:
+      label: What you do today
+      description: How you work around it now, if at all.
