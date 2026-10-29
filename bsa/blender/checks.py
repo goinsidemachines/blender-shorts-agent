@@ -89,9 +89,9 @@ Tolerances (scene units are metres):
   dimension. A teleport, a keyed jump or a one-frame snap pops; a ball that falls fast and then hangs almost still,
   or a still ball struck into motion, does not (its speed changes once and stays changed). The frame before and
   after each shot are read as references for its first and last moves, not judged (a cut may move anything).
-- names: an object name ending in ".001" (Blender renamed a duplicate: object names are one namespace across
-  scenes) is a warning; a contact tag naming no object in the scene, a hero tag naming a shot short.json does not
-  have, or a near label naming an object its shot's scene does not have, is an error.
+- names: object names ending in ".001" (Blender renamed a duplicate: object names are one namespace across
+  scenes) are one warning naming them; a contact tag naming no object in the scene, a hero tag naming a shot
+  short.json does not have, or a near label naming an object its shot's scene does not have, is an error.
 """
 
 from __future__ import annotations
@@ -149,6 +149,7 @@ POSE_KEPT = 8  # poses remembered per pair
 RAY_STEP = 5e-7  # a ray restarts this fraction of its distance from the origin past each hit (about 8 float32 steps)
 OTHER_GEOMETRY = ("CURVE", "FONT", "SURFACE", "META")  # rendered, checked for materials and images only
 RENAMED = re.compile(r"\.\d{3,}$")
+RENAMED_LISTED = 12  # renamed objects named in the one names warning
 # Modifiers that give the same mesh every frame unless their settings are animated (a changed mesh is still found at
 # the next sampled frame, and the object is evaluated every frame from then on). Any other modifier, shape keys or
 # an armature parent may deform the mesh, so such objects are evaluated on every frame of the sweep.
@@ -737,13 +738,16 @@ class _Run:
         """Names that point at the wrong object: renamed duplicates, and tags or labels naming what is not there."""
         present = {o.name for o in self.scene.objects}
         shot_ids = {s.id for s in short.shots} if short is not None else None
+        renamed = sorted(o.name for o in self.scene.objects if RENAMED.search(o.name))
+        if renamed:
+            shown = ", ".join(repr(n) for n in renamed[:RENAMED_LISTED])
+            more = f" and {len(renamed) - RENAMED_LISTED} more" if len(renamed) > RENAMED_LISTED else ""
+            what = f"{renamed[0]!r} ends" if len(renamed) == 1 else f"{len(renamed)} object names end"
+            self.add("names", "warning", renamed[0], None, f"{what} in a number like '.001' ({shown}{more}): "
+                     "Blender renamed a duplicate (object names are shared by every scene in the .blend), so labels "
+                     "and tags using the plain name point at another object. Give each object a unique name",
+                     key=("renamed",))  # fmt: skip
         for obj in sorted(self.scene.objects, key=lambda o: o.name):
-            renamed = RENAMED.search(obj.name)
-            if renamed:
-                self.add("names", "warning", obj.name, None, f"name ends in {renamed.group()!r}: Blender renamed a "
-                         "duplicate (object names are shared by every scene in the .blend), so labels and tags using "
-                         "the plain name point at another object. Give each object a unique name",
-                         key=(obj.name, "renamed"))  # fmt: skip
             for t in tags(obj):
                 if t.startswith("contact:"):
                     target = _contact_target(t[len("contact:") :], present)

@@ -382,6 +382,12 @@ def test_renamed_duplicates_are_warned():
     _cube("Person.001", (2, 0, 0.5))
     found = _found(sc, "names", severity="warning")
     assert [f.obj for f in found] == ["Person.001"], found
+    assert "'Person.001'" in found[0].message, found
+    _cube("Pier.003", (4, 0, 0.5))
+    _cube("Pier.004", (6, 0, 0.5))
+    found = _found(sc, "names", severity="warning")  # one warning naming every renamed object
+    assert len(found) == 1, found
+    assert all(f"'{n}'" in found[0].message for n in ("Person.001", "Pier.003", "Pier.004")), found
 
 
 def test_tags_must_name_objects_in_the_scene():
