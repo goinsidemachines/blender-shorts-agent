@@ -257,6 +257,7 @@ def paper_world(scene, hex_colour: str, light: float = 1.0, exposure: float | No
     lin, shown = _solve_linear(scene, target)
     world = scene.world or bpy.data.worlds.new(f"{scene.name} paper")
     scene.world = world
+    world["bsa_backdrop"] = "paper"  # the stills' background check applies (bsa.colour.flat_backdrop)
     world.use_nodes = True
     nt = world.node_tree
     nt.nodes.clear()

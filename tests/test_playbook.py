@@ -152,3 +152,18 @@ def test_checks_chapter_lists_every_scene_check():
     for name in names:
         assert f"| `{name}`" in text, name
     assert "10 times the other's bounding-box volume" in _flat(text)
+
+
+def test_scale_references_never_need_a_person():
+    """A human figure for scale breaks a no_humans rule: every scale tip offers an object and names the rule."""
+    bullets = []
+    for path in sorted((SKILL / "playbook").rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        for bullet in re.split(r"\n(?=\s*[-|#]|\s*\n)", text):
+            flat = _flat(bullet)
+            if re.search(r"for scale|next to a person|beside a person", flat, re.IGNORECASE):
+                bullets.append((path.name, flat))
+    assert len(bullets) >= 3, bullets
+    for name, flat in bullets:
+        assert "no_humans" in flat, (name, flat)
+        assert re.search(r"\b(door|car|bench|container)\b", flat), (name, flat)

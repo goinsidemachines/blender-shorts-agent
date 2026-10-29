@@ -53,6 +53,11 @@ def test_paper_world_renders_the_brand_colour():
     assert colour.delta_e(PAPER, got) < 2.0, (colour.srgb_to_hex(got), out)
     assert colour.background_warning(_render_background(sc), PAPER, "s01") is None
     assert sc.view_settings.view_transform == "AgX"
+    assert colour.flat_backdrop(sc.world) and sc.world["bsa_backdrop"] == "paper"
+    sky = bpy.data.worlds.new("sky")
+    sky.use_nodes = True
+    sky.node_tree.nodes.new("ShaderNodeTexSky")
+    assert not colour.flat_backdrop(sky)  # a sky is not a backdrop: the stills skip its background check
 
 
 def test_paper_world_with_a_look_and_exposure():

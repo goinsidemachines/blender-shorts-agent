@@ -22,7 +22,8 @@ What made the reference shorts work, as rules.
 - The picture that proves a line is on screen while the line is spoken. Lines start a moment after their shot
   starts (the timeline leaves a short lead-in), so the eye arrives first.
 - Labels appear one at a time, each with a soft sound, when the narration reaches them; never a wall of text.
-- When a number is said, show what it measures (a 2 m flywheel next to a person).
+- When a number is said, show what it measures (a 2 m flywheel next to a door or a car for scale). Under a
+  `no_humans` rule people never appear.
 
 ## Captions carry the story with the sound off
 

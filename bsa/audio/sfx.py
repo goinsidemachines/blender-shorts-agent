@@ -87,6 +87,16 @@ def wind(dur_s: float, seed: int = 0) -> np.ndarray:
     return shaped_noise(len(tt), 60, 1800, -5, seed) * gust
 
 
+def water(dur_s: float, seed: int = 0) -> np.ndarray:
+    """Water lapping or flowing: soft mid-band noise with slow, uneven swells."""
+    tt = _t(dur_s)
+    rng = np.random.default_rng(seed)
+    swell = 0.5 + 0.5 * np.sin(2 * np.pi * rng.uniform(0.3, 0.7) * tt + rng.uniform(0, 2 * np.pi)) ** 2
+    ripple = 1 + 0.3 * np.sin(2 * np.pi * rng.uniform(2.5, 4.0) * tt)
+    fade = np.clip(np.minimum(tt, dur_s - tt) / 0.08, 0, 1)
+    return shaped_noise(len(tt), 150, 5000, -4, seed) * swell * ripple * fade
+
+
 def thud(dur_s: float = 0.5, seed: int = 0) -> np.ndarray:
     """A dull, heavy landing: low thump, a soft body of low noise, no bright click."""
     tt = _t(dur_s)
@@ -133,4 +143,5 @@ KINDS: dict[str, Callable[..., np.ndarray]] = {
     "creak": creak,
     "hum": lambda dur_s, seed=0: hum(110, dur_s),
     "wind": wind,
+    "water": water,
 }

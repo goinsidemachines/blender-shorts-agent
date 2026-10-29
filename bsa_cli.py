@@ -220,13 +220,17 @@ def cmd_new_short(args) -> dict:
     root = settings.load_settings().get("workspace")
     if not root:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
+    length = 45 if args.length is None else args.length  # the interview's default
+    if not LENGTH_RANGE_S[0] <= length <= LENGTH_RANGE_S[1]:
+        raise CliError(f"--length must be {LENGTH_RANGE_S[0]} to {LENGTH_RANGE_S[1]} seconds, got {length:g}")
     try:
         sdir = workspace.new_short(Path(root), args.title, number=args.number)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
     path = short_json(sdir)
     if not path.exists():
-        save_short(Short(slug=workspace.slugify(args.title), title=args.title, length_s=45), path)
+        save_short(Short(slug=workspace.slugify(args.title), title=args.title, length_s=length,
+                         topic=(args.topic or "").strip()), path)
     return {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
 
 
@@ -467,7 +471,8 @@ def cmd_mix(args) -> dict:
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
            "sfx": recorded.report(recorded.resolve(short, library, policy))}  # fmt: skip
     if end:
-        out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"])}
+        out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"]),
+                          **closing.hold(card, end, tl.fps)}  # "note" when the line holds it past closing.seconds
         if card["voice_line"] and from_takes and not end["line_f0"]:
             out["warnings"] = [("the closing line has no take yet, so the closing card is silent: run CLI narrate "
                                 "SHORT again (it makes only the missing take), then mix")]  # fmt: skip
@@ -661,7 +666,9 @@ def cmd_assets(args) -> dict:
         if len(args.args) < 2:
             raise CliError("usage: assets search textures|hdris|models|sounds QUERY")
         if args.args[0] == "sounds":
-            return sounds.search(" ".join(args.args[1:]), http=sounds._urlopen, freesound_key=settings.freesound_key())
+            ws = settings.load_settings().get("workspace")  # a cached pack's kinds come from the library
+            return sounds.search(" ".join(args.args[1:]), http=sounds._urlopen, freesound_key=settings.freesound_key(),
+                                 cache_dir=Path(ws) / ".assets-cache" if ws else None)
         from bsa import rules
 
         found, hidden = polyhaven.search_with_rules(args.args[0], " ".join(args.args[1:]),
@@ -749,6 +756,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("new-short", help="make a new short's folder in the workspace")
     sp.add_argument("title")
     sp.add_argument("--number", type=int, default=None, help="the folder number to use (refused if already used)")
+    sp.add_argument("--topic", default=None, help="what a viewer should understand at the end (short.json topic)")
+    sp.add_argument("--length", type=float, default=None, help="length in seconds, 15 to 90 (short.json length_s)")
     sp.set_defaults(fn=cmd_new_short)
 
     sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE]")

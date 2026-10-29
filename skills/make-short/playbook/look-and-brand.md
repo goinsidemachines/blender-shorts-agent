@@ -39,6 +39,10 @@ with their end-card line above it (the `end_card` setting, e.g. "Follow for more
   narrated over it (it is narrated with the story's lines, as take `closing`; no caption, no music, no sound effects).
   It replaces the overlay end card. `BLENDER closing SHORT` makes it (`stills/closing.png`) and reports warnings;
   `BLENDER stills` and the edit make it too, and the storyboard and final pages show it for approval.
+- `closing.seconds` is the shortest hold, not a cut-off. When the voice line needs longer, the card holds for the
+  line plus a short lead-in (0.2 s) and pause (0.5 s), on purpose, so the line is never cut. The mix and edit results
+  then say so under `closing.note` ("closing card held 4.5 s so the voice line fits ..."), and the final page shows
+  the hold: tell the user. To keep the card short, shorten the voice line.
 - Look at the card against the user's hard rules like any other picture (no humans, faces and so on). The rule word
   checks in `CLI validate` read its voice line and website.
 - Warnings say when its text sits in the bottom 18% or right 12%, where YouTube's title and buttons cover it.
@@ -84,7 +88,8 @@ A look is a few decisions held consistently across every shot:
   Read it in build.py's result and tell the user then (change exposure= or look=, or accept that colour), not when
   the stills check finds the background off. Put the backdrop colour in `style.palette.background`
   (or the brand's `brand.background`): `BLENDER stills SHORT` then warns when a still's background is more than
-  ΔE 5 from it.
+  ΔE 5 from it. It checks only shots whose world is a flat backdrop (`paper_world` or a plain colour). A sky, an
+  HDRI or a gradient world is an environment, not a backdrop: those shots get no background warning.
 - **Brand view:** `brand.exposure` (stops, e.g. `0.3`) and `brand.look` (e.g. `Punchy`) in the settings set the
   view for every brand short: `paper_world` applies them, and `look.brand_view(scene)` does on its own. A fresh
   short never gets them.
@@ -117,6 +122,7 @@ Two things go wrong with a brand font, and both are caught before anything rende
 - Bevel every hard edge; smooth-shade curved surfaces; add surface detail at the scale the camera sees.
 - Warm practical lights on the hero against a cooler surround separate the subject.
 - Depth: haze or volumetrics outdoors, depth of field on macro shots, foreground framing.
-- A person silhouette or a familiar object for scale when size matters.
+- A familiar object for scale when size matters: a door, a car, a bench, a standard shipping container. Under a
+  `no_humans` rule people never appear, not even as a silhouette or a stick figure.
 - Overlays (arrows, plots) in the accent colour with a clear meaning, explained once ("cyan = which way the piston
   moves, gold = the force on the crank").

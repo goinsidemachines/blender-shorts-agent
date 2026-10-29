@@ -95,6 +95,17 @@ def test_new_short_with_a_number(home, workspace):
     assert len(proc.stderr.strip().splitlines()) == 1
 
 
+def test_new_short_with_a_topic_and_length(home, workspace):
+    data = ok(run(home, "new-short", "The Lever", "--topic", "How a lever trades force for distance", "--length", "40"))
+    spec = json.loads((Path(data["short"]) / "source" / "short.json").read_text(encoding="utf-8"))
+    assert spec["topic"] == "How a lever trades force for distance" and spec["length_s"] == 40
+    assert json.loads((Path(ok(run(home, "new-short", "Pulley"))["short"]) / "source" / "short.json").read_text(
+        encoding="utf-8"))["length_s"] == 45  # the default
+    proc = run(home, "new-short", "Too long", "--length", "200")
+    assert proc.returncode != 0 and "15" in proc.stderr and "90" in proc.stderr
+    assert not any(p.name.endswith("too-long") for p in workspace.iterdir())
+
+
 def test_brand_exposure_and_look_settings(home):
     s = ok(run(home, "settings", "set", "brand.exposure", "0.3"))["settings"]
     assert s["brand"]["exposure"] == 0.3

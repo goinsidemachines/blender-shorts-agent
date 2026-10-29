@@ -3,8 +3,9 @@
 Sources, all CC0 (public domain dedication: commercial use, no attribution required):
 
 - **Curated packs** (`pack:<id>`): known CC0 packs hosted as plain files on OpenGameArt, including Kenney's, at
-  stable URLs. Downloaded as a zip; the audio files are extracted into the cache and tagged with sfx kinds from
-  their file names ("impactWood_heavy" -> impact, thud).
+  stable URLs: hits and doors, UI clicks, and natural water and wind for outdoor shorts. Downloaded as a zip; the
+  audio files are extracted into the cache and tagged with sfx kinds from their file names ("impactWood_heavy" ->
+  impact, thud), or with the pack's own kind when it holds one subject (wind).
 - **Wikimedia Commons** (`commons:<file name>`): keyless public API; each file's licence is read from its metadata
   and anything but CC0 is refused; downloads are checked against the file's SHA-1.
 - **Freesound** (`freesound:<id>`): only with an API key (`settings set freesound.api_key KEY`, or
@@ -56,12 +57,14 @@ PACKS = {
         "url": "https://opengameart.org/sites/default/files/100-CC0-wood-metal-SFX.zip",
         "tags": "metal wood hit impact thud slam drop fall land door lock key click latch creak squeak tools hammer "
                 "spring sheet scrape",
+        "kinds": ["impact", "click", "creak"],
     },
     "kenney-ui-sfx": {
         "name": "51 UI sound effects (buttons, switches and clicks)", "author": "Kenney", "license": "CC0",
         "approx_bytes": 1_400_000, "page": "https://opengameart.org/content/51-ui-sound-effects-buttons-switches-and-clicks",
         "url": "https://opengameart.org/sites/default/files/UI_SFX_Set.zip",
         "tags": "click switch button toggle tick latch ui interface",
+        "kinds": ["click"],
         "designed": True,  # interface sounds, tonal and partly synthesised: not used under natural-only
     },
     "kenney-rpg": {
@@ -69,8 +72,25 @@ PACKS = {
         "page": "https://opengameart.org/content/50-rpg-sound-effects",
         "url": "https://opengameart.org/sites/default/files/RPGsounds_Kenney.zip",
         "tags": "door creak metal latch click cloth footstep chop knife slide drag wood coins book",
+        "kinds": ["thud", "click", "slide", "creak"],
+    },
+    "oga-water": {
+        "name": "40 CC0 water / splash / slime SFX", "author": "rubberduck", "license": "CC0",
+        "approx_bytes": 2_300_000, "page": "https://opengameart.org/content/40-cc0-water-splash-slime-sfx",
+        "url": "https://opengameart.org/sites/default/files/water-splash-slime-sfx.zip",
+        "tags": "water splash bubble bubbles rain loop liquid drip lapping river canal sea lake nature ambience slime",
+        "kinds": ["water"],  # its bubble, splash and water / rain loops; the slime clips get no kind
+    },
+    "oga-wind": {
+        "name": "Wind", "author": "IgnasD", "license": "CC0", "approx_bytes": 264_000,
+        "page": "https://opengameart.org/content/wind", "url": "https://opengameart.org/sites/default/files/wind.zip",
+        "tags": "wind blow gust breeze air weather outdoor nature ambience",
+        "kinds": ["wind"], "fallback_kinds": ["wind"],  # every clip in it is wind, whatever its file name says
     },
 }  # fmt: skip
+# `tags` are words a search matches. `kinds` are the sfx kinds the pack's clips get when indexed (auto_kinds of its
+# file names): search shows these, never kinds read off the tags, so it promises no kind the library will not have.
+# `fallback_kinds` (a pack of one subject only) tag a clip whose file name suggests no kind.
 
 # File-name words -> sfx kind (a clip can have several). Order: the kinds' order in the result.
 KIND_WORDS = {
@@ -83,6 +103,8 @@ KIND_WORDS = {
     "rumble": ("rumble", "quake", "earthquake"),
     "hiss": ("hiss", "steam", "spray", "air"),
     "wind": ("wind", "gust", "breeze"),
+    "water": ("water", "splash", "splashes", "bubble", "bubbles", "drip", "drips", "rain", "stream", "river", "wave",
+              "waves", "lapping", "liquid", "flowing", "pour"),
     "whoosh": ("whoosh", "swish", "swoosh", "woosh", "swing"),
 }
 
@@ -119,6 +141,11 @@ def auto_kinds(name: str) -> list[str]:
     """The sfx kinds a clip's file name suggests (["impact", "thud"] for "impactWood_heavy_003.ogg")."""
     words = set(_words(name))
     return [kind for kind, keys in KIND_WORDS.items() if words & set(keys)]
+
+
+def pack_clip_kinds(pid: str, name: str) -> list[str]:
+    """The kinds a pack's clip is tagged with: what its file name suggests, else the pack's `fallback_kinds`."""
+    return auto_kinds(name) or list(PACKS.get(pid, {}).get("fallback_kinds", []))
 
 
 def _safe(text: str) -> str:
@@ -211,12 +238,25 @@ def source_name(item: str) -> str:
         item.split(":", 1)[0], item)
 
 
-def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None = None) -> dict:
+def pack_kinds(pid: str, cache_dir: Path | None = None) -> tuple[list[str], str]:
+    """(kinds, where from) for a pack: the kinds its clips have in the library when it is indexed there
+    ("library"), else the catalogue's `kinds` ("catalogue")."""
+    if cache_dir is not None:
+        clips = [c for c in recorded.Library(cache_dir).clips if c.get("asset") == f"sfx-{pid}"]
+        if clips:
+            have = {k for c in clips for k in c.get("kinds", [])}
+            return [k for k in KIND_WORDS if k in have], "library"
+    return list(PACKS[pid]["kinds"]), "catalogue"
+
+
+def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None = None,
+           cache_dir: Path | None = None) -> dict:
     """{"results": [...], "notes": [...], "skipped": [...]}: CC0 recordings matching `query` from the packs,
     Wikimedia Commons and (with a key) Freesound. Each result has an `id` to plan (pack:..., commons:...,
     freesound:...), its name, licence, the kinds its name suggests and where it comes from. A source that fails is
     left out and named in `skipped` ({"source", "error", "retry"}) and in a note, so the user hears which source was
-    not searched and that a retry may find more."""
+    not searched and that a retry may find more. A pack's `kinds` are what its clips are tagged: from the library
+    when it is cached in `cache_dir` (`kinds_from` "library"), else from the catalogue."""
     words = query.lower().split()
     results, notes, skips = [], [], []
     scored = []
@@ -224,10 +264,10 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
         hay = (p["name"] + " " + p["tags"]).lower()
         score = sum(w in hay for w in words)
         if score:
+            kinds, kinds_from = pack_kinds(pid, cache_dir)
             scored.append((-score, pid, {"id": f"pack:{pid}", "name": p["name"], "provider": "pack", "license": "CC0",
                                          "source": f"OpenGameArt ({p['author']})", "bytes": p["approx_bytes"],
-                                         "page": p["page"], "kinds": [k for k in KIND_WORDS if any(
-                                             w in p["tags"].split() for w in KIND_WORDS[k])],
+                                         "page": p["page"], "kinds": kinds, "kinds_from": kinds_from,
                                          **({"designed": True, "note": DESIGNED_NOTE} if p.get("designed") else {})}))  # fmt: skip
     results += [r for *_, r in sorted(scored)]
     try:
@@ -476,7 +516,7 @@ def adopt_legacy(cache_dir: Path) -> list[str]:
         rels = _extract(polyhaven._target(cache_dir, f["path"]), pid, cache_dir)
         if rels:
             _index(lib, f"sfx-{pid}", f"OpenGameArt ({p['author']})", p["license"], f,
-                   [(rel, auto_kinds(rel)) for rel in rels])
+                   [(rel, pack_clip_kinds(pid, rel)) for rel in rels])
             added.append(f"sfx-{pid}")
     if added:
         lib.save()
@@ -494,8 +534,9 @@ def download(plans: list[Asset], cache_dir: Path, http=_urlopen) -> dict[str, li
         paths = []
         for f in a.files:
             if f["role"] == "archive":
-                rels = _extract(polyhaven._target(cache_dir, f["path"]), a.id.removeprefix("sfx-"), cache_dir)
-                clips = [(rel, auto_kinds(rel)) for rel in rels]
+                pid = a.id.removeprefix("sfx-")
+                rels = _extract(polyhaven._target(cache_dir, f["path"]), pid, cache_dir)
+                clips = [(rel, pack_clip_kinds(pid, rel)) for rel in rels]
             else:
                 clips = [(f["path"], list(f.get("kinds") or auto_kinds(f["path"])))]
             _index(lib, a.id, a.source, a.license, f, clips)
