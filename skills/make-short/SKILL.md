@@ -74,7 +74,7 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    first-run questions in `playbook/00-first-run.md`: workspace (suggest `default_workspace`, then say where it is
    and how to change it), narrator ("Do you already have a voice tool, or would you like me to set one up?": their own
    command, a voice I set up, or captions only), render preference (`ask-always` if they want to be asked each time), brand or
-   fresh style, hard rules (`rules`: their own content rules for every video), handle (`""` if they want none) and, with a handle, the end-card line above it (`end_card`). Save each answer with
+   fresh style, hard rules (`rules`: their own content rules for every video), handle (`""` if they want none) and, with a handle, the end-card line above it (`end_card`). Then the closing card (`website`, `closing.image`, `closing.voice_line`, `closing.seconds`, then `closing_asked true`). Save each answer with
    `CLI settings set KEY VALUE` as soon as it is given, and offer to note the workspace in your memory as well (the
    plugin always reads the settings file; memory is only a convenience).
 2. **The user's hard rules come first.** Read `CLI settings rules` at the start of every short and before each

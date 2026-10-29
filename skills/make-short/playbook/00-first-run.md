@@ -141,6 +141,27 @@ holds the last shot 1.5 s longer for it when there is a handle), the line smalle
 have its own end card (`"end_card"` in its short.json, with an optional second line such as their site:
 `look-and-brand.md`), so a brief that wants a particular end card never needs this setting changed and restored.
 
+## 7. Closing card
+
+Shorts viewers can't tap links in the description, so a site has to be shown and said in the video. Ask once:
+**"Do you have a website or channel link to show at the end of each short?"** and, if they do, **"Do you have your
+own end image (1080x1920), or should I make a simple one?"**
+
+- Their site: `CLI settings set website example.com`.
+- Their own image: `CLI settings set closing.image "C:/path/card.png"` (PNG or JPG, best 1080x1920; another size is
+  scaled to fill and warned). No image: leave it unset and the plugin makes a card from their brand (background, font,
+  accent): "More at", the website in a pill, and the @handle.
+- Offer a line said over the card in the narrator's voice, in their words, e.g. `CLI settings set closing.voice_line
+  "Play with it yourself at example dot com."` (spell the site the way it should be spoken).
+- How long it holds: `CLI settings set closing.seconds 2.5` (1.5 to 5; it holds longer if the line needs it).
+- Then `CLI settings set closing_asked true`. No site and no image: just `closing_asked true` (no closing card; a
+  handle alone keeps the overlay end card above).
+
+With a closing card the overlay end card is not shown (the card says it once). The card comes after the story's last
+line, adds no music or sound effects, and has no caption over it. One short can switch it off (`"closing": false` in
+its short.json) or change it (`"closing": {"image": null, "voice_line": "...", "seconds": 3, "website": "..."}`). The
+settings, image and site stay in the user's own settings folder, never in a short's repo or the plugin.
+
 ## Changing a setting later
 
 The user changes any setting by saying so ("use Cycles from now on", "switch to Kokoro"). Save it with `settings

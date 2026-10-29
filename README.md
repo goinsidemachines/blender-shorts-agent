@@ -141,6 +141,9 @@ Add a hard rule: no humans, no people, body parts, faces, silhouettes or stick f
 - **Captions** timed to the narration, kept clear of the platform's buttons, and checked for missing glyphs.
 - **Your brand or a fresh look per short**: your colours, fonts, handle and end card, or a new style chosen on the
   story page.
+- **A closing card**: set your website (and, if you like, your own 1080x1920 image and a line for the narrator) and
+  every short ends on it for a few seconds, the line read over it, so viewers who can't tap a link still see and hear
+  where to go. Without an image the plugin makes one from your brand. No music or sound is added.
 - **Honesty**: every number on screen or in the narration has a source; exaggerated or slowed motion carries a badge;
   myths are cut.
 

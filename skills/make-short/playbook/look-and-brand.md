@@ -32,6 +32,20 @@ The look never includes plugin-author (goinsidemachines) branding, unless the us
 By default the only text identity in a video is the user's own, on the end card: their handle, if they gave one,
 with their end-card line above it (the `end_card` setting, e.g. "Follow for more").
 
+### The closing card
+
+- With a `website` or a `closing.image` set (`00-first-run.md` section 7), every final short ends on the closing card:
+  the user's image, or one made from the brand, held `closing.seconds` after the story, with `closing.voice_line`
+  narrated over it (it is narrated with the story's lines, as take `closing`; no caption, no music, no sound effects).
+  It replaces the overlay end card. `BLENDER closing SHORT` makes it (`stills/closing.png`) and reports warnings;
+  `BLENDER stills` and the edit make it too, and the storyboard and final pages show it for approval.
+- Look at the card against the user's hard rules like any other picture (no humans, faces and so on). The rule word
+  checks in `CLI validate` read its voice line and website.
+- Warnings say when its text sits in the bottom 18% or right 12%, where YouTube's title and buttons cover it.
+- One short: `"closing": false` turns it off, `"closing": {...}` changes image, seconds, voice_line or website.
+- After turning it on or changing the voice line: `CLI narrate SHORT` (it makes only the missing take), then
+  `CLI mix SHORT`, then the edit (the edit refuses a mix made without the card). The rendered shots stay current.
+
 ### The end card
 
 - The `end_card` setting is the line above the @handle for every short; with no handle there is no end card.

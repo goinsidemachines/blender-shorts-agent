@@ -1044,7 +1044,7 @@ def _fake_edit(monkeypatch, seen, probe=None, fail_encode=False):
     import types
 
     def build_edit(short, tl, frames_root, mix_wav, out_mp4, settings, preset="final", anchors=None, hero_boxes=None,
-                   label_heroes=None):  # fmt: skip
+                   label_heroes=None, closing=None):  # fmt: skip
         seen["anchors"], seen["hero_boxes"], seen["label_heroes"] = anchors, hero_boxes, label_heroes
         seen["existed_at_build"] = Path(out_mp4).exists()
         seen["built"] = True

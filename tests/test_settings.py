@@ -48,13 +48,15 @@ def test_non_object_file_is_corrupt(bsa_home):
 
 def test_missing_lists_unanswered(bsa_home):
     s = settings.load_settings()
-    assert settings.missing(s) == ["workspace", "narrator.provider", "render.engine", "brand.mode", "rules", "handle"]
+    assert settings.missing(s) == ["workspace", "narrator.provider", "render.engine", "brand.mode", "rules", "handle",
+                                    "closing"]
     settings.set_value("rules_asked", True)  # asked: no hard rules
     settings.set_value("workspace", "C:/Videos/Shorts")
     settings.set_value("narrator.provider", "none")
     settings.set_value("render.engine", "ask-always")
     settings.set_value("brand.mode", "fresh")
     settings.set_value("handle", "")  # asked, and the user wants no handle
+    settings.set_value("closing_asked", True)  # asked: no closing card
     assert settings.missing(settings.load_settings()) == []
     s = settings.set_value("render.engine", "eevee")
     assert settings.missing(s) == []

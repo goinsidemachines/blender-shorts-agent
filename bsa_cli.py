@@ -394,9 +394,23 @@ def cmd_narrate(args) -> dict:
     from bsa import closing
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
-    clear_stale_takes(sdir / "audio" / "vo", voiced, s.get("narrator") or {})
-    result = narrate(sdir, voiced, s)
+    narrator = s.get("narrator") or {}
+    clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
+    closing_note = None
+    if narrator.get("provider") == "elevenlabs":  # one request for every line: never pay for the story twice
+        result = narrate(sdir, voiced, s)
+    else:  # the story first, so a closing line the voice can't say never costs the short its voice
+        result = narrate(sdir, short, s)
+        if result.status == "ok" and voiced is not short:
+            extra = narrate(sdir, voiced, s)  # only the missing take is spoken
+            if extra.status != "ok":
+                jobstate.mark_done(sdir, "narration", status="ok", provider=narrator.get("provider"),
+                                   **({"message": result.message} if result.message else {}))  # fmt: skip
+                closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
+                                "closing card is silent")  # fmt: skip
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    if closing_note:
+        out["warnings"] = [closing_note]
     try:
         out["timeline"] = cmd_timeline(args)
     except Exception as exc:  # noqa: BLE001 - narration never blocks: fall back to captions-only timing
@@ -492,16 +506,27 @@ def cmd_review(args) -> dict:
                                   look=look)
     elif args.page == "storyboard":
         tl, _ = current_timeline(sdir, short)
-        page = pages.render_storyboard(short, tl, sdir / "stills", out, rules=_rule_rows(short))
+        page = pages.render_storyboard(short, tl, sdir / "stills", out, rules=_rule_rows(short),
+                                       closing=_closing_info(sdir, short))
     else:
         final = sdir / "out" / f"{short.slug}.mp4"
         mp4 = final if final.exists() else sdir / "out" / f"{short.slug}-preview.mp4"
         findings, redo_all = pages.load_findings(sdir)  # rows as check and frame-check write them; unknown keys ignored
         page = pages.render_final(short, findings, mp4, out, (sdir / "review" / "checks.json").is_file(), redo_all,
-                                  rules=_rule_rows(short))  # fmt: skip
+                                  rules=_rule_rows(short), closing=_closing_info(sdir, short))  # fmt: skip
     if args.open:
         pages.open_page(page)
     return {"page": str(page)}
+
+
+def _closing_info(sdir: Path, short) -> dict | None:
+    """The closing card for the review pages while the short has one (BLENDER stills, closing or edit make it)."""
+    from bsa import closing
+    from bsa.review import pages
+
+    if not closing.active(settings.load_settings(), short):
+        return None
+    return pages.closing_info(sdir / "stills")
 
 
 def cmd_render_status(args) -> dict:

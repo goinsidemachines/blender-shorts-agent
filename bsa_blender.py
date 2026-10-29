@@ -196,8 +196,6 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
     the user's image scaled to fill 1080x1920, or the card made from the brand. (None, None, warnings) when the short
     has no closing card. The warnings (and what made the card) are kept in stills/closing.json for the review pages."""
     from bsa import closing
-    from bsa.blender import closing_card
-    from bsa.blender.pixels import read_png
 
     s = settings.load_settings()
     cfg = closing.resolve(s, short)
@@ -214,6 +212,9 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
         png.unlink(missing_ok=True)
         info.unlink(missing_ok=True)
         return None, None, warnings
+    from bsa.blender import closing_card
+    from bsa.blender.pixels import read_png
+
     if cfg["image"]:
         aspect = closing.aspect_warning(*closing_card.image_size(Path(cfg["image"])))
         if aspect:

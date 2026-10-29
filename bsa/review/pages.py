@@ -231,7 +231,46 @@ def _pct(v: float, whole: float) -> str:
     return f"{100 * v / whole:.3f}"
 
 
-def render_storyboard(short: Short, tl: Timeline, stills_dir: Path, out: Path, rules: list[dict] | None = None) -> Path:
+def closing_info(stills_dir: Path) -> dict | None:
+    """The closing card BLENDER stills, closing or edit last made (stills/closing.png and closing.json: what made it
+    and its warnings), or None when there is none."""
+    from bsa import closing
+
+    png, info = Path(stills_dir) / closing.CARD_FILE, Path(stills_dir) / closing.INFO_FILE
+    if not png.is_file() or not info.is_file():
+        return None
+    try:
+        data = json.loads(info.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    return {**data, "png": png} if isinstance(data, dict) else None
+
+
+def _closing_html(card: dict | None, out: Path, tag: str = "div") -> str:
+    """The closing card on a review page: its picture, how long it holds, the line said over it and its warnings."""
+    if not card:
+        return ""
+    src = _esc(_rel(Path(card["png"]), out))
+    if card.get("voice_line"):
+        said = f'<p class="line">Said over it: “{_esc(card["voice_line"])}”</p>'
+    else:
+        said = '<p class="line">Nothing is said over it.</p>'
+    made = "your own image" if card.get("image") else "made from your brand and website"
+    warns = "".join(f'<li class="finding warning"><span class="sev">Warning</span> <div>{_esc(w)}</div></li>'
+                    for w in card.get("warnings") or [])  # fmt: skip
+    secs = float(card.get("seconds") or 0)
+    return (f'<{tag} class="shot panel closing" id="closing" data-title="Closing card" data-time="the end" '
+            f"data-cards='[]'>"
+            f'<button class="thumb" type="button" data-src="{src}" aria-label="Enlarge the closing card">'
+            f'<img class="still" src="{src}" alt="Closing card" loading="lazy"></button>'
+            f'<div class="meta"><h3>Closing card</h3><span class="time">at least {secs:.1f} s</span></div>'
+            f'<p class="line">The video ends on this ({made}) after the story\'s last line. It adds no music or '
+            f"sound.</p>{said}" + (f'<ul class="findings">{warns}</ul>' if warns else "") + f"</{tag}>")  # fmt: skip
+
+
+def render_storyboard(short: Short, tl: Timeline, stills_dir: Path, out: Path, rules: list[dict] | None = None,
+                      closing: dict | None = None) -> Path:  # fmt: skip
+    """The storyboard page; `closing` (closing_info) adds the closing card after the shots."""
     out = Path(out)
     spans = {s.id: s for s in tl.shots}
     total_frames = max(tl.n_frames, 1)
@@ -285,8 +324,8 @@ def render_storyboard(short: Short, tl: Timeline, stills_dir: Path, out: Path, r
         lead=_esc(f"{len(shots)} shots, {_secs(total_frames / tl.fps)} in total. Check the pictures and the captions."),
         segments="\n".join(segments),
         total_s=f"{total_frames / tl.fps:.1f}",
-        shots="\n".join(shots),
-        rules=rules_panel(rules, "Check every picture against these too."),
+        shots="\n".join(shots) + _closing_html(closing, out, "li"),
+        rules=rules_panel(rules, "Check every picture against these too, the closing card included."),
         cap_px=size,
         safe_l=_pct(safe.x, W),
         safe_t=_pct(safe.y, H),
@@ -407,7 +446,7 @@ def _findings_html(findings: list, checks_run: bool = True, redo_all=()) -> str:
 
 
 def render_final(short: Short, findings: list, mp4: Path, out: Path, checks_run: bool = True, redo_all=(),
-                 rules: list[dict] | None = None) -> Path:  # fmt: skip
+                 rules: list[dict] | None = None, closing: dict | None = None) -> Path:  # fmt: skip
     """The final page. `findings` are ReviewFinding (load_findings) or Finding objects. `checks_run` False (no
     review/checks.json) says so instead of "All checks passed". `redo_all`: the frame checks' commands that render
     every flagged frame again."""
@@ -435,6 +474,7 @@ def render_final(short: Short, findings: list, mp4: Path, out: Path, checks_run:
         fileinfo=info,
         post=post_html,
         checks=_findings_html(findings, checks_run, redo_all),
+        closing=f'<h2>Closing card</h2><div class="strip">{_closing_html(closing, out)}</div>' if closing else "",
         rules=rules_panel(rules, "How this short keeps each of your rules."),
         credits=credits,
     )
