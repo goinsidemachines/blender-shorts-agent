@@ -57,10 +57,17 @@ def uv_path() -> Path | None:
     return None
 
 
+UV_INSTALL_PAGE = "https://docs.astral.sh/uv/getting-started/installation/"
+
+
 def uv_install_hint() -> str:
-    if platform.system() == "Windows":
-        return 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"'
-    return "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    """How to install uv with the system's own package manager, never a downloaded script piped into a shell."""
+    system = platform.system()
+    if system == "Windows":
+        return f"winget install --id=astral-sh.uv -e (or see {UV_INSTALL_PAGE})"
+    if system == "Darwin":
+        return f"brew install uv (or see {UV_INSTALL_PAGE})"
+    return f"your package manager, or the steps at {UV_INSTALL_PAGE}"
 
 
 def installed() -> dict[str, bool]:
