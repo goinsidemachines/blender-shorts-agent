@@ -161,6 +161,87 @@ def test_frame_objects_warns_when_the_answer_is_absurd():
     assert caught and issubclass(caught[0].category, camera.FramingWarning), caught
 
 
+def _second_scene():
+    """Scene "Tank" (the window's) and scene "Wheel", built after it as script mode does: a cube parented to an empty
+    at z=12 with a driven gondola beside it, and a camera linked to both scenes (Tank first)."""
+    import bmesh
+
+    sc, cam = _scene()
+    sc.name = "Tank"
+    wheel = bpy.data.scenes.new("Wheel")
+    wheel.render.resolution_x, wheel.render.resolution_y = W, H
+    rig = bpy.data.objects.new("Rig", None)
+    wheel.collection.objects.link(rig)
+    rig.location = (0, 0, 12)
+    me = bpy.data.meshes.new("Arm")
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=2.0)
+    bm.to_mesh(me)
+    bm.free()
+    arm = bpy.data.objects.new("Arm", me)
+    wheel.collection.objects.link(arm)
+    arm.parent = rig
+    gondola = bpy.data.objects.new("Gondola", me)
+    wheel.collection.objects.link(gondola)
+    gondola.parent, gondola.location = rig, (4, 0, 0)
+    drv = gondola.driver_add("rotation_euler", 1).driver
+    var = drv.variables.new()
+    var.targets[0].id, var.targets[0].data_path = rig, "rotation_euler[1]"
+    drv.expression = "-var"
+    wheel.collection.objects.link(cam)
+    cam.location, cam.rotation_euler = (2, -30, 12), (math.radians(90), 0, 0)
+    return sc, wheel, cam, [arm, gondola]
+
+
+def test_frame_objects_measures_parented_objects_in_a_scene_that_is_not_the_windows():
+    """Script mode builds each scene in turn: the objects are measured where the scene they are in places them (the
+    parent lifts them to z=12), never at their own unevaluated place, whatever scene the window shows."""
+    tank, wheel, cam, objs = _second_scene()
+    for frames in (None, [1, 10]):
+        pts = camera._corners(objs, wheel, frames or [None])
+        assert abs(pts[:, 2].min() - 11) < 1e-3 and abs(pts[:, 2].max() - 13) < 1e-3, (frames, pts[:, 2])
+    camera.frame_objects(cam, objs)  # the camera is in both scenes: the one holding the objects is used
+    got = np.array(cam.location)
+    cam.location, cam.rotation_euler = (2, -30, 12), (math.radians(90), 0, 0)
+    camera.frame_box(cam, (-1, -1, 11), (5, 1, 13), scene=wheel)  # the same box, given in the world
+    assert np.allclose(got, cam.location, atol=1e-3), (got, tuple(cam.location))
+    try:
+        camera.frame_objects(cam, objs, scene=tank)
+    except ValueError as e:
+        assert "'Arm'" in str(e) and "'Tank'" in str(e), e
+    else:
+        raise AssertionError("objects that scene 'Tank' does not have were measured anyway")
+
+
+def test_framing_warns_when_the_camera_ends_up_under_the_ground():
+    """Aimed up at a tall wheel from low down, centring the wheel above the caption band slides the camera down along
+    its own up axis, under the ground: the box is in view, seen from under the terrain. The result says so."""
+    import warnings
+
+    from mathutils import Vector
+
+    _sc, cam = _scene()
+    _box("Ground", (400.0, 400.0, 6.9), (0, 0, -2.65))  # a closed bank, its top at z=0.8
+    wheel = _box("Wheel", (35.0, 12.0, 35.0), (0, 0, 12))
+
+    def aim(pos, target):
+        cam.location = Vector(pos)
+        cam.rotation_euler = (Vector(target) - Vector(pos)).to_track_quat("-Z", "Y").to_euler()
+
+    aim((16, 58, 4), (0, 0, 8))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = camera.frame_objects(cam, [wheel])
+    assert cam.location.z < 0.8, tuple(cam.location)
+    under = [w for w in out["warnings"] if "under" in w and "'Ground'" in w]
+    assert under and caught, out["warnings"]
+    aim((16, 58, 30), (0, 0, 12))  # from above the wheel's centre: centring keeps it above the bank
+    out = camera.frame_objects(cam, [wheel])
+    assert cam.location.z > 0.8 and not [w for w in out["warnings"] if "under" in w], (tuple(cam.location), out)
+    out = camera.frame_box(cam, (-17.5, -6, -5.5), (17.5, 6, 29.5))
+    assert not [w for w in out["warnings"] if "under" in w], out
+
+
 def test_frame_box_frames_a_region_of_one_long_mesh():
     """frame_box: a part of one long mesh (in its own coordinates, following it) without a helper object."""
     sc, cam = _scene()

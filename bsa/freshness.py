@@ -154,7 +154,7 @@ _PART_WORDS = {"Object": "objects", "Camera": "camera", "Material": "materials",
                "World": "world", "Scene": "scene settings", "Image": "images", "VectorFont": "fonts",
                "TextCurve": "text", "Curve": "curves", "Collection": "collections", "Texture": "textures",
                "ParticleSettings": "particles", "Armature": "armatures", "Key": "shape keys",
-               "animation": "animation", "drivers": "drivers"}  # fmt: skip
+               "animation": "animation", "drivers": "drivers", "tags": "tags"}  # fmt: skip
 RENDER_CODE_CHANGED = "the plugin's render code or Blender version changed"
 
 
@@ -455,12 +455,15 @@ def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=
     of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture, still_at or badge), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
     text, sound levels and other settings are not in it. `parts` is information (which part of the fingerprint
-    changed), not part of the key."""
+    changed), not part of the key, except its "tags" part: the objects' tags (contact, hero...) change what the checks
+    find but are not in the fingerprint, since they change no pixel."""
     out = {"fingerprint": fingerprint, "frames": [span.f0, span.f1],
            "entry": {k: shot.get(k) for k in CHECKED_FIELDS}, "shot_ids": sorted(shot_ids),
            "parts": dict(parts or {}), "legacy": shot_check_key(fingerprint, span, shot)}  # fmt: skip
     if rules:
         out["rules"] = rules
+    if parts and parts.get("tags") is not None:
+        out["tags"] = parts["tags"]
     return out
 
 
@@ -511,6 +514,8 @@ def _changes(old: dict, sid: str, now) -> list[str]:
     out = []
     if had.get("fingerprint") != now.get("fingerprint"):
         out.append(describe_change(sid, changed_parts(had.get("parts"), now.get("parts"))))
+    if had.get("tags") != now.get("tags"):
+        out.append(f"shot {sid}'s tags changed (contact, hero, grounded, overlay or surface)")
     if had.get("frames") != now.get("frames"):
         a, b = had.get("frames") or ["?", "?"], now["frames"]
         out.append(f"shot {sid}'s frames changed ({a[0]}-{a[1]}, now {b[0]}-{b[1]})")
@@ -554,7 +559,9 @@ def read_checks(short_dir: Path) -> dict | None:
 
 def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     """{shot id: its findings} from review/checks.json for every shot whose checks still hold for `stamp` (same
-    checks code, timing, --every and shot key): `BLENDER check` re-checks only the others."""
+    checks code, timing, --every and shot key): `BLENDER check` re-checks only the others. A finding listed once
+    for several shots ("shots") goes to each of them; findings the overlap cap held back ("held_back") count too,
+    and the row that says how many it held back does not (the cap runs again)."""
     data = read_checks(short_dir) or {}
     old = data.get("stamp")
     if not isinstance(old, dict) or not _code_current(old.get("code")) or stamp.get("code") != checks_code():
@@ -564,9 +571,13 @@ def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     inputs = stamp.get("inputs") if isinstance(stamp.get("inputs"), dict) else {}
     out: dict[str, list] = {sid: [] for sid, key in (stamp.get("shots") or {}).items()
                             if _shot_current(old, sid, inputs.get(sid, key))}  # fmt: skip
-    for f in data.get("findings") or []:
-        if isinstance(f, dict) and f.get("shot") in out:
-            out[f["shot"]].append(f)
+    for f in [*(data.get("findings") or []), *(data.get("held_back") or [])]:
+        if not isinstance(f, dict) or "capped" in f:
+            continue
+        shots = f.get("shots") if isinstance(f.get("shots"), list) else [f.get("shot")]
+        for sid in shots:
+            if sid in out:
+                out[sid].append(f if f.get("shot") == sid else {**f, "shot": sid})
     return out
 
 

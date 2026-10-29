@@ -88,3 +88,13 @@ def test_brand_mode_fresh_turns_the_brand_off_too():
     assert brand_for(s, _short()) == {}
     assert brand_for(s, _short(look="brand")) == s["brand"]
     assert colour.background_source(_short(), s) is None  # never "the brand background" in a fresh short
+
+
+def test_stills_skip_the_background_check_on_a_sky_or_landscape(tmp_path, monkeypatch):
+    """The paper_world advice is for a flat backdrop: a still whose scene has a sky or an HDRI is not checked."""
+    import bsa_blender
+
+    monkeypatch.setenv("BSA_HOME", str(tmp_path))
+    s = _short(look="fresh", style={"palette": {"background": "#AFC6D3"}})
+    missing = tmp_path / "never-read.png"  # reading it would fail: it is skipped before that
+    assert bsa_blender._background_warnings(s, [("s01", missing, False)]) == []

@@ -89,7 +89,8 @@ renders again that did not need to. The fingerprints of a saved .blend are cache
 `blend/short.fingerprints.json`; it is kept current by itself (never edit or copy it).
 
 `BLENDER check SHORT` works the same way: it re-checks only shots whose fingerprint, frames, short.json `scene` or
-`labels`, or list of shots changed, or (when a hard rule scans scene names) whose rules changed, and keeps the
+`labels`, list of shots or objects' tags (`contact:`, `hero`, `grounded`, `overlay`, `surface`: a tag changes no
+pixel, so it re-checks without rendering again) changed, or (when a hard rule scans scene names) whose rules changed, and keeps the
 other shots' findings (its result's `checked` and `kept`); a change
 to the checks' own code (a plugin update) re-checks everything, and `--full` does so on demand. Nothing else counts:
 the post text, sound levels (`sfx`, `source/sound.py`, `CLI mix`), the end-card text and a shot's `title`,
@@ -148,7 +149,8 @@ The single steps, when you need one on its own:
    screen). Thin lines (a string, a turning spoke) do not count: they alias as they move. More than three small
    spots (each under 0.5% of the frame) at frames where something moves are one finding for the shot, with their
    count and frames and the largest one's place: usually thin or fast parts aliasing. Look at that frame; a still
-   surface flickering there is z-fighting. Fix any error (`07-checks.md`); redo flagged frames as above.
+   surface flickering there is z-fighting. A lone spot under 0.2% of the frame at a frame where something moves is
+   not reported: it shows for one frame, too small to see. One that comes back at the same place still is. Fix any error (`07-checks.md`); redo flagged frames as above.
 3. **Look at the frames yourself** (`07-checks.md`, "Look at the images yourself"): first, middle and last frame of
    every shot plus the key moments.
 4. `BLENDER edit SHORT --preset preview` (no .blend needed): captions, badges, labels (near labels just above their object, inside the safe

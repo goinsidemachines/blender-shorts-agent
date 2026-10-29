@@ -241,12 +241,14 @@ def cmd_stills(args) -> dict:
     data = _open_blend(sdir)
     engine = _engine(sdir)
     written = []
+    from bsa.colour import flat_backdrop
+
     for shot in _shots(short, args.shot):
         shot, scene = _scene(data, short, shot.id, tl_hash)
         out = Path(args.out) if args.out else sdir / "stills" / f"{shot.id}.jpg"
         render_still(scene, _still_frame(shot, spans[shot.id]), out, engine=engine)
-        written.append((shot.id, out))
-    result = {"stills": [str(p) for _, p in written]}
+        written.append((shot.id, out, flat_backdrop(scene.world, scene.render.film_transparent)))
+    result = {"stills": [str(p) for _, p, _ in written]}
     warnings = _background_warnings(short, written)
     if not args.shot:  # the storyboard shows the closing card too
         _, card, card_warnings = _closing_card(sdir, short)
@@ -258,17 +260,20 @@ def cmd_stills(args) -> dict:
 
 def _background_warnings(short, stills) -> list[str]:
     """Each still whose background (its most common colour) is far from the intended one, when one is set: the
-    short's style.palette.background, else the brand's (unless the short has its own look, "look": "fresh")."""
+    short's style.palette.background, else the brand's (unless the short has its own look, "look": "fresh").
+    `stills` are (shot id, path, flat): only a still whose scene has a flat backdrop (paper_world or a plain colour,
+    bsa.colour.flat_backdrop) is checked. A sky, an HDRI or a landscape is not a paper backdrop."""
     from bsa.colour import background_source, background_warning
 
     found = background_source(short, settings.load_settings())
-    if not found:
+    flat = [(shot_id, path) for shot_id, path, is_flat in stills if is_flat]
+    if not found or not flat:
         return []
     want, whose = found
     from bsa.blender.pixels import read_png
 
     out = []
-    for shot_id, path in stills:
+    for shot_id, path in flat:
         msg = background_warning(read_png(path), want, f"shot {shot_id}", whose=whose)
         if msg:
             out.append(msg)
@@ -572,8 +577,23 @@ def cmd_check(args) -> dict:
     return out
 
 
+def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dict]]:
+    """(the rows with every finding of the first `most` overlapping pairs over every shot, and one more row saying
+    how many pairs were not listed and in which shots; the rows of those pairs, kept apart so a later check that
+    keeps their shots still has them)."""
+    from bsa import findings
+
+    listed, held, more = findings.cap_pairs(rows, most)
+    if not more:
+        return rows, []
+    shots = sorted({s for r in held for s in r.get("shots") or [r.get("shot")] if s})
+    summary = {**asdict(findings.not_listed(more)), findings.CAPPED: more, "shots": shots,
+               "shot": shots[0] if shots else None, "scene": held[0].get("scene")}  # fmt: skip
+    return [*listed, summary], held
+
+
 def _cmd_check(args, sdir: Path, short, run) -> dict:
-    from bsa.blender.checks import run_checks
+    from bsa.blender.checks import OVERLAP_MAX_FINDINGS, run_checks
 
     tl, tl_hash = _timeline(sdir, short)
     data = _open_blend(sdir)
@@ -604,13 +624,14 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
             run.progress(counted[0] + done, total, current=where)
 
         found = run_checks(scene, replace(tl, shots=[span]), sample_every=args.every, short=short,
-                           progress=_progress_cb(on_frame), rules=hard_rules)  # fmt: skip
+                           progress=_progress_cb(on_frame), rules=hard_rules, cap=False)  # fmt: skip
         item["state"], item["done"] = "done", item["total"]
         counted[0] += item["total"]
         rows += [_check_row(f, shot.id, scene.name) for f in found]
         checked.append(shot.id)
     run.progress(counted[0], total, current=None, force=True)
-    out = _write_findings(sdir / "review" / "checks.json", _merge_findings(rows), stamp, checked=checked, kept=kept)
+    listed, held = _cap_overlap_rows(_merge_findings(rows), OVERLAP_MAX_FINDINGS)
+    out = _write_findings(sdir / "review" / "checks.json", listed, stamp, checked=checked, kept=kept, held_back=held)
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
     jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
@@ -852,6 +873,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
     out = {"mp4": str(path), **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    if end:
+        out["closing"] = end["hold"]  # its "note" says when the voice line held the card past closing.seconds
     return {**out, "warnings": warnings} if warnings else out
 
 
@@ -877,7 +900,12 @@ def _closing_plan(sdir: Path, short, tl, mix: Path) -> tuple[dict | None, list[s
     if cfg["voice_line"] and takes is not None and end["line_f0"] is None:
         warnings.append("the closing line has no take yet, so the closing card is silent: run CLI narrate SHORT "
                         "again (it makes only the missing take), then CLI mix SHORT and the edit")  # fmt: skip
-    return {**end, "png": str(png)}, warnings
+    held = closing.hold(cfg, end, tl.fps)
+    info = png.with_name(closing.INFO_FILE)  # the final page shows how long the card holds, and why
+    data = json.loads(info.read_text(encoding="utf-8"))
+    data.update(held_s=held["seconds"], hold_note=held.get("note"))
+    info.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {**end, "png": str(png), "hold": held}, warnings
 
 
 def cmd_closing(args) -> dict:

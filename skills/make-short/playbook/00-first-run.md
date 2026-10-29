@@ -162,6 +162,12 @@ line, adds no music or sound effects, and has no caption over it. One short can 
 its short.json) or change it (`"closing": {"image": null, "voice_line": "...", "seconds": 3, "website": "..."}`). The
 settings, image and site stay in the user's own settings folder, never in a short's repo or the plugin.
 
+## Plugin feedback (no question)
+
+Don't ask about this. Add one line to the summary at the end of the first run: "If I hit a problem in the plugin
+itself I'll note it and, at the end, ask whether you want to send it to its authors. Change with settings set
+feedback never|off" (`never`: still note, never ask; `off`: don't note). Nothing is sent unless they choose to.
+
 ## Changing a setting later
 
 The user changes any setting by saying so ("use Cycles from now on", "switch to Kokoro"). Save it with `settings

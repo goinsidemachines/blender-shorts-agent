@@ -20,6 +20,7 @@ def test_scene_render_in_blender(blender_run):
         "test_render_range_raises_on_failed_render",
         "test_explicit_engine_overrides_scene",
         "test_estimate_positive",
+        "test_eevee_presets_turn_ray_tracing_on",
         "test_presets_and_look_helpers",
         "test_eevee_estimate_times_a_warm_frame",
         "test_cycles_estimate_times_one_frame",

@@ -82,6 +82,17 @@ def background_hex(short, settings: dict) -> str | None:
     return found[0] if found else None
 
 
+def flat_backdrop(world, transparent: bool = False) -> bool:
+    """True when a scene's world shows as one flat colour: a paper_world backdrop (stamped "bsa_backdrop": "paper"),
+    a plain colour, or no world at all. A world fed by a texture (a sky, an HDRI, a gradient) is an environment, and a
+    transparent film shows none: the background check and its paper_world advice do not apply to those."""
+    if transparent:
+        return False
+    if world is None or world.get("bsa_backdrop") == "paper" or not world.use_nodes or world.node_tree is None:
+        return True
+    return not any(str(n.bl_idname).startswith("ShaderNodeTex") for n in world.node_tree.nodes)
+
+
 def background_warning(pixels: np.ndarray, want_hex: str, where: str, limit: float = DELTA_E_LIMIT,
                        whose: str = "the brand background") -> str | None:  # fmt: skip
     """A warning when a frame's background (its dominant colour) is more than `limit` ΔE from `want_hex` (`whose`

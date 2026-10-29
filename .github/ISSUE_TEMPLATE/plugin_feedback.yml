@@ -1,0 +1,31 @@
+name: Plugin feedback from a short
+description: Problems Claude noted in the plugin itself while making a short (CLI feedback report).
+labels: [plugin-feedback]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is usually filled in for you by `CLI feedback report SHORT --open`. Paths, keys and your settings
+        are already left out. Read it, change anything you like, then click Submit.
+  - type: textarea
+    id: entries
+    attributes:
+      label: Problems
+      description: |
+        One block per problem: summary, severity (blocking, wrong-output or rough-edge), What happened, Expected,
+        Command, Error line, Workaround and Stage. Remove anything you'd rather not share.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Plugin version, Blender version, operating system, script or MCP mode.
+      placeholder: plugin 0.2.0 · Blender 4.5.1 · Windows 11 · script mode
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything to add
+      description: Optional. More detail, or how you'd like it to work.

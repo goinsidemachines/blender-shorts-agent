@@ -7,7 +7,11 @@ node instances) gets the materials and images checks too, plus one "instances" w
 overlaps, normals, grounding and pops are not checked on instances: append the objects instead. An object tagged
 "overlay" (a glow halo, a distance line, an arrow: not physical geometry) is left out of the overlap and z-fighting
 checks (as either object of a pair), self_zfight, self_overlap, floating (neither checked nor counted as a support)
-and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero.
+and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero. An open mesh
+tagged "surface" (water moved by waves, a liquid level: things float in it and dip into it) is left out of the
+overlap and z-fighting checks (as either object of a pair) and gets every other check; it still holds up a grounded
+object. A closed mesh is a solid: it is checked as usual whatever its tags, and a "surface" tag on it is a names
+warning.
 
 Frames: materials, framing, grounding and every pair of objects are checked every `sample_every` frames plus each
 shot's last frame. On every other frame, each object that moved or deformed since the frame before is checked
@@ -29,8 +33,10 @@ Tolerances (scene units are metres):
   and the same gap 10 m away is z-fighting. Faces that share a plane exactly are always caught. The finding names
   both objects and their sizes, one place where the faces overlap and how far apart they are. Coplanar faces facing opposite ways are contact faces (a box's bottom on
   the floor's top) and are hidden, so they are not z-fighting; no extra allowance for "grounded" objects is needed.
-  Each offending pair is one finding per shot naming the frames it overlaps in and how deep it goes; after
-  OVERLAP_MAX_FINDINGS pairs, one more finding says how many were not listed.
+  Each offending pair is one finding per shot naming the frames it overlaps in and how deep it goes. A pair that
+  overlaps the same way in every frame of a shot (scenery that never moves) says "in every frame" and names no shot
+  or frame, so the CLI lists it once with every shot it is in. Every finding of the first OVERLAP_MAX_FINDINGS pairs
+  is listed (a pair counts once, however many findings it has); one more finding says how many pairs were not.
 - contact: a pair tagged "contact:<other>" on either object, or a direct parent and child (not grandparents, not
   siblings under one parent or assembly), may overlap only up to a depth: by default the smaller of CONTACT_DEPTH
   (5 cm) and CONTACT_FRACTION (10%) of the thinner part's smallest dimension (its local bounding box times its
@@ -44,9 +50,10 @@ Tolerances (scene units are metres):
   the other object and the deepest distance to its surface is kept, both ways round. Inside a closed mesh (every
   edge between two faces) a point is one that lies straight behind the nearest face, or, near edges and corners,
   one that an odd number of surface crossings separates from the outside (ray parity, majority of three rays; two
-  crossings closer together than RAY_STEP times their distance from the world origin count as one hit). An
-  open mesh (a plane, a shell with holes) has no inside: a point counts only when it lies straight behind the
-  nearest face (one-sided, like a floor).
+  crossings closer together than RAY_STEP times their distance from the world origin count as one hit). A flat
+  open mesh (a floor plane) is one-sided: a point counts when it lies straight behind the nearest face. Any other
+  open mesh (a shell with holes, a Boolean applied to a mesh that also held other parts) has no inside, so a depth
+  into it can be any number: the finding says the mesh is not closed, with its count of open edges, instead.
 - self_overlap: a hero mesh whose loose parts (connected pieces of one mesh) pass into each other deeper than the
   contact allowance: they read as one solid. Parts that only touch are fine. Detail sunk into a big body is how
   things are modelled (ledges set into a building's wall, a pin seated in a block), so a pair where one part's
@@ -89,9 +96,9 @@ Tolerances (scene units are metres):
   dimension. A teleport, a keyed jump or a one-frame snap pops; a ball that falls fast and then hangs almost still,
   or a still ball struck into motion, does not (its speed changes once and stays changed). The frame before and
   after each shot are read as references for its first and last moves, not judged (a cut may move anything).
-- names: an object name ending in ".001" (Blender renamed a duplicate: object names are one namespace across
-  scenes) is a warning; a contact tag naming no object in the scene, a hero tag naming a shot short.json does not
-  have, or a near label naming an object its shot's scene does not have, is an error.
+- names: object names ending in ".001" (Blender renamed a duplicate: object names are one namespace across
+  scenes) are one warning naming them; a contact tag naming no object in the scene, a hero tag naming a shot
+  short.json does not have, or a near label naming an object its shot's scene does not have, is an error.
 """
 
 from __future__ import annotations
@@ -108,13 +115,14 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from bsa.blender.bake import is_hero, is_overlay, tags
+from bsa.blender.bake import is_hero, is_overlay, is_surface, tags
+from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
 from bsa.pops import find_pops
 from bsa.short import label_near, label_text, load_short
 from bsa.timeline import Timeline
 
-__all__ = ["Finding", "run_checks"]
+__all__ = ["Finding", "OverlapFinding", "run_checks"]
 
 FACETED_MIN_DEG = 1.0
 FACETED_MAX_DEG = 25.0
@@ -122,7 +130,7 @@ FACETED_MIN_EDGES = 8
 CREASE_DEG = 0.5
 CREASE_FRACTION = 0.5  # a flat-shaded edge jumps by its whole angle; a hardened bevel's edge by a sliver of it
 OVERLAP_TOL = 0.002
-OVERLAP_MAX_FINDINGS = 20  # overlap findings listed per scene; one more says how many were left out
+OVERLAP_MAX_FINDINGS = 20  # overlapping pairs listed; one more finding says how many were left out
 FRAME_SPANS_SHOWN = 4
 CONTACT_DEPTH = 0.05
 CONTACT_FRACTION = 0.10
@@ -149,6 +157,7 @@ POSE_KEPT = 8  # poses remembered per pair
 RAY_STEP = 5e-7  # a ray restarts this fraction of its distance from the origin past each hit (about 8 float32 steps)
 OTHER_GEOMETRY = ("CURVE", "FONT", "SURFACE", "META")  # rendered, checked for materials and images only
 RENAMED = re.compile(r"\.\d{3,}$")
+RENAMED_LISTED = 12  # renamed objects named in the one names warning
 # Modifiers that give the same mesh every frame unless their settings are animated (a changed mesh is still found at
 # the next sampled frame, and the object is evaluated every frame from then on). Any other modifier, shape keys or
 # an armature parent may deform the mesh, so such objects are evaluated on every frame of the sweep.
@@ -157,6 +166,13 @@ STATIC_MODIFIERS = {
     "REMESH", "SCREW", "SKIN", "WIREFRAME", "SMOOTH", "LAPLACIANSMOOTH", "MULTIRES", "NORMAL_EDIT",
 }  # fmt: skip
 _RAYS = [Vector(d).normalized() for d in ((0.5773, 0.5774, 0.5775), (-0.4472, 0.7746, 0.4472), (0.8165, -0.2, -0.54))]
+
+
+@dataclass
+class OverlapFinding(Finding):
+    """An overlap finding with the pair of objects it is about (the cap on listed pairs counts pairs)."""
+
+    pair: tuple[str, str] = ("", "")
 
 
 @dataclass
@@ -170,6 +186,8 @@ class _Local:
     mat: np.ndarray | None = None  # (n,) material slot index per triangle
     poly: np.ndarray | None = None  # (n,) the polygon each triangle comes from
     radius: float = 0.0  # the farthest vertex from the object's origin
+    open_edges: int = 0  # edges not shared by exactly two triangles
+    flat: bool = False  # every vertex within OVERLAP_TOL of one plane (a floor, a wall plane)
 
 
 @dataclass
@@ -186,6 +204,8 @@ class _Geo:
     local_key: int = 0
     m: np.ndarray | None = field(default=None, repr=False)
     radius: float = 0.0  # the farthest vertex from the object's origin, in its own coordinates
+    open_edges: int = 0
+    flat: bool = False
     _tree: BVHTree | None = field(default=None, repr=False)
     _bounds: tuple[np.ndarray, np.ndarray] | None = field(default=None, repr=False)
 
@@ -213,16 +233,18 @@ class _Contact:
     inner: str | None = None
     outer: str | None = None
     zfight_at: tuple | None = None  # (world point, gap in metres) of one pair of z-fighting faces
+    outer_open: int = 0  # the outer object is open and not flat (its open edges): the depth means nothing
 
 
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
-               rules: list[dict] | None = None) -> list[Finding]:  # fmt: skip
+               rules: list[dict] | None = None, cap: bool = True) -> list[Finding]:  # fmt: skip
     """Run every check over each shot (every `sample_every` frames plus the shot's first and last; overlaps of moving
     objects and pops use every frame). `short` (the Short, for its near labels and shot ids) defaults to the
     short.json next to the open .blend (<short>/blend/short.blend), when there is one. Errors come first.
     scene.frame_current is restored afterwards. `progress(shot id, frames done, frames in the shot)` is called after
     each frame when given (it never changes what is found). `rules`: the hard rules (bsa.rules.effective); object,
-    mesh, material, collection and library names with words a rule may forbid are "hard_rule" warnings."""
+    mesh, material, collection and library names with words a rule may forbid are "hard_rule" warnings. `cap`: list
+    the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead)."""
     original = scene.frame_current
     run = _Run(scene)
     short = _short_beside_blend() if short is None else short
@@ -238,7 +260,8 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
         run.finish_self()
     finally:
         scene.frame_set(original)
-    return sorted(_cap_overlaps(run.findings), key=lambda f: f.severity != "error")
+    found = _cap_overlaps(run.findings) if cap else run.findings
+    return sorted(found, key=lambda f: f.severity != "error")
 
 
 def _short_beside_blend():
@@ -253,14 +276,8 @@ def _short_beside_blend():
 
 
 def _cap_overlaps(findings: list[Finding]) -> list[Finding]:
-    overlaps = [f for f in findings if f.check == "overlap"]
-    if len(overlaps) <= OVERLAP_MAX_FINDINGS:
-        return findings
-    hidden = {id(f) for f in overlaps[OVERLAP_MAX_FINDINGS:]}
-    kept = [f for f in findings if id(f) not in hidden]
-    kept.append(Finding("overlap", "error", None, None, f"{len(hidden)} more overlapping pairs not listed: fix the "
-                        "ones above and check again"))  # fmt: skip
-    return kept
+    kept, _, more = cap_pairs(findings, OVERLAP_MAX_FINDINGS)
+    return [*kept, not_listed(more)] if more else kept
 
 
 class _Run:
@@ -284,12 +301,16 @@ class _Run:
         self.contact_pairs = _contact_pairs(scene)  # (a, b, what moves a, what moves b) that follow different parents
         self.drift: dict[tuple[str, str], dict] = {}  # per shot: where each such pair meets, and how far it drifts
         self.overlay = {o.name for o in scene.objects if is_overlay(o)}  # glows, guide lines: not physical
+        self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
 
-    def add(self, check, severity, obj, frame, message, key=None):
+    def add(self, check, severity, obj, frame, message, key=None, pair=None):
         key = (check, obj, message) if key is None else (check, *key)
         if key not in self.seen:
             self.seen.add(key)
-            self.findings.append(Finding(check, severity, obj, frame, message))
+            if pair is None:
+                self.findings.append(Finding(check, severity, obj, frame, message))
+            else:
+                self.findings.append(OverlapFinding(check, severity, obj, frame, message, pair))
 
     def shot(self, shot, every, progress=None):
         sampled = set(range(shot.f0, shot.f1 + 1, max(1, every))) | {shot.f1}
@@ -621,9 +642,15 @@ class _Run:
     def overlaps(self, frame, objs, geos, only=None):
         """Every pair of objects whose boxes touch (only pairs with an object in `only` when given)."""
         by_name = {o.name: o for o in objs}
-        names = sorted(n for n in geos if n not in self.overlay)  # overlays are not solid: no overlap, no z-fight
+        for n in sorted(self.surface & set(geos)):
+            if geos[n].closed:
+                self.add("names", "warning", n, None, "tag 'surface' on a closed mesh does nothing: a closed mesh is a "
+                         "solid and its overlaps are checked. Use it on an open surface (a grid moved by waves), or "
+                         "remove it", key=(n, "surface"))  # fmt: skip
+        open_surface = {n for n in self.surface & set(geos) if not geos[n].closed}
+        names = sorted(n for n in geos if n not in self.overlay and n not in open_surface)  # not solid: no overlap
         if only is not None:
-            only = {n for n in only if n not in self.overlay}
+            only = {n for n in only if n not in self.overlay and n not in open_surface}
         if only is None:
             pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
         else:
@@ -660,7 +687,8 @@ class _Run:
 
     def report_overlaps(self, shot, sampled):
         """One finding per offending pair in this shot. A pair seen at a frame still holds at the frames after it
-        that were not checked because neither object changed."""
+        that were not checked because neither object changed. A pair that overlaps the same way in every frame of
+        the shot is reported with no shot or frame (the same finding in every shot it is in)."""
         for (a, b, kind), rec in sorted(self.hits.items(), key=lambda kv: (min(kv[1]["frames"]), kv[0])):
             frames = dict(rec["frames"])
             for f in sorted(rec["frames"]):
@@ -668,35 +696,42 @@ class _Run:
                 while g <= shot.f1 and g not in sampled and g not in frames and not {a, b} & self.changed.get(g, set()):
                     frames[g] = frames[f]
                     g += 1
-            span = _spans(sorted(frames))
             first = min(frames)
+            depths = [frames[f].depth for f in frames]
+            static = len(frames) == shot.f1 - shot.f0 + 1 and max(depths) - min(depths) < 1e-6
+            key, pair = (None if static else shot.id, a, b, kind), (a, b)
             if kind == "zfight":
                 res = frames[first]
                 at = ""
                 if res.zfight_at is not None:
                     point, gap = res.zfight_at
                     apart = "flush" if gap < 1e-7 else f"{gap * 1000:.2g} mm apart"
-                    at = f", for one at {_point(point)} ({apart}, frame {first})"
-                self.add("overlap", "error", a, first, f"z-fighting: {a!r} ({self.size(a)}) and {b!r} "
-                         f"({self.size(b)}) have coplanar overlapping faces in shot {shot.id!r}, {span}{at}. Move "
-                         "one face 0.5 to 1 mm in (or out), or delete the duplicate face",
-                         key=(shot.id, a, b, kind))  # fmt: skip
+                    when = "" if static else f", frame {first}"
+                    at = f", for one at {_point(point)} ({apart}{when})"
+                where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}"
+                self.add("overlap", "error", a, None if static else first, f"z-fighting: {a!r} ({self.size(a)}) and "
+                         f"{b!r} ({self.size(b)}) have coplanar overlapping faces {where}{at}. Move one face 0.5 to "
+                         "1 mm in (or out), or delete the duplicate face", key=key, pair=pair)  # fmt: skip
                 continue
             deepest = max(frames, key=lambda f: (frames[f].depth, -f))
             res = frames[deepest]
             how = f"{res.inner!r} is {_metres(res.depth)} inside {res.outer!r}" if res.depth > 0 else ""
+            if res.depth > 0 and res.outer_open:
+                how = (f"{res.inner!r} reaches into {res.outer!r}, whose mesh is not closed ({res.outer_open} open "
+                       "edges), so how deep cannot be measured. Close it, or keep its open parts as their own object")
             at = f" (deepest at frame {deepest})" if res.depth > 0 and len(frames) > 1 else ""
-            where = f"in shot {shot.id!r}, {span}{at}"
+            where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}{at}"
             if kind == "penetrate":
                 message = (
                     f"{a!r} and {b!r} interpenetrate {where}{': ' + how if how else ''}. Fix the geometry or "
                     "the motion; tag contact:<other> only if they really touch at a surface, and write why"
                 )
-                self.add("overlap", "error", a, deepest if how else first, message, key=(shot.id, a, b, kind))
+                frame = None if static else deepest if how else first
+                self.add("overlap", "error", a, frame, message, key=key, pair=pair)
             else:
-                self.add("overlap", "error", res.inner, deepest, f"{how} {where}, deeper than {rec['note']}. End one "
-                         "at the other's surface; if it is deep by design, tag contact:<other>:<max depth in metres> "
-                         "and write why", key=(shot.id, a, b, kind))  # fmt: skip
+                self.add("overlap", "error", res.inner, None if static else deepest, f"{how} {where}, deeper than "
+                         f"{rec['note']}. End one at the other's surface; if it is deep by design, tag "
+                         "contact:<other>:<max depth in metres> and write why", key=key, pair=pair)  # fmt: skip
 
     def size(self, name: str) -> str:
         """The object's size (its local box times its scale), such as "6.4 x 6.4 x 1.2 mm"."""
@@ -737,13 +772,16 @@ class _Run:
         """Names that point at the wrong object: renamed duplicates, and tags or labels naming what is not there."""
         present = {o.name for o in self.scene.objects}
         shot_ids = {s.id for s in short.shots} if short is not None else None
+        renamed = sorted(o.name for o in self.scene.objects if RENAMED.search(o.name))
+        if renamed:
+            shown = ", ".join(repr(n) for n in renamed[:RENAMED_LISTED])
+            more = f" and {len(renamed) - RENAMED_LISTED} more" if len(renamed) > RENAMED_LISTED else ""
+            what = f"{renamed[0]!r} ends" if len(renamed) == 1 else f"{len(renamed)} object names end"
+            self.add("names", "warning", renamed[0], None, f"{what} in a number like '.001' ({shown}{more}): "
+                     "Blender renamed a duplicate (object names are shared by every scene in the .blend), so labels "
+                     "and tags using the plain name point at another object. Give each object a unique name",
+                     key=("renamed",))  # fmt: skip
         for obj in sorted(self.scene.objects, key=lambda o: o.name):
-            renamed = RENAMED.search(obj.name)
-            if renamed:
-                self.add("names", "warning", obj.name, None, f"name ends in {renamed.group()!r}: Blender renamed a "
-                         "duplicate (object names are shared by every scene in the .blend), so labels and tags using "
-                         "the plain name point at another object. Give each object a unique name",
-                         key=(obj.name, "renamed"))  # fmt: skip
             for t in tags(obj):
                 if t.startswith("contact:"):
                     target = _contact_target(t[len("contact:") :], present)
@@ -899,14 +937,33 @@ def _local_mesh(obj, depsgraph) -> _Local | None:
         ev.to_mesh_clear()
     co64, idx64 = co.reshape(nv, 3).astype(np.float64), idx.reshape(n, 3).astype(np.int64)
     radius = float(np.sqrt((co64**2).sum(1).max()))
-    return _Local(co64, idx64, hash((co.tobytes(), idx.tobytes())), _closed(idx64), mat, poly, radius)
+    gaps = _open_edges(idx64)
+    return _Local(co64, idx64, hash((co.tobytes(), idx.tobytes())), gaps == 0, mat, poly, radius, gaps,
+                  bool(gaps) and _flat(co64[np.unique(idx64)]))  # only an open mesh needs to know
+
+
+def _open_edges(idx: np.ndarray) -> int:
+    """How many edges of these triangles are not shared by exactly two of them (0: a closed, manifold surface; -1
+    for no triangles)."""
+    if not len(idx):
+        return -1
+    e = np.sort(np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]]), axis=1)
+    _, counts = np.unique(e[:, 0] * (int(idx.max()) + 1) + e[:, 1], return_counts=True)
+    return int(np.count_nonzero(counts != 2))
 
 
 def _closed(idx: np.ndarray) -> bool:
     """Is every edge of these triangles shared by exactly two of them (a closed, manifold surface)?"""
-    e = np.sort(np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]]), axis=1)
-    _, counts = np.unique(e[:, 0] * (int(idx.max()) + 1) + e[:, 1], return_counts=True)
-    return bool(len(counts)) and bool(np.all(counts == 2))
+    return _open_edges(idx) == 0
+
+
+def _flat(co: np.ndarray) -> bool:
+    """Do these points lie within OVERLAP_TOL of one plane?"""
+    if len(co) < 4:
+        return True
+    d = co - co.mean(0)
+    normal = np.linalg.eigh(d.T @ d)[1][:, 0]  # the direction they spread least along
+    return float(np.abs(d @ normal).max()) <= OVERLAP_TOL
 
 
 def _place(name: str, local: _Local, matrix) -> _Geo:
@@ -917,7 +974,8 @@ def _place(name: str, local: _Local, matrix) -> _Geo:
     flat = tris.reshape(-1, 3)
     dims = (local.co.max(0) - local.co.min(0)) * np.linalg.norm(m[:3, :3], axis=0)
     key = hash((local.key, (np.round(m, 9) + 0.0).tobytes()))
-    return _Geo(name, tris, flat.min(0), flat.max(0), key, float(dims.min()), local.closed, local.key, m, local.radius)
+    return _Geo(name, tris, flat.min(0), flat.max(0), key, float(dims.min()), local.closed, local.key, m, local.radius,
+                local.open_edges, local.flat)
 
 
 def _world_geo(obj, depsgraph) -> _Geo | None:
@@ -1224,7 +1282,10 @@ def _pair(ga: _Geo, gb: _Geo, limit: float | None = None, zfight_tol: float = CO
         return _Contact(kinds, zfight_at=at)
     if limit is not None:
         kinds = set()
-    return _Contact(kinds, *_depth(ga, gb), zfight_at=at)
+    depth, inner, outer = _depth(ga, gb)
+    og = ga if outer == ga.name else gb
+    unsure = 0 if og.closed or og.flat else max(og.open_edges, 1)
+    return _Contact(kinds, depth, inner, outer, zfight_at=at, outer_open=unsure)
 
 
 def _depth(ga: _Geo, gb: _Geo) -> tuple[float, str, str]:
@@ -1357,7 +1418,8 @@ def _parts(local: _Local, matrix) -> list[_Geo]:
         lo, hi = flat.min(0), flat.max(0)
         c = (lo + hi) / 2
         name = f"part around ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})"
-        parts.append(_Geo(name, tris, lo, hi, 0, float((hi - lo).min()), _closed(corners)))
+        gaps = _open_edges(corners)
+        parts.append(_Geo(name, tris, lo, hi, 0, float((hi - lo).min()), gaps == 0, open_edges=gaps, flat=_flat(flat)))
     return parts
 
 

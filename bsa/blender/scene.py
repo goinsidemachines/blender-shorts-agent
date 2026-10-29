@@ -86,6 +86,7 @@ def preserved_render_state(scene):
         "cy": (cy.device, cy.samples, cy.use_denoising, cy.use_adaptive_sampling, cy.adaptive_threshold),
         "ev_samples": ev.taa_render_samples,
         "ev_blur": getattr(ev, "use_motion_blur", None),
+        "ev_rays": getattr(ev, "use_raytracing", None),
     }
     try:
         yield
@@ -97,6 +98,8 @@ def preserved_render_state(scene):
         ev.taa_render_samples = snap["ev_samples"]
         if snap["ev_blur"] is not None:
             ev.use_motion_blur = snap["ev_blur"]
+        if snap["ev_rays"] is not None:
+            ev.use_raytracing = snap["ev_rays"]
 
 
 def _motion_blur(scene, on: bool) -> None:
@@ -106,7 +109,9 @@ def _motion_blur(scene, on: bool) -> None:
 
 
 def apply_preset(scene, engine: str, preset: str, percent: int | None = None) -> None:
-    """Apply a named preset for the given engine. `percent` overrides the resolution percentage."""
+    """Apply a named preset for the given engine. `percent` overrides the resolution percentage. Every EEVEE preset
+    turns ray tracing on (Blender 4.2 and later): without it glossy water, glass and metal reflect nothing and
+    render flat."""
     if preset not in PRESETS:
         raise ValueError(f"unknown preset {preset!r}; choose from {sorted(PRESETS)}")
     if engine not in ("cycles", "eevee"):
@@ -129,6 +134,8 @@ def apply_preset(scene, engine: str, preset: str, percent: int | None = None) ->
         r.engine = eevee_id()
         if "samples" in cfg:
             scene.eevee.taa_render_samples = cfg["samples"]
+        if hasattr(scene.eevee, "use_raytracing"):
+            scene.eevee.use_raytracing = True
     _motion_blur(scene, cfg.get("motion_blur", False))
 
 

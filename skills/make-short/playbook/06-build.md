@@ -28,7 +28,8 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   `"contact:<other>:moves"` for parts that touch and move against each other by design), with a comment next to
   the tag saying why (see "Quality bar" below), and `"overlay"` for what is drawn on the scene rather than built in
   it (a glow halo round a pivot, a distance line, an arrow): the overlap, z-fighting, grounding and pop checks leave
-  it out, and it must still stay inside the frame (`07-checks.md`);
+  it out, and it must still stay inside the frame (`07-checks.md`); `"surface"` for an open water surface that
+  things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,
   so a rebuild in the same Blender keeps exact object names; see `mcp-mode.md`). It and `setup_scene` also remove
@@ -99,8 +100,8 @@ open Blender uses the plugin's current code (`mcp-mode.md`).
   `BLENDER check` warns ("hard_rule") when a scene name has a word a rule may forbid (a "Worker" object or a "Skin"
   material under `no_humans`); remove the thing, or, when the name is innocent (a clock's "HourHand"), clear the
   word in `short.json` `rules_check` (`02-story.md`).
-- **Real proportions** from sourced dimensions where they exist; a person or a familiar object for scale (only a
-  familiar object when a rule forbids people).
+- **Real proportions** from sourced dimensions where they exist; a familiar object for scale (a door, a car, a
+  bench, a standard container). Under a `no_humans` rule people never appear, not even as a silhouette.
 - **Every surface finished:** bevels on hard edges (nothing is razor-sharp in life), smooth shading on curved
   surfaces, micro-bump or a real texture so materials do not look like plastic. No default grey, no pink.
 - **Motion from simulation or computed contact** (`fields/physics.md`): mechanisms move because the physics or the
@@ -156,8 +157,10 @@ The checks pass geometry that is wrong to the eye if you excuse it, so build it 
 13. **Build openings into the mesh; no live Booleans.** A Boolean modifier (an EXACT cut on a hand-built or
     non-manifold mesh above all) is evaluated again for every render and can come out differently: a window that
     shows in the stills can be gone in the final render. Leave the faces out and close the edges in the mesh
-    itself; if a Boolean is unavoidable, apply it in build.py and check the face count. The checks warn on any
-    live Boolean on a rendered mesh.
+    itself; if a Boolean is unavoidable, apply it in build.py and check the face count. Apply it only to a closed,
+    single solid and keep other parts as their own objects: a mesh left with holes or open parts has no inside, and
+    the overlap check then says it is not closed instead of giving a depth. The checks warn on any live Boolean on a
+    rendered mesh.
 14. **Parts in contact share the moving parent.** When two parts touch (a rod in its cylinder, a part on a moving
     deck), parent both to the moving part that carries them. When you replace a part's constructor, keep its
     parenting: have part builders return parented parts. A dropped parent leaves one part standing while the other
@@ -199,8 +202,11 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   following it; in the world without `of`): a part of one long mesh, with no helper object. Read the result's
   `warnings` (also printed as a `FramingWarning`): the camera sent far off (more than 5 times the box's size or new
   distance: the objects are not where the camera looked, often because a parent moved or turned them), the box
-  outside the view or past the clip end, or the fit not settling. Fix the cause, never ignore it: such a camera
-  renders black or empty stills. A box with no size (an object with no geometry) is refused.
+  outside the view or past the clip end, the camera under the ground or inside a solid (centring slides it along
+  its own up axis: aim from above the box's centre, or use `center=False`), or the fit not settling. Fix the cause, never ignore it: such a camera
+  renders black or empty stills. A box with no size (an object with no geometry) is refused. It measures the objects
+  in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
+  camera's) scene does not have are refused instead of measured at the origin.
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject
   fills the 1080 px width and only a third of the height, and looks small. Instead:
   - Shoot it at a 3/4 angle **along the row** (camera 30-45 degrees off its long axis, a little above): the row

@@ -40,3 +40,24 @@ def test_background_warning():
     grey = np.full((60, 40, 3), (197, 197, 195), np.uint8)
     msg = colour.background_warning(grey, "#F3F2EE", "s01")
     assert "s01" in msg and "#C5C5C3" in msg and "#F3F2EE" in msg and "paper_world" in msg
+
+
+def _world(*node_types, stamp=None, use_nodes=True):
+    from types import SimpleNamespace
+
+    nodes = [SimpleNamespace(bl_idname=t) for t in node_types]
+    return SimpleNamespace(use_nodes=use_nodes, node_tree=SimpleNamespace(nodes=nodes),
+                           get=lambda key, default=None: stamp if key == "bsa_backdrop" else default)  # fmt: skip
+
+
+def test_only_a_flat_backdrop_gets_the_background_check():
+    """A sky, an HDRI or a landscape is not a paper backdrop: the background ΔE check and paper_world advice skip it."""
+    flat = ("ShaderNodeOutputWorld", "ShaderNodeBackground")
+    assert colour.flat_backdrop(_world(*flat)) is True
+    assert colour.flat_backdrop(_world(*flat, "ShaderNodeLightPath", "ShaderNodeMixShader", stamp="paper")) is True
+    assert colour.flat_backdrop(_world(use_nodes=False)) is True
+    assert colour.flat_backdrop(None) is True  # no world: Blender's plain grey
+    assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexSky")) is False
+    assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexEnvironment", "ShaderNodeMapping")) is False
+    assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexGradient", "ShaderNodeValToRGB")) is False
+    assert colour.flat_backdrop(_world(*flat), transparent=True) is False

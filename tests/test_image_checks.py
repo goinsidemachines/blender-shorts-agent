@@ -421,3 +421,27 @@ def test_a_big_flicker_while_things_move_is_still_its_own_finding():
     found = [f for f in frame_checks(paths, load=loaded.__getitem__, moving=set(range(1, 21))) if f.check == "flicker"]
     assert [f.frame for f in found if f.frame is not None] == [10], found
     assert len(found) == 2
+
+
+def test_a_lone_tiny_flicker_spot_while_things_move_is_not_reported():
+    """A one-frame spot of about 0.1% of the frame where something moves (a thin edge aliasing as a wheel turns) is
+    too small to see and gives the same pixels when rendered again: not reported. The same spot on a still frame,
+    or one that comes back at the same place (a small part that z-fights), still is."""
+    from pathlib import Path
+
+    from bsa.image_checks import FLICKER_UNSEEN
+
+    base = _scene_frames(h=384, w=216)
+    frames = [base.copy() for _ in range(20)]
+    frames[6][100:110, 60:70] += 0.4  # 10 x 10 px: 5 x 5 cells, about 0.12% of the frame
+    paths = [Path(f"{i + 1:04d}.png") for i in range(20)]
+
+    def run(px, moving):
+        loaded = dict(zip(paths, [_rgb(f) for f in px], strict=True))
+        return [f for f in frame_checks(paths, load=loaded.__getitem__, moving=moving) if f.check == "flicker"]
+
+    still = run(frames, set())
+    assert [f.frame for f in still] == [7] and still[0].share < FLICKER_UNSEEN, still
+    assert run(frames, set(range(1, 21))) == []
+    frames[13][101:111, 61:71] += 0.4  # it comes back at the same place: z-fighting, not a one-off
+    assert [f.frame for f in run(frames, set(range(1, 21)))] == [7, 14]

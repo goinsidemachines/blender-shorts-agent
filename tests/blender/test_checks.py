@@ -376,12 +376,40 @@ def test_every_offending_pair_is_listed_up_to_a_cap():
     assert len(hidden) == 1 and "4 more" in hidden[0].message, hidden
 
 
+def test_a_static_overlap_is_one_finding_for_every_shot_it_is_in():
+    """A pair that overlaps the same way in every frame (scenery that never moves) is one finding naming the pair,
+    the same in each shot, so the CLI lists it once with its shots. A pair that overlaps only in some frames still
+    says which shot and frames."""
+    sc = _scene()
+    _cube("Pier", (0, 4, 0.5))
+    _cube("Bank", (0.3, 4.2, 0.6))  # 30 cm into the pier, never moving
+    rod = _cube("Rod", (-6, 4, 0.5), size=0.4)
+    _cube("Post", (-3, 4, 0.5))
+    _move_x(rod, [-6 + 3 * i / (N - 1) for i in range(N)])  # reaches the post near the end
+    spans = [Span("s1", 1, 10), Span("s2", 11, 20), Span("s3", 21, N)]
+    found = [f for f in checks.run_checks(sc, Timeline(30, N, spans, [], [])) if f.check == "overlap"]
+    static = [f for f in found if {"Pier", "Bank"} <= set(f.pair)]
+    assert len(static) == 1 and static[0].frame is None and "shot" not in static[0].message, found
+    assert "every frame" in static[0].message and "30 cm" in static[0].message, static
+    moving = [f for f in found if set(f.pair) == {"Post", "Rod"}]
+    assert moving and all("in shot 's3'" in f.message for f in moving), found
+    each = [[f for f in checks.run_checks(sc, Timeline(30, N, [s], [], [])) if f.check == "overlap"
+             and "Pier" in f.pair] for s in spans]  # fmt: skip
+    assert all(len(f) == 1 and f[0].message == static[0].message for f in each), each
+
+
 def test_renamed_duplicates_are_warned():
     sc = _scene()
     _cube("Person", (0, 0, 0.5))
     _cube("Person.001", (2, 0, 0.5))
     found = _found(sc, "names", severity="warning")
     assert [f.obj for f in found] == ["Person.001"], found
+    assert "'Person.001'" in found[0].message, found
+    _cube("Pier.003", (4, 0, 0.5))
+    _cube("Pier.004", (6, 0, 0.5))
+    found = _found(sc, "names", severity="warning")  # one warning naming every renamed object
+    assert len(found) == 1, found
+    assert all(f"'{n}'" in found[0].message for n in ("Person.001", "Pier.003", "Pier.004")), found
 
 
 def test_tags_must_name_objects_in_the_scene():
@@ -438,6 +466,31 @@ def test_resting_on_floor_is_not_overlap():
     _cube("Deep", (0, 2, 0.4))  # 10 cm into the floor
     found = _found(sc, "overlap", severity="error")
     assert len(found) == 1 and "Deep" in found[0].message, found
+    assert "10 cm inside 'Floor'" in found[0].message, found  # a flat open sheet: its one-sided depth is right
+
+
+def test_depth_into_a_mesh_that_is_not_closed_is_not_given():
+    """A mesh with holes or open parts (a Boolean applied to a mesh that also held other parts) has no inside: a
+    depth measured into it can be any number (49 m). The finding says the mesh is not closed instead."""
+    sc = _scene()
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=2.0)
+    top = [f for f in bm.faces if f.normal.z > 0.9]
+    bmesh.ops.delete(bm, geom=top, context="FACES_ONLY")  # an open box
+    ring = bmesh.ops.create_cube(bm, size=0.5)["verts"]
+    bmesh.ops.translate(bm, vec=(3.0, 0, 0), verts=ring)  # and a closed part beside it, in the same mesh
+    me = bpy.data.meshes.new("Shell")
+    bm.to_mesh(me)
+    bm.free()
+    shell = bpy.data.objects.new("Shell", me)
+    sc.collection.objects.link(shell)
+    shell.location = (0, 4, 1.01)
+    _material(shell)
+    _cube("Block", (0.9, 4, 1.0), size=0.8)  # through the open box's side wall
+    found = [f for f in _found(sc, "overlap", severity="error") if "Block" in f.message]
+    assert len(found) == 1, found
+    msg = found[0].message
+    assert "'Shell'" in msg and "not closed" in msg and "4 open edges" in msg and " inside 'Shell'" not in msg, msg
 
 
 def test_hero_leaving_frame_found():
@@ -904,6 +957,32 @@ def test_overlay_objects_skip_physical_checks_but_stay_in_frame():
     edge = [f for f in checks.run_checks(sc, _timeline()) if f.check == "frame_edge"]
     assert [f.obj for f in edge] == ["Halo"], edge
     assert bake.tags(halo) == ["grounded", "overlay"]
+
+
+def test_surface_tag_lets_things_cross_an_open_water_surface_but_not_a_solid():
+    """An open surface tagged "surface" (water moved by waves, a liquid level) may be crossed: a hull floating in it
+    and a wheel dipping into it are not overlaps. A closed mesh tagged "surface" is a solid: it is still checked,
+    and the tag is warned about."""
+    sc = _scene()
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=20, y_subdivisions=20, size=6, location=(0, 4, 0.5))
+    water = bpy.context.object
+    water.name = "Water"
+    for v in water.data.vertices:
+        v.co.z = 0.05 * math.sin(3 * v.co.x) * math.cos(2 * v.co.y)  # waves: an open mesh, not flat
+    _material(water)
+    _cube("Hull", (0, 4, 0.5), size=0.8)  # half in the water
+    assert any("Hull" in f.message for f in _found(sc, "overlap", severity="error"))
+    bake.tag(water, "surface")
+    assert bake.tags(water) == ["surface"]
+    assert not [f for f in _found(sc, "overlap") if "Water" in f.message]
+    tank = _cube("Tank", (2.5, 4, 0.5), size=1.0)  # a closed box tagged surface by mistake
+    bake.tag(tank, "surface")
+    _cube("Boat", (2.5, 4, 1.2), size=0.6)  # 20 cm into the tank
+    found = checks.run_checks(sc, _timeline())
+    assert any(f.check == "overlap" and "Boat" in f.message and "Tank" in f.message for f in found), found
+    warned = [f for f in found if f.check == "names" and f.obj == "Tank"]
+    assert len(warned) == 1 and "closed" in warned[0].message, found
+    assert not [f for f in found if f.check == "names" and f.obj == "Water"]
 
 
 def test_hard_rules_flag_object_mesh_material_and_collection_names():

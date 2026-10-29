@@ -128,6 +128,19 @@ def test_parts_say_which_kind_of_data_changed():
     assert sorted(k for k in moved["s02"] if moved["s02"][k] != after["s02"][k]) == ["animation"]
 
 
+def test_a_tag_changes_the_tags_part_but_not_the_fingerprint():
+    """A contact tag changes what the checks find, not what renders: the "tags" part changes, the fingerprint (and so
+    the frames) does not."""
+    from bsa.blender import bake
+
+    _two_scenes()
+    fps, before = _fp(), _parts()
+    bake.tag(bpy.data.objects["Cube B"], "contact:Sphere B")
+    after = _parts()
+    assert _fp() == fps
+    assert after["s02"]["tags"] != before["s02"]["tags"] and after["s01"] == before["s01"]
+
+
 def test_a_material_only_shot_1_uses_changes_only_shot_1():
     _two_scenes()
     before = _fp()

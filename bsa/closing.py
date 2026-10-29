@@ -136,6 +136,19 @@ def plan(cfg: dict | None, start: int, fps: int, take_s: float | None) -> dict |
             "line_f0": start + round(LEAD_S * fps) if take_s else None}  # fmt: skip
 
 
+def hold(cfg: dict, end: dict, fps: int) -> dict:
+    """How long the card is held: {"seconds" (what plan gave), "set_seconds" (closing.seconds)}, plus a "note" when
+    the closing line made it longer than closing.seconds (closing.seconds is a minimum, never a cut-off). The mix and
+    the edit report it, and the final page shows it."""
+    held = round(end["n_frames"] / fps, 2)
+    out = {"seconds": held, "set_seconds": cfg["seconds"]}
+    if end["n_frames"] > math.ceil(round(cfg["seconds"] * fps, 6)):
+        take_s = max(0.0, held - LEAD_S - PAUSE_S)
+        out["note"] = (f"closing card held {held:.1f} s so the voice line fits (its take is {take_s:.1f} s; "
+                       f"closing.seconds is {cfg['seconds']:g})")  # fmt: skip
+    return out
+
+
 def take_seconds(takes_dir: Path | None) -> float | None:
     path = take(takes_dir)
     if path is None:

@@ -95,6 +95,17 @@ def test_new_short_with_a_number(home, workspace):
     assert len(proc.stderr.strip().splitlines()) == 1
 
 
+def test_new_short_with_a_topic_and_length(home, workspace):
+    data = ok(run(home, "new-short", "The Lever", "--topic", "How a lever trades force for distance", "--length", "40"))
+    spec = json.loads((Path(data["short"]) / "source" / "short.json").read_text(encoding="utf-8"))
+    assert spec["topic"] == "How a lever trades force for distance" and spec["length_s"] == 40
+    assert json.loads((Path(ok(run(home, "new-short", "Pulley"))["short"]) / "source" / "short.json").read_text(
+        encoding="utf-8"))["length_s"] == 45  # the default
+    proc = run(home, "new-short", "Too long", "--length", "200")
+    assert proc.returncode != 0 and "15" in proc.stderr and "90" in proc.stderr
+    assert not any(p.name.endswith("too-long") for p in workspace.iterdir())
+
+
 def test_brand_exposure_and_look_settings(home):
     s = ok(run(home, "settings", "set", "brand.exposure", "0.3"))["settings"]
     assert s["brand"]["exposure"] == 0.3
@@ -1436,3 +1447,24 @@ def test_check_findings_from_two_shots_of_one_scene_are_listed_once():
     c = {"check": "pop", "severity": "error", "obj": "Cube", "frame": 40, "message": "p", "scene": "W", "shot": "s02"}
     merged = bsa_blender._merge_findings([a, b, c])
     assert [(f["check"], f["shots"]) for f in merged] == [("pop", ["s02"]), ("names", ["s01", "s02"])]
+
+
+def test_check_lists_a_static_overlap_once_and_caps_over_pairs_in_every_shot():
+    """The same static overlap from three shots is one row with its shots; the cap counts pairs over every shot and
+    keeps the rest under "held_back", with one row saying how many pairs were not listed and in which shots."""
+    import bsa_blender
+
+    def row(a, b, shot, frame=None):
+        return {"check": "overlap", "severity": "error", "obj": a, "frame": frame, "scene": "W", "shot": shot,
+                "message": f"{a!r} and {b!r} interpenetrate in every frame", "pair": [a, b]}
+
+    rows = [row("Pier", "Ground", s) for s in ("s01", "s02", "s03")]
+    rows += [row(f"P{i}", "Q", "s02", 40 + i) for i in range(3)]
+    merged = bsa_blender._merge_findings(rows)
+    assert len(merged) == 4 and merged[0]["shots"] == ["s01", "s02", "s03"]
+    listed, held = bsa_blender._cap_overlap_rows(merged, 2)
+    assert [r.get("pair") for r in listed[:2]] == [["Pier", "Ground"], ["P0", "Q"]]
+    assert [r["pair"] for r in held] == [["P1", "Q"], ["P2", "Q"]]
+    assert listed[-1]["capped"] == 2 and "2 more overlapping pairs" in listed[-1]["message"]
+    assert listed[-1]["shots"] == ["s02"]
+    assert bsa_blender._cap_overlap_rows(merged, 4) == (merged, [])

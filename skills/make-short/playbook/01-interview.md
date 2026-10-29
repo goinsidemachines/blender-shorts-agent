@@ -5,7 +5,9 @@ questions; offer sensible defaults so the user can just say "yes".
 
 1. **Make the short's folder:** `CLI new-short "<working title>"`. It returns the folder and the slug. Say where it
    is in one line. When the user (or their content plan) wants a particular number, add `--number N`: it refuses a
-   number another short already has (or another session is making), and says which.
+   number another short already has (or another session is making), and says which. When the brief already gives
+   the topic or the length, pass them too: `--topic "<what a viewer should understand>"` and `--length <seconds>`
+   (15 to 90) go into `short.json` `topic` and `length_s` (the length is 45 without it). Then only ask what is left.
 2. **Ask, briefly:**
    - **Topic and angle.** What exactly should a viewer understand at the end? One idea, not three. "How a mechanical
      watch keeps time" is a short; "the history of skyscrapers" is not. If the request is broad, propose a sharp angle.
