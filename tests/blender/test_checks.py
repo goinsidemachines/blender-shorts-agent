@@ -959,6 +959,32 @@ def test_overlay_objects_skip_physical_checks_but_stay_in_frame():
     assert bake.tags(halo) == ["grounded", "overlay"]
 
 
+def test_surface_tag_lets_things_cross_an_open_water_surface_but_not_a_solid():
+    """An open surface tagged "surface" (water moved by waves, a liquid level) may be crossed: a hull floating in it
+    and a wheel dipping into it are not overlaps. A closed mesh tagged "surface" is a solid: it is still checked,
+    and the tag is warned about."""
+    sc = _scene()
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=20, y_subdivisions=20, size=6, location=(0, 4, 0.5))
+    water = bpy.context.object
+    water.name = "Water"
+    for v in water.data.vertices:
+        v.co.z = 0.05 * math.sin(3 * v.co.x) * math.cos(2 * v.co.y)  # waves: an open mesh, not flat
+    _material(water)
+    _cube("Hull", (0, 4, 0.5), size=0.8)  # half in the water
+    assert any("Hull" in f.message for f in _found(sc, "overlap", severity="error"))
+    bake.tag(water, "surface")
+    assert bake.tags(water) == ["surface"]
+    assert not [f for f in _found(sc, "overlap") if "Water" in f.message]
+    tank = _cube("Tank", (2.5, 4, 0.5), size=1.0)  # a closed box tagged surface by mistake
+    bake.tag(tank, "surface")
+    _cube("Boat", (2.5, 4, 1.2), size=0.6)  # 20 cm into the tank
+    found = checks.run_checks(sc, _timeline())
+    assert any(f.check == "overlap" and "Boat" in f.message and "Tank" in f.message for f in found), found
+    warned = [f for f in found if f.check == "names" and f.obj == "Tank"]
+    assert len(warned) == 1 and "closed" in warned[0].message, found
+    assert not [f for f in found if f.check == "names" and f.obj == "Water"]
+
+
 def test_hard_rules_flag_object_mesh_material_and_collection_names():
     """Under a no-people rule, scene names with person words warn (answered words in rules_check are cleared);
     without rules nothing is scanned."""

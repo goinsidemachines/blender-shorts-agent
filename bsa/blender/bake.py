@@ -83,18 +83,26 @@ def _fcurves(action):
 
 
 # Every tag the checks read (07-checks.md documents each): "hero" / "hero:<shot ids>", "grounded",
-# "contact:<other>[:<max depth m>][:moves]" (moves: the pair moves against each other by design), and "overlay" (a glow, a guide line: not physical geometry).
-TAGS = ("hero", "grounded", "contact:", "overlay")
+# "contact:<other>[:<max depth m>][:moves]" (moves: the pair moves against each other by design), "overlay" (a glow,
+# a guide line: not physical geometry) and "surface" (an open fluid surface, such as water: things may cross it).
+TAGS = ("hero", "grounded", "contact:", "overlay", "surface")
 
 
 def _is_tag_start(word: str) -> bool:
-    return word in ("hero", "grounded", "overlay") or word.startswith(("contact:", "hero:"))
+    return word in ("hero", "grounded", "overlay", "surface") or word.startswith(("contact:", "hero:"))
 
 
 def is_overlay(obj) -> bool:
     """Whether the object is tagged "overlay": a non-physical overlay (a glow halo, a distance line, an arrow) that the
     overlap, z-fighting, grounding and pop checks leave out; it must still stay inside the frame."""
     return "overlay" in tags(obj)
+
+
+def is_surface(obj) -> bool:
+    """Whether the object is tagged "surface": an open fluid surface (water moved by waves, a liquid level) that
+    things may cross. The overlap and z-fighting checks leave it out while its mesh is open; a closed mesh is a
+    solid and is checked whatever its tags."""
+    return "surface" in tags(obj)
 
 
 def tags(obj) -> list[str]:
@@ -120,7 +128,7 @@ def is_hero(obj, shot_id: str | None = None) -> bool:
 
 
 def tag(obj, *new_tags: str) -> None:
-    """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay") into bsa_tags (comma-joined, no
+    """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay", "surface") into bsa_tags (comma-joined, no
     duplicates). Only a hero:<shot ids> tag may hold commas (between its shot ids)."""
     for t in new_tags:
         ids = t[5:].split(",") if t.startswith("hero:") else None

@@ -58,6 +58,7 @@ def test_checks_in_blender(blender_run):
         "test_inside_rays_far_from_origin_cross_each_face_once",
         "test_progress_counts_every_frame_and_changes_nothing",
         "test_overlay_objects_skip_physical_checks_but_stay_in_frame",
+        "test_surface_tag_lets_things_cross_an_open_water_surface_but_not_a_solid",
         "test_hard_rules_flag_object_mesh_material_and_collection_names",
         "test_cradle_swing_and_collision_are_not_pops_but_a_teleport_is",
         "test_zfight_tolerance_follows_what_the_camera_can_see",

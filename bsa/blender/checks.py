@@ -7,7 +7,11 @@ node instances) gets the materials and images checks too, plus one "instances" w
 overlaps, normals, grounding and pops are not checked on instances: append the objects instead. An object tagged
 "overlay" (a glow halo, a distance line, an arrow: not physical geometry) is left out of the overlap and z-fighting
 checks (as either object of a pair), self_zfight, self_overlap, floating (neither checked nor counted as a support)
-and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero.
+and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero. An open mesh
+tagged "surface" (water moved by waves, a liquid level: things float in it and dip into it) is left out of the
+overlap and z-fighting checks (as either object of a pair) and gets every other check; it still holds up a grounded
+object. A closed mesh is a solid: it is checked as usual whatever its tags, and a "surface" tag on it is a names
+warning.
 
 Frames: materials, framing, grounding and every pair of objects are checked every `sample_every` frames plus each
 shot's last frame. On every other frame, each object that moved or deformed since the frame before is checked
@@ -111,7 +115,7 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from bsa.blender.bake import is_hero, is_overlay, tags
+from bsa.blender.bake import is_hero, is_overlay, is_surface, tags
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
 from bsa.pops import find_pops
@@ -297,6 +301,7 @@ class _Run:
         self.contact_pairs = _contact_pairs(scene)  # (a, b, what moves a, what moves b) that follow different parents
         self.drift: dict[tuple[str, str], dict] = {}  # per shot: where each such pair meets, and how far it drifts
         self.overlay = {o.name for o in scene.objects if is_overlay(o)}  # glows, guide lines: not physical
+        self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
 
     def add(self, check, severity, obj, frame, message, key=None, pair=None):
         key = (check, obj, message) if key is None else (check, *key)
@@ -637,9 +642,15 @@ class _Run:
     def overlaps(self, frame, objs, geos, only=None):
         """Every pair of objects whose boxes touch (only pairs with an object in `only` when given)."""
         by_name = {o.name: o for o in objs}
-        names = sorted(n for n in geos if n not in self.overlay)  # overlays are not solid: no overlap, no z-fight
+        for n in sorted(self.surface & set(geos)):
+            if geos[n].closed:
+                self.add("names", "warning", n, None, "tag 'surface' on a closed mesh does nothing: a closed mesh is a "
+                         "solid and its overlaps are checked. Use it on an open surface (a grid moved by waves), or "
+                         "remove it", key=(n, "surface"))  # fmt: skip
+        open_surface = {n for n in self.surface & set(geos) if not geos[n].closed}
+        names = sorted(n for n in geos if n not in self.overlay and n not in open_surface)  # not solid: no overlap
         if only is not None:
-            only = {n for n in only if n not in self.overlay}
+            only = {n for n in only if n not in self.overlay and n not in open_surface}
         if only is None:
             pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
         else:

@@ -28,7 +28,8 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   `"contact:<other>:moves"` for parts that touch and move against each other by design), with a comment next to
   the tag saying why (see "Quality bar" below), and `"overlay"` for what is drawn on the scene rather than built in
   it (a glow halo round a pivot, a distance line, an arrow): the overlap, z-fighting, grounding and pop checks leave
-  it out, and it must still stay inside the frame (`07-checks.md`);
+  it out, and it must still stay inside the frame (`07-checks.md`); `"surface"` for an open water surface that
+  things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,
   so a rebuild in the same Blender keeps exact object names; see `mcp-mode.md`). It and `setup_scene` also remove
