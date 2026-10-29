@@ -1,6 +1,6 @@
 {
   "name": "blender-shorts-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Make finished, narrated vertical explainer shorts (YouTube Shorts / Reels / TikTok) entirely in Blender. Runs in Claude Code with Blender 4.5+ installed on your computer.",
   "author": {
     "name": "Inside Machines",
