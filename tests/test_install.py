@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,7 @@ def test_kokoro_end_to_end(bsa_home, tmp_path):
         assert check_take(out / f"{ln.id}.wav") == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="pathlib makes Windows paths only on Windows")
 def test_long_windows_path_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("BSA_HOME", str(tmp_path / ("x" * 150)))
     monkeypatch.setattr(install, "uv_path", lambda: Path("uv"))
