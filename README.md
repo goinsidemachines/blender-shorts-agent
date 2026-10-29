@@ -9,14 +9,14 @@ on clean HTML pages; after that it runs to the end on its own, and it checks its
 
 <table>
 <tr>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/CiJkurEFW2g"><img src="docs/media/demo-pendulum.gif" width="200" alt="Heavy or light pendulum short"></a><br><b>Heavy or light pendulum</b><br><a href="https://www.youtube.com/shorts/CiJkurEFW2g">Watch</a> · <a href="https://goinsidemachines.com/everyday/heavy-or-light-pendulum/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/0kTD73urxJA"><img src="docs/media/demo-lever.gif" width="200" alt="The lever short"></a><br><b>The lever</b><br><a href="https://www.youtube.com/shorts/0kTD73urxJA">Watch</a> · <a href="https://goinsidemachines.com/machines/the-lever/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/PZWokxHSg_0"><img src="docs/media/demo-taipei-101.gif" width="200" alt="Taipei 101 damper short"></a><br><b>The Taipei 101 damper</b><br><a href="https://www.youtube.com/shorts/PZWokxHSg_0">Watch</a> · <a href="https://goinsidemachines.com/machines/the-taipei-101-damper/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/CiJkurEFW2g"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-pendulum.gif" width="200" alt="Heavy or light pendulum short"></a><br><b>Heavy or light pendulum</b><br><a href="https://www.youtube.com/shorts/CiJkurEFW2g">Watch</a> · <a href="https://goinsidemachines.com/everyday/heavy-or-light-pendulum/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/0kTD73urxJA"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-lever.gif" width="200" alt="The lever short"></a><br><b>The lever</b><br><a href="https://www.youtube.com/shorts/0kTD73urxJA">Watch</a> · <a href="https://goinsidemachines.com/machines/the-lever/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/PZWokxHSg_0"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-taipei-101.gif" width="200" alt="Taipei 101 damper short"></a><br><b>The Taipei 101 damper</b><br><a href="https://www.youtube.com/shorts/PZWokxHSg_0">Watch</a> · <a href="https://goinsidemachines.com/machines/the-taipei-101-damper/">Read</a></td>
 </tr>
 <tr>
-<td align="center"><a href="https://www.youtube.com/shorts/RdU5MHgl2D0"><img src="docs/media/demo-newtons-cradle.gif" width="200" alt="Newton's cradle short"></a><br><b>Newton's cradle</b><br><a href="https://www.youtube.com/shorts/RdU5MHgl2D0">Watch</a> · <a href="https://goinsidemachines.com/everyday/newtons-cradle/">Read</a></td>
-<td align="center"><a href="https://www.youtube.com/shorts/MSxdoT709Mg"><img src="docs/media/demo-click-pen.gif" width="200" alt="Click pen short"></a><br><b>The click pen</b><br><a href="https://www.youtube.com/shorts/MSxdoT709Mg">Watch</a> · <a href="https://goinsidemachines.com/everyday/click-pen/">Read</a></td>
-<td align="center"><a href="https://www.youtube.com/shorts/1Hg8j9ubPZA"><img src="docs/media/demo-freewheel.gif" width="200" alt="Bike freewheel short"></a><br><b>Why a bike wheel ticks</b><br><a href="https://www.youtube.com/shorts/1Hg8j9ubPZA">Watch</a> · <a href="https://goinsidemachines.com/everyday/bike-wheel-ticks/">Read</a></td>
+<td align="center"><a href="https://www.youtube.com/shorts/RdU5MHgl2D0"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-newtons-cradle.gif" width="200" alt="Newton's cradle short"></a><br><b>Newton's cradle</b><br><a href="https://www.youtube.com/shorts/RdU5MHgl2D0">Watch</a> · <a href="https://goinsidemachines.com/everyday/newtons-cradle/">Read</a></td>
+<td align="center"><a href="https://www.youtube.com/shorts/MSxdoT709Mg"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-click-pen.gif" width="200" alt="Click pen short"></a><br><b>The click pen</b><br><a href="https://www.youtube.com/shorts/MSxdoT709Mg">Watch</a> · <a href="https://goinsidemachines.com/everyday/click-pen/">Read</a></td>
+<td align="center"><a href="https://www.youtube.com/shorts/1Hg8j9ubPZA"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-freewheel.gif" width="200" alt="Bike freewheel short"></a><br><b>Why a bike wheel ticks</b><br><a href="https://www.youtube.com/shorts/1Hg8j9ubPZA">Watch</a> · <a href="https://goinsidemachines.com/everyday/bike-wheel-ticks/">Read</a></td>
 </tr>
 </table>
 
@@ -66,21 +66,21 @@ tomorrow ("carry on with the pen short").
 
 ### 1. The story, on a page
 
-<img src="docs/media/page-story.jpg" width="640" alt="Story approval page">
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/page-story.jpg" width="640" alt="Story approval page">
 
 The hook, every beat with its narration line, how long each line takes to say, honesty badges ("Simplified", "Slowed
 down") wherever the picture bends reality, and how this short keeps each of your hard rules.
 
 ### 2. The storyboard, with real stills
 
-<img src="docs/media/page-storyboard.jpg" width="640" alt="Storyboard approval page">
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/page-storyboard.jpg" width="640" alt="Storyboard approval page">
 
 Each shot is built and rendered as a still before anything is animated, so you approve real pictures, not
 descriptions. Click a still to see it with its captions where they will sit on screen.
 
 ### 3. It renders, and you can watch it happen
 
-<img src="docs/media/page-render-status.jpg" width="640" alt="Live render status page">
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/page-render-status.jpg" width="640" alt="Live render status page">
 
 A live page shows the whole chain (timeline, build, mix, check, render, frame-check, edit): the current step, frames
 done, time left, per-shot thumbnails and any warning as it appears. Only shots whose content changed render again,
@@ -88,7 +88,7 @@ so a fix to one shot doesn't cost you the whole video.
 
 ### 4. The final page
 
-<img src="docs/media/page-final.jpg" width="640" alt="Final review page">
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/page-final.jpg" width="640" alt="Final review page">
 
 The video, the post text with copy buttons, every check that is left, and your hard rules one last time.
 
@@ -112,7 +112,7 @@ itself and checks again. Single bad frames can be re-rendered on their own.
 **Extremes.** Before the preview, each moving part is rendered at full size at the ends of its motion, where things
 usually collide:
 
-<img src="docs/media/extremes.jpg" width="820" alt="Extremes stills of a freewheel's pawls">
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/extremes.jpg" width="820" alt="Extremes stills of a freewheel's pawls">
 
 ## Your hard rules
 
