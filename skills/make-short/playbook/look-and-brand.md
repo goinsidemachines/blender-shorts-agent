@@ -117,6 +117,7 @@ Two things go wrong with a brand font, and both are caught before anything rende
 - Bevel every hard edge; smooth-shade curved surfaces; add surface detail at the scale the camera sees.
 - Warm practical lights on the hero against a cooler surround separate the subject.
 - Depth: haze or volumetrics outdoors, depth of field on macro shots, foreground framing.
-- A person silhouette or a familiar object for scale when size matters.
+- A familiar object for scale when size matters: a door, a car, a bench, a standard shipping container. Under a
+  `no_humans` rule people never appear, not even as a silhouette or a stick figure.
 - Overlays (arrows, plots) in the accent colour with a clear meaning, explained once ("cyan = which way the piston
   moves, gold = the force on the crank").

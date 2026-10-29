@@ -99,8 +99,8 @@ open Blender uses the plugin's current code (`mcp-mode.md`).
   `BLENDER check` warns ("hard_rule") when a scene name has a word a rule may forbid (a "Worker" object or a "Skin"
   material under `no_humans`); remove the thing, or, when the name is innocent (a clock's "HourHand"), clear the
   word in `short.json` `rules_check` (`02-story.md`).
-- **Real proportions** from sourced dimensions where they exist; a person or a familiar object for scale (only a
-  familiar object when a rule forbids people).
+- **Real proportions** from sourced dimensions where they exist; a familiar object for scale (a door, a car, a
+  bench, a standard container). Under a `no_humans` rule people never appear, not even as a silhouette.
 - **Every surface finished:** bevels on hard edges (nothing is razor-sharp in life), smooth shading on curved
   surfaces, micro-bump or a real texture so materials do not look like plastic. No default grey, no pink.
 - **Motion from simulation or computed contact** (`fields/physics.md`): mechanisms move because the physics or the
