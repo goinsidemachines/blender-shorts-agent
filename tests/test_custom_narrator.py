@@ -14,7 +14,7 @@ from bsa import settings
 from bsa.narrate import contract, install
 from bsa.narrate import run as nrun
 from bsa.narrate.contract import NarrationError
-from bsa.narrate.custom import generate, normalise_take
+from bsa.narrate.custom import generate, log_notes, normalise_take
 from bsa.short import Line, Short
 
 
@@ -113,6 +113,67 @@ def test_nonzero_exit_reports_code_and_last_stderr_line(tmp_path):
 
     with pytest.raises(NarrationError, match=r"exit 3.*CUDA exploded"):
         generate("tts --lines {lines} --out {out}", lines("l01"), tmp_path, run=run)
+    assert "CUDA exploded" in (tmp_path / "narrator.log").read_text(encoding="utf-8")  # kept even on failure
+
+
+def test_tool_output_is_logged_and_its_warnings_surfaced(tmp_path):
+    calls = []
+    inner = fake_run(calls)
+
+    def run(cmd, **kw):
+        done = inner(cmd, **kw)
+        return subprocess.CompletedProcess(cmd, 0, "[take] paragraph 1 ok\n",
+                                           "[take] Fallback to line-by-line for p2\nWARNING: slow\nall good\n")
+
+    generate("tts --lines {lines} --out {out}", lines("l01"), tmp_path, run=run)
+    generate("tts --lines {lines} --out {out}", lines("l02"), tmp_path, run=run)  # appended, not replaced
+    log = (tmp_path / "narrator.log").read_text(encoding="utf-8")
+    assert log.count("paragraph 1 ok") == 2 and "l01" in log and "l02" in log
+    notes = log_notes(tmp_path)
+    assert notes == ["[take] Fallback to line-by-line for p2", "WARNING: slow"]  # each once, in order
+    assert log_notes(tmp_path / "nothing-here") == []
+
+
+def test_cli_narrate_keeps_the_voice_tools_log(tmp_path):
+    import os
+    import shutil
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    home, ws = tmp_path / "home", tmp_path / "ws"
+    home.mkdir()
+    tool = tmp_path / "tool.py"
+    tool.write_text(
+        "import json, math, struct, sys, wave\n"
+        "a = sys.argv\n"
+        "items = json.load(open(a[a.index('--lines') + 1], encoding='utf-8'))\n"
+        "out = a[a.index('--out') + 1]\n"
+        "print('[take] warning: fell back to line-by-line', file=sys.stderr)\n"
+        "for it in items:\n"
+        "    w = wave.open(out + '/' + it['id'] + '.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2)\n"
+        "    w.setframerate(48000)\n"
+        "    w.writeframes(b''.join(struct.pack('<h', int(9000 * math.sin(i / 20))) for i in range(48000)))\n"
+        "    w.close()\n", encoding="utf-8")  # fmt: skip
+    env = {**os.environ, "BSA_HOME": str(home)}
+
+    def cli(*args):
+        proc = subprocess.run([sys.executable, str(root / "bsa_cli.py"), *map(str, args)], capture_output=True,
+                              text=True, env=env, check=False)  # fmt: skip
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return json.loads(proc.stdout)
+
+    cli("settings", "set", "workspace", ws)
+    short = Path(cli("new-short", "Pendulum")["short"])
+    shutil.copyfile(root / "tests" / "e2e" / "pendulum" / "source" / "short.json", short / "source" / "short.json")
+    for stage in ("interview", "story", "storyboard"):
+        cli("state", short, "done", stage)
+    cli("settings", "set", "narrator.provider", "custom")
+    cli("settings", "set", "narrator.command", f'"{sys.executable}" "{tool}" --lines {{lines}} --out {{out}}')
+    cli("settings", "set", "narrator.verify", "false")
+    out = cli("narrate", short)
+    assert out["status"] == "ok", out
+    assert Path(out["voice_log"]) == short / "audio" / "vo" / "narrator.log"
+    assert out["voice_log_notes"] == ["[take] warning: fell back to line-by-line"]
 
 
 def test_missing_wav_names_the_line(tmp_path):

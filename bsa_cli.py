@@ -401,6 +401,9 @@ def cmd_narrate(args) -> dict:
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
     narrator = s.get("narrator") or {}
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
+    from bsa.narrate import custom
+
+    custom.clear_log(sdir / "audio" / "vo")  # this run's output only: the story's takes and the closing line's
     closing_note = None
     if narrator.get("provider") == "elevenlabs":  # one request for every line: never pay for the story twice
         result = narrate(sdir, voiced, s)
@@ -414,6 +417,9 @@ def cmd_narrate(args) -> dict:
                 closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
                                 "closing card is silent")  # fmt: skip
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    log = sdir / "audio" / "vo" / custom.LOG_FILE
+    if log.is_file():  # the user's own tool's output; its fallbacks and warnings would otherwise pass unseen
+        out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
     if closing_note:
         out["warnings"] = [closing_note]
     try:
