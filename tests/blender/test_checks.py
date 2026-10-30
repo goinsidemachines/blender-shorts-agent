@@ -595,7 +595,8 @@ def test_progress_counts_every_frame_and_changes_nothing():
 
 def test_clean_scene_has_no_errors():
     sc = _scene()
-    sc.camera.location = (0.4, -8, 0.5)  # the hero framed in the middle of the frame, not small in one half
+    sc.camera.location = (0.4, -8, 0.5)  # the hero framed in the middle of the framing band, not small in one half
+    sc.camera.rotation_euler = (math.radians(85), 0, 0)  # looking a little down: the band's centre is above H/2
     hero = _cube("Hero", (0.6, 0, 0.5))
     bake.tag(hero, "hero", "grounded")
     _move_x(hero, [0.6 + 0.4 * i / (N - 1) for i in range(N)])
