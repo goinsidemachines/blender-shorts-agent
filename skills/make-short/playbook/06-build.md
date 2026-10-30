@@ -191,20 +191,33 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
 - **Frame with `bsa.blender.camera.frame_objects`, not by trial and error.** Set the camera's angle, then
   `camera.frame_objects(cam, [objects...], frames=[f0, ..., f1])` moves it along its view axis (an orthographic
   camera: its `ortho_scale`) and slides it in its own plane until the objects' bounding boxes, at every frame you
-  give (the extremes of the motion), just fill the safe area above the caption band (`bsa.layout.frame_area`: x
-  60-940, rows 220 to about 1165, 24 px inside; `margin=` to change that, `avoid=None` for a shot with no captions,
-  `aim=True` to turn the camera to the objects first, `center=False` to keep them where they sit). It returns the
+  give (the extremes of the motion), just fill the band between the top cards and the caption band, centred in it
+  (`bsa.layout.target_area`: x 60-940, rows about 321 to 1141: below the badge row, above the captions, 24 px inside;
+  `margin=` to change that, `avoid=None` for a shot with no captions, `top=None` for a shot with no badge,
+  `top=layout.top_cards_band(labels=2)` for a badge and two stacked labels, `aim=True` to turn the camera to the
+  objects first, `center=False` to keep them where they sit). To put the subject on chosen screen rows instead, pass
+  `px_top=` / `px_bottom=` (pixels from the top of the 1080x1920 frame): a tall subject's top and bottom land on
+  them, a wide one is centred between them, so a wide shot can sit low, just above the captions, instead of leaving
+  an empty floor under it. Add `px_left=` / `px_right=` for a whole target box per shot (rows 820-1250 under a
+  title card, say). `shift=True` centres with the lens shift (`shift_x` / `shift_y`, keyed with `key=`) instead of
+  sliding the camera: it keeps its angle and only moves along its view axis. The camera's real lens and sensor fit are used for the 1080x1920 frame, whatever the
+  scene's resolution is while building. Pass `shot="s02"` so messages and findings name the shot. It returns the
   box it reached; then look at the still. For a camera move, frame each end with `key=FRAME` (it keys that
   position): it is safe on an already animated camera (it starts from the camera's pose now, measuring other frames
   does not snap it back, existing keys stay), so frame and key each position in turn without clearing the
   animation. Without `key` the new position is lost at the next frame change on a keyed camera.
   `camera.frame_box(cam, lo, hi, of=obj)` frames a box instead (`lo`, `hi` its corners, in `obj`'s own coordinates,
-  following it; in the world without `of`): a part of one long mesh, with no helper object. Read the result's
-  `warnings` (also printed as a `FramingWarning`): the camera sent far off (more than 5 times the box's size or new
-  distance: the objects are not where the camera looked, often because a parent moved or turned them), the box
-  outside the view or past the clip end, the camera under the ground or inside a solid (centring slides it along
-  its own up axis: aim from above the box's centre, or use `center=False`), or the fit not settling. Fix the cause, never ignore it: such a camera
-  renders black or empty stills. A box with no size (an object with no geometry) is refused. It measures the objects
+  following it; in the world without `of`): a part of one long mesh, with no helper object. The camera never ends
+  up under the ground: centring slides it along its own up axis, so a camera aimed up from low down would sink;
+  instead it is lifted just above the ground's top and pitched down so the subject is still framed in the band (the
+  result's `lifted` names the ground). A subject wholly under the ground, or ground it cannot get above, raises
+  `FramingError` naming the shot, the camera and the ground (`above_ground=False` only warns, the old way). Read the
+  result's `warnings` (also printed as a `FramingWarning`, kept on the scene, named by the preview chain's build
+  step and listed by the checks as `framing` findings on the review page): the camera sent far off (more than 5
+  times the box's size or new distance: the objects are not where the camera looked, often because a parent moved
+  or turned them), the box outside the view or past the clip end, or the fit not settling. Fix the cause, never
+  ignore it: such a camera renders black or empty stills. A box with no size (an object with no geometry) is
+  refused. It measures the objects
   in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
   camera's) scene does not have are refused instead of measured at the origin.
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject

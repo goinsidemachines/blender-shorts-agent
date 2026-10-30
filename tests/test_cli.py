@@ -1213,6 +1213,9 @@ def _past_narration(home, short: Path) -> None:
     ok(run(home, "timeline", short.name))
 
 
+FRAMING_NOTE = "scene Tower: camera Cam: frame_objects: the fit for 'Tower' did not settle in 60 steps"
+
+
 def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = None):
     """Stub the Blender-side steps of BLENDER preview; the CLI steps (timeline, state, mix) run for real."""
     import bsa_blender
@@ -1235,6 +1238,7 @@ def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = 
 
     monkeypatch.setattr(bsa_blender, "_build_script_mode", build)
     monkeypatch.setattr(bsa_blender, "_reopen", lambda sdir: calls.append("reopen"))
+    monkeypatch.setattr(bsa_blender, "_framing_notes", lambda sdir: [FRAMING_NOTE])  # what build.py's framing kept
     monkeypatch.setattr(bsa_blender, "_scenes_current", lambda *a: True)
     monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)  # the fake .blend has no scenes
     monkeypatch.setattr(bsa_blender, "cmd_check", step("check", {"errors": 0, "warnings": 1}))
@@ -1272,7 +1276,9 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     assert list(by) == ["timeline", "build", "build done", "mix", "check", "render", "frame-check", "edit"]
     assert by["timeline"]["state"] == "skipped" and by["timeline"]["summary"] == {"skipped": "the timing is current"}
     assert all(by[n]["state"] == "done" for n in list(by)[1:])
-    assert by["build"]["summary"] == {"why": "no blend/short.blend yet"} and by["render"]["summary"]["frames"] == 7
+    assert by["build"]["summary"] == {"why": "no blend/short.blend yet", "framing": [FRAMING_NOTE]}
+    assert by["render"]["summary"]["frames"] == 7
+    assert out["steps"][0]["framing"] == [FRAMING_NOTE]  # the build step names the framing warnings
     assert all(by[n]["started"] <= by[n]["finished"] for n in list(by)[1:])
     page = (pendulum / "review" / "render-preview.html").read_text(encoding="utf-8")
     assert "Steps" in page and "Done" in page

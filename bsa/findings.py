@@ -1,4 +1,5 @@
-"""Scene-check findings shared by the checks (inside Blender) and the CLI: the cap on listed overlapping pairs.
+"""Scene-check findings shared by the checks (inside Blender) and the CLI: the cap on listed overlapping pairs, and the
+framing warnings a build keeps on its scenes.
 
 An overlap finding names its pair of objects ("pair", on a Finding or a review/checks.json row). One pair can give
 several findings (it interpenetrates and z-fights, or overlaps differently in two shots), so the cap counts pairs:
@@ -6,6 +7,8 @@ every finding of the first `most` pairs is listed, the rest are held back, and o
 were not listed. Pure Python, no Blender."""
 
 from __future__ import annotations
+
+import json
 
 from bsa.image_checks import Finding
 
@@ -42,3 +45,17 @@ def not_listed(count: int) -> Finding:
     """The finding that stands for `count` overlapping pairs held back by the cap."""
     return Finding("overlap", "error", None, None, f"{count} more overlapping pairs not listed: fix the ones above "
                    "and check again")  # fmt: skip
+
+
+FRAMING_PROP = "bsa_framing"  # a scene's custom property: its framing warnings, JSON (bsa.blender.camera)
+
+
+def framing_notes(scene) -> list[dict]:
+    """The framing warnings `scene` keeps (bsa.blender.camera.frame_objects / frame_box): [{"camera", "key", "shot",
+    "message"}]; [] when it keeps none or what it keeps is not that."""
+    get = getattr(scene, "get", None)
+    try:
+        notes = json.loads((get(FRAMING_PROP) if callable(get) else None) or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else []

@@ -593,6 +593,7 @@ def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dic
 
 
 def _cmd_check(args, sdir: Path, short, run) -> dict:
+    from bsa.blender.camera import framing_findings
     from bsa.blender.checks import OVERLAP_MAX_FINDINGS, run_checks
 
     tl, tl_hash = _timeline(sdir, short)
@@ -625,6 +626,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
 
         found = run_checks(scene, replace(tl, shots=[span]), sample_every=args.every, short=short,
                            progress=_progress_cb(on_frame), rules=hard_rules, cap=False)  # fmt: skip
+        found += framing_findings(scene, shot.id, span.f0, span.f1)  # the build's framing warnings
         item["state"], item["done"] = "done", item["total"]
         counted[0] += item["total"]
         rows += [_check_row(f, shot.id, scene.name) for f in found]
@@ -1007,6 +1009,23 @@ def _build_script_mode(sdir: Path) -> Path:
     return blend
 
 
+def _framing_notes(sdir: Path) -> list[str]:
+    """The framing warnings build.py kept on the scenes of blend/short.blend (bsa.blender.camera.framing_notes), one
+    line each: the build step names them, and the checks list them as "framing" findings on the review pages."""
+    from bsa.findings import framing_notes
+
+    data = _open_blend(sdir)
+    return [f"scene {sc.name}: camera {n.get('camera')}: {n.get('message')}" for sc in data.scenes
+            for n in framing_notes(sc)]  # fmt: skip
+
+
+def _build_and_reopen(sdir: Path) -> dict:
+    """Build in script mode, open the new blend/short.blend, and name the framing warnings build.py kept on it."""
+    blend = _build_script_mode(sdir)
+    _reopen(sdir)
+    return {"blend": str(blend), "framing": _framing_notes(sdir)}
+
+
 def _reopen(sdir: Path) -> None:
     """Open blend/short.blend again (the build just rewrote it)."""
     import bpy
@@ -1121,8 +1140,7 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         stop("build", f"the scene file is not current ({why}): rebuild it through the MCP (bsa_mcp_build.py), then "
                       "run BLENDER preview SHORT --no-build again")  # fmt: skip
     if why:
-        run("build", _build_script_mode, sdir, summary=lambda o: {"why": why})
-        _reopen(sdir)
+        run("build", _build_and_reopen, sdir, summary=lambda o: {"why": why, "framing": o.get("framing")})
     else:
         skip("build", "the .blend is current")
     if why or not _marked_after(sdir, "build", _blend(sdir)):

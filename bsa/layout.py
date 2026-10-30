@@ -70,6 +70,62 @@ def frame_area(safe: Rect | None = None, avoid=_DEFAULT, margin: float = 24) -> 
     return Rect(s.x + margin, top + margin, s.w - 2 * margin, bottom - top - 2 * margin)
 
 
+# The cards the edit stacks at the top-left of the safe area (bsa.blender.edit: BADGE_SIZE, LABEL_SIZE, LINE_H,
+# SMALL_MARGIN, STACK_GAP_PX): the shot's badge, then its plain labels, each in a box SMALL_MARGIN * H around it.
+BADGE_PX = 30
+LABEL_PX = 40
+CARD_MARGIN = 0.010
+CARD_GAP_PX = 12
+MIN_BAND_PX = 40  # a framing band thinner than this cannot hold a subject
+
+
+def top_cards_band(badge: bool = True, labels: int = 0, line_h: float = 1.25) -> Rect | None:
+    """The rows the shot's top cards take, full safe width: its badge (rows about 221-297) and `labels` stacked plain
+    labels below it (about 100 px each with the gap), as the edit draws them. None when there are none."""
+    s = safe_rect()
+    rows = [BADGE_PX] * bool(badge) + [LABEL_PX] * max(0, int(labels))
+    if not rows:
+        return None
+    box = 2 * CARD_MARGIN * H
+    h = 1 + sum(px * line_h + box for px in rows) + CARD_GAP_PX * (len(rows) - 1)
+    return Rect(s.x, s.y, s.w, h)
+
+
+def target_area(safe: Rect | None = None, avoid=_DEFAULT, margin: float = 24, top=_DEFAULT,
+                px_top: float | None = None, px_bottom: float | None = None, px_left: float | None = None,
+                px_right: float | None = None) -> Rect:  # fmt: skip
+    """The band to frame heroes in: `frame_area(safe, avoid, margin)` (the safe area above the caption band, `margin`
+    px inside) with its top below the top cards (`top`: default `top_cards_band()`, the badge row; a Rect for more
+    rows; None for none), `margin` px under them. So the subject sits in the free space between the badge and the
+    captions, not in the whole safe area.
+
+    `px_top` / `px_bottom`: explicit screen rows (pixels in the 1080x1920 frame, from the top) for the band's top
+    and bottom instead (either alone: the other is the default's); the sides keep the margin unless `px_left` /
+    `px_right` (explicit columns) are given too: an explicit target box per shot. ValueError when the rows or
+    columns are outside the frame, upside down or closer than MIN_BAND_PX."""
+    area = frame_area(safe, avoid, margin)
+    band = top_cards_band() if top is _DEFAULT else top
+    y0, y1 = area.y, area.bottom
+    x0, x1 = area.x, area.right
+    if band is not None:
+        y0 = max(y0, band.bottom + margin)
+    if px_top is not None:
+        y0 = float(px_top)
+    if px_bottom is not None:
+        y1 = float(px_bottom)
+    if px_left is not None:
+        x0 = float(px_left)
+    if px_right is not None:
+        x1 = float(px_right)
+    if not (0 <= y0 and y1 <= H and y1 - y0 >= MIN_BAND_PX):
+        raise ValueError(f"framing band rows {y0:g} to {y1:g} are not a band in the {W}x{H} frame: the top row must be "
+                         f"above the bottom one by at least {MIN_BAND_PX} px, both between 0 and {H}")  # fmt: skip
+    if not (0 <= x0 and x1 <= W and x1 - x0 >= MIN_BAND_PX):
+        raise ValueError(f"framing box columns {x0:g} to {x1:g} are not a band in the {W}x{H} frame: the left column "
+                         f"must be left of the right one by at least {MIN_BAND_PX} px, both between 0 and {W}")  # fmt: skip
+    return Rect(x0, y0, x1 - x0, y1 - y0)
+
+
 DOWN_COST = 3.0  # a label moved down covers its own object: each pixel down counts as three sideways or up
 
 
