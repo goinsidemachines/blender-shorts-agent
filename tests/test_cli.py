@@ -626,7 +626,7 @@ def test_resumed_render_drops_damaged_frames_and_says_so(home, pendulum, monkeyp
     other = pendulum / "frames" / "preview" / second / f"{spans[second].f0:04d}.png"
     other.write_bytes(b"\0" * 64)
     stamps[second] = {**stamps[second], "engine": "cycles"}  # stale: the whole shot renders again
-    damaged = bsa_blender._drop_damaged(pendulum, "preview", shots, spans, stamps, None)
+    damaged = bsa_blender._drop_damaged(pendulum / "frames" / "preview", shots, spans, stamps, None)
     assert damaged == {first: [f0 + 1, f0 + 2]}
     assert not (folder / f"{f0 + 1:04d}.png").exists() and not (folder / f"{f0 + 2:04d}.png").exists()
     assert (folder / f"{f0 + 3:04d}.png").exists() and other.exists()
@@ -637,7 +637,7 @@ def test_resumed_render_drops_damaged_frames_and_says_so(home, pendulum, monkeyp
     assert bsa_blender._damaged_warnings(damaged) == [want]
     (folder / f"{f0 + 5:04d}.png").write_bytes(b"\0" * 64)
     redo = {first: [f0]}
-    assert bsa_blender._drop_damaged(pendulum, "preview", shots[:1], spans, stamps, redo) == {first: [f0 + 5]}
+    assert bsa_blender._drop_damaged(pendulum / "frames" / "preview", shots[:1], spans, stamps, redo) == {first: [f0 + 5]}
     assert redo == {first: [f0, f0 + 5]} and (folder / f"{f0 + 5:04d}.png").exists()  # redo_frames deletes it
 
 

@@ -300,6 +300,21 @@ def cmd_state(args) -> dict:
     return _state(sdir)
 
 
+def cmd_engine(args) -> dict:
+    """The engine this short renders with and where that comes from (the engine stage, short.json's render.engine,
+    or the setting), plus the seconds per frame each engine's runs measured and their MP4s (bsa.engine_runs)."""
+    from bsa import engine_runs
+
+    sdir = short_dir(args.short)
+    approved = (jobstate.load_state(sdir)["stages"].get("engine") or {}).get("engine")
+    own = engine_runs.short_engine(sdir)
+    setting = (settings.load_settings().get("render") or {}).get("engine")
+    engine, source = engine_runs.pick(approved, own, setting)
+    return {"short": str(sdir), "engine": engine, "from": source,
+            "approved": approved if approved in engine_runs.ENGINES else None, "short_json": own,
+            "setting": setting, "runs": engine_runs.compare(sdir)}  # fmt: skip
+
+
 def _sound_library(sdir: Path):
     """The workspace's recorded clips, after indexing any pack an earlier version left in `.assets-cache/sfx/`."""
     from bsa.assets import polyhaven, sounds
@@ -820,6 +835,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("stage", nargs="?", choices=jobstate.STAGES)
     sp.add_argument("--info", default=None)
     sp.set_defaults(fn=cmd_state)
+
+    sp = sub.add_parser("engine", help="SHORT: its render engine and where it comes from, and each engine's measured "
+                        "seconds per frame and MP4")  # fmt: skip
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_engine)
 
     for name, fn, text in [
         ("validate", cmd_validate, "check short.json (sources, ids, sizes)"),
