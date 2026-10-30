@@ -315,7 +315,7 @@ def _font_and_sound_warnings(sdir: Path, short) -> list[str]:
     from bsa.audio import recorded
 
     s = settings.load_settings()
-    return fonts.glyph_warnings(short, s) + recorded.policy_warnings(
+    return fonts.glyph_warnings(short, s, cache_dirs=fonts.font_caches(sdir)) + recorded.policy_warnings(
         short, _sound_library(sdir), recorded.sound_policy(short, s))
 
 
@@ -696,13 +696,12 @@ def cmd_fonts(args) -> dict:
     from bsa import fonts
 
     out = {"suggestions": fonts.suggestions()}
-    if args.name:
-        path = Path(args.name) if Path(args.name).is_file() else fonts.find_font_file(args.name, fonts.font_dirs())
-        out = {"name": args.name, "installed": path is not None, "file": str(path) if path else None, **out}
-        out.update(fonts.describe(path, args.name, args.text) if path else {})
-    if args.short:
-        sdir = short_dir(args.short)
-        out["glyph_warnings"] = fonts.glyph_warnings(load(sdir), settings.load_settings())
+    sdir = short_dir(args.short) if args.short else None
+    if args.name:  # a family, "Family@600" (a static weight, installed or downloaded) or a file
+        out = {**fonts.report(args.name, args.text, cache_dirs=fonts.font_caches(sdir)), **out}
+    if sdir is not None:
+        out["glyph_warnings"] = fonts.glyph_warnings(load(sdir), settings.load_settings(),
+                                                     cache_dirs=fonts.font_caches(sdir))  # fmt: skip
     return out
 
 

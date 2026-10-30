@@ -93,7 +93,8 @@ so this question is not repeated; the engine stage then estimates and asks for e
 - **Fresh style**: `brand.mode fresh`. Each story page then shows 2 to 3 style options (`playbook/02-story.md`).
 - **Brand**: `brand.mode brand`, then collect the essentials into `brand.*`: `brand.palette` (accent and background
   colours as hex), `brand.font` (an installed font name: check it with `CLI fonts "NAME"`), `brand.caption` (a JSON object: `size`, `color` and `box` as hex, e.g.
-  `'{"color": "#FFD000", "box": "#000000"}'`; captions are white on a dark box when unset), `brand.material` (overall
+  `'{"color": "#FFD000", "box": "#000000"}'`: 6 hex digits are opaque, 8 keep their alpha, `#00000099`; captions are
+  white on a see-through dark box when unset), `brand.material` (overall
   feel: matte clay, brushed metal, glossy toy...), optionally `brand.exposure` (stops, e.g. `0.3`) and `brand.look`
   (e.g. `Punchy`) for the view (a plain paper backdrop is set with `look.paper_world`, `look-and-brand.md`), and where their handle or logo should sit: `brand.handle_place`
   (the handle goes on the end card after the last line, in the upper third of the safe area unless a hero is there; a logo, if they have one, is built into the scene as an

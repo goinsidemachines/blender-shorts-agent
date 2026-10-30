@@ -18,6 +18,7 @@ from bsa.fonts import (  # noqa: F401 - find_font_file, font_dirs re-exported
     cover_font,
     family_of,
     find_font_file,
+    font_caches,
     font_dirs,
     font_files,
     font_info_or_none,
@@ -76,13 +77,14 @@ def text_strip_rect(strip) -> Rect:
     return Rect(x - margin, y - margin, w + 2 * margin, h + 2 * margin)
 
 
-def _load_font(name: str | None):
-    """(font datablock or None, family used or None, note): the style font from a file path or a family name in the
-    OS font folders, else the first installed OS fallback (bsa.fonts.FALLBACKS), else Blender's default font. The
-    note says which font is used when the named one is missing."""
+def _load_font(name: str | None, cache_dirs: list[Path] | None = None):
+    """(font datablock or None, family used or None, note): the style font from a file path, a family name in the
+    OS font folders, or a static weight "Family@600" (installed, or downloaded into one of `cache_dirs`, default
+    bsa.fonts.font_caches()), else the first installed OS fallback (bsa.fonts.FALLBACKS), else Blender's default
+    font. The note says which font is used when the named one (or its weight) is missing."""
     if not name:
         return None, None, None
-    path, used, note = resolve(name)
+    path, used, note = resolve(name, cache_dirs=cache_dirs)
     if path is not None:
         try:
             return bpy.data.fonts.load(str(path), check_existing=True), used, note
@@ -97,12 +99,13 @@ def font_used(scene) -> str:
 
 
 def font_note(scene) -> str | None:
-    """Why the edit fell back to Blender's default font, or None."""
+    """Why the edit used another font than the style named (a missing font or weight), or None."""
     return scene.get(FONT_NOTE_PROP) or None
 
 
-def _hex_colour(value, alpha: float):
-    """'#RRGGBB' or '#RRGGBBAA' as an RGBA tuple of 0..1 floats; None when it is not one."""
+def _hex_colour(value, alpha: float = 1.0):
+    """'#RRGGBB' or '#RRGGBBAA' as an RGBA tuple of 0..1 floats; None when it is not one. A colour the user gives
+    as 6 digits is opaque (alpha 1, the default); 8 digits keep their own alpha."""
     text = str(value or "").strip().lstrip("#")
     if not re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text):
         return None
@@ -112,8 +115,8 @@ def _hex_colour(value, alpha: float):
 
 def caption_colours(short: Short, settings: dict) -> tuple[tuple, tuple]:
     """(text, box) colours of the captions: `brand.caption` `color` and `box` from settings (not for a short with its
-    own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark box when
-    neither sets them."""
+    own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark see-through box
+    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#20232680") keep their alpha."""
     from bsa.settings import brand_for
 
     cap = {}
@@ -121,7 +124,7 @@ def caption_colours(short: Short, settings: dict) -> tuple[tuple, tuple]:
         if isinstance(src, dict):
             cap.update(src)
     text = _hex_colour(cap.get("color") or cap.get("colour"), 1.0) or (1.0, 1.0, 1.0, 1.0)
-    box = _hex_colour(cap.get("box") or cap.get("box_color") or cap.get("box_colour"), BOX_COLOR[3]) or BOX_COLOR
+    box = _hex_colour(cap.get("box") or cap.get("box_color") or cap.get("box_colour"), 1.0) or BOX_COLOR
     return text, box
 
 
@@ -413,7 +416,8 @@ def build_edit(
     if closing:
         card = seq.strips.new_image("Closing card", str(closing["png"]), 1, closing["f0"], fit_method="FIT")
         card.frame_final_duration = closing["n_frames"]
-    font, used, note = _load_font(short.style.get("font"))
+    sdir = Path(out_mp4).parent.parent if Path(out_mp4).parent.name == "out" else None  # <short>/out/<slug>.mp4
+    font, used, note = _load_font(short.style.get("font"), font_caches(sdir))
     if note:
         scene[FONT_NOTE_PROP] = note
     if used:
