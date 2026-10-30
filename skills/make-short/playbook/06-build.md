@@ -43,7 +43,13 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - save to `blend/short.blend`. Rebuild after every edit to build.py: when `source/build.py` is newer than
   `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (in its
   result's `warnings`, or `build_warnings` for `check` and `frame-check`, and on one stderr line), and the final
-  render and edit refuse to run.
+  render and edit refuse to run;
+- import only `bpy`, the standard library, numpy and the plugin's own `bsa` modules. Blender runs with
+  `--factory-startup`, which leaves the user's own site-packages folder off its path: a third-party package such as
+  Pillow is not importable inside Blender, even when it is installed for the very Python that Blender ships (it
+  imports in `python` on its own, then fails in the build). Draw images with numpy (and save them through
+  `bpy.data.images`), and do any other work with numpy or the standard library. The same holds for any other script
+  that runs inside Blender.
 
 Skeleton:
 
