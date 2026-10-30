@@ -167,5 +167,12 @@ def test_edge_findings_say_how_much_is_outside_and_where_it_is_worst():
     glow = {"Glow": {"overlay": True, "samples": [(f, 0.94) for f in range(0, 50, 5)] + [(50, 0.0)]}}
     (f,) = viewer.edge_findings("s02", glow, 5, 30)
     assert f.severity == "warning" and "overlay" in f.message
+    # a push-in on a part of a big hero: most of its box outside, but the part fills the frame: only a warning
+    close = {"Tower": {"overlay": False, "samples": [(f, 0.9, 0.6) for f in range(0, 50, 5)]}}
+    assert viewer.edge_findings("s02", close, 5, 30)[0].severity == "warning"
+    lost = {"Tower": {"overlay": False, "samples": [(f, 0.9, 0.01) for f in range(0, 50, 5)]}}
+    assert viewer.edge_findings("s02", lost, 5, 30)[0].severity == "error"
+    unknown = {"Tower": {"overlay": False, "samples": [(f, 0.9, None) for f in range(0, 50, 5)]}}
+    assert viewer.edge_findings("s02", unknown, 5, 30)[0].severity == "warning"  # the camera inside it: not lost
     assert viewer.edge_findings("s02", {"Far": {"overlay": False, "samples": [(10, 1.0), (15, 1.0)]}}, 5, 30) == []
     assert viewer.edge_findings("s02", {"In": {"overlay": False, "samples": [(10, 0.0)]}}, 5, 30) == []

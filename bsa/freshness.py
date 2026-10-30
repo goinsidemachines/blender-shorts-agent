@@ -417,9 +417,11 @@ def rendered_frames(folder: Path, span: Span, engine: str | None, fingerprint: s
 CHECKS_VERSION = 1  # bump when the scene checks change what they find: every shot is checked again once
 _BSA = Path(__file__).resolve().parent
 # the code the scene checks' findings come from: the checks, the viewer checks (framing, covered) and the edit's text
-# boxes they measure, the framing band they measure against, and the framing_call notes (findings, camera)
+# boxes they measure, the framing band they measure against, the framing_call notes (findings, camera), the hard-rule
+# words (rules) and the object tags (bake: hero, overlay, may-exit)
 _CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
-                _BSA / "findings.py", _BSA / "blender" / "camera.py")  # fmt: skip
+                _BSA / "findings.py", _BSA / "blender" / "camera.py", _BSA / "rules.py",
+                _BSA / "blender" / "bake.py")  # fmt: skip
 
 
 def checks_code() -> str:

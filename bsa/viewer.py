@@ -95,19 +95,22 @@ def coverage_findings(shot_id: str, samples: dict, step: int, fps: int) -> list[
 def edge_findings(shot_id: str, views: dict, step: int, fps: int) -> list[Finding]:
     """frame_edge findings: one per hero or overlay that is partly or wholly outside the camera frame at a sampled
     frame of a shot it is in (inside at one sampled frame at least), naming the largest share outside and its frame.
-    An error for a hero (not an overlay) more than EDGE_ERROR outside for EDGE_ERROR_S or longer: a nearly empty shot.
-    `views`: {name: {"overlay": bool, "samples": [(frame, share of its box outside, 0 to 1)]}}, `step` frames
-    apart."""
+    An error for a hero (not an overlay) more than EDGE_ERROR outside, with what is left of it on screen under
+    SMALL_SHARE of the frame, for EDGE_ERROR_S or longer: a nearly empty shot. A close-up or push-in that frames a
+    part of a big hero (most of it outside, but the part fills the frame) stays a warning.
+    `views`: {name: {"overlay": bool, "samples": [(frame, share of its box outside, 0 to 1[, share of the frame its
+    visible part covers, or None when unknown])]}}, `step` frames apart. Without the third value the hero counts as
+    lost when it is mostly outside."""
     out = []
     for name, v in views.items():
         samples = v["samples"]
-        if not samples or all(share >= 1 - EDGE_TOL for _, share in samples):
+        if not samples or all(s[1] >= 1 - EDGE_TOL for s in samples):
             continue  # never in this shot
-        bad = [(f, share) for f, share in samples if share > EDGE_TOL]
+        bad = [(s[0], s[1]) for s in samples if s[1] > EDGE_TOL]
         if not bad:
             continue
         frame, share = max(bad, key=lambda b: (b[1], -b[0]))
-        heavy = sum(share_ > EDGE_ERROR for _, share_ in bad)
+        heavy = sum(s[1] > EDGE_ERROR and _lost(s) for s in samples)
         overlay = bool(v.get("overlay"))
         error = not overlay and heavy * max(1, step) >= EDGE_ERROR_S * fps
         what = "overlay" if overlay else "hero"
@@ -120,6 +123,14 @@ def edge_findings(shot_id: str, views: dict, step: int, fps: int) -> list[Findin
             f"{then}{'r' if error else 'R'}eframe or move the camera (camera.move keys a smooth orbit or dolly that keeps it "
             "in the band), or tag only the true subject as hero"))  # fmt: skip
     return sorted(out, key=lambda f: f.severity != "error")
+
+
+def _lost(sample) -> bool:
+    """Whether a frame_edge sample's hero is lost from the shot: what is left of it on screen covers under
+    SMALL_SHARE of the frame (unknown: not lost)."""
+    if len(sample) < 3:
+        return True
+    return sample[2] is not None and sample[2] < SMALL_SHARE
 
 
 def union(rects) -> Rect | None:

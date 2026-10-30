@@ -406,6 +406,12 @@ def move(cam, objs, f0: int, f1: int, orbit: float = 0.0, tilt: float = 0.0, to=
             cam.rotation_euler = e
             cam.keyframe_insert("rotation_euler", frame=f)
             prev = e.copy()
+        elif cam.rotation_mode == "QUATERNION":  # the same sign as the key before: no flick between opposite keys
+            q = cam.rotation_quaternion.copy()
+            if prev is not None and prev.dot(q) < 0:
+                cam.rotation_quaternion = -q
+                cam.keyframe_insert("rotation_quaternion", frame=f)
+            prev = cam.rotation_quaternion.copy()
         poses.append((f, np.array(cam.matrix_world, dtype=np.float64), centre))
     distances = _ease_distances(cam, poses, every, above_ground)
     _f, m_end, c_end = poses[-1]
