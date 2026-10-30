@@ -668,9 +668,19 @@ def test_frame_check_reports_unreadable_frames_as_errors(home, pendulum, monkeyp
         def progress(self, *a, **kw):
             pass
 
+    shaded = []
+
+    def shading_rows(sdir, short_, tl, tl_hash, shots, load):
+        shaded.append({shot.id: list(fs) for shot, fs in shots})
+        return []
+
+    monkeypatch.setattr(bsa_blender, "_shading_rows", shading_rows)
     args = types.SimpleNamespace(preset="preview")
-    with pytest.raises(bsa_blender.CliError, match="2 frame error"):
-        bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
+    for _ in range(2):  # checked, then kept from the cache: the shading check never gets the damaged frames
+        with pytest.raises(bsa_blender.CliError, match="2 frame error"):
+            bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
+        got = shaded[-1][short.shots[0].id]
+        assert frames[1] not in got and frames[2] not in got and frames[0] in got and frames[3] in got
     assert frames[1] not in given and frames[2] not in given and frames[0] in given
     data = json.loads((pendulum / "review" / "frame-checks-preview.json").read_text(encoding="utf-8"))
     bad = [f for f in data["findings"] if f["check"] == "unreadable_frame"]
@@ -678,6 +688,38 @@ def test_frame_check_reports_unreadable_frames_as_errors(home, pendulum, monkeyp
     assert all(f["severity"] == "error" and f["redo_frames"] == [f["frame"]] for f in bad)
     assert "cut off" in bad[0]["message"] and frames[1].name in bad[0]["message"]
     assert "--redo-flagged" in data["redo_all"]
+
+
+def test_one_shot_the_shading_check_cannot_read_leaves_the_others_checked(home, pendulum, monkeypatch, capsys):
+    """The shading check only adds warnings: a shot whose scene it can't read is skipped with a note, and the other
+    shots are still checked."""
+    import sys
+    import types
+
+    import bsa_blender
+    from bsa.image_checks import Finding
+
+    tl = _rendered(home, pendulum, "preview")
+    short = bsa_blender._load(pendulum)
+    (pendulum / "blend").mkdir(exist_ok=True)
+    (pendulum / "blend" / "short.blend").write_bytes(b"blend")
+    bad_id = short.shots[0].id
+
+    def scene(data, short_, sid, tl_hash):
+        if sid == bad_id:
+            raise KeyError(f"no scene for {sid}")
+        return None, types.SimpleNamespace(name=sid)
+
+    def frame_shading(scene_, numbered, sid, load):
+        return [Finding("shading", "warning", None, numbered[0][0], f"a flat face shades in {sid}")]
+
+    monkeypatch.setitem(sys.modules, "bsa.blender.shading", types.SimpleNamespace(frame_shading=frame_shading))
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_scene", scene)
+    shots = [(s, sorted((pendulum / "frames" / "preview" / s.id).glob("*.png"))) for s in short.shots]
+    rows = bsa_blender._shading_rows(pendulum, short, None, tl.get("hash"), shots, None)
+    assert sorted(r["shot"] for r in rows) == sorted(s.id for s in short.shots[1:]), rows
+    assert bad_id in capsys.readouterr().err
 
 
 def test_assets_download_goes_where_build_py_looks(home, pendulum, tmp_path, monkeypatch, capsys):

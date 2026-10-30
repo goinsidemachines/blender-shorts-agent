@@ -793,26 +793,30 @@ def _motion(sdir: Path, short, tl, tl_hash: str) -> dict:
 
 def _shading_rows(sdir: Path, short, tl, tl_hash: str, shots, load) -> list[dict]:
     """Shading-gradient warnings (bsa.blender.shading) on each shot's first, middle and last rendered frame: a large
-    flat face of a hero that shades strongly from one side to the other. [] when the scenes can't be read (it only
-    adds warnings)."""
+    flat face of a hero that shades strongly from one side to the other. `shots`: (shot, its readable frames). It
+    only adds warnings: a shot it can't read is skipped with a note (the others are still checked), and [] when the
+    scenes can't be read at all."""
     if not _blend(sdir).is_file():
         return []
     try:
         from bsa.blender.shading import frame_shading
 
         data = _open_blend(sdir)
-        rows = []
-        for shot, frames in shots:
-            if not frames:
-                continue
+    except Exception as exc:  # noqa: BLE001 - the shading check only adds warnings
+        print(f"frame-check: shading not checked ({exc})", file=sys.stderr)
+        return []
+    rows = []
+    for shot, frames in shots:
+        if not frames:
+            continue
+        try:
             picked = sorted({frames[0], frames[len(frames) // 2], frames[-1]})
             numbered = [(int(p.stem), p) for p in picked if p.stem.isdigit()]
             scene = _scene(data, short, shot.id, tl_hash)[1]
             rows += [{**asdict(f), "shot": shot.id} for f in frame_shading(scene, numbered, shot.id, load)]
-        return rows
-    except Exception as exc:  # noqa: BLE001 - the shading check only adds warnings
-        print(f"frame-check: shading not checked ({exc})", file=sys.stderr)
-        return []
+        except Exception as exc:  # noqa: BLE001 - one shot's failure must not drop the others' warnings
+            print(f"frame-check: shading not checked for shot {shot.id} ({exc})", file=sys.stderr)
+    return rows
 
 
 FC_CACHE_VERSION = 1
@@ -912,6 +916,7 @@ def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> di
     cache_path = engine_runs.frame_check_cache_path(sdir, args.preset, side)
     cache, code = _load_fc_cache(cache_path), _fc_code()
     kept = {}
+    readable_shots = []  # (shot, its frames that are complete PNGs): the shading check reads only those
     workers = _fc_workers()
     before = 0
     for (shot, frames), item in zip(shots, items, strict=True):  # one shot at a time: never across a cut
@@ -938,12 +943,14 @@ def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> di
                 found += frame_checks(readable, load=read_png, progress=_progress_cb(on_frame), moving=moving,
                                       held=held, workers=workers)  # Blender's image loader, in threads where it can  # fmt: skip
             item["state"] = "done"
+        damaged = {f.frame for f in found if f.check == "unreadable_frame"}  # checked now or kept from the cache
+        readable_shots.append((shot, [p for p in frames if not (p.stem.isdigit() and int(p.stem) in damaged)]))
         kept[shot.id] = {"key": key, "findings": [asdict(f) for f in found]}
         for f in found:
             rows.append({**asdict(f), "shot": shot.id, **_redo(sdir, args.preset, f, spans[shot.id], side.flags())})
         before += len(frames)
     _save_fc_cache(cache_path, kept)
-    rows += _shading_rows(sdir, short, tl, tl_hash, shots, read_png)
+    rows += _shading_rows(sdir, short, tl, tl_hash, readable_shots, read_png)
     run.progress(before, total, force=True)
     rows.sort(key=lambda f: f["severity"] != "error")
     flagged = sum(1 for f in rows if f.get("redo_frames"))
