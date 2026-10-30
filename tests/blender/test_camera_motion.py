@@ -285,6 +285,35 @@ def test_framing_refuses_a_subject_under_the_ground():
         raise AssertionError("a camera was framed on a subject under the ground")
 
 
+def test_framing_under_open_water_is_not_under_the_ground():
+    """A camera under a water plane tagged "surface" (an underwater shot of a sunken wreck) is not under the ground:
+    open water is not ground, so no lift and no FramingError."""
+    _sc, cam = _scene()
+    bpy.ops.mesh.primitive_plane_add(size=400, location=(0, 0, 5))
+    water = bpy.context.object
+    water.name = "Water"
+    water["bsa_tags"] = "surface"
+    wreck = _box("Wreck", (6.0, 2.0, 2.0), (0, 0, -3))
+    _aim(cam, (0, -14, -2), (0, 0, -3))
+    out = camera.frame_objects(cam, [wreck], shot="s01")
+    assert out["lifted"] is None and cam.location.z < 5, (out, tuple(cam.location))
+
+
+def test_framing_a_floating_subject_with_no_floor_is_fine():
+    """A subject floating in empty space, framed from below it: there is no ground at all, and the subject itself
+    is not ground, so no lift and no FramingError."""
+    _sc, cam = _scene()
+    sat = _box("Satellite", (8.0, 3.0, 3.0), (0, 0, 10))
+    _aim(cam, (0, -20, 0), (0, 0, 10))
+    out = camera.frame_objects(cam, [sat], shot="s01")
+    assert out["lifted"] is None, out
+    _aim(cam, (0.5, -0.5, 0), (0, 0, 10))  # right under the subject, looking up at it
+    out = camera.frame_objects(cam, [sat], center=False, shot="s01")
+    assert out["lifted"] is None, out
+    out = camera.frame_box(cam, (-1, -1, -1), (1, 1, 1), of=sat, center=False, shot="s01")
+    assert out["lifted"] is None, out
+
+
 def test_frame_objects_puts_the_subject_between_explicit_rows():
     """px_top / px_bottom: the subject's top and bottom land on those screen rows (a tall subject: the height
     limits), centred across; the 1080x1920 frame is used whatever the scene's resolution says."""

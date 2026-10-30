@@ -10,7 +10,9 @@ world, or in one object's own coordinates): a part of one long mesh, with no hel
 
 The camera never ends up under the ground (`above_ground=True`, the default): centring slides it along its own up
 axis, so a camera aimed up from low down sinks; when the first surface straight above it faces up, or there is a
-surface above and none below, it is lifted just above that ground's top and pitched so the subject is still framed.
+surface above and none below that acts as ground for the subject (flat, broad, under it), it is lifted just above
+that ground's top and pitched so the subject is still framed. Open water (objects tagged "surface") and the framed
+objects themselves are never ground, and with no ground at all (a subject floating in empty space) nothing is done.
 When that cannot work (the subject wholly under the ground, or still under it after a few lifts) FramingError names
 the shot, the camera and the ground.
 
@@ -38,7 +40,8 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from bsa.blender.bake import is_overlay
+from bsa import viewer
+from bsa.blender.bake import is_overlay, is_surface
 from bsa.findings import FRAMING_PROP, framing_notes
 from bsa.image_checks import Finding
 from bsa.layout import H, Rect, W, caption_band, target_area
@@ -224,7 +227,7 @@ def frame_objects(cam, objs, frames=None, safe_rect: Rect | None = None, avoid=_
     pts = _corners(objs, scene, list(frames) if frames else [None])
     _set_pose(cam, pose)
     what = ", ".join(repr(o.name) for o in objs[:4]) + (f" and {len(objs) - 4} more" if len(objs) > 4 else "")
-    return _frame(cam, pts, scene, what, area, aim, center, key, above_ground, shot, shift)
+    return _frame(cam, pts, scene, what, area, aim, center, key, above_ground, shot, shift, objs)
 
 
 def frame_box(cam, lo, hi, of=None, frames=None, safe_rect: Rect | None = None, avoid=_DEFAULT, margin: float = 24,
@@ -247,7 +250,8 @@ def frame_box(cam, lo, hi, of=None, frames=None, safe_rect: Rect | None = None, 
         pts = _corners([of], scene, list(frames) if frames else [None], box)
         _set_pose(cam, pose)
         what = f"the box {box[0]} to {box[1]} of {of.name!r}"
-    return _frame(cam, pts, scene, what, area, aim, center, key, above_ground, shot, shift)
+    return _frame(cam, pts, scene, what, area, aim, center, key, above_ground, shot, shift,
+                  [of] if of is not None else [])
 
 
 def _fmt(v) -> str:
@@ -322,8 +326,10 @@ def _where(scene, shot) -> str:
     return f"shot {shot}, scene {scene.name!r}" if shot else f"scene {scene.name!r}"
 
 
-def _frame(cam, pts, scene, what, area, aim, center, key, above_ground=True, shot=None, shift=False) -> dict:
-    """Move the camera so the world points `pts` fill the framing band `area` (see frame_objects)."""
+def _frame(cam, pts, scene, what, area, aim, center, key, above_ground=True, shot=None, shift=False,
+           framed=()) -> dict:
+    """Move the camera so the world points `pts` fill the framing band `area` (see frame_objects). `framed`: the
+    objects framed, never taken for the ground."""
     size = float(np.ptp(pts, axis=0).max()) if len(pts) else 0.0
     if not np.all(np.isfinite(pts)) or size < MIN_SIZE:
         raise ValueError(f"frame_objects: {what} has no size to frame (no geometry, or every point in one place): "
@@ -338,8 +344,9 @@ def _frame(cam, pts, scene, what, area, aim, center, key, above_ground=True, sho
         cam.data.shift_x = cam.data.shift_y = 0.0  # centred from the camera's own axis each time
     m, settled = _fit(cam, scene, m, pts, area, center, shift=shift)
     lifted = None
+    skip = frozenset(o.name for o in framed)
     if above_ground:
-        m, settled, lifted = _lift(cam, scene, m, pts, area, center, settled, what, shot, shift)
+        m, settled, lifted = _lift(cam, scene, m, pts, area, center, settled, what, shot, shift, skip)
     cam.matrix_world = Matrix(m.tolist())
     if key is not None:
         cam.keyframe_insert("location", frame=key)
@@ -354,7 +361,7 @@ def _frame(cam, pts, scene, what, area, aim, center, key, above_ground=True, sho
     x, y, depth = project(m, pts)
     box = (float(x.min()), float(y.min()), float(x.max()), float(y.max()))
     found = _absurd(cam, what, pts, start, m[:3, 3], box, depth, settled, ortho)
-    below = None if above_ground else _under(scene, m[:3, 3], what)
+    below = None if above_ground else _under(scene, m[:3, 3], what, pts, skip)
     if below:
         found.insert(len(found) - (not settled), below)
     _note(scene, cam, key, shot, found)
@@ -371,16 +378,17 @@ def _frame(cam, pts, scene, what, area, aim, center, key, above_ground=True, sho
     }
 
 
-def _lift(cam, scene, m, pts, area, center, settled, what, shot, shift=False):
+def _lift(cam, scene, m, pts, area, center, settled, what, shot, shift=False, skip=frozenset()):
     """(m, settled, lifted): a camera under the ground lifted just above the ground's top and refitted with its height
     held there (pitching instead of sinking), until no ground is above it. FramingError when the subject is wholly
-    under the ground or the camera is still under it after GROUND_TRIES tries."""
+    under the ground or the camera is still under it after GROUND_TRIES tries. `skip`: names of the framed objects
+    (never ground)."""
     lifted = None
     size = float(np.ptp(pts, axis=0).max())
     clearance = max(GROUND_CLEARANCE * size, 2 * cam.data.clip_start, 0.05)
     from_z = float(m[2, 3])
     for attempt in range(GROUND_TRIES + 1):
-        ground = _ground(scene, m[:3, 3])
+        ground = _ground(scene, m[:3, 3], pts, skip)
         if ground is None:
             break
         top, name = ground
@@ -400,37 +408,63 @@ def _lift(cam, scene, m, pts, area, center, settled, what, shot, shift=False):
     return m, settled, lifted
 
 
-def _first_hit(scene, depsgraph, origin: Vector, direction: Vector):
-    """(location, normal, object) of the first surface along the ray that is not an overlay, or None."""
-    for _ in range(32):
+def _first_hit(scene, depsgraph, origin: Vector, direction: Vector, skip=frozenset()):
+    """(location, normal, object) of the first surface along the ray that can be ground, or None: overlays, open
+    water (tagged "surface") and the objects named in `skip` (the ones being framed) are looked through."""
+    for _ in range(64):
         hit, loc, normal, _index, obj, _m = scene.ray_cast(depsgraph, origin, direction)
         if not hit:
             return None
-        if obj is None or not is_overlay(obj.original):
+        src = obj.original if obj is not None else None
+        if src is None or not (is_overlay(src) or is_surface(src) or src.name in skip):
             return loc, normal, obj
-        origin = loc + direction * max(1e-4, 1e-6 * abs(loc.z))  # a glow or guide line: look through it
+        origin = loc + direction * max(1e-4, 1e-6 * abs(loc.z))  # a glow, water or the subject: look through it
     return None
 
 
-def _ground(scene, pos: np.ndarray) -> tuple[float, str] | None:
+def _acts_as_ground(obj, pts: np.ndarray) -> bool:
+    """Could the (evaluated) object be ground for the subject with world points `pts`: roughly flat and horizontal,
+    at least bsa.viewer.GROUND_MIN_SIDE and the subject's width each way, and under the subject's footprint (the
+    shape test of bsa.viewer.is_ground, without its height test: a subject sunk into a bank still stands on it)?"""
+    if obj is None:
+        return False
+    mw = np.array(obj.matrix_world, dtype=np.float64)
+    corners = np.array([tuple(c) for c in obj.bound_box], dtype=np.float64)
+    world = corners @ mw[:3, :3].T + mw[:3, 3]
+    lo, hi, s_lo, s_hi = world.min(0), world.max(0), pts.min(0), pts.max(0)
+    side = min(hi[0] - lo[0], hi[1] - lo[1])
+    if side < max(viewer.GROUND_MIN_SIDE, s_hi[0] - s_lo[0], s_hi[1] - s_lo[1]):
+        return False
+    if hi[2] - lo[2] > viewer.GROUND_FLAT * side:
+        return False
+    return bool(lo[0] <= s_hi[0] and s_lo[0] <= hi[0] and lo[1] <= s_hi[1] and s_lo[1] <= hi[1])
+
+
+def _ground(scene, pos: np.ndarray, pts: np.ndarray | None = None, skip=frozenset()) -> tuple[float, str] | None:
     """(the height of the ground's top above `pos`, the ground's name) when a camera at `pos` is under the ground or
     inside a solid, else None: the first surface straight above it faces up (it is seen from below), or there is a
     surface above it and none below (it is under all the scenery; a camera under a bridge still has the ground or
-    water below it). Under all the scenery, the top is the first surface facing up going up through it."""
+    water below it) and that object could be ground for the subject `pts` (_acts_as_ground: a floating object
+    over a camera in a floorless scene is not ground). Under all the scenery, the top is the first surface facing up
+    going up through it. Open water (tagged "surface") and the objects named in `skip` (the framed ones) are never
+    ground: they are looked through."""
     depsgraph = _depsgraph(scene)
     origin = Vector(pos.tolist())
     up = Vector((0.0, 0.0, 1.0))
-    above = _first_hit(scene, depsgraph, origin, up)
+    above = _first_hit(scene, depsgraph, origin, up, skip)
     if above is None:
         return None
     loc, normal, obj = above
-    if normal.z <= 0 and _first_hit(scene, depsgraph, origin, Vector((0.0, 0.0, -1.0))) is not None:
-        return None  # a ceiling or the underside of a bridge, with ground below
+    if normal.z <= 0:
+        if _first_hit(scene, depsgraph, origin, Vector((0.0, 0.0, -1.0)), skip) is not None:
+            return None  # a ceiling or the underside of a bridge, with ground below
+        if pts is not None and not _acts_as_ground(obj, pts):
+            return None  # nothing below and nothing ground-like above: no ground at all
     top = loc.z
     if normal.z <= 0:
         probe = loc
         for _ in range(32):
-            nxt = _first_hit(scene, depsgraph, probe + up * max(1e-4, 1e-6 * abs(probe.z)), up)
+            nxt = _first_hit(scene, depsgraph, probe + up * max(1e-4, 1e-6 * abs(probe.z)), up, skip)
             if nxt is None:
                 break
             probe, n, _o = nxt
@@ -440,9 +474,9 @@ def _ground(scene, pos: np.ndarray) -> tuple[float, str] | None:
     return float(top), (obj.original.name if obj is not None else "a surface")
 
 
-def _under(scene, pos: np.ndarray, what: str) -> str | None:
+def _under(scene, pos: np.ndarray, what: str, pts: np.ndarray | None = None, skip=frozenset()) -> str | None:
     """Why a camera at `pos` is under the ground or inside a solid (see _ground), or None."""
-    ground = _ground(scene, pos)
+    ground = _ground(scene, pos, pts, skip)
     if ground is None:
         return None
     top, name = ground
