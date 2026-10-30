@@ -108,6 +108,16 @@ def test_an_empty_half_is_reported():
     assert not viewer.framing_findings("s1", some)  # only for a part of the shot
 
 
+def test_a_wide_subject_centred_in_the_framing_band_passes():
+    from bsa.layout import target_area
+
+    band = target_area()  # where camera.frame_objects / frame_box put the subject by default
+    w = band.w
+    h = w / 1.6  # a wide 1.6:1 box, centred in the band
+    box = Rect(band.x, band.y + band.h / 2 - h / 2, w, h)
+    assert not viewer.framing_findings("s1", {f: [box] for f in range(1, 60, 5)})
+
+
 def test_heroes_off_screen_are_not_framing():
     assert not viewer.framing_findings("s1", {1: [None], 6: [Rect(-500, -500, 100, 100)]})
 

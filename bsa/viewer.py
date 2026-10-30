@@ -7,7 +7,7 @@ Screen boxes are pixels of the 1080x1920 frame, origin top-left (bsa.layout.Rect
 from __future__ import annotations
 
 from bsa.image_checks import Finding
-from bsa.layout import H, Rect, W, overlap_area
+from bsa.layout import H, Rect, W, overlap_area, target_area
 
 COVER_WARN = 0.25  # a caption, badge or label over more than this share of a subject's box on screen: warning
 COVER_ERROR = 0.5  # over this share ...
@@ -85,7 +85,7 @@ def coverage_findings(shot_id: str, samples: dict, step: int, fps: int) -> list[
             "covered", "error" if error else "warning", name, frame,
             f"the {what} {text!r} covers {100 * share:.0f}% of {whose} on screen in shot {shot_id!r} (frames "
             f"{frame_spans(hit['frames'], step)}): the viewer can't see it there. Frame the subject clear of the caption "
-            "band and the badge corner (bsa.layout.frame_area), shorten the text, or move the label"))  # fmt: skip
+            "band and the badge corner (bsa.layout.target_area, camera.frame_objects' default band), shorten the text, or move the label"))  # fmt: skip
     return sorted(out, key=lambda f: f.severity != "error")
 
 
@@ -100,7 +100,9 @@ def union(rects) -> Rect | None:
 def framing_findings(shot_id: str, boxes: dict, skip=frozenset()) -> list[Finding]:
     """Warnings for a shot whose subject (the union of its heroes' boxes on screen, cut to the frame) is under
     SMALL_SHARE of the frame, or (not small) leaves the top or bottom half of the frame empty (reaches less than
-    EMPTY_REACH of the frame height into it), for MOST of its sampled frames. `boxes`: {frame: [Rect or None per hero]}; frames in
+    EMPTY_REACH of the frame height into it), for MOST of its sampled frames. The halves split at the centre of the
+    default framing band (bsa.layout.target_area, where camera.frame_objects / frame_box put the subject), not at
+    H/2: a subject centred in that band always reaches both. `boxes`: {frame: [Rect or None per hero]}; frames in
     `skip` (the shot's `wide`) and frames with no hero on screen are not counted."""
     seen = {f: union(clip(r) for r in rs) for f, rs in boxes.items() if f not in skip}
     seen = {f: u for f, u in seen.items() if u is not None}
@@ -118,14 +120,17 @@ def framing_findings(shot_id: str, boxes: dict, skip=frozenset()) -> list[Findin
             "or use a longer lens; if the shot is a deliberate wide or establishing shot, give it \"wide\": true (or "
             "the reason) in short.json"))  # fmt: skip
     reach = EMPTY_REACH * H
-    for half, empty in (("top", lambda u: u.y > H / 2 - reach), ("bottom", lambda u: u.bottom < H / 2 + reach)):
+    band = target_area()
+    mid = band.y + band.h / 2  # the band's own centre (about row 731), not H/2
+    for half, empty in (("top", lambda u: u.y > mid - reach), ("bottom", lambda u: u.bottom < mid + reach)):
         frames = [f for f, u in seen.items() if empty(u) and f not in small]  # a small subject is reported as such
         if len(frames) >= MOST * n:
             out.append(Finding(
                 "framing", "warning", None, frames[0],
-                f"the {half} half of the frame has no hero in {len(frames)} of {n} sampled frames of shot {shot_id!r}: "
-                "the subject sits in one half and the other is empty. Centre it in the area above the captions "
-                "(bsa.layout.frame_area) or move the camera; give the shot \"wide\": true (or the reason) if the "
+                f"the {half} half of the framing band has no hero in {len(frames)} of {n} sampled frames of shot {shot_id!r}: "
+                "the subject sits in one half and the other is empty. Centre it in the band between the top cards and "
+                "the captions (bsa.layout.target_area, where camera.frame_objects / frame_box frame by default) or "
+                "move the camera; give the shot \"wide\": true (or the reason) if the "
                 "space is deliberate"))  # fmt: skip
     return out
 
