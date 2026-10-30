@@ -222,6 +222,8 @@ def cmd_new_short(args) -> dict:
     if not root:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
     length = 45 if args.length is None else args.length  # the interview's default
+    if isinstance(length, float) and length.is_integer():
+        length = int(length)  # "--length 40" is stored as 40, not 40.0
     if not LENGTH_RANGE_S[0] <= length <= LENGTH_RANGE_S[1]:
         raise CliError(f"--length must be {LENGTH_RANGE_S[0]} to {LENGTH_RANGE_S[1]} seconds, got {length:g}")
     try:
