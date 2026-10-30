@@ -98,5 +98,11 @@ def build_short(short_dir: Path | str, plugin_root: Path | str = PLUGIN_ROOT, fo
         raise TypeError(f"{build_py} must define build(short_dir)")
     ns["build"](str(short_dir))
     showing = show_scene(bpy, first) if bpy is not None and first else None
+    framing = []  # the framing warnings build.py's frame_objects / frame_box kept on the scenes (also check findings)
+    if bpy is not None:
+        from bsa.findings import framing_notes
+
+        framing = [f"scene {sc.name}: camera {n.get('camera')}: {n.get('message')}" for sc in bpy.data.scenes
+                   for n in framing_notes(sc)]  # fmt: skip
     return {"short": str(short_dir), "reloaded": len(dropped), "blend": str(short_dir / "blend" / "short.blend"),
-            "showing": showing}  # fmt: skip
+            "showing": showing, "framing": framing}  # fmt: skip
