@@ -1518,6 +1518,52 @@ def test_grab_maps_seconds_to_frames(home, pendulum, monkeypatch, capsys):
     assert "outside the video" in capsys.readouterr().err
 
 
+def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys):
+    """Grabs from an earlier edit of the video are removed before new ones are written (a requested second that
+    lands on another frame would leave an old frame beside the new ones); a side run's grabs are its own."""
+    import os
+    import types
+
+    import bsa_blender
+
+    mp4 = pendulum / "out" / "pendulum-preview.mp4"
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"mp4 one")
+    grabs = pendulum / "review" / "grabs"
+    grabs.mkdir(parents=True)
+    for name in ("preview-f0886.png", "preview-sheet.png", "preview-eevee-f0001.png", "final-f0001.png"):
+        (grabs / name).write_bytes(b"old")
+    fake_edit = types.ModuleType("bsa.blender.edit")
+    fake_edit.probe = lambda p: {"width": 1080, "height": 1920, "fps": 30.0, "frames": 60, "has_audio": True}
+    fake_grab = types.ModuleType("bsa.blender.grab")
+    fake_grab.frame_at = lambda t, fps, n: int(t * fps) + 1
+
+    def grab_frames(mp4, frames, folder, stem):
+        for f in frames:
+            (folder / f"{stem}-f{f:04d}.png").write_bytes(b"new")
+
+    fake_grab.grab_frames = grab_frames
+    import bsa.blender
+
+    monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake_edit)
+    monkeypatch.setitem(sys.modules, "bsa.blender.grab", fake_grab)
+    monkeypatch.setattr(bsa.blender, "grab", fake_grab, raising=False)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "1"]) == 0
+    out = _result(capsys)
+    assert out["cleared"] == 2
+    assert sorted(p.name for p in grabs.glob("*.png")) == ["final-f0001.png", "preview-eevee-f0001.png",
+                                                          "preview-f0031.png"]  # fmt: skip
+    assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "0"]) == 0  # the same video
+    assert _result(capsys)["cleared"] == 0 and (grabs / "preview-f0031.png").is_file()
+    mp4.write_bytes(b"mp4 two, edited again")
+    st = mp4.stat()
+    os.utime(mp4, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "1"]) == 0
+    assert _result(capsys)["cleared"] == 2  # f0001 and f0031 came from the older video
+    assert sorted(p.name for p in grabs.glob("preview-f*.png")) == ["preview-f0031.png"]
+
+
 def test_frame_check_findings_carry_a_redo_command(tmp_path):
     import bsa_blender
     from bsa.image_checks import Finding

@@ -199,7 +199,9 @@ The single steps, when you need one on its own:
    `out/<slug>-preview.mp4` (`out/<slug>.mp4` for `--preset final`) at full size into
    `review/grabs/preview-f0046.png` and so on (its result maps each second to its frame and file);
    `--sheet [--count 12] [--columns 4]` makes one quarter-size contact sheet of evenly spaced frames,
-   `review/grabs/preview-sheet.png`, for an overview. No .blend is needed. The grabs use the Standard view
+   `review/grabs/preview-sheet.png`, for an overview. Grabs of an older edit of the same video are removed first
+   (the result's `cleared` counts them), so the folder only ever holds frames of the video as it is now; a side
+   run's grabs are its own. No .blend is needed. The grabs use the Standard view
    transform, so their colours match the video (pulling frames through a default scene's AgX washes them out). Check
    captions, labels, badges and the end card where they really sit, and grab the moments where parts move against
    each other at full size: a contact sheet is too small to show thin parts passing through each other.

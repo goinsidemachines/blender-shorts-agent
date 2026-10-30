@@ -11,7 +11,9 @@ status have marked their run as starting there.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import re
 import sys
 from contextlib import contextmanager
 from dataclasses import asdict, replace
@@ -1080,16 +1082,45 @@ def cmd_grab(args) -> dict:
     stem = f"{args.preset}{side.suffix}"  # a side run's grabs never replace the approved run's
     if args.sheet:
         frames = grab.sheet_frames(n, args.count)
+        cleared = _fresh_grabs(folder, stem, mp4)
         sheet = grab.contact_sheet(mp4, frames, folder / f"{stem}-sheet.png", columns=args.columns)
-        return {"mp4": str(mp4), "sheet": str(sheet), "frames": frames,
+        return {"mp4": str(mp4), "sheet": str(sheet), "frames": frames, "cleared": cleared,
                 "seconds": [round((f - 1) / fps, 2) for f in frames]}  # fmt: skip
     try:
         frames = [grab.frame_at(t, fps, n) for t in args.at]
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    cleared = _fresh_grabs(folder, stem, mp4)
     grab.grab_frames(mp4, list(dict.fromkeys(frames)), folder, stem)
-    return {"mp4": str(mp4), "grabs": [{"seconds": t, "frame": f, "path": str(folder / f"{stem}-f{f:04d}.png")}
-                                      for t, f in zip(args.at, frames, strict=True)]}  # fmt: skip
+    return {"mp4": str(mp4), "cleared": cleared,
+            "grabs": [{"seconds": t, "frame": f, "path": str(folder / f"{stem}-f{f:04d}.png")}
+                      for t, f in zip(args.at, frames, strict=True)]}  # fmt: skip
+
+
+_GRAB = re.compile(r"-(f\d{4}|sheet)\.png$")
+
+
+def _fresh_grabs(folder: Path, stem: str, mp4: Path) -> int:
+    """Remove this preset's (or side run's) grabs when they came from another video than `mp4` (another edit of it:
+    its size or time changed), so frames of an older video never sit beside new ones. The video they came from is
+    noted in `<folder>/<stem>.source.json`; grabs with no note are older than the note, so they go too. Returns how
+    many files were removed. Other presets' and side runs' grabs are left alone."""
+    st = mp4.stat()
+    source = {"mp4": mp4.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    note = folder / f"{stem}.source.json"
+    try:
+        same = json.loads(note.read_text(encoding="utf-8")) == source
+    except (OSError, ValueError):
+        same = False
+    removed = 0
+    if not same and folder.is_dir():
+        for path in folder.glob(f"{glob.escape(stem)}-*.png"):
+            if path.name[len(stem):] and _GRAB.fullmatch(path.name[len(stem):]):
+                path.unlink()
+                removed += 1
+    folder.mkdir(parents=True, exist_ok=True)
+    note.write_text(json.dumps(source), encoding="utf-8")
+    return removed
 
 
 def cmd_extremes(args) -> dict:
