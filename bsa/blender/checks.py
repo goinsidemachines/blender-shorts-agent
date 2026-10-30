@@ -7,7 +7,8 @@ node instances) gets the materials and images checks too, plus one "instances" w
 overlaps, normals, grounding and pops are not checked on instances: append the objects instead. An object tagged
 "overlay" (a glow halo, a distance line, an arrow: not physical geometry) is left out of the overlap and z-fighting
 checks (as either object of a pair), self_zfight, self_overlap, floating (neither checked nor counted as a support)
-and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero. An open mesh
+and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero (not when
+tagged "overlay:may-exit": it leaves the frame on purpose). An open mesh
 tagged "surface" (water moved by waves, a liquid level: things float in it and dip into it) is left out of the
 overlap and z-fighting checks (as either object of a pair) and gets every other check; it still holds up a grounded
 object. A closed mesh is a solid: it is checked as usual whatever its tags, and a "surface" tag on it is a names
@@ -115,7 +116,7 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from bsa.blender.bake import is_hero, is_overlay, is_surface, tags
+from bsa.blender.bake import is_hero, is_overlay, is_surface, may_exit, tags
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
 from bsa.pops import find_pops
@@ -388,7 +389,7 @@ class _Run:
                 continue
             geos[obj.name] = geo
             state = _view_state(self.scene, cam, geo) if cam else "in"
-            if cam and (is_hero(obj, shot_id) or obj.name in self.overlay):  # an overlay stays in frame too
+            if cam and (is_hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
                 views.setdefault(obj.name, []).append((frame, state))
             if obj.name not in self.static_done:
                 self.static_done.add(obj.name)
