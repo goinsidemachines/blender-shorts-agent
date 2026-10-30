@@ -299,6 +299,37 @@ def test_a_fast_object_crossing_the_frame_is_not_flicker():
     assert [f for f in _run(frames) if f.check == "flicker"] == []
 
 
+def _coin(f, top, height, width=22, x=40, value=0.95):
+    """A bright falling, spinning coin (an ellipse) with its top at row `top`, cut off by the frame's edges."""
+    h, w = f.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    cy, cx = top + height / 2, x + width / 2
+    f[((yy - cy) / (height / 2)) ** 2 + ((xx - cx) / (width / 2)) ** 2 <= 1] = value
+
+
+def test_a_coin_falling_into_and_out_of_the_frame_is_not_flicker():
+    """A part entering the frame (in at the top, falling fast and spinning) or leaving it is motion, not flicker:
+    the spot it covers for one frame comes back, but what changed moved on (it is somewhere else for good)."""
+    base = _scene_frames()
+    tops = [None, None, None, -8, 40, 100, 165, None, None]  # in at the top, 60 px a frame, out at the bottom
+    heights = [0, 0, 0, 22, 8, 22, 10, 0, 0]  # spinning: edge-on every other frame
+    frames = []
+    for top, height in zip(tops, heights, strict=True):
+        f = base.copy()
+        if top is not None:
+            _coin(f, top, height)
+        frames.append(_rgb(f))
+    assert [f for f in _run(frames) if f.check == "flicker"] == []
+
+
+def test_flicker_beside_a_still_scene_is_still_found_when_nothing_moves_on():
+    """The entering-object rule needs a lasting change nearby: a patch that toggles alone is still flicker."""
+    base = _scene_frames()
+    frames = [base.copy() for _ in range(6)]
+    _coin(frames[3], 60, 22)  # appears for one frame and is gone, nothing anywhere else changes
+    assert [f.frame for f in _run([_rgb(f) for f in frames]) if f.check == "flicker"] == [4]
+
+
 def test_thin_lines_moving_faster_than_their_width_are_not_flicker():
     # Bevel shadows on floor slabs in a push-in: 2 px dark lines sliding 7 px a frame cover each pixel for one frame.
     base = _scene_frames()

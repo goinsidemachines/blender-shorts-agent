@@ -324,6 +324,23 @@ def _moved(cur: np.ndarray, others: tuple[np.ndarray, ...], box: tuple[int, int,
     return False
 
 
+FLICKER_TRAVEL = 0.3  # a lasting change within this share of the frame of a one-frame change ...
+FLICKER_TRAVEL_SHARE = 0.5  # ... at least this share of its size: an object entering, leaving or crossing the frame
+
+
+def _travels(a: np.ndarray, c: np.ndarray, box: tuple[int, int, int, int], n: int) -> bool:
+    """Something of the area's size changed for good near the area that changed for one frame (`box`, `n` cells, at
+    frame t): it was elsewhere at t-1 or is elsewhere at t+1. That is an object moving through: entering the frame
+    (a falling part, spinning, too far from where it was found again for `_moved`), leaving it, or crossing it.
+    Z-fighting and denoiser flicker change one area for one frame and nothing else."""
+    h, w = a.shape
+    r = max(4, round(FLICKER_TRAVEL * max(h, w)))
+    y0, x0, y1, x1 = box
+    lasting = np.abs(c[max(0, y0 - r) : min(h, y1 + r), max(0, x0 - r) : min(w, x1 + r)]
+                     - a[max(0, y0 - r) : min(h, y1 + r), max(0, x0 - r) : min(w, x1 + r)]) > FLICKER_JUMP  # fmt: skip
+    return int(lasting.sum()) >= FLICKER_TRAVEL_SHARE * n
+
+
 def _where(box: tuple[float, float, float, float]) -> str:
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     row = "upper" if cy < 1 / 3 else "lower" if cy > 2 / 3 else "middle"
@@ -335,7 +352,8 @@ class Flicker:
     """Flicker inside one shot: an area whose luminance jumps at frame t and is back at t+1 (A-B-A), in a cluster
     bigger than noise. Z-fighting and denoiser blotches do this; camera moves and pans do not, and a moving object
     (which also covers each spot for one frame) is told apart by finding the area's look shifted in the frame
-    before or after. Feed frames in order with `add` (luminance, or pixels); the finding for frame t comes out when
+    before or after, or (an object entering, leaving or crossing the frame too fast or turning too much to be found
+    again) by a lasting change of its size nearby (`_travels`). Feed frames in order with `add` (luminance, or pixels); the finding for frame t comes out when
     t+1 is added. A frame that does not follow the last one starts over: never compare across a cut or a gap."""
 
     def __init__(self):
@@ -371,7 +389,7 @@ class Flicker:
                 break
             if min(y1 - y0, x1 - x0) < FLICKER_MIN_SIDE or not _solid(mask[y0:y1, x0:x1]):
                 continue
-            if _moved(b, (a, c), (y0, x0, y1, x1), reach):
+            if _moved(b, (a, c), (y0, x0, y1, x1), reach) or _travels(a, c, (y0, x0, y1, x1), n):
                 continue
             box = (round(x0 / w, 3), round(y0 / h, 3), round(x1 / w, 3), round(y1 / h, 3))
             out.append(FlickerFinding(
