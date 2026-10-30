@@ -108,6 +108,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import bmesh
 import bpy
@@ -326,10 +327,12 @@ class _Run:
         sizes: dict[str, float] = {}
         seen = {"below": {}, "framing": {}, "texts": {}}  # what the viewer sees at the sampled frames (see_frame)
         self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
+        shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
         for frame in range(shot.f0, shot.f1 + 1):
             self.scene.frame_set(frame)
             self.depsgraph.update()  # a scene that is not the context scene is not evaluated by frame_set alone
             objs = _render_meshes(self.scene, self.view_layer)
+            shown = self.pop_in(shot, frame, objs, shown)
             for obj in objs:
                 moved = obj.evaluated_get(self.depsgraph).matrix_world.translation
                 positions.setdefault(obj.name, []).append((frame, np.array(moved)))
@@ -354,6 +357,31 @@ class _Run:
         fps = self.tl.fps if self.tl is not None else 30
         for f in viewer.edge_findings(shot.id, views, max(1, every), fps):  # in the shot: it must stay in the frame
             self.add(f.check, f.severity, f.obj, f.frame, f.message, key=(f.obj, shot.id))
+
+    def pop_in(self, shot, frame, objs, before: dict[str, bool]) -> dict[str, bool]:
+        """Warn about an object (not an overlay) that switches on inside the camera frame after its shot's first
+        frame: it was not rendered (hide_render, a hidden collection) or was scaled to nothing at the frame before,
+        and now part of its box is on screen. It pops into view. Returns what is shown now, for the next frame."""
+        cam = self.scene.camera
+        now = {}
+        for obj in objs:
+            m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
+            scale = float(np.linalg.norm(m[:3, :3], axis=0).max())
+            now[obj.name] = scale > POP_IN_SCALE
+            if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name) or obj.name in self.overlay:
+                continue
+            corners = np.array([tuple(c) for c in obj.evaluated_get(self.depsgraph).bound_box], dtype=np.float64)
+            world = corners @ m[:3, :3].T + m[:3, 3]
+            box = SimpleNamespace(lo=world.min(0), hi=world.max(0))
+            if _box_state(self.scene, cam, box) == "out":
+                continue
+            how = "grows from zero scale" if obj.name in before else "is switched on (render visibility)"
+            self.add("pop_in", "warning", obj.name, frame,
+                     f"{obj.name!r} {how} at frame {frame} in shot {shot.id!r} with part of it inside the camera "
+                     "frame: it pops into view. Start it outside the frame so it moves in from the edge, switch it on "
+                     "at a cut (the shot's first frame) or while something hides it, or fade or grow it in on screen "
+                     "on purpose (then say why in your notes)", key=(obj.name, shot.id))  # fmt: skip
+        return now
 
     def short_shot(self, shot_id):
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
@@ -1312,6 +1340,7 @@ def _view_state(scene, cam, geo: _Geo) -> str:
     return _view(scene, cam, geo)[0]
 
 
+POP_IN_SCALE = 1e-4  # an object scaled to this or less (its largest axis) is not shown: it can pop in
 EDGE_VERTS = 4000  # vertices sampled for the share outside when the box straddles the camera plane
 
 
