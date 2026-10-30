@@ -132,3 +132,22 @@ def test_cli_fonts_with_a_weight(tmp_path):
     data = json.loads(out)
     assert data["installed"] is False and data["requested_weight"] == 600
     assert 'CLI assets plan SHORT "font:No Such Font Anywhere@600"' in data["warning"]
+
+
+def test_a_plain_variable_family_with_a_downloaded_weight_says_to_use_it(tmp_path):
+    """The static weight is already in the font cache: the warning says to name it ("Varia@600"), not to plan the
+    download again."""
+    dirs = _fonts(tmp_path, VF)
+    cache = _cache(tmp_path)
+    assert fonts.cached_weights("Varia", [tmp_path / "nope", cache]) == [600]
+    style = fonts.glyph_warnings(_short("Varia"), {"handle": ""}, dirs, system="Windows", cache_dirs=[cache])
+    assert len(style) == 1 and '"Varia@600"' in style[0] and "style.font" in style[0]
+    assert "assets plan" not in style[0]
+    s = {"handle": "", "brand": {"mode": "brand", "font": "Varia"}}
+    brand = fonts.glyph_warnings(_short("Varia"), s, dirs, system="Windows", cache_dirs=[cache])
+    assert len(brand) == 1 and 'brand.font "Varia@600"' in brand[0] and "assets plan" not in brand[0]
+    got = fonts.brand_font_check("Varia", dirs, system="Windows", cache_dirs=[cache])
+    assert 'settings set brand.font "Varia@600"' in got["warning"] and "assets plan" not in got["warning"]
+    # with nothing cached, the advice to plan the download stays
+    plain = fonts.glyph_warnings(_short("Varia"), {"handle": ""}, dirs, system="Windows", cache_dirs=[])
+    assert any(PLAN in w for w in plain)

@@ -501,6 +501,40 @@ def test_hero_leaving_frame_found():
     found = _found(sc, "frame_edge", "Hero")
     assert len(found) == 1, found
     assert found[0].frame > 1
+    assert found[0].severity == "error" and "% of 'Hero' is outside the camera frame at frame" in found[0].message
+
+
+def _switch_on(obj, frame):
+    obj.hide_render = True
+    obj.keyframe_insert("hide_render", frame=1)
+    obj.hide_render = False
+    obj.keyframe_insert("hide_render", frame=frame)
+
+
+def test_an_object_switched_on_inside_the_frame_pops_in():
+    """A part whose render visibility switches on mid-shot while it is on screen pops into view; one switched on
+    outside the frame (it then slides in), one there from the shot's start, and an overlay are fine. Scaling up from
+    nothing on screen pops too."""
+    sc = _scene()
+    key = _cube("Key", (0, 0, 0.5), size=0.5)
+    _switch_on(key, 15)
+    far = _cube("Far", (30, 0, 0.5), size=0.5)
+    _switch_on(far, 15)
+    glow = _cube("Glow", (1, 0, 0.5), size=0.5)
+    _switch_on(glow, 15)
+    bake.tag(glow, "overlay")
+    grow = _cube("Grow", (-1, 0, 2.0), size=0.5)
+    grow.scale = (0, 0, 0)
+    grow.keyframe_insert("scale", frame=1)
+    grow.keyframe_insert("scale", frame=9)
+    grow.scale = (1, 1, 1)
+    grow.keyframe_insert("scale", frame=20)
+    _cube("Still", (2, 0, 0.5), size=0.5)
+    found = [f for f in checks.run_checks(sc, _timeline()) if f.check == "pop_in"]
+    assert sorted(f.obj for f in found) == ["Grow", "Key"], found
+    key_f = next(f for f in found if f.obj == "Key")
+    assert key_f.frame == 15 and key_f.severity == "warning" and "'s1'" in key_f.message, key_f
+    assert "switched on" in key_f.message and "grows" in next(f for f in found if f.obj == "Grow").message
 
 
 def test_per_shot_hero_only_checked_in_its_shots():
@@ -1009,11 +1043,18 @@ def test_hard_rules_flag_object_mesh_material_and_collection_names():
     for c in list(box.users_collection):
         c.objects.unlink(box)
     coll.objects.link(box)
+    crate = _cube("Crate", (-6, 0, 0.5))
+    coll.objects.link(crate)
+    rigid = bpy.data.collections.new("RigidBodyWorld")  # Blender's own name: "body" here is "rigid body"
+    sc.collection.children.link(rigid)
+    rigid.objects.link(crate)
     assert not [f for f in checks.run_checks(sc, _timeline()) if f.check == "hard_rule"]
     rule = {"id": "r1", "text": "No people", "kind": "no_humans", "scope": "every short"}
     short = SimpleNamespace(shots=[], rules=[], rules_check={"r1": {"kept": "x", "cleared": {"hand": "clock hand"}}})
     found = [f for f in checks.run_checks(sc, _timeline(), short=short, rules=[rule]) if f.check == "hard_rule"]
-    assert {f.obj for f in found} == {"Worker", "Desk", "Gear", "Box"}, found
+    assert {f.obj for f in found} == {"Worker", "Desk", "Gear", "Crowd"}, found
+    crowd = [f for f in found if f.obj == "Crowd"]
+    assert len(crowd) == 1 and "collection 'Crowd' has" in crowd[0].message and "(on " not in crowd[0].message
     assert all(f.severity == "warning" and "r1" in f.message for f in found), found
     assert not [f for f in found if f.obj == hand.name]
 

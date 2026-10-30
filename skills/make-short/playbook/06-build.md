@@ -210,10 +210,21 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   title card, say). `shift=True` centres with the lens shift (`shift_x` / `shift_y`, keyed with `key=`) instead of
   sliding the camera: it keeps its angle and only moves along its view axis. The camera's real lens and sensor fit are used for the 1080x1920 frame, whatever the
   scene's resolution is while building. Pass `shot="s02"` so messages and findings name the shot. It returns the
-  box it reached; then look at the still. For a camera move, frame each end with `key=FRAME` (it keys that
-  position): it is safe on an already animated camera (it starts from the camera's pose now, measuring other frames
-  does not snap it back, existing keys stay), so frame and key each position in turn without clearing the
-  animation. Without `key` the new position is lost at the next frame change on a keyed camera.
+  box it reached; then look at the still. `key=FRAME` keys the framed position: it is safe on an already animated
+  camera (it starts from the camera's pose now, measuring other frames does not snap it back, existing keys stay).
+  Without `key` the new position is lost at the next frame change on a keyed camera.
+- **Camera moves: `camera.move`, never two keyed ends.** Framing only the two ends of an orbit or a swing and
+  letting Blender interpolate goes wrong: location and rotation interpolate apart, and the framing also slides the
+  camera sideways, so the in-between poses look past the subject (a shot can lose its subject halfway and still
+  pass both end stills). Re-framing every 8 frames by hand is no cure either: the distance bumps between keys.
+  Frame the start (`frame_objects(cam, objs, key=f0)`), then `camera.move(cam, objs, f0, f1, orbit=90)` (degrees
+  about the vertical through the subject; `tilt=` degrees up or down; `end_at=(x, y, z)` to end where a camera
+  position says; `to=[part]` to push in to a part, or with `orbit` too). It turns the start pose about the subject
+  on a smoothstep, frames a pose every 2 frames (`every=`) into the same band with the same options as
+  `frame_objects` (`px_top=`, `shift=`, `above_ground`...), eases the distance so it never bumps, keys Euler
+  rotations without flips, and replaces the camera's keys between `f0` and `f1`. The subject stays in the band the
+  whole way; read its `warnings` as for `frame_objects`. `frame_edge` errors when most of a hero leaves the frame
+  for half a second or more (`07-checks.md`).
   `camera.frame_box(cam, lo, hi, of=obj)` frames a box instead (`lo`, `hi` its corners, in `obj`'s own coordinates,
   following it; in the world without `of`): a part of one long mesh, with no helper object. The camera never ends
   up under the ground: centring slides it along its own up axis, so a camera aimed up from low down would sink;

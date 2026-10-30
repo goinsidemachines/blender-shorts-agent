@@ -120,8 +120,10 @@ the story, or, only when the word truly keeps the rule (a clock's "hand" or "fac
 every place it appears with the words around it ("line l02 \"…the other face is a ramp…\""), and one hint per rule
 says how to clear words: read the context, never clear a word you have not looked at. The words a rule checks are
 never narrowed for engineering terms (a tooth's "face", a freehub "body", an arrow "head"): clearing is your
-judgement, said in your own words. Word checks only catch words; you still judge every rule, including the ones
-with no kind.
+judgement, said in your own words. A cleared key of one word clears it everywhere; a key of several words is a
+phrase (`"driver pin"`, `"logo eye"`) and clears the word only where it stands in that phrase, so a lone "driver" is
+still flagged: prefer the phrase when the word is innocent only there. "rigid body" and "soft body" (physics terms)
+are never flagged. Word checks only catch words; you still judge every rule, including the ones with no kind.
 
 ## 6. Show it
 

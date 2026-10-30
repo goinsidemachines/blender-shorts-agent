@@ -326,26 +326,31 @@ def static_weights(name: str, dirs: list[Path], files: list[Path] | None = None)
     return sorted(out, key=lambda d: (d["weight"] or 0, d["file"]))
 
 
-def variable_warning(info: dict, name: str) -> str | None:
-    """Why a variable font draws the wrong weight in Blender, and what to do; None for a static font."""
+def variable_warning(info: dict, name: str, cached: list[int] | None = None) -> str | None:
+    """Why a variable font draws the wrong weight in Blender, and what to do; None for a static font. `cached`: the
+    static weights of the family already downloaded (cached_weights): then the advice is to name one."""
     if not info.get("variable"):
         return None
     w = info.get("default_weight")
     family = info.get("family") or name
-    return (f"{name} is a variable font: Blender loads only its default instance ({info.get('default_instance')}, "
-            f"weight {w}), so captions and 3D text come out {weight_name(w)}, not the weight you may expect. Use a "
-            f"static weight instead: an installed static file of {family}, or plan one with CLI assets plan SHORT "
-            f"\"font:{family}@600\" (it downloads only after the user's yes).")  # fmt: skip
+    why = (f"{name} is a variable font: Blender loads only its default instance ({info.get('default_instance')}, "
+           f"weight {w}), so captions and 3D text come out {weight_name(w)}, not the weight you may expect.")
+    if cached:
+        return (f"{why} A static weight is already downloaded: set style.font to \"{family}@{pick_weight(cached)}\" "
+                "(the family name alone loads the variable font).")  # fmt: skip
+    return (f"{why} Use a static weight instead: an installed static file of {family}, or plan one with CLI assets "
+            f"plan SHORT \"font:{family}@600\" (it downloads only after the user's yes).")  # fmt: skip
 
 
-def brand_font_check(name: str, dirs: list[Path] | None = None, system: str | None = None) -> dict:
+def brand_font_check(name: str, dirs: list[Path] | None = None, system: str | None = None,
+                     cache_dirs: list[Path] | None = None) -> dict:  # fmt: skip
     """What `settings set brand.font NAME` reports, once, at setup: the same check as `CLI fonts NAME` (installed,
     variable, default weight, the installed static weights) with a `warning` worded for the brand setting."""
     name = str(name or "").strip()
     dirs = font_dirs() if dirs is None else dirs
     family, weight = parse_weight(name)
     if weight is not None:  # "Family@600": a static file of that weight, installed or downloaded
-        path, _used, note = resolve_weight(family, weight, dirs, system)
+        path, _used, note = resolve_weight(family, weight, dirs, system, cache_dirs)
         found = note is None and path is not None
         return {"name": name, "installed": found, "file": str(path) if found else None,
                 "warning": None if found else f"{note}: every brand short would use that until the weight is there"}
@@ -366,9 +371,12 @@ def brand_font_check(name: str, dirs: list[Path] | None = None, system: str | No
         family = info["family"] or name
         statics = static_weights(family, dirs)
         out["static_weights"] = statics
+        cached = cached_weights(family, cache_dirs)
         use = (f"settings set brand.font to one of the installed static weights listed here (as \"{family}@<weight>\", "
                "or its file path)"
                if statics else
+               f"a static weight is already downloaded: settings set brand.font \"{family}@{pick_weight(cached)}\""
+               if cached else
                f"download a static weight: at the first short, plan it with CLI assets plan SHORT "
                f"\"font:{family}@600\" (only after the user's yes), then settings set brand.font \"{family}@600\", which "
                "finds the download")  # fmt: skip
@@ -475,12 +483,18 @@ def glyph_warnings(short, settings: dict, dirs: list[Path] | None = None, system
         return [weight_note] if weight_note else []
     shown = used or name
     out = [weight_note] if weight_note else []
-    vw = None if weight_note else variable_warning(info, shown)  # the weight note already says what to do
+    family = info.get("family") or shown
+    cached = cached_weights(family, cache_dirs) if info.get("variable") else []
+    vw = None if weight_note else variable_warning(info, shown, cached)  # the weight note already says what to do
     if vw and _is_brand_font(name, path, settings, short):  # the brand's font: point at the setting, briefly
-        out.append(f"{shown} (brand.font) is a variable font, so captions come out "
-                   f"{weight_name(info.get('default_weight'))}: fix it once with settings set brand.font to a static "
-                   f"weight, \"{info.get('family') or shown}@600\" or a file (CLI fonts \"{info.get('family') or shown}\" "
-                   "lists them)")  # fmt: skip
+        if cached:
+            out.append(f"{shown} (brand.font) is a variable font, so captions come out "
+                       f"{weight_name(info.get('default_weight'))}; a static weight is already downloaded: settings "
+                       f"set brand.font \"{family}@{pick_weight(cached)}\"")  # fmt: skip
+        else:
+            out.append(f"{shown} (brand.font) is a variable font, so captions come out "
+                       f"{weight_name(info.get('default_weight'))}: fix it once with settings set brand.font to a "
+                       f"static weight, \"{family}@600\" or a file (CLI fonts \"{family}\" lists them)")  # fmt: skip
     elif vw:
         out.append(vw)
     for where, text in text_items(short, settings):
@@ -547,6 +561,30 @@ def weight_file(family: str, weight: int, dirs: list[Path] | None = None, files:
         if path.is_file():
             return path
     return None
+
+
+_CACHED = re.compile(r"^(.+)-(\d{3})\.ttf$", re.IGNORECASE)
+
+
+def cached_weights(family: str, cache_dirs: list[Path] | None = None) -> list[int]:
+    """The static weights of `family` that `CLI assets` already downloaded into one of `cache_dirs` (default:
+    font_caches()), as <cache>/fonts/<Family>-<weight>.ttf: sorted, without repeats."""
+    want = cached_font_name(family, 100)[: -len("-100.ttf")].lower()
+    found = set()
+    for cache in font_caches() if cache_dirs is None else cache_dirs:
+        folder = Path(cache) / "fonts"
+        if not folder.is_dir():
+            continue
+        for path in folder.iterdir():
+            m = _CACHED.match(path.name)
+            if m and m.group(1).lower() == want and 100 <= int(m.group(2)) <= 900 and path.is_file():
+                found.add(int(m.group(2)))
+    return sorted(found)
+
+
+def pick_weight(weights: list[int], want: int = 600) -> int:
+    """The weight of `weights` closest to `want` (the heavier one on a tie)."""
+    return min(weights, key=lambda w: (abs(w - want), -w))
 
 
 def weight_hint(family: str, weight: int) -> str:

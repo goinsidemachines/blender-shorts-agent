@@ -6,7 +6,8 @@ own plane, until the objects' bounding boxes, at every frame given, just fit the
 by default the free space between the badge row at the top and the caption band, `margin` px inside; or explicit
 screen rows (`px_top`, `px_bottom`). Pixels are in the 1080x1920 layout frame, top-left origin, projected with the
 camera's real lens and sensor fit for that frame. `frame_box` does the same for a box given by its corners (in the
-world, or in one object's own coordinates): a part of one long mesh, with no helper object.
+world, or in one object's own coordinates): a part of one long mesh, with no helper object. `move` keys a smooth
+orbit or dolly between two framed poses, framing a pose every MOVE_EVERY frames so the subject stays in the band.
 
 The camera never ends up under the ground (`above_ground=True`, the default): centring slides it along its own up
 axis, so a camera aimed up from low down sinks; when the first surface straight above it faces up, or there is a
@@ -252,6 +253,168 @@ def frame_box(cam, lo, hi, of=None, frames=None, safe_rect: Rect | None = None, 
         what = f"the box {box[0]} to {box[1]} of {of.name!r}"
     return _frame(cam, pts, scene, what, area, aim, center, key, above_ground, shot, shift,
                   [of] if of is not None else [])
+
+
+MOVE_EVERY = 2  # camera.move keys a framed pose every this many frames
+
+
+def _smoothstep(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def _box_corners(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+    return np.array([(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+
+
+def _angles(v: np.ndarray) -> tuple[float, float, float]:
+    """(azimuth, elevation, length) of a vector: radians, azimuth about world Z from +X, elevation above the XY
+    plane."""
+    r = float(np.linalg.norm(v))
+    if r < 1e-9:
+        return 0.0, 0.0, 0.0
+    return math.atan2(v[1], v[0]), math.asin(max(-1.0, min(1.0, v[2] / r))), r
+
+
+def _clear_between(cam, f0: int, f1: int) -> None:
+    """Remove the camera's (and its lens data's) transform, ortho and shift keys strictly between f0 and f1."""
+    from bsa.blender.extremes import fcurves
+
+    keyed = set(_POSE) | {"ortho_scale", "shift_x", "shift_y"}
+    for owner in (cam, cam.data):
+        for fc in fcurves(owner):
+            if fc.data_path not in keyed:
+                continue
+            for k in reversed([k for k in fc.keyframe_points if f0 < k.co[0] < f1]):
+                fc.keyframe_points.remove(k)
+
+
+MOVE_SMOOTH = 6.0  # frames: the camera's distance along a move is eased over about this long (a Gaussian's sigma)
+
+
+def _ease_distances(cam, poses, every: int, above_ground: bool) -> list[float]:
+    """Ease the distance of each keyed pose of a move: the fit takes the larger of the width and the height limit, so
+    its distance turns a corner where one takes over from the other (a bump in the dolly). The distances along each
+    pose's view axis are smoothed (never nearer than fitted, so the subject stays in the band; the first and last
+    keys keep their framing) and the location is keyed again. Returns the camera's distance to the framed box's centre at each key."""
+    out = []
+    if cam.data.type != "ORTHO" and len(poses) > 2:
+        depth = np.array([float((c - m[:3, 3]) @ -(m[:3, 2] / np.linalg.norm(m[:3, 2]))) for _f, m, c in poses])
+        sigma = MOVE_SMOOTH / max(1, every)
+        k = np.arange(-math.ceil(3 * sigma), math.ceil(3 * sigma) + 1)
+        w = np.exp(-0.5 * (k / sigma) ** 2)
+        w /= w.sum()
+        pad = min(len(k) // 2, len(depth) - 1)  # mirrored through the end values: the first and last keys stay put
+        w = w[len(k) // 2 - pad : len(k) // 2 + pad + 1]
+        w /= w.sum()
+        eased = np.convolve(np.pad(depth, pad, mode="reflect", reflect_type="odd"), w, mode="valid")
+        for (f, m, _c), d0, d1 in zip(poses, depth, eased, strict=True):
+            back = m[:3, 2] / np.linalg.norm(m[:3, 2])
+            step = back * max(0.0, float(d1 - d0))
+            if not step.any() or (above_ground and step[2] < 0):
+                continue  # already as far as it needs, or easing would sink a camera the fit kept above the ground
+            m[:3, 3] += step
+            cam.matrix_world = Matrix(m.tolist())
+            cam.keyframe_insert("location", frame=f)
+    for _f, m, c in poses:
+        out.append(float(np.linalg.norm(m[:3, 3] - c)))
+    return out
+
+
+def move(cam, objs, f0: int, f1: int, orbit: float = 0.0, tilt: float = 0.0, to=None, end_at=None,
+         every: int = MOVE_EVERY, scene=None, shot: str | None = None, safe_rect: Rect | None = None,
+         avoid=_DEFAULT, margin: float = 24, top=_DEFAULT, px_top: float | None = None,
+         px_bottom: float | None = None, px_left: float | None = None, px_right: float | None = None,
+         shift: bool = False, above_ground: bool = True) -> dict:  # fmt: skip
+    """Key a smooth camera move from frame `f0` to `f1` that keeps `objs` framed in the band the whole way: an orbit
+    (`orbit` degrees about the world Z axis through the subject, counter-clockwise seen from above; `tilt` degrees up
+    or down), a dolly or push-in (`to`: other objects, a part, framed at the end: the framed box slides from `objs`'
+    box to theirs), or both. `end_at`: a camera position to end at instead of `orbit` / `tilt` (its direction from the
+    subject is used, the shorter way round; the distance still comes from the fit).
+
+    It starts from the camera's pose now (frame the start with frame_objects first, or set its angle), so the move
+    carries on from the shot's start without a jump. Every `every` frames (and at `f1`) that pose is turned about the
+    subject's centre on a smoothstep (slow out, slow in), carried along with the subject's box at that frame (measured
+    where the objects are then: keys, parents) and framed into the band exactly as frame_objects does (the same fit, band options and
+    above-ground lift), and keyed. Keying only the two ends of an orbit lets location and rotation interpolate apart,
+    so the camera swings off the subject in between; framing each pose densely keeps it in the band, and the
+    distance changes smoothly (no bumps between sparse refits). The camera's existing keys strictly between `f0` and
+    `f1` are removed first; keys outside stay. Euler rotations are keyed continuous (no 360 degree flips).
+
+    Returns {"keys": the keyed frames, "start" / "end": (azimuth, elevation) in degrees of the camera seen from the
+    subject, "distances": the camera's distance to the framed box's centre at each key, "warnings": the framing
+    warnings, each once (also issued as FramingWarning)}."""
+    objs = list(objs)
+    to = list(to) if to else []
+    if f1 <= f0:
+        raise ValueError(f"camera.move: f1 ({f1}) must come after f0 ({f0})")
+    scene = _scene_of(cam, objs + to, scene)
+    area = _area(safe_rect, avoid, margin, top, px_top, px_bottom, px_left, px_right)
+    every = max(1, int(every))
+    frames = list(range(f0, f1 + 1, every))
+    if frames[-1] != f1:
+        frames.append(f1)
+    pose = _pose(cam)  # the pose now: measuring other frames would snap a keyed camera back to its keys
+    boxes = []
+    for f in frames:  # the framed box at each key: objs', sliding to `to`'s
+        a = _corners(objs, scene, [f])
+        lo, hi = a.min(0), a.max(0)
+        if to:
+            b = _corners(to, scene, [f])
+            s = _smoothstep((f - f0) / (f1 - f0))
+            lo, hi = lo + (b.min(0) - lo) * s, hi + (b.max(0) - hi) * s
+        boxes.append((lo, hi))
+    _set_pose(cam, pose)
+    _depsgraph(scene).update()
+    m0 = np.array(cam.matrix_world, dtype=np.float64)
+    c0 = (boxes[0][0] + boxes[0][1]) / 2
+    az0, el0, r0 = _angles(m0[:3, 3] - c0)
+    if r0 < 1e-9:
+        raise ValueError(f"camera.move: camera {cam.name!r} sits at the subject's centre: give it a start position")
+    if end_at is not None:
+        az1, el1, _ = _angles(np.asarray(end_at, dtype=np.float64) - (boxes[-1][0] + boxes[-1][1]) / 2)
+        turn, rise = (az1 - az0 + math.pi) % (2 * math.pi) - math.pi, el1 - el0  # the shorter way round
+    else:
+        turn, rise = math.radians(orbit), math.radians(tilt)
+    limit = math.radians(89)
+    rise = max(-limit, min(limit, el0 + rise)) - el0
+    what = ", ".join(repr(o.name) for o in objs[:4]) + (f" and {len(objs) - 4} more" if len(objs) > 4 else "")
+    _clear_between(cam, f0, f1)
+    euler = cam.rotation_mode not in ("QUATERNION", "AXIS_ANGLE")
+    prev = None
+    found: list[str] = []
+    poses = []
+    for f, (lo, hi) in zip(frames, boxes, strict=True):
+        s = _smoothstep((f - f0) / (f1 - f0))
+        rot = np.array(Matrix.Rotation(turn * s, 3, "Z"))  # the start pose, turned about the subject ...
+        v = rot @ (m0[:3, 3] - c0)
+        h = np.cross(v, (0.0, 0.0, 1.0))
+        if np.linalg.norm(h) > 1e-9 and rise:  # ... and raised or lowered over it
+            rot = np.array(Matrix.Rotation(rise * s, 3, Vector((h / np.linalg.norm(h)).tolist()))) @ rot
+        centre = (lo + hi) / 2
+        m = np.eye(4)
+        m[:3, :3] = rot @ m0[:3, :3]
+        m[:3, 3] = centre + rot @ (m0[:3, 3] - c0)
+        cam.matrix_world = Matrix(m.tolist())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _frame(cam, _box_corners(lo, hi), scene, what, area, False, True, f, above_ground, shot, shift,
+                   objs + to)  # fmt: skip
+        found += [str(w.message) for w in caught if issubclass(w.category, FramingWarning)]
+        if euler:  # the same turn as the key before, not one 360 degrees away
+            e = cam.rotation_euler.copy() if prev is None else cam.matrix_basis.to_euler(cam.rotation_mode, prev)
+            cam.rotation_euler = e
+            cam.keyframe_insert("rotation_euler", frame=f)
+            prev = e.copy()
+        poses.append((f, np.array(cam.matrix_world, dtype=np.float64), centre))
+    distances = _ease_distances(cam, poses, every, above_ground)
+    _f, m_end, c_end = poses[-1]
+    end = _angles(m_end[:3, 3] - c_end)
+    found = list(dict.fromkeys(found))
+    for w in found:
+        warnings.warn(w, FramingWarning, stacklevel=2)
+    return {"keys": frames, "start": (math.degrees(az0), math.degrees(el0)),
+            "end": (math.degrees(end[0]), math.degrees(end[1])), "distances": distances, "warnings": found}
 
 
 def _fmt(v) -> str:

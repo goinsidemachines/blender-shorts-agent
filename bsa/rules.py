@@ -64,6 +64,13 @@ KINDS: dict[str, Kind] = {
 
 _ID = re.compile(r"^r(\d+)$")
 
+# Phrases whose words never mean what a rule forbids, whatever the rule: physics terms ("rigid body" is no one's
+# body). Only phrases: the word alone is still flagged.
+INNOCENT_PHRASES = ("rigid body", "soft body")
+# Names Blender gives its own data (a rigid-body world's collections, made by bpy.ops.rigidbody.world_add): the
+# user never chose them, so the scene-name scan skips them. A ".001" suffix is Blender's too.
+BLENDER_MADE = re.compile(r"^(RigidBodyWorld|RigidBodyConstraints)(\.\d{3})?$")
+
 
 # --------------------------------------------------------------------------- the rules setting
 
@@ -182,11 +189,38 @@ def _base(word: str, words: frozenset) -> str | None:
     return None
 
 
-def _hits(words: frozenset, text: str, skip: set[str] = frozenset()) -> list[str]:
+def _same(a: str, b: str) -> bool:
+    """Whether two tokens are one word, singular or plural ("body" and "bodies", "pin" and "pins")."""
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return long_ in (short + "s", short + "es") or (short.endswith("y") and long_ == short[:-1] + "ies")
+
+
+def _covered(toks: list[str], phrases) -> set[int]:
+    """Positions of `toks` inside one of `phrases` (each a tuple of tokens), matched word by word."""
+    out: set[int] = set()
+    for p in phrases:
+        n = len(p)
+        for j in range(len(toks) - n + 1):
+            if all(_same(toks[j + k], p[k]) for k in range(n)):
+                out.update(range(j, j + n))
+    return out
+
+
+def _phrases(extra=()) -> tuple[tuple[str, ...], ...]:
+    return tuple(tuple(tokens(p)) for p in (*INNOCENT_PHRASES, *extra))
+
+
+def _hits(words: frozenset, text: str, skip: set[str] = frozenset(), phrases=None) -> list[str]:
+    """The flagged words of `text` (as they appear), leaving out cleared words (`skip`) and words inside an innocent
+    or cleared phrase (`phrases`: tuples of tokens; default INNOCENT_PHRASES)."""
+    toks = tokens(text)
+    inside = _covered(toks, _phrases() if phrases is None else phrases)
     out = []
-    for t in tokens(text):
+    for i, t in enumerate(toks):
         base = _base(t, words)
-        if base and base not in skip and t not in skip and t not in out:
+        if base and base not in skip and t not in skip and i not in inside and t not in out:
             out.append(t)
     return out
 
@@ -196,13 +230,19 @@ def hits(kind: str, text: str) -> list[str]:
     return _hits(KINDS[kind].words, text)
 
 
-def _skip(entry, words: frozenset) -> set[str]:
-    out = set()
+def _skip(entry, words: frozenset) -> tuple[set[str], tuple[tuple[str, ...], ...]]:
+    """(cleared words, phrases) from a rules_check entry: a one-word key clears that word everywhere; a key of
+    several words ("driver pin") is a phrase, and clears its words only where they stand in that phrase."""
+    out, phrases = set(), []
     for w in cleared(entry):
-        for t in tokens(w) or [w.lower()]:
+        toks = tokens(w)
+        if len(toks) > 1:
+            phrases.append(" ".join(toks))
+            continue
+        for t in toks or [w.lower()]:
             out.add(t)
             out.add(_base(t, words) or t)
-    return out
+    return out, _phrases(phrases)
 
 
 def _places(short) -> list[tuple[str, str]]:
@@ -210,11 +250,14 @@ def _places(short) -> list[tuple[str, str]]:
     out = []
     for ln in short.lines:
         out.append((f"line {ln.id}", " ".join(x for x in (ln.text, ln.say) if isinstance(x, str))))
-    for sh in short.shots:
-        from bsa.short import label_text
+    from bsa.short import label_text
 
-        out.append((f"shot {sh.id}", " ".join([sh.title, sh.picture, *(label_text(lb) for lb in sh.labels),
-                                               sh.badge or ""])))  # fmt: skip
+    for sh in short.shots:  # each text on its own, so a warning quotes the one label it is in
+        out.append((f"shot {sh.id} title", sh.title))
+        out.append((f"shot {sh.id} picture", sh.picture))
+        out += [(f"shot {sh.id} label", label_text(lb)) for lb in sh.labels]
+        if sh.badge:
+            out.append((f"shot {sh.id} badge", sh.badge))
     for fx in short.sfx:
         out.append((f"sfx {fx.kind!r} in shot {fx.shot}", fx.kind))
     for a in short.assets:
@@ -267,12 +310,16 @@ def context(text: str, token: str, n: int = CONTEXT_WORDS) -> str:
     return ("…" if lo > 0 else "") + snippet + ("…" if hi < len(words) else "")
 
 
-def _word_warnings(r: dict, kind: Kind, places, skip: set[str]) -> list[str]:
+def _word_warnings(r: dict, kind: Kind, places, skip) -> list[str]:
     """One warning per flagged word (its places, each with the words around it), then one hint to clear words that
-    keep the rule. The rule's words are never narrowed: this only says the same thing with less noise."""
+    keep the rule. The rule's words are never narrowed: this only says the same thing with less noise. `skip`:
+    (cleared words, phrases) from _skip."""
+    words_, phrases = skip
     by_word: dict[str, list[tuple[str, str, str]]] = {}
     for where, text in places:
-        for t in _hits(kind.words, text, skip):
+        if not isinstance(text, str) or not text.strip():
+            continue
+        for t in _hits(kind.words, text, words_, phrases):
             by_word.setdefault(_base(t, kind.words) or t, []).append((where, t, context(text, t)))
     out = []
     for base, found in by_word.items():
@@ -286,7 +333,8 @@ def _word_warnings(r: dict, kind: Kind, places, skip: set[str]) -> list[str]:
         example = json.dumps({w: "why it keeps the rule here" for w in by_word}, ensure_ascii=False)
         out.append(f"hard rule {describe(r)}: change the places above where a word means what the rule forbids. "
                    f"Where it does not (a tooth's face, a clock's hand), say why once in "
-                   f"rules_check.{r.get('id')}.cleared, e.g. {example}: that clears the word everywhere in this short."
+                   f"rules_check.{r.get('id')}.cleared, e.g. {example}: that clears the word everywhere in this short. A "
+                   'phrase ("driver pin") clears the word only where it stands in that phrase.'
                    + (" Clearing a word changes what the scene checks look for, so run BLENDER check SHORT again "
                       "after." if kind.scene else ""))  # fmt: skip
     return out
@@ -377,9 +425,11 @@ def name_hits(rules: list[dict], short, names) -> list[dict]:
     out = []
     for r in _scene_rules(rules):
         kind = KINDS[r["kind"]]
-        skip = _skip(_entry(short, r.get("id")), kind.words)
+        skip, phrases = _skip(_entry(short, r.get("id")), kind.words)
         for what, name, obj in names:
-            found = _hits(kind.words, name, skip)
+            if BLENDER_MADE.match(str(name)):  # Blender's own name for its own data, never the user's
+                continue
+            found = _hits(kind.words, name, skip, phrases)
             if found:
                 where = f"{what} {name!r}" + (f" (on {obj!r})" if obj and obj != name else "")
                 out.append({"rule": r, "obj": obj, "words": found,

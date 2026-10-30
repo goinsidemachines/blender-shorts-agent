@@ -108,6 +108,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import bmesh
 import bpy
@@ -321,15 +322,17 @@ class _Run:
     def shot(self, shot, every, progress=None):
         sampled = set(range(shot.f0, shot.f1 + 1, max(1, every))) | {shot.f1}
         positions: dict[str, list[tuple[int, np.ndarray]]] = {}
-        views: dict[str, list[tuple[int, str]]] = {}
+        views: dict[str, dict] = {}  # heroes and overlays: {"overlay", "samples": [(frame, share outside)]}
         self.cur, self.changed, self.hits, self.drift = {}, {}, {}, {}
         sizes: dict[str, float] = {}
         seen = {"below": {}, "framing": {}, "texts": {}}  # what the viewer sees at the sampled frames (see_frame)
         self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
+        shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
         for frame in range(shot.f0, shot.f1 + 1):
             self.scene.frame_set(frame)
             self.depsgraph.update()  # a scene that is not the context scene is not evaluated by frame_set alone
             objs = _render_meshes(self.scene, self.view_layer)
+            shown = self.pop_in(shot, frame, objs, shown)
             for obj in objs:
                 moved = obj.evaluated_get(self.depsgraph).matrix_world.translation
                 positions.setdefault(obj.name, []).append((frame, np.array(moved)))
@@ -351,14 +354,34 @@ class _Run:
         self.report_overlaps(shot, sampled)
         self.report_contacts(shot)
         self.report_seen(shot, seen, every)
-        for name, states in views.items():
-            if any(s != "out" for _, s in states):  # the hero is in this shot: it must stay inside the frame
-                bad = next(((f, s) for f, s in states if s != "in"), None)
-                if bad:
-                    where = "partly outside" if bad[1] == "partial" else "outside"
-                    what = "overlay" if name in self.overlay else "hero"
-                    self.add("frame_edge", "warning", name, bad[0], f"{what} is {where} the camera frame in shot "
-                             f"{shot.id!r}", key=(name, shot.id))  # fmt: skip
+        fps = self.tl.fps if self.tl is not None else 30
+        for f in viewer.edge_findings(shot.id, views, max(1, every), fps):  # in the shot: it must stay in the frame
+            self.add(f.check, f.severity, f.obj, f.frame, f.message, key=(f.obj, shot.id))
+
+    def pop_in(self, shot, frame, objs, before: dict[str, bool]) -> dict[str, bool]:
+        """Warn about an object (not an overlay) that switches on inside the camera frame after its shot's first
+        frame: it was not rendered (hide_render, a hidden collection) or was scaled to nothing at the frame before,
+        and now part of its box is on screen. It pops into view. Returns what is shown now, for the next frame."""
+        cam = self.scene.camera
+        now = {}
+        for obj in objs:
+            m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
+            scale = float(np.linalg.norm(m[:3, :3], axis=0).max())
+            now[obj.name] = scale > POP_IN_SCALE
+            if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name) or obj.name in self.overlay:
+                continue
+            corners = np.array([tuple(c) for c in obj.evaluated_get(self.depsgraph).bound_box], dtype=np.float64)
+            world = corners @ m[:3, :3].T + m[:3, 3]
+            box = SimpleNamespace(lo=world.min(0), hi=world.max(0))
+            if _box_state(self.scene, cam, box) == "out":
+                continue
+            how = "grows from zero scale" if obj.name in before else "is switched on (render visibility)"
+            self.add("pop_in", "warning", obj.name, frame,
+                     f"{obj.name!r} {how} at frame {frame} in shot {shot.id!r} with part of it inside the camera "
+                     "frame: it pops into view. Start it outside the frame so it moves in from the edge, switch it on "
+                     "at a cut (the shot's first frame) or while something hides it, or fade or grow it in on screen "
+                     "on purpose (then say why in your notes)", key=(obj.name, shot.id))  # fmt: skip
+        return now
 
     def short_shot(self, shot_id):
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
@@ -469,9 +492,10 @@ class _Run:
             if geo is None:
                 continue
             geos[obj.name] = geo
-            state = _view_state(self.scene, cam, geo) if cam else "in"
+            state, share = _view(self.scene, cam, geo) if cam else ("in", 0.0)
             if cam and (is_hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
-                views.setdefault(obj.name, []).append((frame, state))
+                views.setdefault(obj.name, {"overlay": obj.name in self.overlay, "samples": []})["samples"].append(
+                    (frame, share))
             if obj.name not in self.static_done:
                 self.static_done.add(obj.name)
                 self.static(obj, depsgraph, frame)
@@ -823,7 +847,8 @@ class _Run:
     def hard_rules(self, short, rules):
         """Names in the scene with words a hard rule may forbid (a "Worker" object, a "Skin" material under no
         people): warnings to look at, since a name is not a picture (a clock's "HourHand" is fine, and is cleared in
-        short.json rules_check)."""
+        short.json rules_check). A collection is reported once, as itself; names Blender gives its own data
+        (RigidBodyWorld) and innocent phrases ("rigid body") are skipped (bsa.rules.name_hits)."""
         from bsa.rules import name_hits
 
         names = []
@@ -834,9 +859,9 @@ class _Run:
             for slot in obj.material_slots:
                 if slot.material is not None:
                     names.append(("material", slot.material.name, obj.name))
-            for coll in obj.users_collection:
+            for coll in obj.users_collection:  # reported for the collection itself, once, not "on" one member
                 if coll is not self.scene.collection:
-                    names.append(("collection", coll.name, obj.name))
+                    names.append(("collection", coll.name, coll.name))
             if obj.instance_collection is not None:
                 names.append(("collection", obj.instance_collection.name, obj.name))
             lib = obj.library or (obj.data.library if obj.data is not None else None)
@@ -1312,6 +1337,40 @@ def _bvh(tris: np.ndarray) -> BVHTree:
 
 def _view_state(scene, cam, geo: _Geo) -> str:
     """ "in" (bounding box fully inside the camera frame), "partial", or "out"."""
+    return _view(scene, cam, geo)[0]
+
+
+POP_IN_SCALE = 1e-4  # an object scaled to this or less (its largest axis) is not shown: it can pop in
+EDGE_VERTS = 4000  # vertices sampled for the share outside when the box straddles the camera plane
+
+
+def _view(scene, cam, geo: _Geo) -> tuple[str, float]:
+    """(_view_state's answer, the share of the object outside the camera frame, 0 to 1): the share of its box's
+    area on screen that lies outside the frame, or, when the box reaches behind the camera, the share of its
+    vertices that are outside the frame or behind the camera."""
+    state = _box_state(scene, cam, geo)
+    if state != "partial":
+        return state, 0.0 if state == "in" else 1.0
+    corners = [(x, y, z) for x in (geo.lo[0], geo.hi[0]) for y in (geo.lo[1], geo.hi[1]) for z in (geo.lo[2], geo.hi[2])]
+    pts = [world_to_camera_view(scene, cam, Vector(c)) for c in corners]
+    if all(p.z > 0 for p in pts):
+        x0, x1 = min(p.x for p in pts), max(p.x for p in pts)
+        y0, y1 = min(p.y for p in pts), max(p.y for p in pts)
+        area = (x1 - x0) * (y1 - y0)
+        if area > 1e-12:
+            inside = max(0.0, min(x1, 1.0) - max(x0, 0.0)) * max(0.0, min(y1, 1.0) - max(y0, 0.0))
+            return state, float(min(1.0, max(0.0, 1 - inside / area)))
+    verts = geo.tris.reshape(-1, 3)
+    if len(verts) > EDGE_VERTS:
+        verts = verts[:: len(verts) // EDGE_VERTS + 1]
+    out = 0
+    for v in verts:
+        p = world_to_camera_view(scene, cam, Vector(v.tolist()))
+        out += not (p.z > 0 and 0.0 <= p.x <= 1.0 and 0.0 <= p.y <= 1.0)
+    return state, out / len(verts) if len(verts) else 1.0
+
+
+def _box_state(scene, cam, geo: _Geo) -> str:
     corners = [
         (x, y, z) for x in (geo.lo[0], geo.hi[0]) for y in (geo.lo[1], geo.hi[1]) for z in (geo.lo[2], geo.hi[2])
     ]
