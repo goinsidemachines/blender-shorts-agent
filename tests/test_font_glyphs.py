@@ -108,6 +108,42 @@ def test_glyph_warnings_warn_about_a_variable_style_font(tmp_path):
     assert any("variable" in w and "Light" in w for w in warnings)
 
 
+def test_a_variable_brand_font_is_named_once_briefly_at_validate(tmp_path):
+    """When the cause is brand.font, validate points at the setting in one short line instead of the full advice."""
+    vf = _write(tmp_path, "Varia-VF.ttf", build_variable("Lift", family="Varia"))
+    short = Short(slug="t", title="T", length_s=10, style={"font": str(vf)}, lines=[Line("l1", "Lift", "s1")],
+                  shots=[Shot("s1", "a", "p", "S")])  # fmt: skip
+    s = {"handle": "", "brand": {"mode": "brand", "font": str(vf)}}
+    warnings = fonts.glyph_warnings(short, s, [tmp_path / "fonts"], system="Windows")
+    assert len(warnings) == 1 and "brand.font" in warnings[0] and "Light" in warnings[0]
+    assert "assets plan" not in warnings[0] and len(warnings[0]) < 220
+    # a short with its own (fresh) look, or another font, still gets the full advice
+    fresh = fonts.glyph_warnings(short, {**s, "brand": {"mode": "fresh", "font": str(vf)}}, [tmp_path / "fonts"],
+                                 system="Windows")  # fmt: skip
+    assert len(fresh) == 1 and "assets plan" in fresh[0]
+
+
+def test_brand_font_check_warns_about_a_variable_font(tmp_path):
+    vf = _write(tmp_path, "Varia-VF.ttf", build_variable("abc", family="Varia"))
+    got = fonts.brand_font_check(str(vf), [tmp_path / "fonts"], system="Windows")
+    assert got["installed"] is True and got["variable"] is True and got["default_weight"] == 300
+    assert "brand.font" in got["warning"] and "font:Varia@600" in got["warning"] and got["static_weights"] == []
+    static = _write(tmp_path, "Testa-Bold.ttf", build_font("abc", family="Testa", weight=700))
+    assert fonts.brand_font_check(str(static), [tmp_path / "fonts"])["warning"] is None
+    missing = fonts.brand_font_check("No Such Family", [tmp_path / "fonts"], system="Linux")
+    assert missing["installed"] is False and "not installed" in missing["warning"]
+
+
+def test_cli_settings_set_brand_font_checks_the_font(tmp_path, bsa_home):
+    vf = _write(tmp_path, "Varia-VF.ttf", build_variable("abc", family="Varia"))
+    out = _cli("settings", "set", "brand.font", str(vf), env_home=bsa_home)
+    assert out.returncode == 0, out.stderr
+    check = json.loads(out.stdout)["font_check"]
+    assert check["variable"] is True and "brand.font" in check["warning"]
+    out = _cli("settings", "set", "brand.mode", "brand", env_home=bsa_home)
+    assert "font_check" not in json.loads(out.stdout)
+
+
 @pytest.mark.skipif(platform.system() != "Windows", reason="Windows system fonts")
 def test_real_windows_fonts():
     seg = fonts.find_font_file("Segoe UI", fonts.font_dirs())

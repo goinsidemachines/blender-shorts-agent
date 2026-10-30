@@ -200,7 +200,14 @@ def cmd_settings(args) -> dict:
     if args.key == "handle":
         value = value.strip().lstrip("@")  # "" = asked, and the user wants no handle
     s = settings.set_value(args.key, value)
-    return {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
+    out = {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
+    font = value if args.key == "brand.font" else (value.get("font") if args.key == "brand" and isinstance(
+        value, dict) else None)  # fmt: skip
+    if isinstance(font, str) and font.strip():  # checked once here, as CLI fonts does: not on every short
+        from bsa import fonts
+
+        out["font_check"] = fonts.brand_font_check(font)
+    return out
 
 
 def cmd_machine(args) -> dict:
