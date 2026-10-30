@@ -334,6 +334,57 @@ def variable_warning(info: dict, name: str) -> str | None:
             f"\"font:{family}@600\" (it downloads only after the user's yes).")  # fmt: skip
 
 
+def brand_font_check(name: str, dirs: list[Path] | None = None, system: str | None = None) -> dict:
+    """What `settings set brand.font NAME` reports, once, at setup: the same check as `CLI fonts NAME` (installed,
+    variable, default weight, the installed static weights) with a `warning` worded for the brand setting."""
+    name = str(name or "").strip()
+    dirs = font_dirs() if dirs is None else dirs
+    path = Path(name) if name and Path(name).is_file() else (find_font_file(name, dirs) if name else None)
+    out = {"name": name, "installed": path is not None, "file": str(path) if path else None, "warning": None}
+    if path is None:
+        note = resolve(name, dirs, system)[2] if name else None
+        out["warning"] = (f"{note}: every brand short would use that instead. Install {name}, or set brand.font to "
+                          "an installed font (CLI fonts lists a few).") if note else None  # fmt: skip
+        return out
+    info = font_info_or_none(path)
+    if info is None:
+        out["warning"] = f"{path.name} is not a font file Blender can read: set brand.font to another font"
+        return out
+    out.update(family=info["family"], variable=info["variable"], default_weight=info["default_weight"],
+               default_instance=info["default_instance"])  # fmt: skip
+    if info["variable"]:
+        family = info["family"] or name
+        statics = static_weights(family, dirs)
+        out["static_weights"] = statics
+        use = ("settings set brand.font to one of the installed static weights listed here (its file path)"
+               if statics else
+               f"download a static weight: at the first short, plan it with CLI assets plan SHORT "
+               f"\"font:{family}@600\" (only after the user's yes), then settings set brand.font to the downloaded "
+               "file's path")  # fmt: skip
+        out["warning"] = (f"{name} is a variable font: Blender loads only its default instance "
+                          f"({info.get('default_instance')}, weight {info['default_weight']}), so every brand short's "
+                          f"captions and 3D text come out {weight_name(info['default_weight'])}. Fix it once in the "
+                          f"brand: {use}.")  # fmt: skip
+    return out
+
+
+def _is_brand_font(name: str, path: Path, settings: dict, short) -> bool:
+    """Whether the short's style font is the brand's own font (brand.font) and the short follows the brand: then a
+    problem with it is the brand's, said once at setup, not the short's."""
+    from bsa import settings as bsa_settings
+
+    brand_font = str(bsa_settings.brand_for(settings or {}, short).get("font") or "").strip()
+    if not brand_font:
+        return False
+    if _squash(brand_font) == _squash(name):
+        return True
+    brand_path = Path(brand_font) if Path(brand_font).is_file() else None
+    try:
+        return brand_path is not None and brand_path.resolve() == Path(path).resolve()
+    except OSError:
+        return False
+
+
 def _candidates(system: str | None) -> tuple[str, ...]:
     key = system or platform.system()
     return (*FALLBACKS.get(key, FALLBACKS["Linux"]), *GLYPH_FALLBACKS.get(key, GLYPH_FALLBACKS["Linux"]))
@@ -411,7 +462,11 @@ def glyph_warnings(short, settings: dict, dirs: list[Path] | None = None, system
     shown = used or name
     out = []
     vw = variable_warning(info, shown)
-    if vw:
+    if vw and _is_brand_font(name, path, settings, short):  # the brand's font: point at the setting, briefly
+        out.append(f"{shown} (brand.font) is a variable font, so captions come out "
+                   f"{weight_name(info.get('default_weight'))}: fix it once with settings set brand.font to a static "
+                   f"weight (CLI fonts \"{info.get('family') or shown}\" lists them)")  # fmt: skip
+    elif vw:
         out.append(vw)
     for where, text in text_items(short, settings):
         miss = missing_chars(text, info)

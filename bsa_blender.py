@@ -50,10 +50,12 @@ def _load(sdir: Path):
 
 
 def _timeline(sdir: Path, short):
-    from bsa.narrate.run import takes_durations
+    from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import build_timeline
 
-    tl = build_timeline(short, takes_durations(sdir, short), settings.has_end_card(settings.load_settings(), short))
+    durations = takes_durations(sdir, short)
+    tl = build_timeline(short, durations, settings.has_end_card(settings.load_settings(), short),
+                        onsets=takes_onsets(sdir, short) if durations is not None else None)  # fmt: skip
     return tl, freshness.check_timeline(sdir, tl)  # (timeline, hash): it must match source/timeline.json
 
 
@@ -1252,12 +1254,15 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
     run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
         summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
     edit = run("edit", cmd_edit, ns(short=args.short, preset="preview", **which),
-               summary=lambda o: {"mp4": o.get("mp4")})  # fmt: skip
+               summary=lambda o: {"mp4": o.get("mp4"), **({"closing_note": (o.get("closing") or {}).get("note")}
+                                                          if (o.get("closing") or {}).get("note") else {})})  # fmt: skip
     out = {"steps": steps, "mp4": edit.get("mp4"), "checks": str(sdir / "review" / "checks.json"),
            "frame_checks": str(engine_runs.frame_checks_path(sdir, "preview", side)), "engine": side.engine,
            "engines": engine_runs.compare(sdir, "preview")}  # fmt: skip
     if side.tag:
         out["tag"] = side.tag
+    if edit.get("closing"):  # its "note" says when the voice line held the card past closing.seconds
+        out["closing"] = edit["closing"]
     if edit.get("warnings"):
         out["warnings"] = edit["warnings"]
     return out

@@ -40,8 +40,8 @@ with their end-card line above it (the `end_card` setting, e.g. "Follow for more
   It replaces the overlay end card. `BLENDER closing SHORT` makes it (`stills/closing.png`) and reports warnings;
   `BLENDER stills` and the edit make it too, and the storyboard and final pages show it for approval.
 - `closing.seconds` is the shortest hold, not a cut-off. When the voice line needs longer, the card holds for the
-  line plus a short lead-in (0.2 s) and pause (0.5 s), on purpose, so the line is never cut. The mix and edit results
-  then say so under `closing.note` ("closing card held 4.5 s so the voice line fits ..."), and the final page shows
+  line plus a short lead-in (0.2 s) and pause (0.5 s), on purpose, so the line is never cut. The mix, edit and
+  `BLENDER preview` results then say so under `closing.note` ("closing card held 4.5 s so the voice line fits ..."), and the final page shows
   the hold: tell the user. To keep the card short, shorten the voice line.
 - Look at the card against the user's hard rules like any other picture (no humans, faces and so on). The rule word
   checks in `CLI validate` read its voice line and website.
@@ -106,7 +106,11 @@ Two things go wrong with a brand font, and both are caught before anything rende
   installed, offer to download one: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
   Fonts (its licence is checked: OFL, Apache 2.0 or Ubuntu Font Licence), shown and approved like any asset
   (`assets.md`); after the yes, `assets download SHORT` puts it in `<workspace>/.assets-cache/fonts/` and you set
-  `style.font` to that path. Don't thicken thin text with `curve.offset` instead.
+  `style.font` to that path. Don't thicken thin text with `curve.offset` instead. For a brand, this is checked once,
+  at setup: `settings set brand.font NAME` returns a `font_check` with the same facts and a `warning` that says how
+  to fix it in the brand (set `brand.font` to a static weight's file path, then every brand short copies it). While
+  a brand short still uses a variable `brand.font`, `CLI validate` says so in one short line that points at the
+  setting, rather than repeating the full advice on every short.
 - **Missing glyphs draw as boxes.** Every character of the captions, labels, badges (upper case, as drawn) and the
   end card (its line and the @handle) is checked against the style font's character map. `CLI validate SHORT` (and
   `CLI fonts "NAME" --short SHORT`, or `--text "..."` for any text) warns with the character, its code point, where

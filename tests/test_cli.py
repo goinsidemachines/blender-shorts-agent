@@ -99,6 +99,9 @@ def test_new_short_with_a_topic_and_length(home, workspace):
     data = ok(run(home, "new-short", "The Lever", "--topic", "How a lever trades force for distance", "--length", "40"))
     spec = json.loads((Path(data["short"]) / "source" / "short.json").read_text(encoding="utf-8"))
     assert spec["topic"] == "How a lever trades force for distance" and spec["length_s"] == 40
+    assert isinstance(spec["length_s"], int)  # a whole number is stored as one, like every other short
+    half = ok(run(home, "new-short", "Gears", "--length", "42.5"))
+    assert json.loads((Path(half["short"]) / "source" / "short.json").read_text(encoding="utf-8"))["length_s"] == 42.5
     assert json.loads((Path(ok(run(home, "new-short", "Pulley"))["short"]) / "source" / "short.json").read_text(
         encoding="utf-8"))["length_s"] == 45  # the default
     proc = run(home, "new-short", "Too long", "--length", "200")
@@ -1367,6 +1370,19 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     assert "Steps" in page and "Done" in page
     status_out = ok(run(home, "render-status", "pendulum"))
     assert status_out["idle"] is True and "preview chain done" in status_out["summary"]
+
+
+def test_preview_chain_says_when_the_closing_card_is_held_longer(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    _fake_chain(monkeypatch, home, pendulum, [])
+    hold = {"seconds": 5.0, "set_seconds": 2.5, "note": "closing card held 5.0 s so the voice line fits"}
+    monkeypatch.setattr(bsa_blender, "cmd_edit", lambda *a, **k: {"mp4": "x-preview.mp4", "closing": hold})
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert out["closing"] == hold  # as the edit's own result says it
+    assert out["steps"][-1] == {"step": "edit", "mp4": "x-preview.mp4", "closing_note": hold["note"]}
 
 
 def test_preview_chain_stops_at_the_first_failure(home, pendulum, monkeypatch, capsys):

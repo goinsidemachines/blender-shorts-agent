@@ -20,10 +20,17 @@ finished.
      regenerates a take that doesn't match (alone, with seeds 8 then 9; for the user's own tool the command is
      run again with a lines file holding only those lines);
    - marks the `narration` stage itself (`status` `ok` or `captions-only`);
-   - re-times the short from the takes and rewrites `source/timeline.json` (returned as `timeline`).
+   - re-times the short from the takes and rewrites `source/timeline.json` (returned as `timeline`). A take that
+     opens with silence (some voices leave a lead-in) keeps its place in the mix, but its caption cards start when
+     the voice does: the timing measures each take's leading silence, so captions never show before the word;
+   - with the user's own tool, saves what the tool printed (stdout and stderr) to `audio/vo/narrator.log` and lists
+     its lines that mention a fallback, a warning or an error under `voice_log_notes` (the log's path is
+     `voice_log`).
 3. Read the result:
    - `status: ok`: carry on. If `message` names lines that may not be spoken clearly, listen to them if you can,
-     or reword the line in `short.json` and run `narrate` again (only that take is remade).
+     or reword the line in `short.json` and run `narrate` again (only that take is remade). If `voice_log_notes`
+     has lines (the tool fell back to another mode, or warned), tell the user in one line and check the takes it
+     names; the full output is in `audio/vo/narrator.log`.
    - `status: captions-only` with a `message`: say it **once**, in plain words ("The Kokoro voice didn't work (the
      engine isn't installed), so this short uses captions only. You can add a voice later."), then carry on. Do not
      retry in a loop, do not ask the user to fix it now.

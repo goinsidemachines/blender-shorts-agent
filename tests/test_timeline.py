@@ -31,6 +31,22 @@ def test_captions_only_timing():
     assert line.f1 - line.f0 + 1 == 102
 
 
+def test_captions_start_at_the_voice_onset_not_the_take_start():
+    """A take that opens with silence: the line (and its audio) stays where it was, its captions wait for the voice."""
+    lines = [Line("l01", "The pendulum swings. Then it stops.", "s01"), Line("l02", "Every time.", "s01")]
+    plain = build_timeline(_short(lines), {"l01": 3.0, "l02": 1.5})
+    tl = build_timeline(_short(lines), {"l01": 3.0, "l02": 1.5}, onsets={"l01": 0.5, "l02": 0.0})
+    assert [(s.f0, s.f1) for s in tl.lines] == [(s.f0, s.f1) for s in plain.lines]
+    assert tl.n_frames == plain.n_frames
+    l01 = [c for c in tl.cards if c.line_id == "l01"]
+    assert l01[0].f0 == tl.lines[0].f0 + 15 and l01[-1].f1 == tl.lines[0].f1  # 0.5 s at 30 fps
+    assert [(c.f0, c.f1) for c in tl.cards if c.line_id == "l02"] == [
+        (c.f0, c.f1) for c in plain.cards if c.line_id == "l02"]  # fmt: skip
+    # an onset past the take's end never leaves a line without a caption
+    late = build_timeline(_short(lines), {"l01": 3.0, "l02": 1.5}, onsets={"l01": 9.0})
+    assert [c for c in late.cards if c.line_id == "l01"][-1].f0 == late.lines[0].f1
+
+
 def test_long_take_stretches_shot():
     s = _short([Line("l01", "a", "s01"), Line("l02", "b", "s01")], min_s=3)
     tl = build_timeline(s, {"l01": 2.5, "l02": 2.0})

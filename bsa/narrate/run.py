@@ -18,7 +18,7 @@ from bsa import jobstate
 from bsa.narrate import custom as _custom
 from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
-from bsa.narrate.contract import NarrationError, check_take, read_durations
+from bsa.narrate.contract import NarrationError, check_take, read_durations, voice_onset
 from bsa.short import Short, spoken_text
 
 LOCAL_ENGINES = ("kokoro", "chatterbox", "chatterbox-turbo")
@@ -187,3 +187,13 @@ def takes_durations(short_dir: Path, short: Short) -> dict[str, float] | None:
         return read_durations(Path(short_dir) / "audio" / "vo", [ln.id for ln in short.lines])
     except NarrationError as exc:
         raise NarrationError(f"{exc}; run narration again (state SHORT reset narration, then narrate SHORT)") from exc
+
+
+def takes_onsets(short_dir: Path, short: Short) -> dict[str, float] | None:
+    """Seconds of leading silence per take (contract.voice_onset), so each line's captions start with the voice,
+    not with the take; None for a captions-only short. A missing or unreadable take counts as 0."""
+    info = jobstate.load_state(short_dir)["stages"].get("narration") or {}
+    if info.get("status") != "ok":
+        return None
+    vo = Path(short_dir) / "audio" / "vo"
+    return {ln.id: voice_onset(vo / f"{ln.id}.wav") for ln in short.lines}

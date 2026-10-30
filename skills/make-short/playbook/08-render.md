@@ -145,7 +145,8 @@ scenes are missing or from another timing, or with `--rebuild`), `state done bui
 that mark), `mix`, `check` (skipped when it already passed on every shot as it is now; otherwise only changed shots
 are checked again), `render --preset preview` (it resumes; only changed shots render again, and its step says which
 were kept and why the others rendered), `frame-check --preset preview` and `edit --preset preview`. Its
-result's `steps` say what ran or was skipped and why. It stops at the first failure with "stopped at <step>: ..."
+result's `steps` say what ran or was skipped and why, and its `closing` (as the edit's) has a `note` when the
+closing card holds longer than `closing.seconds` so its voice line fits: tell the user. It stops at the first failure with "stopped at <step>: ..."
 (for example the check errors, with the checks' counts in the result): fix that and run it again. In MCP mode,
 rebuild through the MCP first and run `BLENDER preview SHORT --no-build`: it never runs build.py and refuses with
 a plain message when the .blend is not current. The chain needs every stage up to narration done. Then do steps 3,

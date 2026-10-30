@@ -54,12 +54,13 @@ def load(sdir: Path):
 
 def current_timeline(sdir: Path, short):
     """The timeline from the takes when narration finished with a voice, else from reading time."""
-    from bsa.narrate.run import takes_durations
+    from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import build_timeline
 
     durations = takes_durations(sdir, short)
     end_card = settings.has_end_card(settings.load_settings(), short)
-    return build_timeline(short, durations, end_card=end_card), durations is not None
+    onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
+    return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
 
 
 def built_timeline(sdir: Path, short):
@@ -199,7 +200,14 @@ def cmd_settings(args) -> dict:
     if args.key == "handle":
         value = value.strip().lstrip("@")  # "" = asked, and the user wants no handle
     s = settings.set_value(args.key, value)
-    return {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
+    out = {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
+    font = value if args.key == "brand.font" else (value.get("font") if args.key == "brand" and isinstance(
+        value, dict) else None)  # fmt: skip
+    if isinstance(font, str) and font.strip():  # checked once here, as CLI fonts does: not on every short
+        from bsa import fonts
+
+        out["font_check"] = fonts.brand_font_check(font)
+    return out
 
 
 def cmd_machine(args) -> dict:
@@ -221,6 +229,8 @@ def cmd_new_short(args) -> dict:
     if not root:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
     length = 45 if args.length is None else args.length  # the interview's default
+    if isinstance(length, float) and length.is_integer():
+        length = int(length)  # "--length 40" is stored as 40, not 40.0
     if not LENGTH_RANGE_S[0] <= length <= LENGTH_RANGE_S[1]:
         raise CliError(f"--length must be {LENGTH_RANGE_S[0]} to {LENGTH_RANGE_S[1]} seconds, got {length:g}")
     try:
@@ -417,6 +427,9 @@ def cmd_narrate(args) -> dict:
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
     narrator = s.get("narrator") or {}
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
+    from bsa.narrate import custom
+
+    custom.clear_log(sdir / "audio" / "vo")  # this run's output only: the story's takes and the closing line's
     closing_note = None
     if narrator.get("provider") == "elevenlabs":  # one request for every line: never pay for the story twice
         result = narrate(sdir, voiced, s)
@@ -430,6 +443,9 @@ def cmd_narrate(args) -> dict:
                 closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
                                 "closing card is silent")  # fmt: skip
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    log = sdir / "audio" / "vo" / custom.LOG_FILE
+    if log.is_file():  # the user's own tool's output; its fallbacks and warnings would otherwise pass unseen
+        out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
     if closing_note:
         out["warnings"] = [closing_note]
     try:
