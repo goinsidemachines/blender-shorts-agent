@@ -152,9 +152,12 @@ def _split_cards(text: str, line_id: str, f0: int, f1: int) -> list[Card]:
     return cards
 
 
-def build_timeline(short: Short, durations: dict[str, float] | None, end_card: bool = False) -> Timeline:
+def build_timeline(short: Short, durations: dict[str, float] | None, end_card: bool = False,
+                   onsets: dict[str, float] | None = None) -> Timeline:  # fmt: skip
     """Lay shots out back to back; durations maps line id to its audio length in seconds. With `end_card` (the user
-    has a handle) the last shot holds END_CARD_S longer, so the end card never covers a line or its caption."""
+    has a handle) the last shot holds END_CARD_S longer, so the end card never covers a line or its caption.
+    `onsets` maps line id to the seconds of silence its take opens with (bsa.narrate.run.takes_onsets): the line and
+    its audio keep their frames, its caption cards start when the voice does."""
     fps = short.fps
     lead = round(LEAD_IN_S * fps)
     gap = _frames(GAP_S, fps)
@@ -177,7 +180,8 @@ def build_timeline(short: Short, durations: dict[str, float] | None, end_card: b
         pos = cursor + lead
         for ln, n in zip(mine, lens, strict=True):
             lines.append(Span(ln.id, pos, pos + n - 1))
-            cards += _split_cards(ln.text, ln.id, pos, pos + n - 1)
+            wait = min(round(float((onsets or {}).get(ln.id) or 0.0) * fps), max(n - 1, 0))
+            cards += _split_cards(ln.text, ln.id, pos + max(wait, 0), pos + n - 1)
             pos += n + gap
         cursor += length
     return Timeline(fps, cursor - 1, shots, lines, cards)

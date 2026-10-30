@@ -60,6 +60,38 @@ def wav_seconds(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
+ONSET_WINDOW_S = 0.01
+ONSET_BELOW_PEAK_DB = 35.0  # the voice starts at the first window within this many dB of the loudest one
+ONSET_FLOOR_DBFS = -55.0  # never count anything quieter than this as voice
+ONSET_PREROLL_S = 0.05  # captions show this much before the first sound, so they never trail the word
+
+
+def voice_onset(path: Path) -> float:
+    """Seconds of leading silence in a take (where the voice starts, less a small pre-roll): captions wait for it,
+    the mix still plays the take from its start. 0.0 for a take that starts at once or can't be read."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            rate, width, channels = w.getframerate(), w.getsampwidth(), w.getnchannels()
+            data = w.readframes(w.getnframes())
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+    if width != 2 or rate <= 0 or channels < 1:
+        return 0.0
+    x = np.frombuffer(data[: len(data) - len(data) % (2 * channels)], dtype="<i2").astype(np.float64) / 32768.0
+    x = x.reshape(-1, channels).mean(axis=1)
+    win = max(1, round(ONSET_WINDOW_S * rate))
+    n = len(x) // win
+    if n == 0:
+        return 0.0
+    rms = np.sqrt(np.mean(x[: n * win].reshape(n, win) ** 2, axis=1))
+    peak = float(rms.max())
+    threshold = max(peak * 10 ** (-ONSET_BELOW_PEAK_DB / 20), 10 ** (ONSET_FLOOR_DBFS / 20))
+    loud = np.nonzero(rms >= threshold)[0]
+    if len(loud) == 0:
+        return 0.0
+    return round(max(0.0, loud[0] * win / rate - ONSET_PREROLL_S), 3)
+
+
 def read_durations(out_dir: Path, ids: list[str]) -> dict[str, float]:
     """Seconds per line from durations.json, cross-checked against the WAV lengths (±0.05 s).
 

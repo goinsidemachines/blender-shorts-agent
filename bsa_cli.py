@@ -54,12 +54,13 @@ def load(sdir: Path):
 
 def current_timeline(sdir: Path, short):
     """The timeline from the takes when narration finished with a voice, else from reading time."""
-    from bsa.narrate.run import takes_durations
+    from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import build_timeline
 
     durations = takes_durations(sdir, short)
     end_card = settings.has_end_card(settings.load_settings(), short)
-    return build_timeline(short, durations, end_card=end_card), durations is not None
+    onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
+    return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
 
 
 def built_timeline(sdir: Path, short):
