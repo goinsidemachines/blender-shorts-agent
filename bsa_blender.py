@@ -1288,7 +1288,7 @@ def main(argv: list[str] | None = None) -> int:
             out = args.fn(args)
         _warn_stale_build(args, out)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
-        plain = isinstance(exc, (freshness.StaleError, CliError))
+        plain = isinstance(exc, (freshness.StaleError, CliError, jobstate.StateDamaged))
         message = _one_line(exc if plain else f"{type(exc).__name__}: {exc}")
         _settle_starting(status, message)
         _fail(message, getattr(exc, "payload", None))

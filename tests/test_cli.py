@@ -1438,6 +1438,24 @@ def test_redo_flagged_reads_the_last_frame_check(tmp_path):
     assert bsa_blender._redo_targets(tmp_path, args, None, spans) == {"s01": [5, 6, 9]}
 
 
+def test_damaged_state_stops_with_a_plain_line_and_restores(home, pendulum):
+    """A power cut can leave state.json as zero bytes: every command stops and names the backup; `state SHORT
+    restore` puts it back (the damaged file is kept)."""
+    ok(run(home, "state", "pendulum", "done", "interview"))
+    ok(run(home, "state", "pendulum", "reset", "story"))  # a second save: the first one becomes the backup
+    (pendulum / "state.json").write_bytes(b"\0" * 593)
+    proc = run(home, "state", "pendulum")
+    assert proc.returncode == 1 and proc.stdout == ""
+    err = proc.stderr.strip()
+    assert err.startswith(f"{pendulum / 'state.json'} was damaged (593 zero bytes)"), err
+    assert "state.json.bak" in err and f"CLI state {pendulum.name} restore" in err and "Damaged" not in err
+    assert (pendulum / "state.json").read_bytes() == b"\0" * 593  # untouched
+    out = ok(run(home, "state", "pendulum", "restore"))
+    assert list(out["stages"]) == ["interview"] and out["next"] == "story"
+    assert len(list(pendulum.glob("state.damaged-*.json"))) == 1
+    assert "not damaged" in run(home, "state", "pendulum", "restore").stderr
+
+
 def test_check_findings_from_two_shots_of_one_scene_are_listed_once():
     import bsa_blender
 
