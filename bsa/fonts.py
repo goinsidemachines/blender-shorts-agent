@@ -356,7 +356,7 @@ def brand_font_check(name: str, dirs: list[Path] | None = None, system: str | No
         family = info["family"] or name
         statics = static_weights(family, dirs)
         out["static_weights"] = statics
-        use = (f"settings set brand.font to one of the installed static weights listed here (its file path)"
+        use = ("settings set brand.font to one of the installed static weights listed here (its file path)"
                if statics else
                f"download a static weight: at the first short, plan it with CLI assets plan SHORT "
                f"\"font:{family}@600\" (only after the user's yes), then settings set brand.font to the downloaded "

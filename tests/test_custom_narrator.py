@@ -121,7 +121,7 @@ def test_tool_output_is_logged_and_its_warnings_surfaced(tmp_path):
     inner = fake_run(calls)
 
     def run(cmd, **kw):
-        done = inner(cmd, **kw)
+        inner(cmd, **kw)
         return subprocess.CompletedProcess(cmd, 0, "[take] paragraph 1 ok\n",
                                            "[take] Fallback to line-by-line for p2\nWARNING: slow\nall good\n")
 
