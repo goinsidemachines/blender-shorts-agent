@@ -43,13 +43,15 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
   Blender prints its own log lines, so read the line starting `BSA_RESULT ` (JSON). Failure: non-zero exit, a
   `BSA_RESULT` line with `"ok": false` and the `error`, and the same plain line on stderr (relay it). Don't pass the
   .blend: each command opens `blend/short.blend` itself when it needs it, after it has marked its run as starting in
-  the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `estimate`) run one at a
+  the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `test-frames`, `estimate`) run one at a
   time per workspace, across sessions: a second one waits for the first (`<workspace>/.gpu.lock`, `08-render.md`).
   Never delete that file by hand.
 
 Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render.md` say when):
 
 - `BLENDER extremes SHORT`: renders each hero at the extremes of its motion, full resolution, before the preview.
+- `BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]`: single frames at fractions of shots, current
+  build, engine and look, reduced size, into `review/test-frames/` (takes the GPU lock).
 - `BLENDER grab SHORT --preset preview|final --at <s>...` (or `--sheet`): frames of the edited MP4, true colour.
 - `BLENDER preview SHORT`: the whole rebuild chain (build, done build, mix, check, render preview, frame-check, edit).
 - `BLENDER render SHORT --preset preview|final`: only shots whose content fingerprint changed render again (and

@@ -10,12 +10,22 @@ memory"); suggest closing it, but never stop a program yourself.
 
 ## One GPU job at a time
 
-`BLENDER render`, the preview chain's render step, `BLENDER extremes` and `BLENDER estimate` take the workspace's
+`BLENDER render`, the preview chain's render step, `BLENDER extremes`, `BLENDER test-frames` and `BLENDER estimate` take the workspace's
 GPU lock (`<workspace>/.gpu.lock`: pid, short, command, start time), so two sessions never render at once. A second
 command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr, and `render-status` and
 the page say "final render waiting for the GPU: ...". It starts by itself when the first ends, or at once when the
 first's Blender is gone (a crashed or killed run leaves a stale lock, which is cleared). Tell the user what it waits
 for. With `--no-wait` it fails at once instead, naming the holder: use that when the user would rather not queue.
+
+## Test frames (a quick look before the preview)
+
+`BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]` renders single frames, each at a fraction of its
+shot (0 = the shot's first frame, 1 = its last), with the short's current build (`blend/short.blend`), engine and
+look, at `--scale` of the full resolution (default 0.4), into `review/test-frames/<shot>-<percent>-f<frame>.png`.
+Its result lists the PNG `paths` (and each one's shot, fraction and frame): open them. Use it to tune a material,
+a light or a framing without a whole preview render, instead of a render script of your own. It takes the GPU lock
+like the commands above (it waits and says for what, or fails at once with `--no-wait`), so it never renders
+alongside another session's job. Rebuild first after changing `build.py` (it warns when the .blend is older).
 
 ## Moving parts at their extremes (before the first preview)
 

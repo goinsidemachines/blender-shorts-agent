@@ -1161,6 +1161,17 @@ def test_blender_stills_and_check_smoke(home, pendulum):
     result = json.loads(still.stdout.split("BSA_RESULT ", 1)[1].splitlines()[0])
     assert result["stills"] == 0 and "no hero moves" in result["warnings"][0]
 
+    quick = blender_cmd("test-frames", "pendulum", "--at", "s01:0.5", "s02:0", "--scale", "0.1")
+    assert quick.returncode == 0, quick.stdout + quick.stderr
+    result = json.loads(quick.stdout.split("BSA_RESULT ", 1)[1].splitlines()[0])
+    pngs = [Path(p) for p in result["paths"]]
+    assert len(pngs) == 2 and all(p.parent == pendulum / "review" / "test-frames" for p in pngs)
+    assert all(p.suffix == ".png" and p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" for p in pngs)
+    assert [f["shot"] for f in result["frames"]] == ["s01", "s02"]
+    assert not (pendulum.parent / ".gpu.lock").exists()  # taken and released
+    missing = blender_cmd("test-frames", "pendulum", "--at", "s99:0.5")
+    assert missing.returncode == 1 and "no shot 's99'" in missing.stderr, missing.stderr
+
     check = blender_cmd("check", "pendulum")
     report = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
     errors = [f for f in report["findings"] if f["severity"] == "error"]
