@@ -268,9 +268,9 @@ def test_brand_caption_colours():
     cap = _captions(edit.build_edit(short, tl, frames, wav, out, brand, preset="preview"))[0]
     assert [round(c, 3) for c in cap.color] == [1.0, round(0xD0 / 255, 3), 0.0, 1.0]
     assert [round(c, 3) for c in cap.box_color] == [round(v / 255, 3) for v in (0x10, 0x20, 0x30, 0x80)]
-    solid = {"brand": {"mode": "brand", "caption": {"box": "#202326"}}}  # 6 digits: opaque, not the default 0.55
+    solid = {"brand": {"mode": "brand", "caption": {"box": "#14161A"}}}  # 6 digits: opaque, not the default 0.55
     cap = _captions(edit.build_edit(short, tl, frames, wav, out, solid, preset="preview"))[0]
-    assert [round(c, 3) for c in cap.box_color] == [round(v / 255, 3) for v in (0x20, 0x23, 0x26, 0xFF)]
+    assert [round(c, 3) for c in cap.box_color] == [round(v / 255, 3) for v in (0x14, 0x16, 0x1A, 0xFF)]
     assert edit.caption_colours(short, solid)[1][3] == 1.0
     assert edit.caption_colours(short, {})[1] == edit.BOX_COLOR  # no box given: the default see-through box
 

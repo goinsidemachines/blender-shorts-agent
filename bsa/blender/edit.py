@@ -114,7 +114,7 @@ def _hex_colour(value, alpha: float = 1.0):
 def caption_colours(short: Short, settings: dict) -> tuple[tuple, tuple]:
     """(text, box) colours of the captions: `brand.caption` `color` and `box` from settings (not for a short with its
     own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark see-through box
-    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#20232680") keep their alpha."""
+    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#14161A80") keep their alpha."""
     from bsa.settings import brand_for
 
     cap = {}

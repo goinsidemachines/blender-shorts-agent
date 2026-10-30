@@ -98,8 +98,8 @@ A look is a few decisions held consistently across every shot:
   missing font falls back to one that ships with the OS (Segoe UI or Arial on Windows, Helvetica Neue or Helvetica on
   macOS, DejaVu Sans or Liberation Sans on Linux), then to Blender's own, and the edit says which it used). Caption size 64 px by default.
   See "Checking the font" below before the story page.
-- **Caption colours:** `style.caption` (or `brand.caption`) `color` and `box` as hex. A 6-digit hex (`#202326`) is
-  opaque; an 8-digit one keeps its alpha (`#20232699` is 60 % ink). With no `box`, captions sit on the default dark
+- **Caption colours:** `style.caption` (or `brand.caption`) `color` and `box` as hex. A 6-digit hex (`#14161A`) is
+  opaque; an 8-digit one keeps its alpha (`#14161A99` is 60 % ink). With no `box`, captions sit on the default dark
   see-through box (55 % alpha).
 - **World:** an HDRI (CC0, downloaded only after a yes) or a simple gradient world; never a pure black void unless
   that is the look.
