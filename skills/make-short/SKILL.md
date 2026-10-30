@@ -57,7 +57,7 @@ Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render
 - `BLENDER render SHORT --preset preview|final`: only shots whose content fingerprint changed render again (and
   `BLENDER check SHORT` re-checks only those); `--shot ID --frames 120-140,200` or `--redo-flagged` redo single
   frames that frame-check flagged (each finding has a ready `redo` command).
-- `CLI render-status SHORT [--preset preview|final] [--open]`: where the preview chain, a render, check, frame-check
+- `CLI render-status SHORT [--preset preview|final] [--tag NAME] [--open]`: where the preview chain, a render, check, frame-check
   or edit is (the current step and its progress, time left, live warnings, and whether its Blender is still running;
   when nothing runs, how the last run ended); `--open` shows the live page `review/render-<preset>.html`.
 

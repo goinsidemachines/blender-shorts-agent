@@ -135,7 +135,9 @@ are never overwritten, the engine stage keeps its engine, and a side edit never 
 same options on every command of one side run (`BLENDER render SHORT --preset preview --engine eevee`, then
 `frame-check` and `edit` with `--engine eevee`); the chain passes them on itself. Tags are lowercase letters, digits
 and hyphens; `preview` and `final` are refused. Its fingerprints, resume, scene checks and GPU lock are the same as
-the approved run's; the live status page shows whichever run is going (its engine is on the page).
+the approved run's. Its live status is its own too: `review/render-status-<preset>-<tag>.json`, the page
+`review/render-<preset>-<tag>.html` and its thumbnails, so the approved run's page is never overwritten (`CLI
+render-status SHORT --preset preview --tag eevee` reads it).
 
 Each render's result has `s_per_frame` (the average over the frames it rendered fresh) and `engines`: every run of
 that preset on record in `review/engine-runs.json`, with what it measured and its MP4 while it exists. Relay those

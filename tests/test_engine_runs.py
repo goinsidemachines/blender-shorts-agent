@@ -56,6 +56,22 @@ def test_side_runs_never_share_the_approved_paths(tmp_path):
     assert er.mp4_path(tmp_path, "pend", "final", side).name == "pend-final-eevee.mp4"
 
 
+def test_side_runs_have_their_own_live_status_page_and_thumbnails(tmp_path):
+    """The live status (render-status-<key>.json, render-<key>.html, render-status/<key>-<shot>.jpg) of a side run
+    is keyed on its own name; the approved run's stay exactly as they were."""
+    from bsa import render_status as rs
+
+    approved, side = er.EngineRun("cycles"), er.EngineRun("eevee", "fast")
+    assert er.status_key("preview", approved) == "preview" and er.status_key("final", None) == "final"
+    assert er.status_key("preview", side) == "preview-fast"
+    assert rs.status_path(tmp_path, er.status_key("preview", approved)).name == "render-status-preview.json"
+    assert rs.page_path(tmp_path, er.status_key("preview", approved)).name == "render-preview.html"
+    assert rs.thumb_rel(er.status_key("preview", approved), "s01") == "render-status/preview-s01.jpg"
+    assert rs.status_path(tmp_path, er.status_key("preview", side)).name == "render-status-preview-fast.json"
+    assert rs.page_path(tmp_path, er.status_key("preview", side)).name == "render-preview-fast.html"
+    assert rs.thumb_rel(er.status_key("preview", side), "s01") == "render-status/preview-fast-s01.jpg"
+
+
 def test_the_engine_comes_from_the_stage_then_short_json_then_settings(tmp_path):
     assert er.pick("cycles", "eevee", "eevee") == ("cycles", "engine stage")
     assert er.pick(None, "eevee", "cycles") == ("eevee", "short.json")
@@ -164,8 +180,13 @@ def test_a_side_edit_writes_its_own_mp4_and_leaves_the_approved_run(home, pendul
     monkeypatch.setattr(fake, "build_edit", build_edit)
     monkeypatch.setattr(fake, "encode", lambda scene, progress=None: built["out_mp4"])
     monkeypatch.setenv("BSA_HOME", str(home))
+    status = _approved_status(pendulum, "preview")
     assert bsa_blender.main(["edit", "pendulum", "--preset", "preview", "--engine", "eevee"]) == 0, \
         capsys.readouterr().err
+    _assert_side_status(pendulum, "preview", "eevee", status, "edit")
+    side = ok(run(home, "render-status", pendulum.name, "--preset", "preview", "--tag", "eevee"))
+    assert side["status_file"].endswith("render-status-preview-eevee.json") and side["last_run"]["kind"] == "edit"
+    assert {p: p.read_bytes() for p in status} == status  # reading it leaves the approved page alone too
     assert built["frames_root"] == pendulum / "frames" / "preview-eevee"
     assert built["out_mp4"] == pendulum / "out" / "pendulum-preview-eevee.mp4"
     assert approved.read_bytes() == b"approved"
@@ -207,10 +228,38 @@ def test_a_side_frame_check_keeps_its_own_findings_and_redo_commands(home, pendu
 
     args = types.SimpleNamespace(preset="preview", engine="eevee", tag=None)
     bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
+    status = _approved_status(pendulum, "preview")
+    monkeypatch.setitem(__import__("sys").modules, "bsa.blender.pixels", types.SimpleNamespace(read_png=None))
+    monkeypatch.setattr(bsa_blender, "_cmd_frame_check", lambda *a, **kw: {"warnings": 0})
+    assert bsa_blender.main(["frame-check", "pendulum", "--preset", "preview", "--engine", "eevee"]) == 0
+    _assert_side_status(pendulum, "preview", "eevee", status, "frame-check")
     assert not (pendulum / "review" / "frame-checks-preview.json").exists()
     data = json.loads((pendulum / "review" / "frame-checks-preview-eevee.json").read_text(encoding="utf-8"))
     assert data["findings"][0]["redo"].endswith("--engine eevee --tag eevee")
     assert data["redo_all"].endswith("--redo-flagged --engine eevee --tag eevee")
+
+
+def _approved_status(sdir, preset):
+    """The approved run's live status and page, as a finished run left them."""
+    from bsa import render_status as rs
+
+    path, page = rs.status_path(sdir, preset), rs.page_path(sdir, preset)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 2, "state": "done", "kind": "render", "preset": preset, "pid": 1,
+                                "started": 1.0, "finished": 2.0, "updated": 2.0,
+                                "run": {"kind": "render", "current": None, "steps": []}}), encoding="utf-8")  # fmt: skip
+    page.write_text("approved page", encoding="utf-8")
+    return {path: path.read_bytes(), page: page.read_bytes()}
+
+
+def _assert_side_status(sdir, preset, tag, approved, kind):
+    """A side run left the approved run's status and page alone and recorded itself under its own name."""
+    from bsa import render_status as rs
+
+    assert {p: p.read_bytes() for p in approved} == approved
+    side = rs.read_status(rs.status_path(sdir, f"{preset}-{tag}"))
+    assert side and side["kind"] == kind, side
+    assert rs.page_path(sdir, f"{preset}-{tag}").is_file()
 
 
 def test_render_and_preview_take_engine_and_tag():
@@ -237,13 +286,14 @@ def test_a_side_render_uses_its_own_folder_and_records_what_it_measured(home, pe
     _approve(home, pendulum, "cycles")
     _rendered(home, pendulum, "preview", engine="cycles")
     approved = {p: p.read_bytes() for p in (pendulum / "frames" / "preview").rglob("*") if p.is_file()}
-    calls, trackers = [], []
+    calls, trackers, keys = [], [], []
 
     class Watch:
         cancelled = False
 
         def __init__(self, tracker, short_dir, preset):
             trackers.append(tracker)
+            keys.append(preset)
 
         def __enter__(self):
             return self
@@ -276,9 +326,16 @@ def test_a_side_render_uses_its_own_folder_and_records_what_it_measured(home, pe
     monkeypatch.setattr(bsa_blender, "_check_near_objects", lambda *a: None)
     monkeypatch.setattr(bsa_blender, "_write_anchors", lambda *a, **kw: {})
     monkeypatch.setenv("BSA_HOME", str(home))
+    status = _approved_status(pendulum, "preview")
     assert bsa_blender.main(["render", "pendulum", "--preset", "preview", "--engine", "eevee"]) == 0, \
         capsys.readouterr().err
     out = json.loads(capsys.readouterr().out.split("BSA_RESULT ", 1)[1])
+    _assert_side_status(pendulum, "preview", "eevee", status, "render")
+    assert keys == ["preview-eevee"]  # the live frame checks' thumbnails: render-status/preview-eevee-<shot>.jpg
+    trackers[-1].set_thumb(trackers[-1].shots[0]["id"], 1)
+    assert trackers[-1].shots[0]["thumb"].startswith("render-status/preview-eevee-")
+    assert out["status"].endswith("render-status-preview-eevee.json")
+    assert out["page"].endswith("render-preview-eevee.html")
     assert calls and all(folder.parent == pendulum / "frames" / "preview-eevee" and engine == "eevee"
                          for folder, engine in calls)  # fmt: skip
     assert {p: p.read_bytes() for p in (pendulum / "frames" / "preview").rglob("*") if p.is_file()} == approved

@@ -123,10 +123,12 @@ def check_frame(png: Path, frame: int, thumb: Path, flicker: Flicker | None = No
 class Watch:
     """Registers render_pre / render_write / render_cancel handlers for the length of a `with` block."""
 
-    def __init__(self, tracker: rs.Tracker, short_dir: Path, preset: str):
+    def __init__(self, tracker: rs.Tracker, short_dir: Path, key: str):
+        """`key`: the name the run's status files go under (bsa.engine_runs.status_key: the preset, or
+        <preset>-<tag> for a side run), so its thumbnails are render-status/<key>-<shot>.jpg."""
         self.tracker = tracker
         self.short_dir = Path(short_dir)
-        self.preset = preset
+        self.key = key
         self.cancelled = False
         self.history: list[tuple[int, rs.FrameKey]] = []
         self.flicker = Flicker()  # per shot; only frames checked one after another are compared
@@ -187,7 +189,7 @@ class Watch:
                 findings += rs.stuck_from_digests(self.history)
             if shot and self.tracker.should_check():
                 c0 = time.perf_counter()
-                found, live = check_frame(png, frame, rs.thumb_path(self.short_dir, self.preset, shot), self.flicker)
+                found, live = check_frame(png, frame, rs.thumb_path(self.short_dir, self.key, shot), self.flicker)
                 findings += found
                 self.tracker.note_check(shot, time.perf_counter() - c0)
                 self.tracker.set_thumb(shot, frame)

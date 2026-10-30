@@ -577,6 +577,14 @@ def cmd_render_status(args) -> dict:
 
     sdir = short_dir(args.short)
     presets = [args.preset] if args.preset else ["preview", "final"]
+    if getattr(args, "tag", None):  # a side run's status is its own (bsa.engine_runs.status_key)
+        from bsa import engine_runs
+
+        try:
+            tag = engine_runs.check_tag(args.tag)
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+        presets = [f"{p}-{tag}" for p in presets]
     found = [(p, rs.read_status(rs.status_path(sdir, p))) for p in presets]
     found = [(p, st) for p, st in found if st]
     if found:
@@ -880,6 +888,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("render-status", help="SHORT [--preset preview|final] [--open]: where the preview chain or a render is")
     sp.add_argument("short")
     sp.add_argument("--preset", choices=["preview", "final"], help="default: the most recently updated")
+    sp.add_argument("--tag", default=None, help="a side run's status (its tag: the engine's name for --engine alone)")
     sp.add_argument("--open", action="store_true", help="open the live page review/render-<preset>.html")
     sp.set_defaults(fn=cmd_render_status)
 
