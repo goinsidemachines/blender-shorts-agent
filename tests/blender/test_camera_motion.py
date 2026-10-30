@@ -391,3 +391,52 @@ def test_frame_box_frames_a_region_of_one_long_mesh():
     world = camera.frame_box(cam, tuple(min(p[i] for p in pts) for i in range(3)),
                              tuple(max(p[i] for p in pts) for i in range(3)))  # world coordinates  # fmt: skip
     assert world["warnings"] == []
+
+
+def _orbit_scene():
+    sc, cam = _scene()
+    sc.frame_end = 101
+    _box("Floor", (20.0, 20.0, 0.1), (0, 0, -0.05))
+    lock = _box("Lock", (1.2, 0.4, 0.6), (0, 0, 0.3))
+    cam.location = (3.0, -3.0, 1.5)
+    camera.frame_objects(cam, [lock], aim=True, key=1)
+    return sc, cam, lock
+
+
+def test_move_orbits_with_the_subject_in_the_band_the_whole_way():
+    """A 90 degree orbit framed every 2 frames: the subject stays in the band at every frame (keys and in between),
+    the distance changes smoothly, the Euler keys never flip, and stray keys inside the move are replaced."""
+    sc, cam, lock = _orbit_scene()
+    cam.location = (9.0, 9.0, 9.0)
+    cam.keyframe_insert("location", frame=50)  # a stray key inside the move: removed
+    sc.frame_set(1)
+    out = camera.move(cam, [lock], 1, 101, orbit=90, shot="s02")
+    assert out["keys"][:3] == [1, 3, 5] and out["keys"][-1] == 101 and out["warnings"] == [], out
+    turned = (out["end"][0] - out["start"][0] + 180) % 360 - 180
+    assert abs(turned - 90) < 6, out
+    area = target_area()
+    for f in range(1, 102):
+        x0, y0, x1, y1 = _projected(sc, cam, [lock], [f])
+        assert x0 >= area.x - 6 and x1 <= area.right + 6 and y0 >= area.y - 6 and y1 <= area.bottom + 6, (f, x0, y0, x1, y1)
+        assert max(x1 - x0 - area.w, y1 - y0 - area.h) > -40, (f, x0, y0, x1, y1)  # still fills the band
+    d = np.array(out["distances"])
+    assert np.abs(np.diff(d, 2)).max() < 0.02 * d.mean(), d
+    zs = []
+    for f in range(1, 102):
+        sc.frame_set(f)
+        zs.append(cam.rotation_euler[2])
+    assert np.abs(np.diff(zs)).max() < math.radians(5), np.degrees(np.diff(zs)).max()
+    keyed = {kp.co[0] for fc in extremes.fcurves(cam) if fc.data_path == "location" for kp in fc.keyframe_points}
+    assert 50.0 not in keyed and keyed == set(map(float, out["keys"]))
+
+
+def test_move_pushes_in_to_a_part():
+    """A dolly with `to`: the framed box slides from the whole lock to its plug, which fills the band at the end."""
+    sc, cam, lock = _orbit_scene()
+    plug = _box("Plug", (0.2, 0.2, 0.2), (0.3, -0.25, 0.3))
+    out = camera.move(cam, [lock], 1, 61, to=[plug])
+    area = target_area()
+    x0, y0, x1, y1 = _projected(sc, cam, [plug], [61])
+    assert abs((x1 - x0) - area.w) < 4 or abs((y1 - y0) - area.h) < 4, (x0, y0, x1, y1)
+    d = np.array(out["distances"])
+    assert d[-1] < 0.5 * d[0] and np.all(np.diff(d) < 1e-6), d  # it moves in all the way, never back out

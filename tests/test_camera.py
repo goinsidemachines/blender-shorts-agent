@@ -25,5 +25,7 @@ def test_camera_and_motion_in_blender(blender_run):
         "test_framing_warnings_are_kept_on_the_scene_as_findings",
         "test_frame_objects_fits_an_explicit_box_with_the_lens_shift",
         "test_frame_objects_measures_parented_objects_in_a_scene_that_is_not_the_windows",
+        "test_move_orbits_with_the_subject_in_the_band_the_whole_way",
+        "test_move_pushes_in_to_a_part",
     ):
         assert f"PASS {name}" in result.stdout
