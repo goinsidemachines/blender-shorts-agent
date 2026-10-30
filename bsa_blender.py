@@ -199,9 +199,12 @@ def _check_keys(short, tl, fps: dict | None, parts: dict | None = None) -> dict:
     """{shot id: what its scene checks depend on} (freshness.shot_check_inputs)."""
     spans = {s.id: s for s in tl.shots}
     ids = [s.id for s in short.shots]
+    from bsa.overlays import caption_size
+
     rule_key = rules.scene_key(_hard_rules(short), short)
+    size = caption_size(short)
     return {s.id: freshness.shot_check_inputs((fps or {}).get(s.id), spans[s.id], asdict(s), ids,
-                                              (parts or {}).get(s.id), rule_key) for s in short.shots}  # fmt: skip
+                                              (parts or {}).get(s.id), rule_key, size) for s in short.shots}  # fmt: skip
 
 
 def _hard_rules(short) -> list[dict]:

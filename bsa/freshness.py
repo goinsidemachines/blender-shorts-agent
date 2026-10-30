@@ -415,28 +415,28 @@ def rendered_frames(folder: Path, span: Span, engine: str | None, fingerprint: s
 # --------------------------------------------------------------------------- scene checks
 
 CHECKS_VERSION = 1  # bump when the scene checks change what they find: every shot is checked again once
-_CHECKS_CODE = Path(__file__).resolve().parent / "blender" / "checks.py"
-
-
-def _checks_codes() -> tuple[str, str]:
-    """(the code hash, the hash of the file's raw bytes as stamps before line endings were ignored used)."""
-    try:
-        raw = _CHECKS_CODE.read_bytes()
-    except OSError:
-        return f"{CHECKS_VERSION}:?", f"{CHECKS_VERSION}:?"
-    norm = raw.replace(b"\r\n", b"\n")
-    return (f"{CHECKS_VERSION}:{hashlib.sha256(norm).hexdigest()[:16]}",
-            f"{CHECKS_VERSION}:{hashlib.sha256(raw).hexdigest()[:16]}")  # fmt: skip
+_BSA = Path(__file__).resolve().parent
+# the code the scene checks' findings come from: the checks, the viewer checks (framing, covered) and the edit's text
+# boxes they measure, the framing band they measure against, and the framing_call notes (findings, camera)
+_CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
+                _BSA / "findings.py", _BSA / "blender" / "camera.py")  # fmt: skip
 
 
 def checks_code() -> str:
-    """CHECKS_VERSION plus a hash of the checks' code (line endings ignored: a CRLF checkout is the same code): any
-    change to them means a full re-check."""
-    return _checks_codes()[0]
+    """CHECKS_VERSION plus a hash of the checks' code (_CHECKS_CODE, line endings ignored: a CRLF checkout is the
+    same code): any change to it means a full re-check."""
+    h = hashlib.sha256()
+    for path in _CHECKS_CODE:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return f"{CHECKS_VERSION}:?"
+        h.update(raw.replace(b"\r\n", b"\n") + b"\0")
+    return f"{CHECKS_VERSION}:{h.hexdigest()[:16]}"
 
 
 def _code_current(code) -> bool:
-    return code in _checks_codes()
+    return code == checks_code()
 
 
 # the short.json shot fields the scene checks read (bsa.blender.checks: the badge and labels cover the subject or not)
@@ -451,18 +451,21 @@ def shot_check_key(fingerprint: str | None, span: Span, shot: dict) -> str:
 
 
 def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=(), parts: dict | None = None,
-                      rules: list | None = None) -> dict:  # fmt: skip
+                      rules: list | None = None, caption_size: int | None = None) -> dict:  # fmt: skip
     """What one shot's scene checks depend on, and nothing else: its content (fingerprint), its frames, the fields
     of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture or still_at), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
     text, sound levels and other settings are not in it. `parts` is information (which part of the fingerprint
     changed), not part of the key, except its "tags" part: the objects' tags (contact, hero...) change what the checks
-    find but are not in the fingerprint, since they change no pixel."""
+    find but are not in the fingerprint, since they change no pixel. `caption_size` (bsa.overlays.caption_size: the
+    short's style.caption.size) sizes the caption box the covered check measures, so it is in the key too."""
     out = {"fingerprint": fingerprint, "frames": [span.f0, span.f1],
            "entry": {k: shot.get(k) for k in CHECKED_FIELDS}, "shot_ids": sorted(shot_ids),
            "parts": dict(parts or {}), "legacy": shot_check_key(fingerprint, span, shot)}  # fmt: skip
     if rules:
         out["rules"] = rules
+    if caption_size is not None:
+        out["caption_size"] = caption_size
     if parts and parts.get("tags") is not None:
         out["tags"] = parts["tags"]
     return out
@@ -532,6 +535,9 @@ def _changes(old: dict, sid: str, now) -> list[str]:
     if had.get("rules") != now.get("rules"):
         out.append("the hard rules the scene names are checked against changed (rules_check, cleared words "
                    "included)")  # fmt: skip
+    if had.get("caption_size") != now.get("caption_size"):
+        out.append(f"the caption size changed ({had.get('caption_size')}, now {now.get('caption_size')}): the "
+                   "captions cover a different part of the frame")  # fmt: skip
     return out or [f"shot {sid} changed"]
 
 
