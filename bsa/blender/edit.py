@@ -7,7 +7,6 @@ Text strip geometry: the VSE places text by a normalised anchor (0-1, origin bot
 
 from __future__ import annotations
 
-import math
 import re
 import sys
 from pathlib import Path
@@ -24,24 +23,33 @@ from bsa.fonts import (  # noqa: F401 - find_font_file, font_dirs re-exported
     missing_chars,
     resolve,
 )
-from bsa.layout import H, Rect, W, caption_rect, end_card_band, place_label, safe_rect
+from bsa.layout import H, Rect, W, caption_rect, end_card_band, safe_rect
+from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-exported for callers of the edit
+    BADGE_SIZE,
+    CAPTION_MARGIN,
+    CAPTION_SIZE,
+    CHAR_W,
+    LABEL_SIZE,
+    LINE_H,
+    NEAR_GAP_PX,
+    NEAR_WRAP_PX,
+    SMALL_MARGIN,
+    STACK_GAP_PX,
+    caption_size,
+    captions,
+    corner_stack,
+    follow,
+    hero_rects,
+)
+from bsa.overlays import est_lines as _est_lines
+from bsa.overlays import est_width as _est_width
 from bsa.settings import end_card
 from bsa.short import Short, label_near, label_text
 from bsa.timeline import Timeline, end_card_start
 
-CAPTION_SIZE = 64
-BADGE_SIZE = 30
-LABEL_SIZE = 40
 END_SIZE = 72
 END_LINE_SIZE = 44
-LINE_H = 1.25  # same line height as layout.caption_rect
-CHAR_W = 0.56  # average glyph advance in em, for estimating wrapping
-CAPTION_MARGIN = 0.018  # box margin as a fraction of the render height
-SMALL_MARGIN = 0.010
-STACK_GAP_PX = 12
 END_GAP_PX = 24  # clear space between the end-card line's box and the @handle box
-NEAR_GAP_PX = 16  # a near label's box sits this far above its object's top
-NEAR_WRAP_PX = 420  # near labels wrap narrower than the safe area
 BOX_COLOR = (0.02, 0.025, 0.03, 0.55)
 BADGE_COLOR = (1.0, 0.8, 0.35, 1.0)
 
@@ -51,16 +59,6 @@ FONT_NOTE_PROP = "bsa_font_fallback"
 FONT_USED_PROP = "bsa_font_used"
 END_NOTE_PROP = "bsa_end_card_note"
 GLYPH_NOTE_PROP = "bsa_glyph_fallbacks"
-
-
-def _est_lines(text: str, size_px: float, wrap_px: float) -> int:
-    per_line = max(1, int(wrap_px / (size_px * CHAR_W)))
-    return max(1, sum(max(1, math.ceil(len(part) / per_line)) for part in text.split("\n")))
-
-
-def _est_width(text: str, size_px: float, wrap_px: float) -> float:
-    longest = max(len(part) for part in text.split("\n"))
-    return min(wrap_px, longest * size_px * CHAR_W)
 
 
 def text_strip_rect(strip) -> Rect:
@@ -204,99 +202,52 @@ def _add_shots(short: Short, tl: Timeline, frames_root: Path, strips) -> None:
 
 def _follow(strip, points: dict, span, captions, fixed=(), placed: dict | None = None, heroes: dict | None = None,
             near: str | None = None) -> None:  # fmt: skip
-    """Keyframe a near label's position every frame of its shot: just above its object's top on screen (from
-    anchors), inside the safe area and never on a caption shown at that frame, the shot's badge and stacked labels
-    (`fixed`) or the near labels already placed in that frame (`placed`: {frame: [Rect]}, which this label's own box
-    is added to). It keeps off the shot's heroes too where it can (`heroes`: the shot's {"f0", "boxes"} from
-    anchors.json), except its own object `near` and a hero whose box holds the anchor (the assembly the part
-    belongs to). Frames where the object is behind the camera keep the last position."""
-    w = _est_width(strip.text, LABEL_SIZE, NEAR_WRAP_PX)
-    h = _est_lines(strip.text, LABEL_SIZE, NEAR_WRAP_PX) * LABEL_SIZE * LINE_H
-    m = SMALL_MARGIN * H
-    pts = list(points.get("points") or [])
-    f0 = int(points.get("f0", span.f0))
-    first = next((p for p in pts if p is not None), None)
-    last = first or [safe_rect().x + safe_rect().w / 2, safe_rect().y]
-    placed = {} if placed is None else placed
-    for frame in range(span.f0, span.f1 + 1):
-        i = frame - f0
-        p = pts[i] if 0 <= i < len(pts) and pts[i] is not None else last
-        last = p
-        avoid = [r for c0, c1, r in captions if c0 <= frame <= c1] + list(fixed) + placed.get(frame, [])
-        prefer = _hero_rects(heroes, frame, skip=near, anchor=p)
-        x, bottom = place_label((p[0], p[1]), (w, h), m, NEAR_GAP_PX, avoid, prefer)
-        placed.setdefault(frame, []).append(Rect(x - w / 2 - m, bottom - h - m, w + 2 * m, h + 2 * m))
+    """Keyframe a near label's position every frame of its shot (bsa.overlays.follow places it)."""
+    for frame, (x, bottom, _) in follow(strip.text, points, span.f0, span.f1, captions, fixed, placed, heroes,
+                                        near).items():  # fmt: skip
         strip.location = _norm(x, bottom)
         strip.keyframe_insert("location", frame=frame)
 
 
-def _hero_rects(heroes: dict | None, frame: int, skip: str | None = None, anchor=None) -> list[Rect]:
-    """The hero boxes on screen at `frame` from a shot's {"f0", "boxes": {name: [[x0, y0, x1, y1] or None, ...]}},
-    leaving out `skip` and any box that holds the point `anchor`."""
-    out = []
-    if not isinstance(heroes, dict) or not isinstance(heroes.get("boxes"), dict):
-        return out
-    i = frame - int(heroes.get("f0", 1))
-    for name, per_frame in heroes["boxes"].items():
-        b = per_frame[i] if name != skip and isinstance(per_frame, list) and 0 <= i < len(per_frame) else None
-        if not b or (anchor is not None and b[0] <= anchor[0] <= b[2] and b[1] <= anchor[1] <= b[3]):
-            continue
-        out.append(Rect(b[0], b[1], b[2] - b[0], b[3] - b[1]))
-    return out
+_hero_rects = hero_rects
 
 
 def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anchors: dict | None = None,
                   label_heroes: dict | None = None) -> None:  # fmt: skip
+    """Captions, each shot's badge and stacked labels, and its near labels, where bsa.overlays places them."""
     safe = safe_rect()
-    size = int((short.style.get("caption") or {}).get("size") or CAPTION_SIZE)
-    wrap_px = safe.w - 2 * CAPTION_MARGIN * H
+    size = caption_size(short)
     cx = safe.x + safe.w / 2
     colour, box = caption_colours(short, settings)
-    captions = []  # (f0, f1, caption box) for keeping near labels off the captions
-    for card in tl.cards:
-        rect = caption_rect(_est_lines(card.text, size, wrap_px), size, LINE_H)
-        pad = CAPTION_MARGIN * H
-        captions.append((card.f0, card.f1, Rect(rect.x - pad, rect.y - pad, rect.w + 2 * pad, rect.h + 2 * pad)))
-        texts.add(
-            card.text, card.f0, card.f1, CH_CAPTION, size, _norm(cx, rect.bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
-            color=colour, box=box,
-        )  # fmt: skip
+    cards = captions(short, tl)  # near labels keep off the caption bands
+    for card, (f0, f1, _, _, bottom) in zip(tl.cards, cards, strict=True):
+        texts.add(card.text, f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
+                  color=colour, box=box)  # fmt: skip
 
     spans = {s.id: s for s in tl.shots}
-    left = safe.x + SMALL_MARGIN * H + 1  # +1 px keeps float noise off the safe edge
     for shot in short.shots:
         span = spans[shot.id]
-        y = safe.y + SMALL_MARGIN * H + 1
         fixed = []  # the badge and the stacked labels: near labels keep off them
-        if shot.badge:
-            strip = texts.add(
-                shot.badge.upper(), span.f0, span.f1, CH_BADGE, BADGE_SIZE, _norm(left, y), ("LEFT", "TOP"),
-                SMALL_MARGIN, color=BADGE_COLOR,
-            )  # fmt: skip
+        for kind, text, i, x, y in corner_stack(shot):
+            if kind == "badge":
+                strip = texts.add(text, span.f0, span.f1, CH_BADGE, BADGE_SIZE, _norm(x, y), ("LEFT", "TOP"),
+                                  SMALL_MARGIN, color=BADGE_COLOR)  # fmt: skip
+            else:
+                strip = texts.add(text, span.f0, span.f1, CH_LABEL + i, LABEL_SIZE, _norm(x, y), ("LEFT", "TOP"),
+                                  SMALL_MARGIN, bold=False)  # fmt: skip
             fixed.append(text_strip_rect(strip))
-            y += BADGE_SIZE * LINE_H + 2 * SMALL_MARGIN * H + STACK_GAP_PX
-        near_labels = []
+        placed = {}  # {frame: [near label boxes]}: each near label keeps off the ones placed before it
         for i, label in enumerate(shot.labels):
             text, near = label_text(label), label_near(label)
-            if near:
-                points = ((anchors or {}).get(shot.id) or {}).get(near)
-                if points is None:
-                    raise ValueError(f"no anchors for label {text!r} near {near!r} in shot {shot.id}: run BLENDER "
-                                     "anchors SHORT")  # fmt: skip
-                near_labels.append((i, text, points, near))
+            if not near:
                 continue
-            strip = texts.add(
-                text, span.f0, span.f1, CH_LABEL + i, LABEL_SIZE, _norm(left, y), ("LEFT", "TOP"), SMALL_MARGIN,
-                bold=False,
-            )  # fmt: skip
-            fixed.append(text_strip_rect(strip))
-            n = _est_lines(text, LABEL_SIZE, safe.w - 2 * SMALL_MARGIN * H)
-            y += n * LABEL_SIZE * LINE_H + 2 * SMALL_MARGIN * H + STACK_GAP_PX
-        placed = {}  # {frame: [near label boxes]}: each near label keeps off the ones placed before it
-        for i, text, points, near in near_labels:
+            points = ((anchors or {}).get(shot.id) or {}).get(near)
+            if points is None:
+                raise ValueError(f"no anchors for label {text!r} near {near!r} in shot {shot.id}: run BLENDER "
+                                 "anchors SHORT")  # fmt: skip
             strip = texts.add(text, span.f0, span.f1, CH_LABEL + i, LABEL_SIZE, (0.5, 0.5), ("CENTER", "BOTTOM"),
                               SMALL_MARGIN, bold=False, wrap_px=NEAR_WRAP_PX)  # fmt: skip
-            _follow(strip, points, span, captions, fixed, placed, (label_heroes or {}).get(shot.id), near)
+            _follow(strip, points, span, cards, fixed, placed, (label_heroes or {}).get(shot.id), near)
 
 
 def _add_end_card(tl: Timeline, texts: _Texts, settings: dict, heroes: dict | None = None, short=None) -> str | None:

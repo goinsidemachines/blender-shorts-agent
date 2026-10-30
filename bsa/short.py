@@ -42,6 +42,9 @@ class Shot:
     # A deliberate hold: true (the whole shot) or [[from_s, to_s], ...] seconds from the shot's start. frame-check
     # does not report stuck frames there (a scripted freeze, a part at rest).
     hold: bool | list = False
+    # A deliberately wide or off-centre framing: true, a reason ("establishing shot of the whole bridge") or
+    # [[from_s, to_s], ...] as for hold. The framing checks (subject too small, an empty half) skip those frames.
+    wide: bool | str | list = False
 
 
 @dataclass
@@ -267,6 +270,9 @@ def validate(short: Short) -> list[str]:
         if _hold_problem(s.hold):
             errors.append(f"shot {s.id} hold must be true, false or a list of [from_s, to_s] ranges (seconds from "
                           f"the shot's start, from_s <= to_s), got {s.hold!r}")  # fmt: skip
+        if not isinstance(s.wide, str) and _hold_problem(s.wide):
+            errors.append(f"shot {s.id} wide must be true, false, a reason or a list of [from_s, to_s] ranges "
+                          f"(seconds from the shot's start, from_s <= to_s), got {s.wide!r}")  # fmt: skip
 
     card = short.end_card
     if isinstance(card, dict):

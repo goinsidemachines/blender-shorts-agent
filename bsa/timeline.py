@@ -261,11 +261,21 @@ def pacing_warnings(short: Short, tl: Timeline, end_card: bool = False) -> list[
 def held_frames(shot, span: Span, fps: int) -> set[int]:
     """The frames of `span` that the shot's `hold` declares a deliberate hold (true: all of them; ranges in seconds
     from the shot's start, inclusive)."""
-    hold = getattr(shot, "hold", False)
-    if hold is True:
+    return _ranged_frames(getattr(shot, "hold", False), span, fps)
+
+
+def wide_frames(shot, span: Span, fps: int) -> set[int]:
+    """The frames of `span` that the shot's `wide` declares deliberately wide (true or a reason: all of them; ranges
+    in seconds from the shot's start, inclusive): the framing checks skip them."""
+    wide = getattr(shot, "wide", False)
+    return _ranged_frames(True if isinstance(wide, str) and wide.strip() else wide, span, fps)
+
+
+def _ranged_frames(value, span: Span, fps: int) -> set[int]:
+    if value is True:
         return set(range(span.f0, span.f1 + 1))
     out: set[int] = set()
-    for a, b in hold or []:
+    for a, b in value if isinstance(value, list) else []:
         lo, hi = span.f0 + round(a * fps), min(span.f0 + round(b * fps), span.f1)
         out.update(range(max(lo, span.f0), hi + 1))
     return out
