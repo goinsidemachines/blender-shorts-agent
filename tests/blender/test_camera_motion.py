@@ -320,7 +320,7 @@ def test_frame_objects_fits_an_explicit_box_with_the_lens_shift():
 
 
 def test_framing_warnings_are_kept_on_the_scene_as_findings():
-    """Each framing's warnings are kept on the scene (per camera and key), so the checks list them as "framing"
+    """Each framing's warnings are kept on the scene (per camera and key), so the checks list them as "framing_call"
     findings for the review pages; framing that camera and key again without a problem clears them."""
     import warnings
 
@@ -331,7 +331,7 @@ def test_framing_warnings_are_kept_on_the_scene_as_findings():
         out = camera.frame_objects(cam, [nut], key=5, shot="s01")
     assert out["warnings"]
     found = camera.framing_findings(sc, "s01", 1, 30)
-    assert found and all(f.check == "framing" and f.severity == "warning" and f.obj == "Cam" for f in found), found
+    assert found and all(f.check == "framing_call" and f.severity == "warning" and f.obj == "Cam" for f in found), found
     assert found[0].frame == 5 and "Nut" in found[0].message
     assert camera.framing_findings(sc, "s02", 40, 60) == []  # another shot
     _aim(cam, (0, -8, 1), (0, 0, 1))

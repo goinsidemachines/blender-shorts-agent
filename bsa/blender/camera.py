@@ -18,7 +18,7 @@ An answer that cannot be right comes with a warning (`FramingWarning`, and in th
 sent more than FAR_FACTOR times the framed box's distance or size away (the objects were not where it looked: a
 parent moved or turned them), the box ending up outside the view, behind the clip start or past the clip end, the
 camera under the ground (only with above_ground=False), or the fit not settling. The warnings are also kept on the
-scene (`framing_notes`), so the scene checks list them as "framing" findings on the review pages
+scene (`framing_notes`), so the scene checks list them as "framing_call" findings on the review pages
 (`framing_findings`) and the preview chain's build step names them. A box with no size (no geometry) is refused with
 ValueError.
 
@@ -461,7 +461,7 @@ def _note(scene, cam, key, shot, found: list[str]) -> None:
 
 
 def framing_findings(scene, shot: str | None = None, f0: int | None = None, f1: int | None = None) -> list[Finding]:
-    """The framing warnings kept on `scene` as "framing" findings (warnings) for shot `shot` (frames f0..f1): those
+    """The framing warnings kept on `scene` as "framing_call" findings (warnings) for shot `shot` (frames f0..f1): those
     framed for that shot, or with no shot given, those keyed inside f0..f1 or not keyed."""
     out = []
     for n in framing_notes(scene):
@@ -471,7 +471,7 @@ def framing_findings(scene, shot: str | None = None, f0: int | None = None, f1: 
         elif n.get("key") is not None and f0 is not None and f1 is not None and not f0 <= n["key"] <= f1:
             continue
         cam = n.get("camera")
-        out.append(Finding("framing", "warning", cam, n.get("key"), f"camera {cam!r}: {n.get('message')}"))
+        out.append(Finding("framing_call", "warning", cam, n.get("key"), f"camera {cam!r}: {n.get('message')}"))
     return out
 
 

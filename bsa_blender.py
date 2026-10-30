@@ -1143,7 +1143,7 @@ def _build_script_mode(sdir: Path) -> Path:
 
 def _framing_notes(sdir: Path) -> list[str]:
     """The framing warnings build.py kept on the scenes of blend/short.blend (bsa.blender.camera.framing_notes), one
-    line each: the build step names them, and the checks list them as "framing" findings on the review pages."""
+    line each: the build step names them, and the checks list them as "framing_call" findings on the review pages."""
     from bsa.findings import framing_notes
 
     data = _open_blend(sdir)
