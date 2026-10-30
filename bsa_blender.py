@@ -1143,9 +1143,13 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         summary=_render_summary)  # fmt: skip
     run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview"),
         summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
-    edit = run("edit", cmd_edit, ns(short=args.short, preset="preview"), summary=lambda o: {"mp4": o.get("mp4")})
+    edit = run("edit", cmd_edit, ns(short=args.short, preset="preview"),
+               summary=lambda o: {"mp4": o.get("mp4"), **({"closing_note": (o.get("closing") or {}).get("note")}
+                                                          if (o.get("closing") or {}).get("note") else {})})  # fmt: skip
     out = {"steps": steps, "mp4": edit.get("mp4"), "checks": str(sdir / "review" / "checks.json"),
            "frame_checks": str(sdir / "review" / "frame-checks-preview.json")}  # fmt: skip
+    if edit.get("closing"):  # its "note" says when the voice line held the card past closing.seconds
+        out["closing"] = edit["closing"]
     if edit.get("warnings"):
         out["warnings"] = edit["warnings"]
     return out
