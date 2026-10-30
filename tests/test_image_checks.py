@@ -476,3 +476,37 @@ def test_a_lone_tiny_flicker_spot_while_things_move_is_not_reported():
     assert run(frames, set(range(1, 21))) == []
     frames[13][101:111, 61:71] += 0.4  # it comes back at the same place: z-fighting, not a one-off
     assert [f.frame for f in run(frames, set(range(1, 21)))] == [7, 14]
+
+
+# --------------------------------------------------------------------------- shading gradient on a flat face
+
+
+def _face():
+    """The pixels (rows, columns) of a big flat face in the middle of a 400 x 300 frame."""
+    yy, xx = np.mgrid[60:340, 50:250]
+    return yy.ravel(), xx.ravel()
+
+
+def test_a_strong_smooth_gradient_across_a_flat_face_is_found():
+    from bsa.image_checks import shading_findings
+
+    lum = np.full((400, 300), 0.5, np.float32)
+    lum[60:340, 50:250] = np.linspace(0.85, 0.35, 280, dtype=np.float32)[:, None]  # light top, grey base
+    rng = np.random.default_rng(1)
+    lum += rng.normal(0, 0.02, lum.shape).astype(np.float32)  # render noise and a little texture
+    found = shading_findings(lum, [("Tower", *_face())], frame=12)
+    assert [(f.check, f.severity, f.obj, f.frame) for f in found] == [("shading", "warning", "Tower", 12)], found
+    assert "top" in found[0].message and "look.lights" in found[0].message
+
+
+def test_an_even_face_a_shadow_edge_and_a_gentle_gradient_are_not_found():
+    from bsa.image_checks import shading_findings
+
+    even = np.full((400, 300), 0.6, np.float32)
+    shadow = even.copy()
+    shadow[200:340, 50:250] = 0.3  # a cast shadow: a step, not a gradient
+    gentle = even.copy()
+    gentle[60:340, 50:250] = np.linspace(0.62, 0.56, 280, dtype=np.float32)[:, None]
+    for lum in (even, shadow, gentle):
+        assert shading_findings(lum, [("Tower", *_face())], frame=1) == []
+    assert shading_findings(even, [("Tower", np.array([5]), np.array([5]))], frame=1) == []  # too few pixels

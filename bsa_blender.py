@@ -694,6 +694,30 @@ def _motion(sdir: Path, short, tl, tl_hash: str) -> dict:
         return {}
 
 
+def _shading_rows(sdir: Path, short, tl, tl_hash: str, shots, load) -> list[dict]:
+    """Shading-gradient warnings (bsa.blender.shading) on each shot's first, middle and last rendered frame: a large
+    flat face of a hero that shades strongly from one side to the other. [] when the scenes can't be read (it only
+    adds warnings)."""
+    if not _blend(sdir).is_file():
+        return []
+    try:
+        from bsa.blender.shading import frame_shading
+
+        data = _open_blend(sdir)
+        rows = []
+        for shot, frames in shots:
+            if not frames:
+                continue
+            picked = sorted({frames[0], frames[len(frames) // 2], frames[-1]})
+            numbered = [(int(p.stem), p) for p in picked if p.stem.isdigit()]
+            scene = _scene(data, short, shot.id, tl_hash)[1]
+            rows += [{**asdict(f), "shot": shot.id} for f in frame_shading(scene, numbered, shot.id, load)]
+        return rows
+    except Exception as exc:  # noqa: BLE001 - the shading check only adds warnings
+        print(f"frame-check: shading not checked ({exc})", file=sys.stderr)
+        return []
+
+
 FC_CACHE_VERSION = 1
 
 
@@ -802,6 +826,7 @@ def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> di
             rows.append({**asdict(f), "shot": shot.id, **_redo(sdir, args.preset, f, spans[shot.id])})
         before += len(frames)
     _save_fc_cache(cache_path, kept)
+    rows += _shading_rows(sdir, short, tl, tl_hash, shots, read_png)
     run.progress(before, total, force=True)
     rows.sort(key=lambda f: f["severity"] != "error")
     flagged = sum(1 for f in rows if f.get("redo_frames"))

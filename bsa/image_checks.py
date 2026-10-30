@@ -447,3 +447,56 @@ def collapse_spots(findings: list[Finding], moving: set[int] | None) -> list[Fin
 def _boxes_meet(a: tuple, b: tuple) -> bool:
     """Do two boxes (x0, y0, x1, y1, fractions of the frame) overlap or touch?"""
     return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+
+# --------------------------------------------------------------------------- shading gradient on a large flat face
+
+SHADE_MIN_PIXELS = 40  # a face needs this many pixels to be measured
+SHADE_MAX_PIXELS = 6000  # more are thinned evenly (the fit needs no more)
+SHADE_DROP = 0.12  # the fitted brightness changes by at least this much (luminance 0..1) across the face ...
+SHADE_CHANGE = 0.25  # ... and by this share of its mean brightness: a strong gradient
+SHADE_BINS = 8  # the face cut in this many bands along the gradient ...
+SHADE_STEP = 0.35  # ... none of which may jump by more than this share of the whole change: smooth, not a shadow edge
+
+
+def shading_findings(lum: np.ndarray, faces, frame: int | None) -> list[Finding]:
+    """Warnings for large flat faces whose brightness runs strongly and smoothly from one side to the other: area
+    lights close to a big subject fall off across it (inverse square), so a flat wall looks dirty or curved. `lum`:
+    the frame's luminance (0..1, top row first); `faces`: (object name, rows, columns) of the pixels where one flat
+    face of a hero is seen (bsa.blender.shading). A plane fitted to the face's brightness must change by SHADE_DROP
+    and SHADE_CHANGE of its mean across the face, evenly (no band of SHADE_BINS jumps by more than SHADE_STEP of the
+    change: a cast shadow's edge is a step, not a gradient)."""
+    out = []
+    h, w = lum.shape[:2]
+    for name, ys, xs in faces:
+        ys, xs = np.asarray(ys, dtype=np.int64), np.asarray(xs, dtype=np.int64)
+        inside = (ys >= 0) & (ys < h) & (xs >= 0) & (xs < w)
+        ys, xs = ys[inside], xs[inside]
+        if len(ys) < SHADE_MIN_PIXELS:
+            continue
+        if len(ys) > SHADE_MAX_PIXELS:
+            pick = np.linspace(0, len(ys) - 1, SHADE_MAX_PIXELS).astype(np.int64)
+            ys, xs = ys[pick], xs[pick]
+        v = lum[ys, xs].astype(np.float64)
+        x, y = xs / max(w, h), ys / max(w, h)
+        coef = np.linalg.lstsq(np.stack([np.ones_like(x), x, y], axis=1), v, rcond=None)[0]
+        t = coef[1] * x + coef[2] * y
+        change, mean = float(t.max() - t.min()), float(v.mean())
+        if change < SHADE_DROP or change < SHADE_CHANGE * mean:
+            continue
+        bands = np.array([float(v[b].mean()) for b in np.array_split(np.argsort(t), SHADE_BINS)])
+        total = abs(bands[-1] - bands[0])
+        if total <= 0 or np.abs(np.diff(bands)).max() > SHADE_STEP * total:
+            continue
+        if abs(coef[2]) >= abs(coef[1]):
+            light, dark = ("top", "bottom") if coef[2] < 0 else ("bottom", "top")
+        else:
+            light, dark = ("left", "right") if coef[1] < 0 else ("right", "left")
+        out.append(Finding(
+            "shading", "warning", name, frame,
+            f"a large flat face of {name!r} shades from light at the {light} to dark at the {dark} (its brightness "
+            f"changes by {100 * change / max(mean, 1e-6):.0f}% across it) at frame {frame}: it looks dirty or curved. "
+            "Area lights close to a big subject fall off across it: light subjects larger than a few metres with sun "
+            "lamps (bsa.blender.look.lights), or move the area lights further away; check that an edge or facing "
+            "effect in the material does not darken it either"))  # fmt: skip
+    return out
