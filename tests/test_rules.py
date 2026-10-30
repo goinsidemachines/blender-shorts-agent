@@ -271,3 +271,45 @@ def test_word_hits_are_grouped_by_word_with_context_and_one_cleared_hint(short):
     assert sum("'body'" in x for x in warnings) == 1
     hints = [x for x in warnings if "rules_check.r1.cleared" in x]
     assert len(hints) == 1 and '"face"' in hints[0] and '"body"' in hints[0]
+
+
+def test_each_label_is_quoted_on_its_own(short):
+    """Labels are separate texts: the warning quotes the one with the word, never all of them run together."""
+    short.shots[0].labels = ["Spring", "Driver pin", "Key pin"]
+    short.rules_check = {"r1": "No people"}
+    _, warnings = rules.problems(short, _s(NO_PEOPLE))
+    driver = next(w for w in warnings if "'driver'" in w)
+    assert 'shot s01 label "Driver pin"' in driver, driver
+    assert "Spring Driver" not in driver
+
+
+def test_a_cleared_phrase_clears_the_word_only_in_that_phrase(short):
+    """Clearing "driver pin" keeps a lone "driver" flagged; clearing a single word still clears it everywhere."""
+    short.shots[0].labels = ["Driver pin"]
+    short.lines[0].text = "The driver turns the key."
+    short.rules_check = {"r1": {"kept": "Lock parts only", "cleared": {"driver pin": "a part of the pin stack"}}}
+    _, warnings = rules.problems(short, _s(NO_PEOPLE))
+    driver = next(w for w in warnings if "'driver'" in w)
+    assert "line l01" in driver and "label" not in driver and "1 place" in driver
+    assert not any("'pin'" in w for w in warnings)
+    short.rules_check["r1"]["cleared"] = {"driver": "a part of the pin stack"}
+    assert not any("'driver'" in w for w in rules.problems(short, _s(NO_PEOPLE))[1])
+
+
+def test_phrases_in_scene_names():
+    """"rigid body" is a physics term, never a person's body; Blender's own RigidBodyWorld collection is skipped;
+    a known innocent phrase the user has not cleared ("logo eye" under no faces) still warns."""
+    no_faces = {"id": "r2", "text": "No faces", "kind": "no_faces"}
+    short = SimpleNamespace(rules=[], rules_check={})
+    eff = rules.effective(_s(NO_PEOPLE, no_faces), short)
+    names = [("collection", "RigidBodyWorld", "RigidBodyWorld"),
+             ("collection", "RigidBodyConstraints.001", "RigidBodyConstraints.001"),
+             ("object", "Rigid Body Proxy", "Rigid Body Proxy"), ("object", "BodyPanel", "BodyPanel"),
+             ("material", "LogoEye", "Badge")]  # fmt: skip
+    found = [(h["rule"]["id"], h["obj"], h["words"]) for h in rules.name_hits(eff, short, names)]
+    assert found == [("r1", "BodyPanel", ["body"]), ("r1", "Badge", ["eye"]), ("r2", "Badge", ["eye"])], found
+    short.rules_check = {"r2": {"kept": "x", "cleared": {"logo eye": "the eye-shaped mark of the logo"}}}
+    eff = rules.effective(_s(NO_PEOPLE, no_faces), short)
+    found = [(h["rule"]["id"], h["obj"]) for h in rules.name_hits(eff, short, names)]
+    assert found == [("r1", "BodyPanel"), ("r1", "Badge")], found
+    assert rules.hits("no_humans", "rigid bodies and a body") == ["body"]

@@ -1009,11 +1009,18 @@ def test_hard_rules_flag_object_mesh_material_and_collection_names():
     for c in list(box.users_collection):
         c.objects.unlink(box)
     coll.objects.link(box)
+    crate = _cube("Crate", (-6, 0, 0.5))
+    coll.objects.link(crate)
+    rigid = bpy.data.collections.new("RigidBodyWorld")  # Blender's own name: "body" here is "rigid body"
+    sc.collection.children.link(rigid)
+    rigid.objects.link(crate)
     assert not [f for f in checks.run_checks(sc, _timeline()) if f.check == "hard_rule"]
     rule = {"id": "r1", "text": "No people", "kind": "no_humans", "scope": "every short"}
     short = SimpleNamespace(shots=[], rules=[], rules_check={"r1": {"kept": "x", "cleared": {"hand": "clock hand"}}})
     found = [f for f in checks.run_checks(sc, _timeline(), short=short, rules=[rule]) if f.check == "hard_rule"]
-    assert {f.obj for f in found} == {"Worker", "Desk", "Gear", "Box"}, found
+    assert {f.obj for f in found} == {"Worker", "Desk", "Gear", "Crowd"}, found
+    crowd = [f for f in found if f.obj == "Crowd"]
+    assert len(crowd) == 1 and "collection 'Crowd' has" in crowd[0].message and "(on " not in crowd[0].message
     assert all(f.severity == "warning" and "r1" in f.message for f in found), found
     assert not [f for f in found if f.obj == hand.name]
 

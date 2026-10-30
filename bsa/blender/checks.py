@@ -823,7 +823,8 @@ class _Run:
     def hard_rules(self, short, rules):
         """Names in the scene with words a hard rule may forbid (a "Worker" object, a "Skin" material under no
         people): warnings to look at, since a name is not a picture (a clock's "HourHand" is fine, and is cleared in
-        short.json rules_check)."""
+        short.json rules_check). A collection is reported once, as itself; names Blender gives its own data
+        (RigidBodyWorld) and innocent phrases ("rigid body") are skipped (bsa.rules.name_hits)."""
         from bsa.rules import name_hits
 
         names = []
@@ -834,9 +835,9 @@ class _Run:
             for slot in obj.material_slots:
                 if slot.material is not None:
                     names.append(("material", slot.material.name, obj.name))
-            for coll in obj.users_collection:
+            for coll in obj.users_collection:  # reported for the collection itself, once, not "on" one member
                 if coll is not self.scene.collection:
-                    names.append(("collection", coll.name, obj.name))
+                    names.append(("collection", coll.name, coll.name))
             if obj.instance_collection is not None:
                 names.append(("collection", obj.instance_collection.name, obj.name))
             lib = obj.library or (obj.data.library if obj.data is not None else None)
