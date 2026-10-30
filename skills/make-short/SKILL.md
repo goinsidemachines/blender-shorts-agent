@@ -86,7 +86,10 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
 3. **Follow the state.** `CLI state SHORT` gives `next`. Read that stage's playbook chapter before acting, every
    time, even if you think you remember it. Never skip an approval stage (`story`, `storyboard`, `engine`). After
    `engine` is approved, run to the end without asking, unless a check fails that you can't fix after 3 attempts:
-   then show the user what fails, what you tried, and the options.
+   then show the user what fails, what you tried, and the options. If a command stops with "state.json was damaged"
+   (a crash or power cut), never re-mark stages by hand: tell the user, and on their yes run `CLI state SHORT
+   restore`, which puts back `state.json.bak` (the copy before the last save; the damaged file is kept), then
+   check `next` and redo only the stage that the backup lacks.
 4. **The user sees HTML pages, never Markdown or JSON.** At the story and storyboard approvals (and for the finished short), write the page with
    `CLI review story|storyboard|final SHORT --open` and talk about what is on it. Never paste short.json or ask the
    user to open your working files.

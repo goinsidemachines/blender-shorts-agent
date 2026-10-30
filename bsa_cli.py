@@ -293,8 +293,10 @@ def cmd_state(args) -> dict:
         jobstate.mark_done(sdir, args.stage, **info)
     elif args.action == "reset":
         jobstate.reset_from(sdir, args.stage)
+    elif args.action == "restore":  # state.json damaged: put state.json.bak back
+        jobstate.restore(sdir)
     elif args.action is not None:
-        raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE]")
+        raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     return _state(sdir)
 
 
@@ -812,9 +814,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--length", type=float, default=None, help="length in seconds, 15 to 90 (short.json length_s)")
     sp.set_defaults(fn=cmd_new_short)
 
-    sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE]")
+    sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     sp.add_argument("short")
-    sp.add_argument("action", nargs="?", choices=["done", "reset"])
+    sp.add_argument("action", nargs="?", choices=["done", "reset", "restore"])
     sp.add_argument("stage", nargs="?", choices=jobstate.STAGES)
     sp.add_argument("--info", default=None)
     sp.set_defaults(fn=cmd_state)
@@ -892,8 +894,8 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         out = args.fn(args)
-    except CliError as exc:
-        if exc.payload is not None:
+    except (CliError, jobstate.StateDamaged) as exc:
+        if getattr(exc, "payload", None) is not None:
             print(json.dumps(exc.payload, indent=2, default=str))
         print(_one_line(exc), file=sys.stderr)
         return 1

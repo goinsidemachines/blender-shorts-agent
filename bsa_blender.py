@@ -465,9 +465,10 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     parts = _parts(sdir, fps)
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))
               for s in shots}  # fmt: skip
+    damaged = _drop_damaged(sdir, args.preset, shots, spans, stamps, redo)  # before the plan counts what is kept
     tracker, watch, plan = _render_watch(sdir, short, args.preset, engine, shots, spans, stamps, fps, tl_hash, redo,
                                          run=run)  # fmt: skip
-    done, warnings = [], []
+    done, warnings = [], _damaged_warnings(damaged)
     with watch:
         tracker.start()
         try:
@@ -493,6 +494,8 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
                 tracker.end_shot(shot.id)
                 done.append({"shot": shot.id, "frames": len(frames), "rendered": p["total"] - p["reused"],
                              "kept": p["reused"], "why": p["reason"] or "unchanged", "folder": str(folder)})  # fmt: skip
+                if shot.id in damaged:
+                    done[-1]["damaged"] = freshness.frames_spec(damaged[shot.id])
             tracker.set_phase("anchors")
             anchors = _write_anchors(sdir, short, tl, tl_hash, data, fps)  # the edit places near labels from these
         except BaseException as exc:
@@ -509,6 +512,42 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     if warnings:
         out["warnings"] = warnings
     return out
+
+
+def _drop_damaged(sdir: Path, preset: str, shots, spans, stamps, redo) -> dict:
+    """{shot id: frames} of kept frames that are not complete PNGs: a crash or power cut mid-render leaves frames cut
+    off or zero-filled, which a resume would otherwise keep as finished. They are deleted so the render makes them
+    again; in a redo they join the frames it redoes (which deletes them). Empty files are the render's own
+    placeholders, and a shot whose frames are stale renders whole anyway: neither is read."""
+    from bsa.image_checks import png_problem
+
+    out = {}
+    for shot in shots:
+        span, folder = spans[shot.id], sdir / "frames" / preset / shot.id
+        if redo is None and freshness.frames_reason(freshness.read_frames_stamp(folder), stamps[shot.id]) is not None:
+            continue
+        bad = []
+        for f in range(span.f0, span.f1 + 1):
+            png = folder / f"{f:04d}.png"
+            try:
+                if png.stat().st_size > 0 and png_problem(png):
+                    bad.append(f)
+            except FileNotFoundError:
+                pass
+        if not bad:
+            continue
+        out[shot.id] = bad
+        if redo is not None:
+            redo[shot.id] = sorted(set(redo.get(shot.id) or []) | set(bad))
+        else:
+            for f in bad:
+                (folder / f"{f:04d}.png").unlink(missing_ok=True)
+    return out
+
+
+def _damaged_warnings(damaged: dict) -> list[str]:
+    return [f"shot {sid}: frames {freshness.frames_spec(frames)} were not complete PNGs (an interrupted render left "
+            "them): deleted and rendered again" for sid, frames in damaged.items()]  # fmt: skip
 
 
 def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, fps, tl_hash: str, redo=None, run=None):
@@ -760,6 +799,20 @@ def _fc_workers() -> int:
     return default_workers() if thread_safe() else 1
 
 
+def _unreadable(frames: list[Path]) -> dict:
+    """{frame path: an "unreadable_frame" error} for each frame that is not a complete PNG (an interrupted render
+    leaves frames cut off, zero-filled or empty)."""
+    from bsa.image_checks import Finding, png_problem
+
+    out = {}
+    for p in frames:
+        why = png_problem(p)
+        if why:
+            out[p] = Finding("unreadable_frame", "error", None, int(p.stem), f"{p.name} is not a complete PNG ({why}); "
+                             "an interrupted render leaves frames like this: render it again")  # fmt: skip
+    return out
+
+
 def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> dict:
     from bsa.timeline import held_frames
 
@@ -794,8 +847,12 @@ def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> di
                 item["done"] = done
                 run.progress(before + done, total, current=where)
 
-            found = frame_checks(frames, load=read_png, progress=_progress_cb(on_frame), moving=moving, held=held,
-                                 workers=workers)  # Blender's image loader, in threads where it can  # fmt: skip
+            bad = _unreadable(frames)  # never decoded: a loader may read half a frame as a whole one
+            readable = [p for p in frames if p not in bad]
+            found = list(bad.values())
+            if readable:
+                found += frame_checks(readable, load=read_png, progress=_progress_cb(on_frame), moving=moving,
+                                      held=held, workers=workers)  # Blender's image loader, in threads where it can  # fmt: skip
             item["state"] = "done"
         kept[shot.id] = {"key": key, "findings": [asdict(f) for f in found]}
         for f in found:
@@ -1288,7 +1345,7 @@ def main(argv: list[str] | None = None) -> int:
             out = args.fn(args)
         _warn_stale_build(args, out)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
-        plain = isinstance(exc, (freshness.StaleError, CliError))
+        plain = isinstance(exc, (freshness.StaleError, CliError, jobstate.StateDamaged))
         message = _one_line(exc if plain else f"{type(exc).__name__}: {exc}")
         _settle_starting(status, message)
         _fail(message, getattr(exc, "payload", None))
