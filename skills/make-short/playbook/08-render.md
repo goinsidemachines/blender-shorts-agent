@@ -114,6 +114,23 @@ the shot was rendered, the redone frames come from the new build and the shot's 
 the result's `warnings` say so, and you render the whole shot (`--shot ID`) when the change shows outside the
 redone frames. Run frame-check again afterwards.
 
+## Another engine, side by side (side runs)
+
+`--engine cycles|eevee [--tag NAME]` on `BLENDER preview`, `render`, `frame-check`, `edit` and `grab` makes a
+**side run**: another engine than the approved one (tagged with the engine's name), or any run given a tag. It
+reads and writes only its own files: frames in `frames/<preset>-<tag>/<shot>/`, findings in
+`review/frame-checks-<preset>-<tag>.json` (its `redo` commands carry the same options), the video in
+`out/<slug>-<preset>-<tag>.mp4`, grabs as `review/grabs/<preset>-<tag>-...`. The approved engine's frames and video
+are never overwritten, the engine stage keeps its engine, and a side edit never marks `preview` or `final`. Use the
+same options on every command of one side run (`BLENDER render SHORT --preset preview --engine eevee`, then
+`frame-check` and `edit` with `--engine eevee`); the chain passes them on itself. Tags are lowercase letters, digits
+and hyphens; `preview` and `final` are refused. Its fingerprints, resume, scene checks and GPU lock are the same as
+the approved run's; the live status page shows whichever run is going (its engine is on the page).
+
+Each render's result has `s_per_frame` (the average over the frames it rendered fresh) and `engines`: every run of
+that preset on record in `review/engine-runs.json`, with what it measured and its MP4 while it exists. Relay those
+numbers as measured (`04-engine.md`, "Comparing the engines on real frames").
+
 ## Preview
 
 Renders and frame checks run with `run_in_background: true` (the Bash tool stops a command after 2 minutes by
