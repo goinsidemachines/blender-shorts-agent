@@ -76,7 +76,7 @@ Blender's own Bullet engine handles bodies that hit, rest and pile up, which the
   detailed render meshes. Check the result against a sourced number as for any model (a hinge pendulum's period
   against `2π√(L/g)`, with `verify.period_from_series`).
 
-**Traps** (the helper handles the first two; the rest are yours):
+**Traps** (the helper handles the first two and the frame stepping; the rest are yours):
 
 - **fps:** a scene from `bpy.data.scenes.new` is 24 fps. Simulated at 24 and sampled at 30, everything runs 25%
   slow (a 4.0 s pendulum came out at 3.2 s). `rigid_body_sim` sets the short's fps.
@@ -91,8 +91,28 @@ Blender's own Bullet engine handles bodies that hit, rest and pile up, which the
   `margin=` well under the thickness (a coin 1.5 mm thick: about 0.0002) and prefer a primitive shape ("BOX",
   "CYLINDER") over "MESH".
 - **Substeps for fast or small bodies:** at a few steps per frame a small or fast body passes through a thin part
-  in one step (tunnelling) or jitters on contact. Raise `substeps` (20 to 60) until the result stops changing,
-  and keep sizes real (millimetres for coins, not centimetres scaled down).
+  in one step (tunnelling) or jitters on contact. Raise `substeps` (20 to 60) until the result stops changing.
+- **Millimetre mechanisms:** Bullet's tolerances (margins, contact thresholds) are fixed lengths, so at real
+  millimetre size a mechanism of many tiny touching parts (a lock's pin stack) can jitter, sink or blow apart even
+  when a single small part dropping on a floor behaves. If it does, build the proxies larger (10 to 50 times) with
+  `gravity` multiplied by the same factor (the motion then keeps its timing) and scale the sampled locations back
+  down before `keyframe_matrices`. Check the result against a number as usual.
+- **BOX and CYLINDER shapes are centred on the origin:** a primitive shape is the object's bounding box (or the
+  cylinder in it) centred on the object's origin, not on the mesh. A pin whose origin sits at its base gets a box
+  half below it: it starts inside its neighbour and is thrown out on the first frame. Put the origin at the
+  mesh's centre (which is also the centre of mass for a uniform part), or use "CONVEX_HULL".
+- **A MOTOR drives object2 the opposite way:** a MOTOR constraint with a positive `motor_lin_target_velocity`
+  moves `object2` along the constraint empty's **negative** X (checked in Blender 5.2: +1 m/s moved it 0.95 m
+  towards -X in a second), and a positive angular target turns it the negative way about X (+1 rad/s turned
+  it -0.49 rad in half a second). Give the velocity you
+  want with its sign flipped, and look at which way the part goes before baking a whole shot.
+- **The world only steps one frame at a time:** Bullet advances only from the frame before. Jumping frames (a
+  debug loop with `frame_set` every 6th frame) shows nothing moving, and a sim sampled out of order replays the
+  cache wrongly. `rigid_body_sim` steps every frame from `f0`; when you step a world yourself, do the same.
+- **Don't bake with `bpy.ops.rigidbody.bake_to_keyframes`:** in script mode (`blender -b`) it fails with
+  "Operator bpy.ops.anim.keyframe_insert_by_name.poll() failed, context is incorrect", whatever context override
+  you give it. Sample with `rigid.rigid_body_sim` and key with `rigid.keyframe_matrices` instead. They also remove
+  the throwaway scene, so no `RigidBodyWorld` / `RigidBodyConstraints` collections are left in the short.
 - **Damping:** Blender's defaults (0.04 linear, 0.1 angular) slowly stop a swing. `add_body` sets 0; set a real
   value only when you mean it.
 
