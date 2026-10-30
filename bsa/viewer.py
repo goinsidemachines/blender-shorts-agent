@@ -19,6 +19,9 @@ GROUND_FLAT = 0.1  # a ground is at most this thick for its smaller horizontal s
 GROUND_MIN_SIDE = 1.0  # ... at least this wide each way (metres) and as wide as the subject
 GROUND_REACH = 0.05  # ... and its top no higher than this share of the subject's height above the subject's bottom
 CAMERA_BELOW_TOL = 0.01  # metres: a camera this far under a ground's top surface is below the ground
+EDGE_TOL = 0.001  # a hero's box this share or less outside the frame is inside (rounding)
+EDGE_ERROR = 0.5  # more than this share of a hero's box outside the frame ...
+EDGE_ERROR_S = 0.5  # ... for at least this long: error (the shot has lost its subject)
 
 KIND_NAMES = {"caption": "caption", "badge": "badge", "label": "label", "near": "label"}
 
@@ -86,6 +89,36 @@ def coverage_findings(shot_id: str, samples: dict, step: int, fps: int) -> list[
             f"the {what} {text!r} covers {100 * share:.0f}% of {whose} on screen in shot {shot_id!r} (frames "
             f"{frame_spans(hit['frames'], step)}): the viewer can't see it there. Frame the subject clear of the caption "
             "band and the badge corner (bsa.layout.target_area, camera.frame_objects' default band), shorten the text, or move the label"))  # fmt: skip
+    return sorted(out, key=lambda f: f.severity != "error")
+
+
+def edge_findings(shot_id: str, views: dict, step: int, fps: int) -> list[Finding]:
+    """frame_edge findings: one per hero or overlay that is partly or wholly outside the camera frame at a sampled
+    frame of a shot it is in (inside at one sampled frame at least), naming the largest share outside and its frame.
+    An error for a hero (not an overlay) more than EDGE_ERROR outside for EDGE_ERROR_S or longer: a nearly empty shot.
+    `views`: {name: {"overlay": bool, "samples": [(frame, share of its box outside, 0 to 1)]}}, `step` frames
+    apart."""
+    out = []
+    for name, v in views.items():
+        samples = v["samples"]
+        if not samples or all(share >= 1 - EDGE_TOL for _, share in samples):
+            continue  # never in this shot
+        bad = [(f, share) for f, share in samples if share > EDGE_TOL]
+        if not bad:
+            continue
+        frame, share = max(bad, key=lambda b: (b[1], -b[0]))
+        heavy = sum(share_ > EDGE_ERROR for _, share_ in bad)
+        overlay = bool(v.get("overlay"))
+        error = not overlay and heavy * max(1, step) >= EDGE_ERROR_S * fps
+        what = "overlay" if overlay else "hero"
+        where = "outside" if share >= 1 - EDGE_TOL else "partly outside"
+        then = "The shot has lost its subject: " if error else ""
+        out.append(Finding(
+            "frame_edge", "error" if error else "warning", name, frame,
+            f"{what} {name!r} is {where} the camera frame in shot {shot_id!r}: {100 * share:.0f}% of {name!r} is "
+            f"outside the camera frame at frame {frame} (outside at frames {frame_spans([f for f, _ in bad], step)}). "
+            f"{then}{'r' if error else 'R'}eframe or move the camera (camera.move keys a smooth orbit or dolly that keeps it "
+            "in the band), or tag only the true subject as hero"))  # fmt: skip
     return sorted(out, key=lambda f: f.severity != "error")
 
 

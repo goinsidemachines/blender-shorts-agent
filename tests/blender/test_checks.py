@@ -501,6 +501,7 @@ def test_hero_leaving_frame_found():
     found = _found(sc, "frame_edge", "Hero")
     assert len(found) == 1, found
     assert found[0].frame > 1
+    assert found[0].severity == "error" and "% of 'Hero' is outside the camera frame at frame" in found[0].message
 
 
 def test_per_shot_hero_only_checked_in_its_shots():

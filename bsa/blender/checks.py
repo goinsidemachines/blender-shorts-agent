@@ -321,7 +321,7 @@ class _Run:
     def shot(self, shot, every, progress=None):
         sampled = set(range(shot.f0, shot.f1 + 1, max(1, every))) | {shot.f1}
         positions: dict[str, list[tuple[int, np.ndarray]]] = {}
-        views: dict[str, list[tuple[int, str]]] = {}
+        views: dict[str, dict] = {}  # heroes and overlays: {"overlay", "samples": [(frame, share outside)]}
         self.cur, self.changed, self.hits, self.drift = {}, {}, {}, {}
         sizes: dict[str, float] = {}
         seen = {"below": {}, "framing": {}, "texts": {}}  # what the viewer sees at the sampled frames (see_frame)
@@ -351,14 +351,9 @@ class _Run:
         self.report_overlaps(shot, sampled)
         self.report_contacts(shot)
         self.report_seen(shot, seen, every)
-        for name, states in views.items():
-            if any(s != "out" for _, s in states):  # the hero is in this shot: it must stay inside the frame
-                bad = next(((f, s) for f, s in states if s != "in"), None)
-                if bad:
-                    where = "partly outside" if bad[1] == "partial" else "outside"
-                    what = "overlay" if name in self.overlay else "hero"
-                    self.add("frame_edge", "warning", name, bad[0], f"{what} is {where} the camera frame in shot "
-                             f"{shot.id!r}", key=(name, shot.id))  # fmt: skip
+        fps = self.tl.fps if self.tl is not None else 30
+        for f in viewer.edge_findings(shot.id, views, max(1, every), fps):  # in the shot: it must stay in the frame
+            self.add(f.check, f.severity, f.obj, f.frame, f.message, key=(f.obj, shot.id))
 
     def short_shot(self, shot_id):
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
@@ -469,9 +464,10 @@ class _Run:
             if geo is None:
                 continue
             geos[obj.name] = geo
-            state = _view_state(self.scene, cam, geo) if cam else "in"
+            state, share = _view(self.scene, cam, geo) if cam else ("in", 0.0)
             if cam and (is_hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
-                views.setdefault(obj.name, []).append((frame, state))
+                views.setdefault(obj.name, {"overlay": obj.name in self.overlay, "samples": []})["samples"].append(
+                    (frame, share))
             if obj.name not in self.static_done:
                 self.static_done.add(obj.name)
                 self.static(obj, depsgraph, frame)
@@ -1313,6 +1309,39 @@ def _bvh(tris: np.ndarray) -> BVHTree:
 
 def _view_state(scene, cam, geo: _Geo) -> str:
     """ "in" (bounding box fully inside the camera frame), "partial", or "out"."""
+    return _view(scene, cam, geo)[0]
+
+
+EDGE_VERTS = 4000  # vertices sampled for the share outside when the box straddles the camera plane
+
+
+def _view(scene, cam, geo: _Geo) -> tuple[str, float]:
+    """(_view_state's answer, the share of the object outside the camera frame, 0 to 1): the share of its box's
+    area on screen that lies outside the frame, or, when the box reaches behind the camera, the share of its
+    vertices that are outside the frame or behind the camera."""
+    state = _box_state(scene, cam, geo)
+    if state != "partial":
+        return state, 0.0 if state == "in" else 1.0
+    corners = [(x, y, z) for x in (geo.lo[0], geo.hi[0]) for y in (geo.lo[1], geo.hi[1]) for z in (geo.lo[2], geo.hi[2])]
+    pts = [world_to_camera_view(scene, cam, Vector(c)) for c in corners]
+    if all(p.z > 0 for p in pts):
+        x0, x1 = min(p.x for p in pts), max(p.x for p in pts)
+        y0, y1 = min(p.y for p in pts), max(p.y for p in pts)
+        area = (x1 - x0) * (y1 - y0)
+        if area > 1e-12:
+            inside = max(0.0, min(x1, 1.0) - max(x0, 0.0)) * max(0.0, min(y1, 1.0) - max(y0, 0.0))
+            return state, float(min(1.0, max(0.0, 1 - inside / area)))
+    verts = geo.tris.reshape(-1, 3)
+    if len(verts) > EDGE_VERTS:
+        verts = verts[:: len(verts) // EDGE_VERTS + 1]
+    out = 0
+    for v in verts:
+        p = world_to_camera_view(scene, cam, Vector(v.tolist()))
+        out += not (p.z > 0 and 0.0 <= p.x <= 1.0 and 0.0 <= p.y <= 1.0)
+    return state, out / len(verts) if len(verts) else 1.0
+
+
+def _box_state(scene, cam, geo: _Geo) -> str:
     corners = [
         (x, y, z) for x in (geo.lo[0], geo.hi[0]) for y in (geo.lo[1], geo.hi[1]) for z in (geo.lo[2], geo.hi[2])
     ]

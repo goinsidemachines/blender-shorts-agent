@@ -151,3 +151,21 @@ def test_clip_and_union():
     u = viewer.union([Rect(0, 0, 10, 10), None, Rect(20, 20, 10, 10)])
     assert (u.x, u.y, u.right, u.bottom) == (0, 0, 30, 30)
     assert overlap_area(u, Rect(0, 0, W, H)) == 900
+
+
+def test_edge_findings_say_how_much_is_outside_and_where_it_is_worst():
+    """A hero a little outside is a warning naming the worst share and frame; most of a hero outside for half a
+    second or more is an error; an overlay never is."""
+    clipped = {"Housing": {"overlay": False, "samples": [(10, 0.0), (15, 0.03), (20, 0.0)]}}
+    (f,) = viewer.edge_findings("s02", clipped, 5, 30)
+    assert f.severity == "warning" and f.frame == 15 and "3% of 'Housing'" in f.message and "'s02'" in f.message
+    gone = {"Housing": {"overlay": False, "samples": [(f, 0.94 if f >= 20 else 0.0) for f in range(0, 50, 5)]}}
+    (f,) = viewer.edge_findings("s02", gone, 5, 30)
+    assert f.severity == "error" and "94% of 'Housing' is outside the camera frame at frame 20" in f.message, f
+    brief = {"Housing": {"overlay": False, "samples": [(f, 0.94 if f == 20 else 0.0) for f in range(0, 50, 5)]}}
+    assert viewer.edge_findings("s02", brief, 5, 30)[0].severity == "warning"  # one sample: under half a second
+    glow = {"Glow": {"overlay": True, "samples": [(f, 0.94) for f in range(0, 50, 5)] + [(50, 0.0)]}}
+    (f,) = viewer.edge_findings("s02", glow, 5, 30)
+    assert f.severity == "warning" and "overlay" in f.message
+    assert viewer.edge_findings("s02", {"Far": {"overlay": False, "samples": [(10, 1.0), (15, 1.0)]}}, 5, 30) == []
+    assert viewer.edge_findings("s02", {"In": {"overlay": False, "samples": [(10, 0.0)]}}, 5, 30) == []
