@@ -68,6 +68,20 @@ A look is a few decisions held consistently across every shot:
 - **Light and mood:** time of day, key light direction and colour, how dark the shadows go. Examples: "storm dusk"
   (cool haze outside, warm practical lights on the hero inside), "workshop macro" (warm key, shallow focus, dark
   background), "clean lab" (soft white light, pale background, saturated accent).
+- **Lights: `look.lights(scene, target, size)`** (`bsa.blender.look`) sets up a key, a fill and a rim light around
+  the scene camera's view, aimed at `target` (a point, or an object: its box's centre); `size` is the subject's
+  largest dimension in metres, `strength=` the key's strength (W/m², default 3). Call it again to move or retune the
+  same three lights. It returns `{"kind", "distance", "lights"}`: change a light's colour or strength there for
+  the mood.
+  - **Scale matters.** An area light's light falls off with the square of the distance. A rig scaled up for a big
+    subject still stands close to it: three area lights about 50 m from a 97 m tower light its top far more than
+    its base, and its flat face shades from light to grey, so it looks dirty or curved. So for subjects larger than
+    a few metres (`look.SUN_ABOVE_M`, 3 m) `look.lights` uses sun lamps (no falloff: every part of a big face is lit
+    the same, soft 12° shadows); for smaller ones it uses area lights `look.AREA_DISTANCE` (8) sizes away, powered
+    so the subject gets the same light. Building lights by hand, keep area lights at least that far, or use suns.
+  - A material's edge or facing tone (Layer Weight "Facing") also varies across a big flat face seen in
+    perspective: keep it to true grazing angles. The `shading` frame check warns about a strong gradient across a
+    hero's large flat face (`07-checks.md`).
 - **Palette:** a background tone, one accent colour for what matters (the hero, the key label, an arrow), a neutral
   for everything else. Use the accent sparingly; it should point the eye.
 - **Materials:** pick a material family and stick to it (brushed metal and glass, painted toy-like plastic, matte
