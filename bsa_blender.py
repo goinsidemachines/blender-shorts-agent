@@ -58,10 +58,23 @@ def _timeline(sdir: Path, short):
 
 
 def _engine(sdir: Path) -> str | None:
-    """The engine approved at the engine stage, else the saved preference, else None (the scene's own)."""
+    """The engine approved at the engine stage, else short.json's render.engine, else the saved preference, else
+    None (the scene's own)."""
+    from bsa import engine_runs
+
     info = jobstate.load_state(sdir)["stages"].get("engine") or {}
-    engine = info.get("engine") or (settings.load_settings().get("render") or {}).get("engine")
-    return engine if engine in ("cycles", "eevee") else None
+    setting = (settings.load_settings().get("render") or {}).get("engine")
+    return engine_runs.pick(info.get("engine"), engine_runs.short_engine(sdir), setting)[0]
+
+
+def _engine_run(sdir: Path, args):
+    """The run `--engine` / `--tag` ask for (bsa.engine_runs): the approved run, or a side run in its own folders."""
+    from bsa import engine_runs
+
+    try:
+        return engine_runs.resolve(_engine(sdir), getattr(args, "engine", None), getattr(args, "tag", None))
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
 
 
 def _blend(sdir: Path) -> Path:
@@ -115,8 +128,11 @@ def _by_scene(short, tl) -> dict[str, list]:
     return groups
 
 
-def _mp4(sdir: Path, short, preset: str) -> Path:
-    return sdir / "out" / (f"{short.slug}.mp4" if preset == "final" else f"{short.slug}-{preset}.mp4")
+def _mp4(sdir: Path, short, preset: str, run=None) -> Path:
+    """The video of `preset`: the approved run's, or a side run's own (`run`, bsa.engine_runs)."""
+    from bsa import engine_runs
+
+    return engine_runs.mp4_path(sdir, short.slug, preset, run or engine_runs.EngineRun(None))
 
 
 def _write_findings(path: Path, findings, stamp: dict | None = None, **extra) -> dict:
@@ -385,7 +401,7 @@ def cmd_estimate(args) -> dict:
     return {**out, "path": str(path)}
 
 
-def _redo_targets(sdir: Path, args, short, spans) -> dict[str, list[int]] | None:
+def _redo_targets(sdir: Path, args, short, spans, run=None) -> dict[str, list[int]] | None:
     """{shot id: frames} to render again for --frames or --redo-flagged; None for a normal render."""
     if getattr(args, "frames", None):
         if not args.shot:
@@ -396,12 +412,15 @@ def _redo_targets(sdir: Path, args, short, spans) -> dict[str, list[int]] | None
             raise CliError(str(exc)) from exc
     if not getattr(args, "redo_flagged", False):
         return None
-    path = sdir / "review" / f"frame-checks-{args.preset}.json"
+    from bsa import engine_runs
+
+    run = run or engine_runs.EngineRun(None)
+    path = engine_runs.frame_checks_path(sdir, args.preset, run)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise CliError(f"--redo-flagged reads {path.name}, which is missing or unreadable: run BLENDER frame-check "
-                       f"SHORT --preset {args.preset} first") from exc  # fmt: skip
+                       f"SHORT --preset {args.preset}{run.flags()} first") from exc  # fmt: skip
     out: dict[str, set[int]] = {}
     for f in data.get("findings") or []:
         sid = f.get("shot") if isinstance(f, dict) else None
@@ -447,17 +466,20 @@ def cmd_render(args) -> dict:
 
 
 def _cmd_render(args, sdir: Path, short, run) -> dict:
+    from bsa import engine_runs
     from bsa.blender.render import render_range
 
     tl, tl_hash = _timeline(sdir, short)
     spans = {s.id: s for s in tl.shots}
-    redo = _redo_targets(sdir, args, short, spans)
+    side = _engine_run(sdir, args)  # the approved run, or a side run (--engine / --tag) in its own folder
+    root = engine_runs.frames_root(sdir, args.preset, side)
+    redo = _redo_targets(sdir, args, short, spans, side)
     shots = _shots(short, args.shot) if redo is None else [s for s in _shots(short, args.shot) if s.id in redo]
     if redo is not None and not shots:
         return {"preset": args.preset, "shots": [], "redo": {},
                 "note": f"no flagged frames in review/frame-checks-{args.preset}.json: nothing to render again"}
     data = _open_blend(sdir)
-    engine = _engine(sdir)
+    engine = side.engine
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
         freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render")
@@ -466,7 +488,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))
               for s in shots}  # fmt: skip
     tracker, watch, plan = _render_watch(sdir, short, args.preset, engine, shots, spans, stamps, fps, tl_hash, redo,
-                                         run=run)  # fmt: skip
+                                         run=run, root=root)  # fmt: skip
     done, warnings = [], []
     with watch:
         tracker.start()
@@ -474,7 +496,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
             for shot in shots:
                 shot, scene = _scene(data, short, shot.id, tl_hash)
                 span = spans[shot.id]
-                folder = sdir / "frames" / args.preset / shot.id
+                folder = root / shot.id
                 if redo is not None:
                     patch = freshness.redo_frames(folder, span, stamps[shot.id], redo[shot.id])
                     if patch["mixed"]:
@@ -502,8 +524,13 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
         tracker.finish("done")
     from bsa import render_status as rs
 
+    measured = tracker.snapshot()  # the seconds per frame this run measured, for the engine comparison
+    engine_runs.record_render(sdir, args.preset, side, frames=len(tracker.durations), seconds=tracker.render_s)
     out = {"preset": args.preset, "engine": engine, "shots": done, "anchors": anchors,
-           "status": str(rs.status_path(sdir, args.preset)), "page": str(rs.page_path(sdir, args.preset))}  # fmt: skip
+           "status": str(rs.status_path(sdir, args.preset)), "page": str(rs.page_path(sdir, args.preset)),
+           "s_per_frame": measured.get("avg_s_per_frame"), "engines": engine_runs.compare(sdir, args.preset)}  # fmt: skip
+    if side.tag:
+        out.update(tag=side.tag, frames_dir=str(root))
     if redo is not None:
         out["redo"] = {sid: freshness.frames_spec(frames) for sid, frames in redo.items()}
     if warnings:
@@ -511,17 +538,20 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     return out
 
 
-def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, fps, tl_hash: str, redo=None, run=None):
+def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, fps, tl_hash: str, redo=None, run=None,
+                  root: Path | None = None):  # fmt: skip
     """The live status of this render (review/render-status-<preset>.json and review/render-<preset>.html), the
-    render handlers that keep it current, and the plan per shot ({shot id: total, reused, stale, reason})."""
+    render handlers that keep it current, and the plan per shot ({shot id: total, reused, stale, reason}). `root`
+    is the frames folder (default frames/<preset>; a side run's own, bsa.engine_runs)."""
     from bsa import render_status as rs
     from bsa.blender.render_watch import Watch
     from bsa.review import pages
 
+    root = root or sdir / "frames" / preset
     plan = {}
     for shot in shots:
         span = spans[shot.id]
-        folder = sdir / "frames" / preset / shot.id
+        folder = root / shot.id
         p = rs.frames_plan(folder, span.f0, span.f1, stamps[shot.id])
         if redo is not None:
             total = span.f1 - span.f0 + 1
@@ -638,12 +668,15 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     return out
 
 
-def _rendered(sdir: Path, short, preset: str, tl, fps: dict | None) -> list:
+def _rendered(sdir: Path, short, preset: str, tl, fps: dict | None, run=None) -> list:
     """(shot, frame paths) for every shot: exactly its current frames, rendered for this timing, engine and shot
-    content (fingerprint)."""
+    content (fingerprint). `run` (bsa.engine_runs) reads a side run's own frames, of its own engine."""
+    from bsa import engine_runs
+
     spans = {s.id: s for s in tl.shots}
-    engine = _engine(sdir)
-    folder = sdir / "frames" / preset
+    run = run or engine_runs.EngineRun(_engine(sdir))
+    engine = run.engine
+    folder = engine_runs.frames_root(sdir, preset, run)
     parts = _parts(sdir, fps)
     return [(shot, freshness.rendered_frames(folder / shot.id, spans[shot.id], engine, (fps or {}).get(shot.id),
                                              preset, parts.get(shot.id))) for shot in short.shots]  # fmt: skip
@@ -652,8 +685,9 @@ def _rendered(sdir: Path, short, preset: str, tl, fps: dict | None) -> list:
 REDO_AROUND = {"flicker": 1, "stuck_frame": 1}  # frames either side a redo takes too (flicker: t-1..t+1)
 
 
-def _redo(sdir: Path, preset: str, finding, span) -> dict:
-    """The frames to render again for one frame finding, and the command that does it."""
+def _redo(sdir: Path, preset: str, finding, span, flags: str = "") -> dict:
+    """The frames to render again for one frame finding, and the command that does it (`flags`: a side run's
+    --engine / --tag)."""
     if finding.frame is None:
         return {}
     k = REDO_AROUND.get(finding.check, 0)
@@ -662,7 +696,7 @@ def _redo(sdir: Path, preset: str, finding, span) -> dict:
     frames = list(range(max(span.f0, lo), min(span.f1, hi) + 1))
     spec = freshness.frames_spec(frames)
     return {"redo_frames": frames,
-            "redo": f'BLENDER render "{sdir}" --preset {preset} --shot {span.id} --frames {spec}'}  # fmt: skip
+            "redo": f'BLENDER render "{sdir}" --preset {preset} --shot {span.id} --frames {spec}{flags}'}  # fmt: skip
 
 
 def cmd_frame_check(args) -> dict:
@@ -761,6 +795,7 @@ def _fc_workers() -> int:
 
 
 def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> dict:
+    from bsa import engine_runs
     from bsa.timeline import held_frames
 
     tl, tl_hash = _timeline(sdir, short)
@@ -768,11 +803,12 @@ def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> di
     fps = _fingerprints(sdir, short, tl, tl_hash)
     motion = _motion(sdir, short, tl, tl_hash)
     rows = []
-    shots = _rendered(sdir, short, args.preset, tl, fps)
+    side = _engine_run(sdir, args)  # a side run (--engine / --tag) keeps its own findings and cache
+    shots = _rendered(sdir, short, args.preset, tl, fps, side)
     total = sum(len(frames) for _, frames in shots)
     items = [{"id": shot.id, "total": len(frames), "done": 0, "state": "pending"} for shot, frames in shots]
     run.progress(0, total, items=items, force=True)
-    cache_path = sdir / "review" / f"frame-check-cache-{args.preset}.json"
+    cache_path = engine_runs.frame_check_cache_path(sdir, args.preset, side)
     cache, code = _load_fc_cache(cache_path), _fc_code()
     kept = {}
     workers = _fc_workers()
@@ -799,16 +835,18 @@ def _cmd_frame_check(args, sdir: Path, short, run, frame_checks, read_png) -> di
             item["state"] = "done"
         kept[shot.id] = {"key": key, "findings": [asdict(f) for f in found]}
         for f in found:
-            rows.append({**asdict(f), "shot": shot.id, **_redo(sdir, args.preset, f, spans[shot.id])})
+            rows.append({**asdict(f), "shot": shot.id, **_redo(sdir, args.preset, f, spans[shot.id], side.flags())})
         before += len(frames)
     _save_fc_cache(cache_path, kept)
     run.progress(before, total, force=True)
     rows.sort(key=lambda f: f["severity"] != "error")
     flagged = sum(1 for f in rows if f.get("redo_frames"))
-    extra = {"redo_all": f'BLENDER render "{sdir}" --preset {args.preset} --redo-flagged'} if flagged else {}
-    out = _write_findings(sdir / "review" / f"frame-checks-{args.preset}.json", rows, **extra)
+    extra = ({"redo_all": f'BLENDER render "{sdir}" --preset {args.preset} --redo-flagged{side.flags()}'}
+             if flagged else {})  # fmt: skip
+    path = engine_runs.frame_checks_path(sdir, args.preset, side)
+    out = _write_findings(path, rows, **extra)
     if out["errors"]:
-        raise CliError(f"{out['errors']} frame error(s); see review/frame-checks-{args.preset}.json", out)
+        raise CliError(f"{out['errors']} frame error(s); see review/{path.name}", out)
     return out
 
 
@@ -826,11 +864,14 @@ def cmd_edit(args) -> dict:
 
 
 def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
-    out_mp4 = _mp4(sdir, short, args.preset)
+    from bsa import engine_runs
+
+    side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4
+    out_mp4 = _mp4(sdir, short, args.preset, side)
     out_mp4.unlink(missing_ok=True)  # a stale video must never pass for this one if the encode fails
     tl, tl_hash = _timeline(sdir, short)
     fps = _fingerprints(sdir, short, tl, tl_hash, reset_after=True)
-    _rendered(sdir, short, args.preset, tl, fps)  # every shot's exact frames, from this timing, engine and content
+    _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
     if args.preset == "final":
         freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit")
     from bsa.short import near_labels
@@ -854,7 +895,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     end, card_warnings = _closing_plan(sdir, short, tl, mix)
     warnings += card_warnings
     n_frames = tl.n_frames + (end["n_frames"] if end else 0)
-    scene = edit.build_edit(short, tl, sdir / "frames" / args.preset, mix if mix.is_file() else None, out_mp4,
+    scene = edit.build_edit(short, tl, engine_runs.frames_root(sdir, args.preset, side), mix if mix.is_file() else None,
+                            out_mp4,
                             settings.load_settings(), preset=args.preset, anchors=anchors, hero_boxes=heroes,
                             label_heroes=label_heroes, closing=end)  # fmt: skip
     run.progress(0, n_frames, current="encoding the MP4", force=True)
@@ -868,11 +910,15 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         wrong["has_audio"] = (info.get("has_audio"), True)
     if wrong:
         raise CliError(f"the encoded video is off: {wrong} (got, wanted)", {"mp4": str(path), **info})
-    jobstate.mark_done(sdir, args.preset, mp4=str(path), **info)
+    if not side.tag:  # a side run is a comparison: the preview / final stage stays the approved run's
+        jobstate.mark_done(sdir, args.preset, mp4=str(path), **info)
+    engine_runs.record_mp4(sdir, args.preset, side, path)
     if edit.end_card_note(scene):
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
     out = {"mp4": str(path), **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    if side.tag:
+        out.update(engine=side.engine, tag=side.tag)
     if end:
         out["closing"] = end["hold"]  # its "note" says when the voice line held the card past closing.seconds
     return {**out, "warnings": warnings} if warnings else out
@@ -935,26 +981,28 @@ def cmd_grab(args) -> dict:
     """Frames of the edited MP4 at full size and its own colours (or a contact sheet), into review/grabs/."""
     sdir = _short_dir(args.short)
     short = _load(sdir)
-    mp4 = _mp4(sdir, short, args.preset)
+    side = _engine_run(sdir, args)
+    mp4 = _mp4(sdir, short, args.preset, side)
     if not mp4.is_file():
-        raise CliError(f"{mp4} does not exist yet: run BLENDER edit SHORT --preset {args.preset} first")
+        raise CliError(f"{mp4} does not exist yet: run BLENDER edit SHORT --preset {args.preset}{side.flags()} first")
     from bsa.blender import grab
     from bsa.blender.edit import probe
 
     info = probe(mp4)
     fps, n = float(info["fps"]), int(info["frames"])
     folder = sdir / "review" / "grabs"
+    stem = f"{args.preset}{side.suffix}"  # a side run's grabs never replace the approved run's
     if args.sheet:
         frames = grab.sheet_frames(n, args.count)
-        sheet = grab.contact_sheet(mp4, frames, folder / f"{args.preset}-sheet.png", columns=args.columns)
+        sheet = grab.contact_sheet(mp4, frames, folder / f"{stem}-sheet.png", columns=args.columns)
         return {"mp4": str(mp4), "sheet": str(sheet), "frames": frames,
                 "seconds": [round((f - 1) / fps, 2) for f in frames]}  # fmt: skip
     try:
         frames = [grab.frame_at(t, fps, n) for t in args.at]
     except ValueError as exc:
         raise CliError(str(exc)) from exc
-    grab.grab_frames(mp4, list(dict.fromkeys(frames)), folder, args.preset)
-    return {"mp4": str(mp4), "grabs": [{"seconds": t, "frame": f, "path": str(folder / f"{args.preset}-f{f:04d}.png")}
+    grab.grab_frames(mp4, list(dict.fromkeys(frames)), folder, stem)
+    return {"mp4": str(mp4), "grabs": [{"seconds": t, "frame": f, "path": str(folder / f"{stem}-f{f:04d}.png")}
                                       for t, f in zip(args.at, frames, strict=True)]}  # fmt: skip
 
 
@@ -1061,6 +1109,7 @@ def cmd_preview(args) -> dict:
     if missing:
         raise CliError("BLENDER preview rebuilds a short that is past narration; this one still needs: "
                        f"{', '.join(missing)} (CLI state SHORT)")  # fmt: skip
+    _engine_run(sdir, args)  # a bad --engine / --tag is refused before anything runs
     short = _load(sdir)
     from bsa import render_status as rs
     from bsa.review import pages
@@ -1136,14 +1185,22 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
     else:
         run("check", cmd_check, ns(short=args.short, every=args.every, full=False, preset="preview"),
             summary=lambda o: {"warnings": o.get("warnings"), "checked": o.get("checked"), "kept": o.get("kept")})
+    from bsa import engine_runs
+
+    which = {"engine": getattr(args, "engine", None), "tag": getattr(args, "tag", None)}  # a side run: its own files
+    side = _engine_run(sdir, args)
     run("render", cmd_render, ns(short=args.short, preset="preview", shot=None, frames=None, redo_flagged=False,
-                                 no_wait=getattr(args, "no_wait", False)),
+                                 no_wait=getattr(args, "no_wait", False), **which),
         summary=_render_summary)  # fmt: skip
-    run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview"),
+    run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
         summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
-    edit = run("edit", cmd_edit, ns(short=args.short, preset="preview"), summary=lambda o: {"mp4": o.get("mp4")})
+    edit = run("edit", cmd_edit, ns(short=args.short, preset="preview", **which),
+               summary=lambda o: {"mp4": o.get("mp4")})  # fmt: skip
     out = {"steps": steps, "mp4": edit.get("mp4"), "checks": str(sdir / "review" / "checks.json"),
-           "frame_checks": str(sdir / "review" / "frame-checks-preview.json")}  # fmt: skip
+           "frame_checks": str(engine_runs.frame_checks_path(sdir, "preview", side)), "engine": side.engine,
+           "engines": engine_runs.compare(sdir, "preview")}  # fmt: skip
+    if side.tag:
+        out["tag"] = side.tag
     if edit.get("warnings"):
         out["warnings"] = edit["warnings"]
     return out
@@ -1168,6 +1225,13 @@ def cmd_probe(args) -> dict:
 
 
 # --------------------------------------------------------------------------- parser
+
+
+def _engine_args(sp) -> None:
+    """--engine / --tag: a side run in its own frames folder and MP4 (bsa.engine_runs); the approved run is kept."""
+    sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
+                    help="render with this engine instead of the approved one (a side run, tagged with its name)")
+    sp.add_argument("--tag", default=None, help="name of a side run: frames/<preset>-TAG/ and out/<slug>-<preset>-TAG.mp4")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1198,6 +1262,7 @@ def build_parser() -> argparse.ArgumentParser:
     redo.add_argument("--redo-flagged", action="store_true",
                       help="render again the frames the last frame-check flagged (flicker: and one either side)")
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _engine_args(sp)
     sp.set_defaults(fn=cmd_render)
 
     sp = sub.add_parser("check", help="scene checks into review/checks.json (only shots that changed)")
@@ -1211,11 +1276,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("frame-check", help="checks on rendered frames")
     sp.add_argument("short")
     sp.add_argument("--preset", required=True, choices=["preview", "final"])
+    _engine_args(sp)
     sp.set_defaults(fn=cmd_frame_check)
 
     sp = sub.add_parser("edit", help="captions, sound and the MP4 encode")
     sp.add_argument("short")
     sp.add_argument("--preset", required=True, choices=["preview", "final"])
+    _engine_args(sp)
     sp.set_defaults(fn=cmd_edit)
 
     sp = sub.add_parser("grab", help="frames of the edited MP4 at full size (--at SECONDS...) or a contact sheet")
@@ -1226,6 +1293,7 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--sheet", action="store_true", help="evenly spaced frames, a quarter size, in one image")
     sp.add_argument("--count", type=int, default=12, help="frames on the contact sheet")
     sp.add_argument("--columns", type=int, default=4, help="contact sheet columns")
+    _engine_args(sp)
     sp.set_defaults(fn=cmd_grab)
 
     sp = sub.add_parser("extremes", help="full-size stills of each hero at the min/max of each animated channel")
@@ -1240,6 +1308,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-build", action="store_true", help="MCP mode: never run build.py (rebuild through the MCP)")
     sp.add_argument("--every", type=int, default=5, help="check every Nth frame (as BLENDER check)")
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _engine_args(sp)
     sp.set_defaults(fn=cmd_preview)
 
     sp = sub.add_parser("closing", help="make the closing card (stills/closing.png) and say what the short ends on")
