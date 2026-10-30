@@ -595,6 +595,7 @@ def test_progress_counts_every_frame_and_changes_nothing():
 
 def test_clean_scene_has_no_errors():
     sc = _scene()
+    sc.camera.location = (0.4, -8, 0.5)  # the hero framed in the middle of the frame, not small in one half
     hero = _cube("Hero", (0.6, 0, 0.5))
     bake.tag(hero, "hero", "grounded")
     _move_x(hero, [0.6 + 0.4 * i / (N - 1) for i in range(N)])
@@ -1074,3 +1075,82 @@ def test_contact_moves_tag_allows_designed_motion_but_keeps_the_depth_limit():
     found = _found(sc, "overlap", severity="error")
     assert any("'Pin'" in f.message or f.obj == "Pin" for f in found), found
     assert sunk.name == "Sunk"
+
+
+# --------------------------------------------------------------------------- what a viewer sees
+
+
+def _seen_short(sc, **shot):
+    from bsa.short import Short, Shot
+
+    return Short(slug="t", title="T", length_s=1, shots=[Shot(id="s1", title="t", picture="p", scene=sc.name, **shot)])
+
+
+def _seen(sc, check, short=None, cards=()):
+    from bsa.timeline import Card
+
+    tl = Timeline(30, N, [Span("s1", 1, N)], [], [Card(t, "l1", a, b) for t, a, b in cards])
+    return [f for f in checks.run_checks(sc, tl, short=short) if f.check == check]
+
+
+def _z_at_row(sc, row):
+    """The height z whose point (0, 0, z) projects nearest to the screen row `row` (pixels from the top)."""
+    from bpy_extras.object_utils import world_to_camera_view
+
+    bpy.context.view_layer.update()
+    return min((z / 40 for z in range(-200, 200)),
+               key=lambda z: abs((1.0 - world_to_camera_view(sc, sc.camera, Vector((0, 0, z))).y) * 1920 - row))
+
+
+def test_camera_below_the_ground_is_an_error():
+    sc = _scene()
+    bake.tag(_cube("Hero", (0, 0, 0.5)), "hero")
+    assert not _seen(sc, "camera_below_ground")
+    sc.camera.location = (0, -8, -0.6)  # over the floor's footprint, under its top: it sees the floor's underside
+    found = _seen(sc, "camera_below_ground")
+    assert [(f.severity, f.obj) for f in found] == [("error", "Floor")], found
+    assert "60 cm below its top" in found[0].message, found[0].message
+    sc.camera.location = (0, -12, -0.6)  # beside the floor, lower than its top: not under it
+    assert not _seen(sc, "camera_below_ground")
+
+
+def test_text_covering_the_subject_is_reported():
+    sc = _scene()
+    sc.camera.location = (0, -6, 1.5)
+    hero = _cube("Hero", (0, 0, _z_at_row(sc, 1290)), size=0.6)  # in the caption band
+    bake.tag(hero, "hero")
+    short = _seen_short(sc)
+    found = _seen(sc, "covered", short, [("A caption over the hero", 1, N)])
+    assert found and found[0].severity == "error" and "caption" in found[0].message, found
+    assert not _seen(sc, "covered", short)  # no caption, nothing over it
+    hero.location.z = _z_at_row(sc, 700)
+    assert not _seen(sc, "covered", short, [("A caption over the hero", 1, N)])
+
+
+def test_a_label_covering_its_own_part_is_reported():
+    sc = _scene()
+    sc.camera.location = (0, -3, 1.5)
+    knob = _cube("Knob", (0, 0, _z_at_row(sc, 300)), size=0.3)  # high up: no room for the label above it
+    short = _seen_short(sc, labels=[{"text": "A rather long label for a knob on the body", "near": "Knob"}])
+    found = _seen(sc, "covered", short)
+    assert any("its own object 'Knob'" in f.message for f in found), found
+    knob.location.z = _z_at_row(sc, 800)  # room above it: the label sits over it, not on it
+    assert not _seen(sc, "covered", short)
+
+
+def test_a_small_subject_is_framing_unless_the_shot_is_wide():
+    sc = _scene()
+    hero = _cube("Hero", (0, 0, 1.5), size=0.2)
+    bake.tag(hero, "hero")
+    found = _seen(sc, "framing", _seen_short(sc))
+    assert len(found) == 1 and "small" in found[0].message and found[0].severity == "warning", found
+    assert not _seen(sc, "framing", _seen_short(sc, wide="establishing shot"))
+    hero.scale = (20, 20, 20)  # 4 m across at 12 m: fills the frame
+    assert not _seen(sc, "framing", _seen_short(sc))
+
+
+def test_a_subject_in_one_half_leaves_the_other_empty():
+    sc = _scene()
+    bake.tag(_cube("Hero", (0, 0, _z_at_row(sc, 450)), size=1.6), "hero")  # rows about 300-600: the top half only
+    found = _seen(sc, "framing", _seen_short(sc))
+    assert len(found) == 1 and "bottom half" in found[0].message, found

@@ -439,7 +439,8 @@ def _code_current(code) -> bool:
     return code in _checks_codes()
 
 
-CHECKED_FIELDS = ("scene", "labels")  # the short.json shot fields the scene checks read (bsa.blender.checks)
+# the short.json shot fields the scene checks read (bsa.blender.checks: the badge and labels cover the subject or not)
+CHECKED_FIELDS = ("scene", "labels", "badge", "wide")
 
 
 def shot_check_key(fingerprint: str | None, span: Span, shot: dict) -> str:
@@ -452,7 +453,7 @@ def shot_check_key(fingerprint: str | None, span: Span, shot: dict) -> str:
 def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=(), parts: dict | None = None,
                       rules: list | None = None) -> dict:  # fmt: skip
     """What one shot's scene checks depend on, and nothing else: its content (fingerprint), its frames, the fields
-    of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture, still_at or badge), the shot
+    of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture or still_at), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
     text, sound levels and other settings are not in it. `parts` is information (which part of the fingerprint
     changed), not part of the key, except its "tags" part: the objects' tags (contact, hero...) change what the checks

@@ -315,11 +315,19 @@ def test_a_tag_change_alone_makes_the_checks_run_again(sdir):
 
 
 def test_check_inputs_ignore_fields_the_checks_never_read(sdir):
-    """The title, picture, still_at and badge are not checked: rewording them keeps the checks current."""
+    """The title, picture and still_at are not checked: rewording them keeps the checks current."""
     _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
-    reworded = _inputs(shot=_shot(title="New", picture="reworded", still_at=0.2, badge="Simplified"))
+    reworded = _inputs(shot=_shot(title="New", picture="reworded", still_at=0.2))
     freshness.require_checks(sdir, "h", {"s01": reworded})
     assert set(freshness.reusable_checks(sdir, freshness.checks_stamp("h", {"s01": reworded}, 5))) == {"s01"}
+
+
+@pytest.mark.parametrize("over", [{"badge": "Simplified"}, {"wide": True}])
+def test_check_inputs_include_the_badge_and_wide(sdir, over):
+    """The badge may cover the subject and `wide` turns the framing checks off: changing either checks again."""
+    _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
+    changed = _inputs(shot=_shot(**over))
+    assert not freshness.reusable_checks(sdir, freshness.checks_stamp("h", {"s01": changed}, 5))
 
 
 @pytest.mark.parametrize(
