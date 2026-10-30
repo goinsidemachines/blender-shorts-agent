@@ -4,7 +4,7 @@ import zlib
 import numpy as np
 import pytest
 
-from bsa.image_checks import Finding, fireflies, frame_checks, read_png
+from bsa.image_checks import Finding, fireflies, frame_checks, png_problem, read_png
 
 
 def _chunk(kind: bytes, body: bytes) -> bytes:
@@ -74,6 +74,29 @@ def test_unsupported_png_raises(tmp_path):
     (tmp_path / "x.png").write_bytes(b"not a png")
     with pytest.raises(ValueError, match="not a PNG"):
         read_png(tmp_path / "x.png")
+
+
+def test_png_problem_finds_frames_an_interrupted_render_left(tmp_path):
+    """A crash or power cut mid-write leaves a PNG cut off, zero-filled or empty: only its signature, chunk headers
+    and IEND chunk are read (stdlib), and a complete PNG passes."""
+    good = write_png(tmp_path / "good.png", _grey(size=256))
+    assert png_problem(good) is None
+    data = good.read_bytes()
+    cases = {
+        "empty": b"",
+        "cut": data[: len(data) // 2],
+        "no_iend": data[:-12],
+        "zero_tail": data[:-12] + b"\0" * 12,
+        "zeroed": data[:40] + b"\0" * (len(data) - 40),
+        "all_zero": b"\0" * len(data),
+        "not_png": b"GIF89a" + data[6:],
+        "bad_iend": data[:-4] + b"\0\0\0\0",
+    }
+    for name, content in cases.items():
+        (tmp_path / f"{name}.png").write_bytes(content)
+        assert png_problem(tmp_path / f"{name}.png"), name
+    assert "empty" in png_problem(tmp_path / "empty.png")
+    assert png_problem(tmp_path / "missing.png")  # unreadable
 
 
 def test_fireflies_counted(tmp_path):

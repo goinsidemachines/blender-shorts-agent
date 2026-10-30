@@ -89,6 +89,42 @@ def read_png(png: Path) -> np.ndarray:
     return out.reshape(height, width, bpp)
 
 
+_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"  # the whole IEND chunk: length 0, type, CRC
+
+
+def png_problem(png: Path) -> str | None:
+    """Why a file is not a complete PNG, or None when it is. A crash or power cut while Blender writes a frame leaves
+    it empty, cut off or zero-filled, and such a frame can still look like a PNG by its name and size. Reads the
+    signature and walks the chunk headers (seeking over their data) to the IEND chunk: stdlib only, cheap enough for
+    every kept frame of a resumed render."""
+    try:
+        with open(png, "rb") as f:
+            size = f.seek(0, 2)
+            if size == 0:
+                return "empty file"
+            f.seek(0)
+            if f.read(8) != _PNG_SIG:
+                return "no PNG signature"
+            pos = 8
+            while True:
+                head = f.read(8)
+                if len(head) < 8:
+                    return f"cut off at byte {size} (no IEND chunk)"
+                length, kind = struct.unpack(">I4s", head)
+                if not kind.isalpha():
+                    return f"damaged chunk at byte {pos}"
+                end = pos + 12 + length
+                if end > size:
+                    return f"cut off at byte {size} (a {kind.decode('ascii')} chunk runs to byte {end})"
+                if kind == b"IEND":
+                    f.seek(pos)
+                    return None if f.read(12) == _IEND else "damaged IEND chunk"
+                pos = end
+                f.seek(pos)
+    except OSError as exc:
+        return f"unreadable ({exc.strerror or exc})"
+
+
 def _unfilter_avg(line: np.ndarray, prev: np.ndarray, bpp: int) -> np.ndarray:
     cur = bytearray(line.tobytes())
     up = prev.tobytes()

@@ -117,7 +117,9 @@ redone frames. Run frame-check again afterwards.
 ## Preview
 
 Renders and frame checks run with `run_in_background: true` (the Bash tool stops a command after 2 minutes by
-default); you are notified when they finish. If one is cut off, run the same command again: it resumes.
+default); you are notified when they finish. If one is cut off, run the same command again: it resumes. A resume
+first verifies every frame it keeps (PNG signature through the end chunk): frames a crash or power cut left cut off
+or zero-filled are deleted and rendered again, and the result's `warnings` and each shot's `damaged` name them.
 
 **After any change (build.py, short.json, a camera tweak), use the chain:** `BLENDER preview SHORT` (in the
 background) runs everything needed to get back to a checked preview, through the same code as the single commands:

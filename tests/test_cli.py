@@ -592,7 +592,7 @@ def test_frame_check_keeps_the_findings_of_shots_whose_frames_did_not_change(hom
     assert checked == [] and again["warnings"] == first["warnings"] == len(ids)
     assert run2.calls[-1][0][0] == run2.calls[-1][0][1]  # all frames counted done
     one = sorted((pendulum / "frames" / "final" / ids[1]).glob("*.png"))[3]
-    one.write_bytes(b"png, rendered again")
+    one.write_bytes(_png(b"rendered again"))
     again = bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
     assert checked == [ids[1]] and again["warnings"] == len(ids)
     checked.clear()
@@ -600,6 +600,81 @@ def test_frame_check_keeps_the_findings_of_shots_whose_frames_did_not_change(hom
     os.utime(one, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # same size, newer file
     bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
     assert checked == [ids[1]]
+
+
+def test_resumed_render_drops_damaged_frames_and_says_so(home, pendulum, monkeypatch):
+    """A crash or power cut mid-render leaves frames cut off or zero-filled: a resumed render verifies every kept
+    frame, deletes the bad ones so they render again (in a redo, adds them to the frames it redoes), and the result
+    says which. Empty placeholders are left to the render as before; a shot rendered whole anyway is not read."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+    from bsa import render_status as rs
+    from bsa.timeline import Span
+
+    tl = _rendered(home, pendulum, "preview")
+    spans = {s["id"]: Span(s["id"], s["f0"], s["f1"]) for s in tl["shots"]}
+    shots = [types.SimpleNamespace(id=sid) for sid in spans]
+    stamps = {sid: freshness.frames_stamp(span, None, None, "preview") for sid, span in spans.items()}
+    first, second = shots[0].id, shots[1].id
+    folder = pendulum / "frames" / "preview" / first
+    f0 = spans[first].f0
+    (folder / f"{f0 + 1:04d}.png").write_bytes(_png()[:-6])  # cut off
+    (folder / f"{f0 + 2:04d}.png").write_bytes(b"\0" * 64)  # zero-filled
+    (folder / f"{f0 + 3:04d}.png").write_bytes(b"")  # the placeholder of the frame in progress
+    other = pendulum / "frames" / "preview" / second / f"{spans[second].f0:04d}.png"
+    other.write_bytes(b"\0" * 64)
+    stamps[second] = {**stamps[second], "engine": "cycles"}  # stale: the whole shot renders again
+    damaged = bsa_blender._drop_damaged(pendulum, "preview", shots, spans, stamps, None)
+    assert damaged == {first: [f0 + 1, f0 + 2]}
+    assert not (folder / f"{f0 + 1:04d}.png").exists() and not (folder / f"{f0 + 2:04d}.png").exists()
+    assert (folder / f"{f0 + 3:04d}.png").exists() and other.exists()
+    total = spans[first].f1 - f0 + 1
+    assert rs.frames_plan(folder, f0, spans[first].f1, stamps[first])["reused"] == total - 3
+    want = (f"shot {first}: frames {f0 + 1}-{f0 + 2} were not complete PNGs (an interrupted render left them): "
+            "deleted and rendered again")  # fmt: skip
+    assert bsa_blender._damaged_warnings(damaged) == [want]
+    (folder / f"{f0 + 5:04d}.png").write_bytes(b"\0" * 64)
+    redo = {first: [f0]}
+    assert bsa_blender._drop_damaged(pendulum, "preview", shots[:1], spans, stamps, redo) == {first: [f0 + 5]}
+    assert redo == {first: [f0, f0 + 5]} and (folder / f"{f0 + 5:04d}.png").exists()  # redo_frames deletes it
+
+
+def test_frame_check_reports_unreadable_frames_as_errors(home, pendulum, monkeypatch):
+    """Frames an interrupted render left cut off or zero-filled are errors with a redo command, and are never handed
+    to the decoder (which may read half a frame as a whole one)."""
+    import types
+
+    import bsa_blender
+
+    _rendered(home, pendulum, "preview")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    short = bsa_blender._load(pendulum)
+    folder = pendulum / "frames" / "preview" / short.shots[0].id
+    frames = sorted(folder.glob("*.png"))
+    frames[1].write_bytes(_png()[:30])  # cut off
+    frames[2].write_bytes(b"\0" * len(_png()))  # zero-filled
+    given = []
+
+    def frame_checks(frames, load=None, progress=None, **_kw):
+        given.extend(frames)
+        return []
+
+    class Run:
+        def progress(self, *a, **kw):
+            pass
+
+    args = types.SimpleNamespace(preset="preview")
+    with pytest.raises(bsa_blender.CliError, match="2 frame error"):
+        bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
+    assert frames[1] not in given and frames[2] not in given and frames[0] in given
+    data = json.loads((pendulum / "review" / "frame-checks-preview.json").read_text(encoding="utf-8"))
+    bad = [f for f in data["findings"] if f["check"] == "unreadable_frame"]
+    assert [f["frame"] for f in bad] == [int(frames[1].stem), int(frames[2].stem)]
+    assert all(f["severity"] == "error" and f["redo_frames"] == [f["frame"]] for f in bad)
+    assert "cut off" in bad[0]["message"] and frames[1].name in bad[0]["message"]
+    assert "--redo-flagged" in data["redo_all"]
 
 
 def test_assets_download_goes_where_build_py_looks(home, pendulum, tmp_path, monkeypatch, capsys):
@@ -1011,6 +1086,20 @@ def test_stale_build_py_warns_and_the_final_refuses(home, pendulum, monkeypatch,
     assert "warnings" not in json.loads(io.out.split("BSA_RESULT ", 1)[1]) and "build.py" not in io.err
 
 
+def _png(note: bytes = b"") -> bytes:
+    """A complete (tiny) PNG file as far as frame-check's completeness check reads it; `note` changes its bytes."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    text = chunk(b"tEXt", b"note\0" + note) if note else b""
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + text + chunk(b"IDAT", zlib.compress(b"\0\0\0\0"))
+            + chunk(b"IEND", b""))  # fmt: skip
+
+
 def _rendered(home, short: Path, preset: str, engine=None, blend=None, shift=0) -> dict:
     """Write source/timeline.json and stamped frames for every shot, as `render` leaves them; returns the timeline.
     With `blend` (a blend/short.blend exists), each shot gets a fingerprint, cached as render caches it."""
@@ -1027,7 +1116,7 @@ def _rendered(home, short: Path, preset: str, engine=None, blend=None, shift=0) 
         folder = short / "frames" / preset / s["id"]
         folder.mkdir(parents=True, exist_ok=True)
         for f in range(span.f0, span.f1 + 1):
-            (folder / f"{f:04d}.png").write_bytes(b"png")
+            (folder / f"{f:04d}.png").write_bytes(_png())
         stamp = freshness.frames_stamp(span, engine, (fps or {}).get(s["id"]), preset)
         (folder / ".render.json").write_text(json.dumps(stamp), encoding="utf-8")
     _anchors(short, fps)  # render writes them too
