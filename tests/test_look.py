@@ -11,6 +11,7 @@ def test_look_in_blender(blender_run):
     assert result.returncode == 0, result.stdout + result.stderr
     for name in (
         "test_a_plain_world_renders_grey_under_agx",
+        "test_toy_water_is_tinted_and_see_through_in_eevee",
         "test_paper_world_renders_the_brand_colour",
         "test_paper_world_with_a_look_and_exposure",
         "test_brand_view_and_bad_look",

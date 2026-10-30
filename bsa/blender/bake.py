@@ -84,18 +84,28 @@ def _fcurves(action):
 
 # Every tag the checks read (07-checks.md documents each): "hero" / "hero:<shot ids>", "grounded",
 # "contact:<other>[:<max depth m>][:moves]" (moves: the pair moves against each other by design), "overlay" (a glow,
-# a guide line: not physical geometry) and "surface" (an open fluid surface, such as water: things may cross it).
-TAGS = ("hero", "grounded", "contact:", "overlay", "surface")
+# a guide line: not physical geometry), "overlay:may-exit" (an overlay that may leave the frame on purpose, such as
+# a falling stream: no frame_edge warning) and "surface" (an open fluid surface, such as water: things may cross it).
+MAY_EXIT = "overlay:may-exit"
+TAGS = ("hero", "grounded", "contact:", "overlay", MAY_EXIT, "surface")
 
 
 def _is_tag_start(word: str) -> bool:
-    return word in ("hero", "grounded", "overlay", "surface") or word.startswith(("contact:", "hero:"))
+    return word in ("hero", "grounded", "overlay", MAY_EXIT, "surface") or word.startswith(("contact:", "hero:"))
 
 
 def is_overlay(obj) -> bool:
-    """Whether the object is tagged "overlay": a non-physical overlay (a glow halo, a distance line, an arrow) that the
-    overlap, z-fighting, grounding and pop checks leave out; it must still stay inside the frame."""
-    return "overlay" in tags(obj)
+    """Whether the object is tagged "overlay" (or "overlay:may-exit"): a non-physical overlay (a glow halo, a distance
+    line, an arrow) that the overlap, z-fighting, grounding and pop checks leave out; it must still stay inside the
+    frame, unless it may exit."""
+    t = tags(obj)
+    return "overlay" in t or MAY_EXIT in t
+
+
+def may_exit(obj) -> bool:
+    """Whether the object is tagged "overlay:may-exit": an overlay that leaves the frame on purpose (water falling
+    out of shot), which frame_edge does not warn about."""
+    return MAY_EXIT in tags(obj)
 
 
 def is_surface(obj) -> bool:

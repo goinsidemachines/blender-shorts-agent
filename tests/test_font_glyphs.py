@@ -134,6 +134,16 @@ def test_brand_font_check_warns_about_a_variable_font(tmp_path):
     assert missing["installed"] is False and "not installed" in missing["warning"]
 
 
+def test_brand_font_check_with_a_weight(tmp_path):
+    """brand.font "Family@600": fine when that static weight is installed, a warning saying how to get it when not."""
+    _write(tmp_path, "Testa-SemiBold.ttf", build_font("abc", family="Testa", weight=600))
+    got = fonts.brand_font_check("Testa@600", [tmp_path / "fonts"], system="Windows")
+    assert got["installed"] is True and got["file"].endswith("Testa-SemiBold.ttf") and got["warning"] is None
+    missing = fonts.brand_font_check("Testa@800", [tmp_path / "fonts"], system="Windows")
+    assert missing["installed"] is False and missing["file"] is None
+    assert "font:Testa@800" in missing["warning"] and "brand short" in missing["warning"]
+
+
 def test_cli_settings_set_brand_font_checks_the_font(tmp_path, bsa_home):
     vf = _write(tmp_path, "Varia-VF.ttf", build_variable("abc", family="Varia"))
     out = _cli("settings", "set", "brand.font", str(vf), env_home=bsa_home)

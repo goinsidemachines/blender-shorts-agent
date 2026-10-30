@@ -22,6 +22,7 @@ def test_edit_in_blender(blender_run):
         "test_font_found_in_the_per_user_font_folder",
         "test_font_fallback_is_reported",
         "test_brand_caption_colours",
+        "test_font_with_a_weight_loads_the_downloaded_static_file",
         "test_end_card_follows_the_last_line_in_the_upper_third",
         "test_end_card_line_is_optional_and_defaults",
         "test_near_label_follows_its_object",

@@ -86,4 +86,18 @@ def test_heavy_commands_take_no_wait():
     for argv in (["render", "x", "--preset", "final", "--no-wait"], ["preview", "x", "--no-wait"],
                  ["extremes", "x", "--no-wait"], ["estimate", "x", "--no-wait"]):  # fmt: skip
         assert p.parse_args(argv).no_wait is True
-    assert bsa_blender.GPU_COMMANDS >= {"render", "extremes", "estimate"}
+    assert bsa_blender.GPU_COMMANDS >= {"render", "extremes", "estimate", "test-frames"}
+
+
+def test_test_frames_arguments():
+    import argparse
+
+    import bsa_blender
+
+    args = bsa_blender.build_parser().parse_args(["test-frames", "x", "--at", "s01:0.5", "s05:0.3", "--no-wait"])
+    assert args.at == [("s01", 0.5), ("s05", 0.3)] and args.scale == 0.4 and args.no_wait is True
+    assert bsa_blender.build_parser().parse_args(["test-frames", "x", "--at", "a:b:1", "--scale", "0.25"]).at == [
+        ("a:b", 1.0)]  # fmt: skip
+    for bad in ("s01", "s01:1.5", ":0.5", "s01:half"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            bsa_blender._at_spec(bad)

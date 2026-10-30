@@ -1119,6 +1119,47 @@ def cmd_extremes(args) -> dict:
     return out
 
 
+def _at_spec(text: str) -> tuple[str, float]:
+    """("s01", 0.5) from "s01:0.5" (a shot id and a fraction of the shot, 0 to 1)."""
+    shot, _, frac = str(text).rpartition(":")
+    try:
+        value = float(frac)
+    except ValueError:
+        value = -1.0
+    if not shot or not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"{text!r}: give SHOT:FRACTION, like s01:0.5 (a fraction from 0 to 1)")
+    return shot, value
+
+
+def cmd_test_frames(args) -> dict:
+    """Single frames at fractions of shots, with the short's current build, engine and look, at a reduced size, into
+    review/test-frames/: a quick look at a material or framing before the full preview."""
+    from bsa.blender.stills import render_still
+
+    if not 0.05 <= args.scale <= 1.0:
+        raise CliError(f"--scale {args.scale}: give a fraction of the full size from 0.05 to 1")
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    tl, tl_hash = _timeline(sdir, short)
+    spans = {s.id: s for s in tl.shots}
+    for shot_id, _ in args.at:
+        _shots(short, shot_id)  # every shot exists before anything renders
+    data = _open_blend(sdir)
+    engine = _engine(sdir)
+    folder = sdir / "review" / "test-frames"
+    frames = []
+    for shot_id, frac in args.at:
+        shot, scene = _scene(data, short, shot_id, tl_hash)
+        span = spans[shot.id]
+        frame = span.f0 + round(frac * (span.f1 - span.f0))
+        out = folder / f"{shot.id}-{round(frac * 100):03d}-f{frame:04d}.png"
+        render_still(scene, frame, out, preset="preview", percent=round(args.scale * 100), engine=engine,
+                     file_format="PNG")  # fmt: skip
+        frames.append({"shot": shot.id, "at": frac, "frame": frame, "path": str(out)})
+    return {"folder": str(folder), "engine": engine or "the scene's own", "scale": args.scale,
+            "paths": [f["path"] for f in frames], "frames": frames}  # fmt: skip
+
+
 # ----- the preview chain: everything after an edit to build.py or short.json, up to a checked preview
 
 
@@ -1407,6 +1448,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
     sp.set_defaults(fn=cmd_extremes)
 
+    sp = sub.add_parser("test-frames", help="single frames at fractions of shots, reduced size, into review/test-frames/")
+    sp.add_argument("short")
+    sp.add_argument("--at", type=_at_spec, nargs="+", required=True, metavar="SHOT:FRACTION", help="e.g. s01:0.5")
+    sp.add_argument("--scale", type=float, default=0.4, help="fraction of the full resolution (default 0.4)")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.set_defaults(fn=cmd_test_frames)
+
     sp = sub.add_parser("preview", help="after an edit: build, mark build done, mix, check, render, frame-check, edit")
     sp.add_argument("short")
     sp.add_argument("--rebuild", action="store_true", help="run build.py even when the .blend looks current")
@@ -1476,7 +1524,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
-GPU_COMMANDS = {"render", "extremes", "estimate"}  # one at a time per workspace (bsa.gpulock); preview via render
+GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames"}  # one at a time per workspace (gpulock); preview via render
 
 
 @contextmanager

@@ -958,6 +958,10 @@ def test_overlay_objects_skip_physical_checks_but_stay_in_frame():
     edge = [f for f in checks.run_checks(sc, _timeline()) if f.check == "frame_edge"]
     assert [f.obj for f in edge] == ["Halo"], edge
     assert bake.tags(halo) == ["grounded", "overlay"]
+    halo["bsa_tags"] = ""
+    bake.tag(halo, "grounded", "overlay:may-exit")  # leaves the frame on purpose (a falling stream)
+    found = checks.run_checks(sc, _timeline())
+    assert not [f for f in found if f.check in ("frame_edge", "overlap", "pops", "floating")], found
 
 
 def test_surface_tag_lets_things_cross_an_open_water_surface_but_not_a_solid():

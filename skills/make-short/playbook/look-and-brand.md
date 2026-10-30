@@ -87,10 +87,20 @@ A look is a few decisions held consistently across every shot:
 - **Materials:** pick a material family and stick to it (brushed metal and glass, painted toy-like plastic, matte
   clay). Real materials have roughness variation and micro-bump: `look.material(..., bump_scale=...)`, or downloaded
   CC0 textures (`assets.md`).
+- **Water in EEVEE:** glass-like water (transmission with an IOR of 1.33) needs ray-traced refraction in EEVEE, and
+  that fails behind other transparent parts (a float seen through the tank water and its glass wall comes out
+  wrong). For a toy-like EEVEE look use `bsa.blender.look.toy_water(name, colour)`: a tinted, partly see-through
+  Principled BSDF (alpha 0.4) with a clear coat, blended (`surface_render_method` BLENDED), so the parts inside show
+  through tinted and the surface still reads as water. `stream=True` gives falling water more body (alpha 0.7);
+  `alpha=` sets any other (about 0.2 for a clear pipe the water runs through). Take the colour from the short's
+  palette. Real refraction is for Cycles.
 - **Typography:** one clean sans font for captions and labels (`style.font`; check it with `CLI fonts "NAME"` when writing the story: a
   missing font falls back to one that ships with the OS (Segoe UI or Arial on Windows, Helvetica Neue or Helvetica on
   macOS, DejaVu Sans or Liberation Sans on Linux), then to Blender's own, and the edit says which it used). Caption size 64 px by default.
   See "Checking the font" below before the story page.
+- **Caption colours:** `style.caption` (or `brand.caption`) `color` and `box` as hex. A 6-digit hex (`#202326`) is
+  opaque; an 8-digit one keeps its alpha (`#20232699` is 60 % ink). With no `box`, captions sit on the default dark
+  see-through box (55 % alpha).
 - **World:** an HDRI (CC0, downloaded only after a yes) or a simple gradient world; never a pure black void unless
   that is the look.
 - **A plain backdrop in an exact colour** (a brand's paper, say): never set the world to the hex and hope. Under AgX
@@ -115,16 +125,20 @@ Two things go wrong with a brand font, and both are caught before anything rende
 - **Variable fonts draw the wrong weight.** A family installed only as a variable font (one file such as
   `Fredoka-VF.ttf` or `Inter[wght].ttf`) loads in Blender as its default instance, which is often Light: captions and
   3D text come out thin. `CLI fonts "NAME"` reports `variable`, the `default_weight` and `default_instance` Blender
-  will use, a `warning`, and any installed `static_weights` of the family. Use a static file instead: set
-  `style.font` (and `bpy.data.fonts.load` in `build.py`) to an installed static weight's path, or, if none is
-  installed, offer to download one: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
+  will use, a `warning`, and any installed `static_weights` of the family. Use a static weight instead: set
+  `brand.font` and `style.font` to the family with its weight, `"Fredoka@600"` (a file path still works too). It
+  loads an installed static file of exactly that weight, else the one `CLI assets` downloaded into
+  `<workspace>/.assets-cache/fonts/` (`Fredoka-600.ttf`). `CLI fonts "Fredoka@600"` says which file that is; when
+  neither exists it warns (and `CLI validate` and the edit's `font_fallback` say so) and the text uses the family as
+  installed. Then offer to download it: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
   Fonts (its licence is checked: OFL, Apache 2.0 or Ubuntu Font Licence), shown and approved like any asset
-  (`assets.md`); after the yes, `assets download SHORT` puts it in `<workspace>/.assets-cache/fonts/` and you set
-  `style.font` to that path. Don't thicken thin text with `curve.offset` instead. For a brand, this is checked once,
+  (`assets.md`); after the yes, `assets download SHORT` puts it in the cache, where `"Fredoka@600"` finds it for
+  every short of the workspace. In `build.py`, load the same file for 3D text: `bsa.fonts.resolve("Fredoka@600",
+  cache_dirs=bsa.fonts.font_caches(SHORT_DIR))[0]`. Don't thicken thin text with `curve.offset` instead. For a brand, this is checked once,
   at setup: `settings set brand.font NAME` returns a `font_check` with the same facts and a `warning` that says how
-  to fix it in the brand (set `brand.font` to a static weight's file path, then every brand short copies it). While
-  a brand short still uses a variable `brand.font`, `CLI validate` says so in one short line that points at the
-  setting, rather than repeating the full advice on every short.
+  to fix it in the brand (set `brand.font` to a static weight, `"Fredoka@600"` or a file path, then every brand
+  short uses it). While a brand short still uses a variable `brand.font`, `CLI validate` says so in one short line
+  that points at the setting, rather than repeating the full advice on every short.
 - **Missing glyphs draw as boxes.** Every character of the captions, labels, badges (upper case, as drawn) and the
   end card (its line and the @handle) is checked against the style font's character map. `CLI validate SHORT` (and
   `CLI fonts "NAME" --short SHORT`, or `--text "..."` for any text) warns with the character, its code point, where

@@ -71,6 +71,46 @@ def assign(obj, mat) -> None:
         obj.data.materials.append(mat)
 
 
+WATER_ALPHA = 0.4  # toy_water: still water (a tank, a glass) you see the parts inside through
+STREAM_ALPHA = 0.7  # toy_water(stream=True): falling water, thin, so it needs more body to read as water
+
+
+def toy_water(name: str, colour, alpha: float | None = None, stream: bool = False, roughness: float = 0.05,
+              coat: float = 1.0):  # fmt: skip
+    """Stylised water that works in EEVEE: a tinted Principled BSDF that is partly see-through (`alpha`, default
+    WATER_ALPHA; STREAM_ALPHA with `stream=True` for a falling stream), with a clear coat for the wet shine, blended
+    (`surface_render_method` BLENDED, or the older `blend_method` BLEND). Glass with an IOR needs ray-traced
+    refraction in EEVEE and breaks behind other transparent parts; this does not refract, so parts inside show
+    through tinted. `colour` is "#RRGGBB" or an sRGB (r, g, b) tuple of 0..1 floats."""
+    from bsa import colour as colours
+
+    srgb = colours.hex_to_srgb(colour) if isinstance(colour, str) else tuple(colour)[:3]
+    a = (STREAM_ALPHA if stream else WATER_ALPHA) if alpha is None else float(alpha)
+    if not 0.0 <= a <= 1.0:
+        raise ValueError(f"alpha {a} is not between 0 and 1")
+    mat = bpy.data.materials.new(name)
+    _nt, bsdf, _out = _principled(mat)
+    _set(bsdf, "Base Color", (*(float(c) for c in colours.srgb_to_linear(srgb)), 1.0))
+    _set(bsdf, "Roughness", roughness)
+    _set(bsdf, "Metallic", 0.0)
+    _set(bsdf, "Alpha", a)
+    for key in ("Coat Weight", "Clearcoat"):  # Blender 4.0+, then 3.x
+        _set(bsdf, key, coat)
+    for key in ("Coat Roughness", "Clearcoat Roughness"):
+        _set(bsdf, key, 0.03)
+    _set(bsdf, "IOR", 1.33)
+    if hasattr(mat, "surface_render_method"):  # Blender 4.2+ (EEVEE Next)
+        mat.surface_render_method = "BLENDED"
+    if hasattr(mat, "blend_method"):  # older EEVEE (still present, but unused, in 4.2+)
+        try:
+            mat.blend_method = "BLEND"
+        except (TypeError, AttributeError):
+            pass
+    if hasattr(mat, "use_backface_culling"):
+        mat.use_backface_culling = False
+    return mat
+
+
 def bevel(obj, width_m: float, segments: int = 3):
     """Rounded hard edges: a Bevel modifier on edges sharper than its angle limit, shaded smooth with hardened
     normals, so the rounding shades smoothly and the flat faces stay flat. Works before or after `smooth`."""

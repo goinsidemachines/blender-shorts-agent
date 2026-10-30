@@ -268,6 +268,31 @@ def test_brand_caption_colours():
     cap = _captions(edit.build_edit(short, tl, frames, wav, out, brand, preset="preview"))[0]
     assert [round(c, 3) for c in cap.color] == [1.0, round(0xD0 / 255, 3), 0.0, 1.0]
     assert [round(c, 3) for c in cap.box_color] == [round(v / 255, 3) for v in (0x10, 0x20, 0x30, 0x80)]
+    solid = {"brand": {"mode": "brand", "caption": {"box": "#202326"}}}  # 6 digits: opaque, not the default 0.55
+    cap = _captions(edit.build_edit(short, tl, frames, wav, out, solid, preset="preview"))[0]
+    assert [round(c, 3) for c in cap.box_color] == [round(v / 255, 3) for v in (0x20, 0x23, 0x26, 0xFF)]
+    assert edit.caption_colours(short, solid)[1][3] == 1.0
+    assert edit.caption_colours(short, {})[1] == edit.BOX_COLOR  # no box given: the default see-through box
+
+
+def test_font_with_a_weight_loads_the_downloaded_static_file():
+    """style.font "Family@600" loads <workspace>/.assets-cache/fonts/Family-600.ttf (what CLI assets downloads),
+    found from the short's folder (out_mp4 is <short>/out/<slug>.mp4)."""
+    import shutil
+
+    short, tl, frames, wav, _ = _fixture()
+    sdir = Path(tempfile.mkdtemp()) / "ws" / "01-t"
+    cache = sdir.parent / ".assets-cache" / "fonts"
+    cache.mkdir(parents=True)
+    src = edit.find_font_file("Arial", edit.font_dirs()) or edit.find_font_file("DejaVu Sans", edit.font_dirs())
+    shutil.copy(src, cache / "Notinstalledfam-600.ttf")
+    short.style["font"] = "Notinstalledfam@600"
+    sc = edit.build_edit(short, tl, frames, wav, sdir / "out" / "t.mp4", {}, preset="preview")
+    assert Path(_captions(sc)[0].font.filepath).name == "Notinstalledfam-600.ttf"
+    assert edit.font_used(sc) == "Notinstalledfam SemiBold" and edit.font_note(sc) is None
+    short.style["font"] = "Notinstalledfam@700"  # not downloaded: an OS font, and the note says how to get it
+    sc = edit.build_edit(short, tl, frames, wav, sdir / "out" / "t.mp4", {}, preset="preview")
+    assert 'CLI assets plan SHORT "font:Notinstalledfam@700"' in edit.font_note(sc)
 
 
 def _end_strips(scene):
