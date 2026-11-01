@@ -181,3 +181,47 @@ def test_end_card_band_prefers_bands_free_of_every_mesh():
     everywhere = [Rect(s.x, s.y, s.w, s.h)]  # scenery everywhere: a band free of heroes, least scenery
     name, _, area = end_card_band(block, [], cap_top, others=everywhere + [rails])
     assert area == 0 and name != "upper third"
+
+
+def test_top_cards_band_follows_the_badge_and_stacked_labels():
+    from bsa.layout import top_cards_band
+
+    s = safe_rect()
+    badge = top_cards_band()
+    assert (badge.x, badge.w, badge.y) == (s.x, s.w, s.y)
+    assert round(badge.bottom) == 297  # rows about 221-297, as the build chapter quotes
+    two = top_cards_band(labels=2)
+    assert two.bottom == pytest.approx(badge.bottom + 2 * (12 + 40 * 1.25 + 2 * 0.010 * H))
+    assert top_cards_band(badge=False, labels=1).bottom == pytest.approx(s.y + 1 + 40 * 1.25 + 2 * 0.010 * H)
+    assert top_cards_band(badge=False) is None
+
+
+def test_target_area_is_the_space_between_the_top_cards_and_the_captions():
+    from bsa.layout import caption_band, frame_area, target_area, top_cards_band
+
+    area = target_area()
+    base = frame_area()
+    assert (area.x, area.w, area.bottom) == (base.x, base.w, base.bottom)  # above the caption band, 24 px inside
+    assert area.y == pytest.approx(top_cards_band().bottom + 24)  # below the badge row
+    assert area.bottom == pytest.approx(caption_band().y - 24)
+    assert target_area(top=None) == base  # no top cards: the old frame_area
+    assert target_area(top=top_cards_band(labels=1)).y == pytest.approx(top_cards_band(labels=1).bottom + 24)
+    assert target_area(avoid=None, top=None, margin=0) == safe_rect()
+
+
+def test_target_area_takes_explicit_screen_rows():
+    from bsa.layout import frame_area, target_area
+
+    area = target_area(px_top=500, px_bottom=1100)
+    assert (area.y, area.bottom) == (500, 1100)
+    assert (area.x, area.w) == (frame_area().x, frame_area().w)  # the sides keep the margin
+    assert target_area(px_bottom=1300).bottom == 1300  # one row alone: the other is the default band's
+    assert target_area(px_bottom=1300).y == target_area().y
+    for top, bottom in ((900, 800), (-5, 900), (300, H + 1), (500, 505)):
+        with pytest.raises(ValueError, match="rows"):
+            target_area(px_top=top, px_bottom=bottom)
+    box = target_area(px_top=440, px_bottom=1150, px_left=110, px_right=970)  # an explicit box: rows and columns
+    assert (box.x, box.y, box.right, box.bottom) == (110, 440, 970, 1150)
+    for left, right in ((600, 500), (-1, 500), (100, W + 1)):
+        with pytest.raises(ValueError, match="columns"):
+            target_area(px_left=left, px_right=right)

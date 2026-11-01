@@ -357,6 +357,42 @@ def _take_short(text="Hello there."):
     return Short(slug="t", title="T", length_s=10, lines=[Line("l01", text, "s01"), Line("l02", "Bye now.", "s01")])
 
 
+def _write_take_with_lead(path: Path, lead_s: float, voice_s: float = 1.0, floor: int = 40) -> None:
+    """A take that opens with `lead_s` of near silence (a faint noise floor), then a voice-loud tone."""
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    lead = rng.integers(-floor, floor + 1, round(lead_s * 48000))
+    t = np.arange(round(voice_s * 48000)) / 48000
+    voice = 9000 * np.sin(2 * np.pi * 220 * t)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(np.concatenate([lead, voice]).astype("<i2").tobytes())
+
+
+def test_voice_onset_measures_the_leading_silence(tmp_path):
+    _write_take_with_lead(tmp_path / "a.wav", 0.5)
+    assert 0.42 <= contract.voice_onset(tmp_path / "a.wav") <= 0.5
+    _write_take_with_lead(tmp_path / "b.wav", 0.0)
+    assert contract.voice_onset(tmp_path / "b.wav") == 0.0
+    (tmp_path / "c.wav").write_bytes(b"not a wav")
+    assert contract.voice_onset(tmp_path / "c.wav") == 0.0  # never blocks the timing
+
+
+def test_takes_onsets_only_after_a_voiced_narration(tmp_path):
+    short = _take_short()
+    vo = tmp_path / "audio" / "vo"
+    _write_take_with_lead(vo / "l01.wav", 0.5)
+    _write_take_with_lead(vo / "l02.wav", 0.0)
+    assert nrun.takes_onsets(tmp_path, short) is None
+    jobstate.mark_done(tmp_path, "narration", status="ok")
+    onsets = nrun.takes_onsets(tmp_path, short)
+    assert set(onsets) == {"l01", "l02"} and onsets["l01"] > 0.4 and onsets["l02"] == 0.0
+
+
 def test_clear_stale_takes_keeps_current_takes(tmp_path):
     vo = tmp_path / "vo"
     narrator = {"provider": "kokoro", "voice": "am_michael", "speed": 1.0}

@@ -18,7 +18,14 @@ def test_camera_and_motion_in_blender(blender_run):
         "test_frame_objects_refuses_a_box_with_no_size",
         "test_frame_objects_warns_when_the_answer_is_absurd",
         "test_frame_box_frames_a_region_of_one_long_mesh",
-        "test_framing_warns_when_the_camera_ends_up_under_the_ground",
+        "test_framing_warns_when_the_camera_ends_up_under_the_ground_if_asked_not_to_lift",
+        "test_framing_lifts_the_camera_out_of_the_ground",
+        "test_framing_refuses_a_subject_under_the_ground",
+        "test_frame_objects_puts_the_subject_between_explicit_rows",
+        "test_framing_warnings_are_kept_on_the_scene_as_findings",
+        "test_frame_objects_fits_an_explicit_box_with_the_lens_shift",
         "test_frame_objects_measures_parented_objects_in_a_scene_that_is_not_the_windows",
+        "test_move_orbits_with_the_subject_in_the_band_the_whole_way",
+        "test_move_pushes_in_to_a_part",
     ):
         assert f"PASS {name}" in result.stdout

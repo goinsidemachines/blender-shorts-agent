@@ -45,6 +45,55 @@ def test_a_plain_world_renders_grey_under_agx():
     assert colour.delta_e(PAPER, colour.dominant_colour(_render_background(sc))) > 5
 
 
+def _plane(name, y, size, mat):
+    bpy.ops.mesh.primitive_plane_add(size=size, location=(0, y, 0), rotation=(math.radians(90), 0, 0))
+    obj = bpy.context.object
+    obj.name = name
+    look.assign(obj, mat)
+    return obj
+
+
+def _alpha(mat) -> float:
+    return next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED").inputs["Alpha"].default_value
+
+
+def test_toy_water_is_tinted_and_see_through_in_eevee():
+    """Toy water: blended, alpha 0.4 (0.7 for a stream), a clear coat, no refraction; a red card behind a blue
+    water plane still shows through it, tinted, in EEVEE."""
+    water = look.toy_water("Water", "#3366CC")
+    stream = look.toy_water("Stream", (0.2, 0.4, 0.8), stream=True)
+    assert water.surface_render_method == "BLENDED" and stream.surface_render_method == "BLENDED"
+    bsdf = next(n for n in water.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    assert bsdf.inputs["Coat Weight"].default_value == 1.0 and bsdf.inputs["Transmission Weight"].default_value == 0
+    assert math.isclose(_alpha(water), look.WATER_ALPHA, abs_tol=1e-6)
+    assert math.isclose(_alpha(stream), look.STREAM_ALPHA, abs_tol=1e-6)
+    assert math.isclose(_alpha(look.toy_water("W2", "#FFFFFF", alpha=0.2)), 0.2, abs_tol=1e-6)
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    setup_scene(sc, Short(slug="t", title="T", length_s=1), "eevee", "still")
+    sc.render.resolution_percentage = 5
+    cam = bpy.data.objects.new("Cam", bpy.data.cameras.new("Cam"))
+    sc.collection.objects.link(cam)
+    cam.rotation_euler = (math.radians(90), 0, 0)
+    sc.camera = cam
+    sun = bpy.data.objects.new("Sun", bpy.data.lights.new("Sun", "SUN"))
+    sun.rotation_euler = (math.radians(90), 0, 0)  # shines along +y, onto the planes' camera side
+    sc.collection.objects.link(sun)
+    _plane("Card", 10, 40, look.material("Card", (1.0, 0.0, 0.0), kind="emissive"))
+
+    def centre():
+        img = _render_background(sc)
+        h, w = img.shape[:2]
+        return img[h // 2 - 2 : h // 2 + 2, w // 2 - 2 : w // 2 + 2, :3].reshape(-1, 3).mean(axis=0)
+
+    bare = centre()
+    _plane("Water", 4, 20, look.toy_water("Water", "#3366CC"))
+    seen = centre()
+    assert seen[0] > 0.35 * bare[0], (bare, seen)  # the red card shows through
+    assert np.abs(seen - bare).max() > 0.05 and seen[2] > bare[2], (bare, seen)  # tinted blue by the water
+
+
 def test_paper_world_renders_the_brand_colour():
     sc = _scene()
     out = look.paper_world(sc, PAPER, exposure=0.0)

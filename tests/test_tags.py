@@ -39,6 +39,15 @@ def test_overlay_tag():
     bake.tag(o, "hero:s01,s02", "overlay")
     assert bake.tags(o) == ["hero:s01,s02", "overlay"]
     assert bake.is_overlay(o) and not bake.is_overlay(Obj())
+    assert not bake.may_exit(o)
+
+
+def test_overlay_may_exit_tag():
+    """A falling stream that leaves the frame on purpose: still an overlay, but frame_edge does not warn."""
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "overlay:may-exit", "grounded")
+    assert bake.tags(o) == ["hero:s01,s02", "overlay:may-exit", "grounded"]  # not read as another shot id
+    assert bake.is_overlay(o) and bake.may_exit(o) and bake.is_hero(o, "s02") and not bake.is_hero(o, "overlay")
 
 
 def test_every_tag_is_documented():

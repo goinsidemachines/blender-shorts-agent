@@ -5,7 +5,7 @@ import numpy as np
 from mathutils import Vector
 
 from bsa.blender import bake, camera, extremes, motion
-from bsa.layout import H, W, caption_band, frame_area
+from bsa.layout import H, W, caption_band, target_area
 
 
 def _scene(cam_type="PERSP"):
@@ -51,7 +51,7 @@ def test_frame_objects_fills_the_safe_area_above_the_captions():
     sc, cam = _scene()
     lever = _box("Lever", (5.0, 0.3, 0.4), (0, 0, 1))  # 5 m wide: the width limits in portrait
     out = camera.frame_objects(cam, [lever])
-    area = frame_area()
+    area = target_area()
     x0, y0, x1, y1 = _projected(sc, cam, [lever])
     assert x0 >= area.x - 1 and x1 <= area.right + 1 and y0 >= area.y - 1 and y1 <= area.bottom + 1, (x0, y0, x1, y1)
     assert abs((x1 - x0) - area.w) < 2, (x1 - x0, area.w)  # fills the width
@@ -68,7 +68,7 @@ def test_frame_objects_over_the_frames_of_a_motion_and_aim():
     bake.keyframe_series(ball, "location", 0, [2.0 * math.sin(i / 5) for i in range(30)])
     frames = list(range(1, 31))
     camera.frame_objects(cam, [tower, ball], frames=frames, aim=True, margin=40)
-    area = frame_area(margin=40)
+    area = target_area(margin=40)
     x0, y0, x1, y1 = _projected(sc, cam, [tower, ball], frames)
     assert x0 >= area.x - 1 and x1 <= area.right + 1 and y0 >= area.y - 1 and y1 <= area.bottom + 1, (x0, y0, x1, y1)
     assert abs((x1 - x0) - area.w) < 2 or abs((y1 - y0) - area.h) < 2
@@ -79,7 +79,7 @@ def test_frame_objects_with_an_orthographic_camera_and_no_band():
     cam.rotation_euler = (math.radians(90), 0, 0)
     plate = _box("Plate", (2.0, 0.1, 1.0), (0.5, 0, 0.5))
     camera.frame_objects(cam, [plate], avoid=None, margin=0)
-    s = frame_area(avoid=None, margin=0)
+    s = target_area(avoid=None, margin=0)
     x0, y0, x1, y1 = _projected(sc, cam, [plate])
     assert abs((x1 - x0) - s.w) < 2 and y0 >= s.y - 1 and y1 <= s.bottom + 1
 
@@ -213,33 +213,160 @@ def test_frame_objects_measures_parented_objects_in_a_scene_that_is_not_the_wind
         raise AssertionError("objects that scene 'Tank' does not have were measured anyway")
 
 
-def test_framing_warns_when_the_camera_ends_up_under_the_ground():
-    """Aimed up at a tall wheel from low down, centring the wheel above the caption band slides the camera down along
-    its own up axis, under the ground: the box is in view, seen from under the terrain. The result says so."""
-    import warnings
+def _aim(cam, pos, target):
+    cam.location = Vector(pos)
+    cam.rotation_euler = (Vector(target) - Vector(pos)).to_track_quat("-Z", "Y").to_euler()
 
-    from mathutils import Vector
 
-    _sc, cam = _scene()
+def _ground_and_wheel():
+    sc, cam = _scene()
     _box("Ground", (400.0, 400.0, 6.9), (0, 0, -2.65))  # a closed bank, its top at z=0.8
     wheel = _box("Wheel", (35.0, 12.0, 35.0), (0, 0, 12))
+    return sc, cam, wheel
 
-    def aim(pos, target):
-        cam.location = Vector(pos)
-        cam.rotation_euler = (Vector(target) - Vector(pos)).to_track_quat("-Z", "Y").to_euler()
 
-    aim((16, 58, 4), (0, 0, 8))
+def test_framing_warns_when_the_camera_ends_up_under_the_ground_if_asked_not_to_lift():
+    """Aimed up at a tall wheel from low down, centring the wheel above the caption band slides the camera down along
+    its own up axis, under the ground. With above_ground=False (the old behaviour) the result only says so."""
+    import warnings
+
+    _sc, cam, wheel = _ground_and_wheel()
+    _aim(cam, (16, 58, 4), (0, 0, 8))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        out = camera.frame_objects(cam, [wheel])
+        out = camera.frame_objects(cam, [wheel], above_ground=False)
     assert cam.location.z < 0.8, tuple(cam.location)
     under = [w for w in out["warnings"] if "under" in w and "'Ground'" in w]
     assert under and caught, out["warnings"]
-    aim((16, 58, 30), (0, 0, 12))  # from above the wheel's centre: centring keeps it above the bank
+    _aim(cam, (16, 58, 30), (0, 0, 12))  # from above the wheel's centre: centring keeps it above the bank
     out = camera.frame_objects(cam, [wheel])
     assert cam.location.z > 0.8 and not [w for w in out["warnings"] if "under" in w], (tuple(cam.location), out)
+    assert out["lifted"] is None
     out = camera.frame_box(cam, (-17.5, -6, -5.5), (17.5, 6, 29.5))
     assert not [w for w in out["warnings"] if "under" in w], out
+
+
+def test_framing_lifts_the_camera_out_of_the_ground():
+    """By default a camera the fit would put under the ground is lifted above it and turned (pitched) so the subject
+    is still framed in the band: never a shot from under the terrain."""
+    sc, cam, wheel = _ground_and_wheel()
+    for start, target in (((16, 58, 4), (0, 0, 8)), ((16, 58, -20), (0, 0, 8)), ((5, 40, 1.5), (0, 0, 20))):
+        _aim(cam, start, target)
+        out = camera.frame_objects(cam, [wheel])
+        assert cam.location.z > 0.8, (start, tuple(cam.location))
+        assert out["lifted"] and out["lifted"]["ground"] == "Ground", out
+        assert not [w for w in out["warnings"] if "under" in w], out["warnings"]
+        area = target_area()
+        x0, y0, x1, y1 = _projected(sc, cam, [wheel])
+        assert x0 >= area.x - 2 and x1 <= area.right + 2 and y0 >= area.y - 2 and y1 <= area.bottom + 2, (start, x0, y0,
+                                                                                                            x1, y1)  # fmt: skip
+        assert abs((x1 - x0) - area.w) < 3 or abs((y1 - y0) - area.h) < 3, (start, x0, y0, x1, y1)
+        assert abs((y0 + y1) / 2 - (area.y + area.h / 2)) < 3, (start, y0, y1)
+    first = dict(out)
+    _aim(cam, (5, 40, 1.5), (0, 0, 20))
+    out = camera.frame_box(cam, (-17.5, -6, -5.5), (17.5, 6, 29.5))
+    assert out["lifted"] and cam.location.z > 0.8
+    assert np.allclose(out["location"], first["location"], atol=0.05), (out["location"], first["location"])
+
+
+def test_framing_refuses_a_subject_under_the_ground():
+    """A subject wholly under the ground cannot be framed from above it: a clear error naming the shot, the camera
+    and the ground."""
+    _sc, cam = _scene()
+    _box("Ground", (400.0, 400.0, 6.9), (0, 0, -2.65))
+    buried = _box("Buried", (2.0, 2.0, 2.0), (0, 0, -3))
+    _aim(cam, (0, -12, -3), (0, 0, -3))
+    try:
+        camera.frame_objects(cam, [buried], shot="s02")
+    except camera.FramingError as exc:
+        text = str(exc)
+        assert "s02" in text and "'Cam'" in text and "'Ground'" in text and "'Buried'" in text, text
+    else:
+        raise AssertionError("a camera was framed on a subject under the ground")
+
+
+def test_framing_under_open_water_is_not_under_the_ground():
+    """A camera under a water plane tagged "surface" (an underwater shot of a sunken wreck) is not under the ground:
+    open water is not ground, so no lift and no FramingError."""
+    _sc, cam = _scene()
+    bpy.ops.mesh.primitive_plane_add(size=400, location=(0, 0, 5))
+    water = bpy.context.object
+    water.name = "Water"
+    water["bsa_tags"] = "surface"
+    wreck = _box("Wreck", (6.0, 2.0, 2.0), (0, 0, -3))
+    _aim(cam, (0, -14, -2), (0, 0, -3))
+    out = camera.frame_objects(cam, [wreck], shot="s01")
+    assert out["lifted"] is None and cam.location.z < 5, (out, tuple(cam.location))
+
+
+def test_framing_a_floating_subject_with_no_floor_is_fine():
+    """A subject floating in empty space, framed from below it: there is no ground at all, and the subject itself
+    is not ground, so no lift and no FramingError."""
+    _sc, cam = _scene()
+    sat = _box("Satellite", (8.0, 3.0, 3.0), (0, 0, 10))
+    _aim(cam, (0, -20, 0), (0, 0, 10))
+    out = camera.frame_objects(cam, [sat], shot="s01")
+    assert out["lifted"] is None, out
+    _aim(cam, (0.5, -0.5, 0), (0, 0, 10))  # right under the subject, looking up at it
+    out = camera.frame_objects(cam, [sat], center=False, shot="s01")
+    assert out["lifted"] is None, out
+    out = camera.frame_box(cam, (-1, -1, -1), (1, 1, 1), of=sat, center=False, shot="s01")
+    assert out["lifted"] is None, out
+
+
+def test_frame_objects_puts_the_subject_between_explicit_rows():
+    """px_top / px_bottom: the subject's top and bottom land on those screen rows (a tall subject: the height
+    limits), centred across; the 1080x1920 frame is used whatever the scene's resolution says."""
+    sc, cam = _scene()
+    sc.render.resolution_x, sc.render.resolution_y = 1920, 1080  # Blender's default: not the short's frame
+    cam.location, cam.rotation_euler = (0, -20, 3), (math.radians(90), 0, 0)
+    tower = _box("Tower", (1.0, 1.0, 6.0), (0, 0, 3))
+    out = camera.frame_objects(cam, [tower], px_top=500, px_bottom=1100)
+    assert out["area"][1] == 500 and out["area"][3] == 1100, out
+    sc.render.resolution_x, sc.render.resolution_y = W, H
+    x0, y0, x1, y1 = _projected(sc, cam, [tower])
+    assert abs(y0 - 500) < 2 and abs(y1 - 1100) < 2, (y0, y1)
+    assert abs((x0 + x1) / 2 - out["area"][0] / 2 - out["area"][2] / 2) < 2, (x0, x1, out["area"])
+
+
+def test_frame_objects_fits_an_explicit_box_with_the_lens_shift():
+    """An explicit target box (rows and columns) and shift=True: the camera keeps its angle and only moves along its
+    view axis; the lens shift centres the subject in the box (and is keyed with key=)."""
+    sc, cam = _scene()
+    cam.location, cam.rotation_euler = (0, -20, 3), (math.radians(90), 0, 0)
+    wide = _box("Wide", (6.0, 1.0, 1.0), (1.5, 0, 2.0))  # off the camera's axis: only the shift can centre it
+    out = camera.frame_objects(cam, [wide], px_top=820, px_bottom=1250, px_left=110, px_right=970, shift=True, key=7)
+    assert out["area"] == (110, 820, 970, 1250), out
+    assert math.isclose(cam.rotation_euler[0], math.radians(90), abs_tol=1e-6) and cam.rotation_euler[2] == 0
+    assert abs(cam.location.x) < 1e-6 and abs(cam.location.z - 3) < 1e-6, tuple(cam.location)  # along its axis only
+    assert out["shift"] != (0.0, 0.0) and out["warnings"] == [], out
+    x0, y0, x1, y1 = _projected(sc, cam, [wide])
+    assert x0 >= 109 and x1 <= 971 and y0 >= 819 and y1 <= 1251, (x0, y0, x1, y1)
+    assert abs((x1 - x0) - 860) < 2, (x0, x1)  # the width limits
+    assert abs((y0 + y1) / 2 - 1035) < 2 and abs((x0 + x1) / 2 - 540) < 2, (x0, y0, x1, y1)
+    keyed = {fc.data_path for fc in extremes.fcurves(cam.data)}
+    assert {"shift_x", "shift_y"} <= keyed, keyed
+
+
+def test_framing_warnings_are_kept_on_the_scene_as_findings():
+    """Each framing's warnings are kept on the scene (per camera and key), so the checks list them as "framing_call"
+    findings for the review pages; framing that camera and key again without a problem clears them."""
+    import warnings
+
+    sc, cam = _scene()
+    nut = _box("Nut", (0.02, 0.02, 0.02), (60, 25, -10))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        out = camera.frame_objects(cam, [nut], key=5, shot="s01")
+    assert out["warnings"]
+    found = camera.framing_findings(sc, "s01", 1, 30)
+    assert found and all(f.check == "framing_call" and f.severity == "warning" and f.obj == "Cam" for f in found), found
+    assert found[0].frame == 5 and "Nut" in found[0].message
+    assert camera.framing_findings(sc, "s02", 40, 60) == []  # another shot
+    _aim(cam, (0, -8, 1), (0, 0, 1))
+    lever = _box("Lever", (5.0, 0.3, 0.4), (0, 0, 1))
+    assert camera.frame_objects(cam, [lever], key=5, shot="s01")["warnings"] == []
+    assert camera.framing_findings(sc, "s01", 1, 30) == []
 
 
 def test_frame_box_frames_a_region_of_one_long_mesh():
@@ -257,10 +384,59 @@ def test_frame_box_frames_a_region_of_one_long_mesh():
     proj = [world_to_camera_view(sc, cam, p) for p in pts]
     x0, x1 = min(p.x for p in proj) * W, max(p.x for p in proj) * W
     y0, y1 = min((1 - p.y) * H for p in proj), max((1 - p.y) * H for p in proj)
-    area = frame_area()
+    area = target_area()
     assert np.allclose(out["box"], (x0, y0, x1, y1), atol=1), (out["box"], (x0, y0, x1, y1))
     assert x0 >= area.x - 1 and x1 <= area.right + 1 and y0 >= area.y - 1 and y1 <= area.bottom + 1
     assert max(x1 - x0 - area.w, y1 - y0 - area.h) > -2  # fills the area one way
     world = camera.frame_box(cam, tuple(min(p[i] for p in pts) for i in range(3)),
                              tuple(max(p[i] for p in pts) for i in range(3)))  # world coordinates  # fmt: skip
     assert world["warnings"] == []
+
+
+def _orbit_scene():
+    sc, cam = _scene()
+    sc.frame_end = 101
+    _box("Floor", (20.0, 20.0, 0.1), (0, 0, -0.05))
+    lock = _box("Lock", (1.2, 0.4, 0.6), (0, 0, 0.3))
+    cam.location = (3.0, -3.0, 1.5)
+    camera.frame_objects(cam, [lock], aim=True, key=1)
+    return sc, cam, lock
+
+
+def test_move_orbits_with_the_subject_in_the_band_the_whole_way():
+    """A 90 degree orbit framed every 2 frames: the subject stays in the band at every frame (keys and in between),
+    the distance changes smoothly, the Euler keys never flip, and stray keys inside the move are replaced."""
+    sc, cam, lock = _orbit_scene()
+    cam.location = (9.0, 9.0, 9.0)
+    cam.keyframe_insert("location", frame=50)  # a stray key inside the move: removed
+    sc.frame_set(1)
+    out = camera.move(cam, [lock], 1, 101, orbit=90, shot="s02")
+    assert out["keys"][:3] == [1, 3, 5] and out["keys"][-1] == 101 and out["warnings"] == [], out
+    turned = (out["end"][0] - out["start"][0] + 180) % 360 - 180
+    assert abs(turned - 90) < 6, out
+    area = target_area()
+    for f in range(1, 102):
+        x0, y0, x1, y1 = _projected(sc, cam, [lock], [f])
+        assert x0 >= area.x - 6 and x1 <= area.right + 6 and y0 >= area.y - 6 and y1 <= area.bottom + 6, (f, x0, y0, x1, y1)
+        assert max(x1 - x0 - area.w, y1 - y0 - area.h) > -40, (f, x0, y0, x1, y1)  # still fills the band
+    d = np.array(out["distances"])
+    assert np.abs(np.diff(d, 2)).max() < 0.02 * d.mean(), d
+    zs = []
+    for f in range(1, 102):
+        sc.frame_set(f)
+        zs.append(cam.rotation_euler[2])
+    assert np.abs(np.diff(zs)).max() < math.radians(5), np.degrees(np.diff(zs)).max()
+    keyed = {kp.co[0] for fc in extremes.fcurves(cam) if fc.data_path == "location" for kp in fc.keyframe_points}
+    assert 50.0 not in keyed and keyed == set(map(float, out["keys"]))
+
+
+def test_move_pushes_in_to_a_part():
+    """A dolly with `to`: the framed box slides from the whole lock to its plug, which fills the band at the end."""
+    sc, cam, lock = _orbit_scene()
+    plug = _box("Plug", (0.2, 0.2, 0.2), (0.3, -0.25, 0.3))
+    out = camera.move(cam, [lock], 1, 61, to=[plug])
+    area = target_area()
+    x0, y0, x1, y1 = _projected(sc, cam, [plug], [61])
+    assert abs((x1 - x0) - area.w) < 4 or abs((y1 - y0) - area.h) < 4, (x0, y0, x1, y1)
+    d = np.array(out["distances"])
+    assert d[-1] < 0.5 * d[0] and np.all(np.diff(d) < 1e-6), d  # it moves in all the way, never back out

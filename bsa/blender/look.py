@@ -71,6 +71,46 @@ def assign(obj, mat) -> None:
         obj.data.materials.append(mat)
 
 
+WATER_ALPHA = 0.4  # toy_water: still water (a tank, a glass) you see the parts inside through
+STREAM_ALPHA = 0.7  # toy_water(stream=True): falling water, thin, so it needs more body to read as water
+
+
+def toy_water(name: str, colour, alpha: float | None = None, stream: bool = False, roughness: float = 0.05,
+              coat: float = 1.0):  # fmt: skip
+    """Stylised water that works in EEVEE: a tinted Principled BSDF that is partly see-through (`alpha`, default
+    WATER_ALPHA; STREAM_ALPHA with `stream=True` for a falling stream), with a clear coat for the wet shine, blended
+    (`surface_render_method` BLENDED, or the older `blend_method` BLEND). Glass with an IOR needs ray-traced
+    refraction in EEVEE and breaks behind other transparent parts; this does not refract, so parts inside show
+    through tinted. `colour` is "#RRGGBB" or an sRGB (r, g, b) tuple of 0..1 floats."""
+    from bsa import colour as colours
+
+    srgb = colours.hex_to_srgb(colour) if isinstance(colour, str) else tuple(colour)[:3]
+    a = (STREAM_ALPHA if stream else WATER_ALPHA) if alpha is None else float(alpha)
+    if not 0.0 <= a <= 1.0:
+        raise ValueError(f"alpha {a} is not between 0 and 1")
+    mat = bpy.data.materials.new(name)
+    _nt, bsdf, _out = _principled(mat)
+    _set(bsdf, "Base Color", (*(float(c) for c in colours.srgb_to_linear(srgb)), 1.0))
+    _set(bsdf, "Roughness", roughness)
+    _set(bsdf, "Metallic", 0.0)
+    _set(bsdf, "Alpha", a)
+    for key in ("Coat Weight", "Clearcoat"):  # Blender 4.0+, then 3.x
+        _set(bsdf, key, coat)
+    for key in ("Coat Roughness", "Clearcoat Roughness"):
+        _set(bsdf, key, 0.03)
+    _set(bsdf, "IOR", 1.33)
+    if hasattr(mat, "surface_render_method"):  # Blender 4.2+ (EEVEE Next)
+        mat.surface_render_method = "BLENDED"
+    if hasattr(mat, "blend_method"):  # older EEVEE (still present, but unused, in 4.2+)
+        try:
+            mat.blend_method = "BLEND"
+        except (TypeError, AttributeError):
+            pass
+    if hasattr(mat, "use_backface_culling"):
+        mat.use_backface_culling = False
+    return mat
+
+
 def bevel(obj, width_m: float, segments: int = 3):
     """Rounded hard edges: a Bevel modifier on edges sharper than its angle limit, shaded smooth with hardened
     normals, so the rounding shades smoothly and the flat faces stay flat. Works before or after `smooth`."""
@@ -320,3 +360,67 @@ def image_material(name: str, maps: dict[str, Path]):
         nt.links.new(disp.outputs["Color"], dn.inputs["Height"])
         nt.links.new(dn.outputs["Displacement"], out.inputs["Displacement"])
     return mat
+
+
+SUN_ABOVE_M = 3.0  # subjects larger than this (metres) are lit with sun lamps: no falloff across them
+AREA_DISTANCE = 8.0  # area lights stand this many subject sizes from its centre: under 30% falloff across it
+AREA_SOFTNESS = 0.4  # an area light's size, as a share of its distance (soft shadows)
+SUN_ANGLE_DEG = 12.0  # a sun lamp's angular size (soft shadows)
+# The three-light rig: name, degrees around the subject from the camera (positive: to the camera's left), degrees
+# above the horizon, share of the key's strength, colour.
+RIG = (
+    ("Key", 45.0, 40.0, 1.0, (1.0, 0.94, 0.86)),
+    ("Fill", -55.0, 15.0, 0.35, (0.95, 0.97, 1.0)),
+    ("Rim", 160.0, 35.0, 0.8, (0.8, 0.88, 1.0)),
+)
+
+
+def lights(scene, target, size: float, strength: float = 3.0) -> dict:
+    """Light the subject at `target` (a point, or an object: the centre of its bounding box) that is `size` metres
+    across (its largest dimension) with a key, a fill and a rim light, placed around the scene camera's view (from
+    -Y looking +Y when there is no camera). Subjects larger than SUN_ABOVE_M get sun lamps: a sun has no falloff, so
+    a big flat face is lit evenly (area lights scaled up for a 100 m tower stand too close, and light its top far
+    more than its base). Smaller subjects get the area-light rig AREA_DISTANCE sizes away, its power set so the key
+    lights the subject as a sun of `strength` (W/m2) would. Calling it again moves and updates the same three lights
+    ("<scene> Key", "<scene> Fill", "<scene> Rim"). Returns {"kind": "sun" or "area", "distance": metres from the
+    target (None for suns), "lights": [the three light objects]}."""
+    from mathutils import Matrix, Vector
+
+    if hasattr(target, "bound_box"):
+        corners = [target.matrix_world @ Vector(c) for c in target.bound_box]
+        centre = sum(corners, Vector()) / len(corners)
+    else:
+        centre = Vector(target)
+    size = max(float(size), 0.01)
+    cam = scene.camera
+    back = (cam.matrix_world.translation - centre) if cam is not None else Vector((0.0, -1.0, 0.0))
+    back.z = 0.0
+    back = back.normalized() if back.length > 1e-9 else Vector((0.0, -1.0, 0.0))
+    sun = size > SUN_ABOVE_M
+    distance = None if sun else AREA_DISTANCE * size
+    made = []
+    for name, around, up, share, colour in RIG:
+        flat = Matrix.Rotation(math.radians(around), 3, "Z") @ back
+        direction = (flat * math.cos(math.radians(up)) + Vector((0.0, 0.0, math.sin(math.radians(up))))).normalized()
+        full = f"{scene.name} {name}"
+        obj = bpy.data.objects.get(full)
+        kind = "SUN" if sun else "AREA"
+        if obj is None or obj.type != "LIGHT":
+            obj = bpy.data.objects.new(full, bpy.data.lights.new(full, kind))
+        if obj.data.type != kind:
+            obj.data.type = kind
+        if scene.collection.objects.get(obj.name) is None and obj.name not in scene.objects:
+            scene.collection.objects.link(obj)
+        data = obj.data
+        data.color = colour
+        if sun:
+            data.energy = strength * share
+            data.angle = math.radians(SUN_ANGLE_DEG)
+            obj.location = centre + direction * size
+        else:
+            data.size = AREA_SOFTNESS * distance
+            data.energy = strength * share * math.pi * distance * distance  # irradiance P / (pi d^2) at the target
+            obj.location = centre + direction * distance
+        obj.rotation_euler = (centre - obj.location).to_track_quat("-Z", "Y").to_euler()
+        made.append(obj)
+    return {"kind": "sun" if sun else "area", "distance": distance, "lights": made}

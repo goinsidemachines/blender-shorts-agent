@@ -40,8 +40,8 @@ with their end-card line above it (the `end_card` setting, e.g. "Follow for more
   It replaces the overlay end card. `BLENDER closing SHORT` makes it (`stills/closing.png`) and reports warnings;
   `BLENDER stills` and the edit make it too, and the storyboard and final pages show it for approval.
 - `closing.seconds` is the shortest hold, not a cut-off. When the voice line needs longer, the card holds for the
-  line plus a short lead-in (0.2 s) and pause (0.5 s), on purpose, so the line is never cut. The mix and edit results
-  then say so under `closing.note` ("closing card held 4.5 s so the voice line fits ..."), and the final page shows
+  line plus a short lead-in (0.2 s) and pause (0.5 s), on purpose, so the line is never cut. The mix, edit and
+  `BLENDER preview` results then say so under `closing.note` ("closing card held 4.5 s so the voice line fits ..."), and the final page shows
   the hold: tell the user. To keep the card short, shorten the voice line.
 - Look at the card against the user's hard rules like any other picture (no humans, faces and so on). The rule word
   checks in `CLI validate` read its voice line and website.
@@ -68,15 +68,39 @@ A look is a few decisions held consistently across every shot:
 - **Light and mood:** time of day, key light direction and colour, how dark the shadows go. Examples: "storm dusk"
   (cool haze outside, warm practical lights on the hero inside), "workshop macro" (warm key, shallow focus, dark
   background), "clean lab" (soft white light, pale background, saturated accent).
+- **Lights: `look.lights(scene, target, size)`** (`bsa.blender.look`) sets up a key, a fill and a rim light around
+  the scene camera's view, aimed at `target` (a point, or an object: its box's centre); `size` is the subject's
+  largest dimension in metres, `strength=` the key's strength (W/m², default 3). Call it again to move or retune the
+  same three lights. It returns `{"kind", "distance", "lights"}`: change a light's colour or strength there for
+  the mood.
+  - **Scale matters.** An area light's light falls off with the square of the distance. A rig scaled up for a big
+    subject still stands close to it: three area lights about 50 m from a 97 m tower light its top far more than
+    its base, and its flat face shades from light to grey, so it looks dirty or curved. So for subjects larger than
+    a few metres (`look.SUN_ABOVE_M`, 3 m) `look.lights` uses sun lamps (no falloff: every part of a big face is lit
+    the same, soft 12° shadows); for smaller ones it uses area lights `look.AREA_DISTANCE` (8) sizes away, powered
+    so the subject gets the same light. Building lights by hand, keep area lights at least that far, or use suns.
+  - A material's edge or facing tone (Layer Weight "Facing") also varies across a big flat face seen in
+    perspective: keep it to true grazing angles. The `shading` frame check warns about a strong gradient across a
+    hero's large flat face (`07-checks.md`).
 - **Palette:** a background tone, one accent colour for what matters (the hero, the key label, an arrow), a neutral
   for everything else. Use the accent sparingly; it should point the eye.
 - **Materials:** pick a material family and stick to it (brushed metal and glass, painted toy-like plastic, matte
   clay). Real materials have roughness variation and micro-bump: `look.material(..., bump_scale=...)`, or downloaded
   CC0 textures (`assets.md`).
+- **Water in EEVEE:** glass-like water (transmission with an IOR of 1.33) needs ray-traced refraction in EEVEE, and
+  that fails behind other transparent parts (a float seen through the tank water and its glass wall comes out
+  wrong). For a toy-like EEVEE look use `bsa.blender.look.toy_water(name, colour)`: a tinted, partly see-through
+  Principled BSDF (alpha 0.4) with a clear coat, blended (`surface_render_method` BLENDED), so the parts inside show
+  through tinted and the surface still reads as water. `stream=True` gives falling water more body (alpha 0.7);
+  `alpha=` sets any other (about 0.2 for a clear pipe the water runs through). Take the colour from the short's
+  palette. Real refraction is for Cycles.
 - **Typography:** one clean sans font for captions and labels (`style.font`; check it with `CLI fonts "NAME"` when writing the story: a
   missing font falls back to one that ships with the OS (Segoe UI or Arial on Windows, Helvetica Neue or Helvetica on
   macOS, DejaVu Sans or Liberation Sans on Linux), then to Blender's own, and the edit says which it used). Caption size 64 px by default.
   See "Checking the font" below before the story page.
+- **Caption colours:** `style.caption` (or `brand.caption`) `color` and `box` as hex. A 6-digit hex (`#14161A`) is
+  opaque; an 8-digit one keeps its alpha (`#14161A99` is 60 % ink). With no `box`, captions sit on the default dark
+  see-through box (55 % alpha).
 - **World:** an HDRI (CC0, downloaded only after a yes) or a simple gradient world; never a pure black void unless
   that is the look.
 - **A plain backdrop in an exact colour** (a brand's paper, say): never set the world to the hex and hope. Under AgX
@@ -101,12 +125,20 @@ Two things go wrong with a brand font, and both are caught before anything rende
 - **Variable fonts draw the wrong weight.** A family installed only as a variable font (one file such as
   `Fredoka-VF.ttf` or `Inter[wght].ttf`) loads in Blender as its default instance, which is often Light: captions and
   3D text come out thin. `CLI fonts "NAME"` reports `variable`, the `default_weight` and `default_instance` Blender
-  will use, a `warning`, and any installed `static_weights` of the family. Use a static file instead: set
-  `style.font` (and `bpy.data.fonts.load` in `build.py`) to an installed static weight's path, or, if none is
-  installed, offer to download one: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
+  will use, a `warning`, and any installed `static_weights` of the family. Use a static weight instead: set
+  `brand.font` and `style.font` to the family with its weight, `"Fredoka@600"` (a file path still works too). It
+  loads an installed static file of exactly that weight, else the one `CLI assets` downloaded into
+  `<workspace>/.assets-cache/fonts/` (`Fredoka-600.ttf`). `CLI fonts "Fredoka@600"` says which file that is; when
+  neither exists it warns (and `CLI validate` and the edit's `font_fallback` say so) and the text uses the family as
+  installed. Then offer to download it: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
   Fonts (its licence is checked: OFL, Apache 2.0 or Ubuntu Font Licence), shown and approved like any asset
-  (`assets.md`); after the yes, `assets download SHORT` puts it in `<workspace>/.assets-cache/fonts/` and you set
-  `style.font` to that path. Don't thicken thin text with `curve.offset` instead.
+  (`assets.md`); after the yes, `assets download SHORT` puts it in the cache, where `"Fredoka@600"` finds it for
+  every short of the workspace. In `build.py`, load the same file for 3D text: `bsa.fonts.resolve("Fredoka@600",
+  cache_dirs=bsa.fonts.font_caches(SHORT_DIR))[0]`. Don't thicken thin text with `curve.offset` instead. For a brand, this is checked once,
+  at setup: `settings set brand.font NAME` returns a `font_check` with the same facts and a `warning` that says how
+  to fix it in the brand (set `brand.font` to a static weight, `"Fredoka@600"` or a file path, then every brand
+  short uses it). While a brand short still uses a variable `brand.font`, `CLI validate` says so in one short line
+  that points at the setting, rather than repeating the full advice on every short.
 - **Missing glyphs draw as boxes.** Every character of the captions, labels, badges (upper case, as drawn) and the
   end card (its line and the @handle) is checked against the style font's character map. `CLI validate SHORT` (and
   `CLI fonts "NAME" --short SHORT`, or `--text "..."` for any text) warns with the character, its code point, where

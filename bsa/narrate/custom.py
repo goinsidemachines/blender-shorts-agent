@@ -1,5 +1,8 @@
 """Bring your own narrator: the user's own voice tool, run as one saved command line.
 
+Everything the tool prints (stdout and stderr) is appended to <out>/narrator.log; `log_notes` picks out its lines
+that mention a fallback, a warning or an error, for the narrate result.
+
 The command has placeholders {lines} (a lines JSON file), {out} (the folder for the takes), {seed}, and optionally
 {voice} and {speed}. It must write <out>/<id>.wav for every line. Whatever WAV it writes is normalised to the
 contract (48 kHz mono 16-bit). The command is run without a shell, so a path with spaces stays one argument.
@@ -21,6 +24,43 @@ from bsa.settings import split_command
 
 _START_HINT = "put the program that runs it first, e.g. python script.py"
 _ADAPTER_HINT = "ask Claude to write a small adapter that turns your tool's output into WAV files"
+
+
+LOG_FILE = "narrator.log"  # everything the tool printed, per run, in the takes folder
+_NOTE_WORDS = ("fallback", "fall back", "fell back", "warning", "error")
+LOG_NOTES_MAX = 20
+
+
+def _log(out_dir: Path, argv: list[str], lines, proc=None, failure: str | None = None) -> None:
+    """Append one run of the tool to <out>/narrator.log: what it was asked for, its exit code, stdout and stderr."""
+    parts = [f"=== {Path(argv[0]).name} for {', '.join(ln.id for ln in lines)}"]
+    if failure:
+        parts.append(f"(could not start: {failure})")
+    if proc is not None:
+        parts.append(f"exit {proc.returncode}")
+        for name, text in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+            if (text or "").strip():
+                parts += [f"--- {name}", str(text).rstrip()]
+    try:
+        with open(Path(out_dir) / LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+            f.write("\n".join(parts) + "\n")
+    except OSError:  # the log is a convenience: it never stops the narration
+        pass
+
+
+def clear_log(out_dir: Path) -> None:
+    (Path(out_dir) / LOG_FILE).unlink(missing_ok=True)
+
+
+def log_notes(out_dir: Path) -> list[str]:
+    """The tool's own lines in narrator.log that mention a fallback, a warning or an error (each once, in order)."""
+    try:
+        text = (Path(out_dir) / LOG_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    notes = [ln.strip() for ln in text.splitlines()
+             if not ln.startswith(("=== ", "--- ")) and any(w in ln.lower() for w in _NOTE_WORDS)]  # fmt: skip
+    return [trim(n) for n in dict.fromkeys(notes)][:LOG_NOTES_MAX]
 
 
 def _tail(proc) -> str:
@@ -71,13 +111,16 @@ def generate(
             argv, check=False, capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL
         )  # stdin closed: a tool that prompts must fail, not hang
     except FileNotFoundError as e:
+        _log(out_dir, argv, lines, failure=str(e))
         raise NarrationError(
             f"the voice command {Path(argv[0]).name!r} was not found ({e}) - {_START_HINT}"
         ) from e
     except OSError as e:
+        _log(out_dir, argv, lines, failure=str(e))
         raise NarrationError(
             f"couldn't start {Path(argv[0]).name}: {e} - {_START_HINT}"
         ) from e
+    _log(out_dir, argv, lines, proc)
     if proc.returncode != 0:
         raise NarrationError(f"your voice tool failed (exit {proc.returncode}): {_tail(proc)}")
     (out_dir / "durations.json").unlink(missing_ok=True)  # durations come from the WAVs, never from the tool

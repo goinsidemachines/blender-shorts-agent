@@ -4,7 +4,7 @@ import zlib
 import numpy as np
 import pytest
 
-from bsa.image_checks import Finding, fireflies, frame_checks, read_png
+from bsa.image_checks import Finding, fireflies, frame_checks, png_problem, read_png
 
 
 def _chunk(kind: bytes, body: bytes) -> bytes:
@@ -74,6 +74,29 @@ def test_unsupported_png_raises(tmp_path):
     (tmp_path / "x.png").write_bytes(b"not a png")
     with pytest.raises(ValueError, match="not a PNG"):
         read_png(tmp_path / "x.png")
+
+
+def test_png_problem_finds_frames_an_interrupted_render_left(tmp_path):
+    """A crash or power cut mid-write leaves a PNG cut off, zero-filled or empty: only its signature, chunk headers
+    and IEND chunk are read (stdlib), and a complete PNG passes."""
+    good = write_png(tmp_path / "good.png", _grey(size=256))
+    assert png_problem(good) is None
+    data = good.read_bytes()
+    cases = {
+        "empty": b"",
+        "cut": data[: len(data) // 2],
+        "no_iend": data[:-12],
+        "zero_tail": data[:-12] + b"\0" * 12,
+        "zeroed": data[:40] + b"\0" * (len(data) - 40),
+        "all_zero": b"\0" * len(data),
+        "not_png": b"GIF89a" + data[6:],
+        "bad_iend": data[:-4] + b"\0\0\0\0",
+    }
+    for name, content in cases.items():
+        (tmp_path / f"{name}.png").write_bytes(content)
+        assert png_problem(tmp_path / f"{name}.png"), name
+    assert "empty" in png_problem(tmp_path / "empty.png")
+    assert png_problem(tmp_path / "missing.png")  # unreadable
 
 
 def test_fireflies_counted(tmp_path):
@@ -299,6 +322,37 @@ def test_a_fast_object_crossing_the_frame_is_not_flicker():
     assert [f for f in _run(frames) if f.check == "flicker"] == []
 
 
+def _coin(f, top, height, width=22, x=40, value=0.95):
+    """A bright falling, spinning coin (an ellipse) with its top at row `top`, cut off by the frame's edges."""
+    h, w = f.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    cy, cx = top + height / 2, x + width / 2
+    f[((yy - cy) / (height / 2)) ** 2 + ((xx - cx) / (width / 2)) ** 2 <= 1] = value
+
+
+def test_a_coin_falling_into_and_out_of_the_frame_is_not_flicker():
+    """A part entering the frame (in at the top, falling fast and spinning) or leaving it is motion, not flicker:
+    the spot it covers for one frame comes back, but what changed moved on (it is somewhere else for good)."""
+    base = _scene_frames()
+    tops = [None, None, None, -8, 40, 100, 165, None, None]  # in at the top, 60 px a frame, out at the bottom
+    heights = [0, 0, 0, 22, 8, 22, 10, 0, 0]  # spinning: edge-on every other frame
+    frames = []
+    for top, height in zip(tops, heights, strict=True):
+        f = base.copy()
+        if top is not None:
+            _coin(f, top, height)
+        frames.append(_rgb(f))
+    assert [f for f in _run(frames) if f.check == "flicker"] == []
+
+
+def test_flicker_beside_a_still_scene_is_still_found_when_nothing_moves_on():
+    """The entering-object rule needs a lasting change nearby: a patch that toggles alone is still flicker."""
+    base = _scene_frames()
+    frames = [base.copy() for _ in range(6)]
+    _coin(frames[3], 60, 22)  # appears for one frame and is gone, nothing anywhere else changes
+    assert [f.frame for f in _run([_rgb(f) for f in frames]) if f.check == "flicker"] == [4]
+
+
 def test_thin_lines_moving_faster_than_their_width_are_not_flicker():
     # Bevel shadows on floor slabs in a push-in: 2 px dark lines sliding 7 px a frame cover each pixel for one frame.
     base = _scene_frames()
@@ -445,3 +499,37 @@ def test_a_lone_tiny_flicker_spot_while_things_move_is_not_reported():
     assert run(frames, set(range(1, 21))) == []
     frames[13][101:111, 61:71] += 0.4  # it comes back at the same place: z-fighting, not a one-off
     assert [f.frame for f in run(frames, set(range(1, 21)))] == [7, 14]
+
+
+# --------------------------------------------------------------------------- shading gradient on a flat face
+
+
+def _face():
+    """The pixels (rows, columns) of a big flat face in the middle of a 400 x 300 frame."""
+    yy, xx = np.mgrid[60:340, 50:250]
+    return yy.ravel(), xx.ravel()
+
+
+def test_a_strong_smooth_gradient_across_a_flat_face_is_found():
+    from bsa.image_checks import shading_findings
+
+    lum = np.full((400, 300), 0.5, np.float32)
+    lum[60:340, 50:250] = np.linspace(0.85, 0.35, 280, dtype=np.float32)[:, None]  # light top, grey base
+    rng = np.random.default_rng(1)
+    lum += rng.normal(0, 0.02, lum.shape).astype(np.float32)  # render noise and a little texture
+    found = shading_findings(lum, [("Tower", *_face())], frame=12)
+    assert [(f.check, f.severity, f.obj, f.frame) for f in found] == [("shading", "warning", "Tower", 12)], found
+    assert "top" in found[0].message and "look.lights" in found[0].message
+
+
+def test_an_even_face_a_shadow_edge_and_a_gentle_gradient_are_not_found():
+    from bsa.image_checks import shading_findings
+
+    even = np.full((400, 300), 0.6, np.float32)
+    shadow = even.copy()
+    shadow[200:340, 50:250] = 0.3  # a cast shadow: a step, not a gradient
+    gentle = even.copy()
+    gentle[60:340, 50:250] = np.linspace(0.62, 0.56, 280, dtype=np.float32)[:, None]
+    for lum in (even, shadow, gentle):
+        assert shading_findings(lum, [("Tower", *_face())], frame=1) == []
+    assert shading_findings(even, [("Tower", np.array([5]), np.array([5]))], frame=1) == []  # too few pixels

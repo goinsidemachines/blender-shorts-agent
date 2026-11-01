@@ -28,9 +28,11 @@ def _window_scene(scene):
 
 
 def render_still(
-    scene, frame: int, out_jpg: Path, preset: str = "still", percent: int | None = None, engine: str | None = None
+    scene, frame: int, out_jpg: Path, preset: str = "still", percent: int | None = None, engine: str | None = None,
+    file_format: str = "JPEG",
 ) -> Path:
-    """Render one frame as JPEG (quality 85). `engine` is "cycles" | "eevee"; None uses the scene's current engine.
+    """Render one frame as JPEG (quality 85), or as an 8-bit PNG with `file_format="PNG"`. `engine` is "cycles" |
+    "eevee"; None uses the scene's current engine.
 
     The scene's render and output settings are restored afterwards.
     """
@@ -43,8 +45,11 @@ def render_still(
     try:
         with _window_scene(scene), preserved_render_state(scene):
             apply_preset(scene, engine, preset, percent)
-            ims.file_format = "JPEG"
-            ims.quality = 85
+            ims.file_format = file_format
+            if file_format == "PNG":
+                ims.color_depth = "8"
+            else:
+                ims.quality = 85
             ims.color_mode = "RGB"
             r.use_file_extension = False
             r.filepath = str(out_jpg)

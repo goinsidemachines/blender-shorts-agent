@@ -54,12 +54,13 @@ def load(sdir: Path):
 
 def current_timeline(sdir: Path, short):
     """The timeline from the takes when narration finished with a voice, else from reading time."""
-    from bsa.narrate.run import takes_durations
+    from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import build_timeline
 
     durations = takes_durations(sdir, short)
     end_card = settings.has_end_card(settings.load_settings(), short)
-    return build_timeline(short, durations, end_card=end_card), durations is not None
+    onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
+    return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
 
 
 def built_timeline(sdir: Path, short):
@@ -199,7 +200,14 @@ def cmd_settings(args) -> dict:
     if args.key == "handle":
         value = value.strip().lstrip("@")  # "" = asked, and the user wants no handle
     s = settings.set_value(args.key, value)
-    return {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
+    out = {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
+    font = value if args.key == "brand.font" else (value.get("font") if args.key == "brand" and isinstance(
+        value, dict) else None)  # fmt: skip
+    if isinstance(font, str) and font.strip():  # checked once here, as CLI fonts does: not on every short
+        from bsa import fonts
+
+        out["font_check"] = fonts.brand_font_check(font)
+    return out
 
 
 def cmd_machine(args) -> dict:
@@ -221,6 +229,8 @@ def cmd_new_short(args) -> dict:
     if not root:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
     length = 45 if args.length is None else args.length  # the interview's default
+    if isinstance(length, float) and length.is_integer():
+        length = int(length)  # "--length 40" is stored as 40, not 40.0
     if not LENGTH_RANGE_S[0] <= length <= LENGTH_RANGE_S[1]:
         raise CliError(f"--length must be {LENGTH_RANGE_S[0]} to {LENGTH_RANGE_S[1]} seconds, got {length:g}")
     try:
@@ -293,9 +303,26 @@ def cmd_state(args) -> dict:
         jobstate.mark_done(sdir, args.stage, **info)
     elif args.action == "reset":
         jobstate.reset_from(sdir, args.stage)
+    elif args.action == "restore":  # state.json damaged: put state.json.bak back
+        jobstate.restore(sdir)
     elif args.action is not None:
-        raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE]")
+        raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     return _state(sdir)
+
+
+def cmd_engine(args) -> dict:
+    """The engine this short renders with and where that comes from (the engine stage, short.json's render.engine,
+    or the setting), plus the seconds per frame each engine's runs measured and their MP4s (bsa.engine_runs)."""
+    from bsa import engine_runs
+
+    sdir = short_dir(args.short)
+    approved = (jobstate.load_state(sdir)["stages"].get("engine") or {}).get("engine")
+    own = engine_runs.short_engine(sdir)
+    setting = (settings.load_settings().get("render") or {}).get("engine")
+    engine, source = engine_runs.pick(approved, own, setting)
+    return {"short": str(sdir), "engine": engine, "from": source,
+            "approved": approved if approved in engine_runs.ENGINES else None, "short_json": own,
+            "setting": setting, "runs": engine_runs.compare(sdir)}  # fmt: skip
 
 
 def _sound_library(sdir: Path):
@@ -315,7 +342,7 @@ def _font_and_sound_warnings(sdir: Path, short) -> list[str]:
     from bsa.audio import recorded
 
     s = settings.load_settings()
-    return fonts.glyph_warnings(short, s) + recorded.policy_warnings(
+    return fonts.glyph_warnings(short, s, cache_dirs=fonts.font_caches(sdir)) + recorded.policy_warnings(
         short, _sound_library(sdir), recorded.sound_policy(short, s))
 
 
@@ -400,6 +427,9 @@ def cmd_narrate(args) -> dict:
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
     narrator = s.get("narrator") or {}
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
+    from bsa.narrate import custom
+
+    custom.clear_log(sdir / "audio" / "vo")  # this run's output only: the story's takes and the closing line's
     closing_note = None
     if narrator.get("provider") == "elevenlabs":  # one request for every line: never pay for the story twice
         result = narrate(sdir, voiced, s)
@@ -413,6 +443,9 @@ def cmd_narrate(args) -> dict:
                 closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
                                 "closing card is silent")  # fmt: skip
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    log = sdir / "audio" / "vo" / custom.LOG_FILE
+    if log.is_file():  # the user's own tool's output; its fallbacks and warnings would otherwise pass unseen
+        out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
     if closing_note:
         out["warnings"] = [closing_note]
     try:
@@ -544,6 +577,14 @@ def cmd_render_status(args) -> dict:
 
     sdir = short_dir(args.short)
     presets = [args.preset] if args.preset else ["preview", "final"]
+    if getattr(args, "tag", None):  # a side run's status is its own (bsa.engine_runs.status_key)
+        from bsa import engine_runs
+
+        try:
+            tag = engine_runs.check_tag(args.tag)
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+        presets = [f"{p}-{tag}" for p in presets]
     found = [(p, rs.read_status(rs.status_path(sdir, p))) for p in presets]
     found = [(p, st) for p, st in found if st]
     if found:
@@ -696,13 +737,12 @@ def cmd_fonts(args) -> dict:
     from bsa import fonts
 
     out = {"suggestions": fonts.suggestions()}
-    if args.name:
-        path = Path(args.name) if Path(args.name).is_file() else fonts.find_font_file(args.name, fonts.font_dirs())
-        out = {"name": args.name, "installed": path is not None, "file": str(path) if path else None, **out}
-        out.update(fonts.describe(path, args.name, args.text) if path else {})
-    if args.short:
-        sdir = short_dir(args.short)
-        out["glyph_warnings"] = fonts.glyph_warnings(load(sdir), settings.load_settings())
+    sdir = short_dir(args.short) if args.short else None
+    if args.name:  # a family, "Family@600" (a static weight, installed or downloaded) or a file
+        out = {**fonts.report(args.name, args.text, cache_dirs=fonts.font_caches(sdir)), **out}
+    if sdir is not None:
+        out["glyph_warnings"] = fonts.glyph_warnings(load(sdir), settings.load_settings(),
+                                                     cache_dirs=fonts.font_caches(sdir))  # fmt: skip
     return out
 
 
@@ -812,12 +852,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--length", type=float, default=None, help="length in seconds, 15 to 90 (short.json length_s)")
     sp.set_defaults(fn=cmd_new_short)
 
-    sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE]")
+    sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     sp.add_argument("short")
-    sp.add_argument("action", nargs="?", choices=["done", "reset"])
+    sp.add_argument("action", nargs="?", choices=["done", "reset", "restore"])
     sp.add_argument("stage", nargs="?", choices=jobstate.STAGES)
     sp.add_argument("--info", default=None)
     sp.set_defaults(fn=cmd_state)
+
+    sp = sub.add_parser("engine", help="SHORT: its render engine and where it comes from, and each engine's measured "
+                        "seconds per frame and MP4")  # fmt: skip
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_engine)
 
     for name, fn, text in [
         ("validate", cmd_validate, "check short.json (sources, ids, sizes)"),
@@ -843,6 +888,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("render-status", help="SHORT [--preset preview|final] [--open]: where the preview chain or a render is")
     sp.add_argument("short")
     sp.add_argument("--preset", choices=["preview", "final"], help="default: the most recently updated")
+    sp.add_argument("--tag", default=None, help="a side run's status (its tag: the engine's name for --engine alone)")
     sp.add_argument("--open", action="store_true", help="open the live page review/render-<preset>.html")
     sp.set_defaults(fn=cmd_render_status)
 
@@ -892,8 +938,8 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         out = args.fn(args)
-    except CliError as exc:
-        if exc.payload is not None:
+    except (CliError, jobstate.StateDamaged) as exc:
+        if getattr(exc, "payload", None) is not None:
             print(json.dumps(exc.payload, indent=2, default=str))
         print(_one_line(exc), file=sys.stderr)
         return 1

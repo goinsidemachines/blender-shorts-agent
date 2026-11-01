@@ -42,6 +42,9 @@ class Shot:
     # A deliberate hold: true (the whole shot) or [[from_s, to_s], ...] seconds from the shot's start. frame-check
     # does not report stuck frames there (a scripted freeze, a part at rest).
     hold: bool | list = False
+    # A deliberately wide or off-centre framing: true, a reason ("establishing shot of the whole bridge") or
+    # [[from_s, to_s], ...] as for hold. The framing checks (subject too small, an empty half) skip those frames.
+    wide: bool | str | list = False
 
 
 @dataclass
@@ -97,6 +100,9 @@ class Short:
     # keeps each rule: {rule id: "how", or {"kept": "how", "cleared": {word: why it keeps the rule}}}.
     rules: list = dc_field(default_factory=list)
     rules_check: dict = dc_field(default_factory=dict)
+    # This short's render choices: {"engine": "cycles" | "eevee"} is the engine the engine stage proposes (the
+    # approved engine stays the engine stage's own). Empty = the setting.
+    render: dict = dc_field(default_factory=dict)
 
 
 def _build(cls, data: dict):
@@ -197,6 +203,20 @@ def _dupes(kind: str, ids: list[str]) -> list[str]:
     return out
 
 
+def _render_problems(render) -> list[str]:
+    from bsa.engine_runs import ENGINES
+
+    if not isinstance(render, dict):
+        return [f"render must be an object such as {{\"engine\": \"eevee\"}}, got {render!r}"]
+    out = []
+    extra = sorted(set(render) - {"engine"})
+    if extra:
+        out.append(f"render has unknown keys {extra}: use engine")
+    if "engine" in render and render["engine"] not in ENGINES:
+        out.append(f"render.engine must be {' or '.join(ENGINES)}, got {render['engine']!r}")
+    return out
+
+
 def validate(short: Short) -> list[str]:
     """Return a list of human-readable problems; empty means the spec is sound."""
     errors: list[str] = []
@@ -250,6 +270,9 @@ def validate(short: Short) -> list[str]:
         if _hold_problem(s.hold):
             errors.append(f"shot {s.id} hold must be true, false or a list of [from_s, to_s] ranges (seconds from "
                           f"the shot's start, from_s <= to_s), got {s.hold!r}")  # fmt: skip
+        if not isinstance(s.wide, str) and _hold_problem(s.wide):
+            errors.append(f"shot {s.id} wide must be true, false, a reason or a list of [from_s, to_s] ranges "
+                          f"(seconds from the shot's start, from_s <= to_s), got {s.wide!r}")  # fmt: skip
 
     card = short.end_card
     if isinstance(card, dict):
@@ -269,6 +292,7 @@ def validate(short: Short) -> list[str]:
         errors.append(f"line id {closing.LINE_ID!r} is kept for the closing line: give the line another id")
     if short.look not in (None, "fresh", "brand"):
         errors.append(f"look must be \"fresh\" (this short's own style, the brand off) or \"brand\", got {short.look!r}")
+    errors += _render_problems(short.render)
     if short.sound_policy not in SOUND_POLICIES:
         errors.append(f"sound_policy must be one of {', '.join(p for p in SOUND_POLICIES if p)} (or empty), got "
                       f"{short.sound_policy!r}")  # fmt: skip

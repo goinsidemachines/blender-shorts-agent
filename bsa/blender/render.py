@@ -20,13 +20,20 @@ def render_range(
     `engine` is "cycles" | "eevee"; None uses the scene's current engine. Zero-byte PNGs (placeholders left by an
     interrupted render) are deleted first. `on_start(scene)` runs once the preset is applied, just before rendering
     (the live render status reads the settings in effect there). Returns every frame path; raises RuntimeError if
-    any is missing or empty.
+    any is missing or empty, or if a frame it wrote is not a complete PNG (deleted, so the next run renders it).
+
+    Blender writes each frame straight to its ####.png name, and skipping finished frames (use_overwrite off) needs
+    those names, so frames can't be written under a temporary name and renamed: they are validated afterwards
+    instead, and kept frames are verified before a resume (bsa_blender._drop_damaged).
     """
+    from bsa.image_checks import png_problem
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in out_dir.glob("*.png"):
         if p.stat().st_size == 0:
             p.unlink()
+    kept = {p.name for p in out_dir.glob("*.png")}
     engine = resolve_engine(scene, engine)
     r = scene.render
     saved = (r.filepath, r.use_overwrite, r.use_placeholder, scene.frame_start, scene.frame_end)
@@ -47,6 +54,12 @@ def render_range(
     bad = [p.name for p in paths if not p.exists() or p.stat().st_size == 0]
     if bad:
         raise RuntimeError(f"render {sorted(result)} left missing or empty frames: {', '.join(bad)}")
+    broken = [(p, why) for p in paths if p.name not in kept and (why := png_problem(p))]
+    if broken:
+        for p, _ in broken:
+            p.unlink(missing_ok=True)
+        raise RuntimeError("render wrote incomplete frames (deleted; run the render again to redo them): "
+                           + "; ".join(f"{p.name}: {why}" for p, why in broken))  # fmt: skip
     return paths
 
 

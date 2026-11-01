@@ -10,12 +10,22 @@ memory"); suggest closing it, but never stop a program yourself.
 
 ## One GPU job at a time
 
-`BLENDER render`, the preview chain's render step, `BLENDER extremes` and `BLENDER estimate` take the workspace's
+`BLENDER render`, the preview chain's render step, `BLENDER extremes`, `BLENDER test-frames` and `BLENDER estimate` take the workspace's
 GPU lock (`<workspace>/.gpu.lock`: pid, short, command, start time), so two sessions never render at once. A second
 command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr, and `render-status` and
 the page say "final render waiting for the GPU: ...". It starts by itself when the first ends, or at once when the
 first's Blender is gone (a crashed or killed run leaves a stale lock, which is cleared). Tell the user what it waits
 for. With `--no-wait` it fails at once instead, naming the holder: use that when the user would rather not queue.
+
+## Test frames (a quick look before the preview)
+
+`BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]` renders single frames, each at a fraction of its
+shot (0 = the shot's first frame, 1 = its last), with the short's current build (`blend/short.blend`), engine and
+look, at `--scale` of the full resolution (default 0.4), into `review/test-frames/<shot>-<percent>-f<frame>.png`.
+Its result lists the PNG `paths` (and each one's shot, fraction and frame): open them. Use it to tune a material,
+a light or a framing without a whole preview render, instead of a render script of your own. It takes the GPU lock
+like the commands above (it waits and says for what, or fails at once with `--no-wait`), so it never renders
+alongside another session's job. Rebuild first after changing `build.py` (it warns when the .blend is older).
 
 ## Moving parts at their extremes (before the first preview)
 
@@ -114,10 +124,31 @@ the shot was rendered, the redone frames come from the new build and the shot's 
 the result's `warnings` say so, and you render the whole shot (`--shot ID`) when the change shows outside the
 redone frames. Run frame-check again afterwards.
 
+## Another engine, side by side (side runs)
+
+`--engine cycles|eevee [--tag NAME]` on `BLENDER preview`, `render`, `frame-check`, `edit` and `grab` makes a
+**side run**: another engine than the approved one (tagged with the engine's name), or any run given a tag. It
+reads and writes only its own files: frames in `frames/<preset>-<tag>/<shot>/`, findings in
+`review/frame-checks-<preset>-<tag>.json` (its `redo` commands carry the same options), the video in
+`out/<slug>-<preset>-<tag>.mp4`, grabs as `review/grabs/<preset>-<tag>-...`. The approved engine's frames and video
+are never overwritten, the engine stage keeps its engine, and a side edit never marks `preview` or `final`. Use the
+same options on every command of one side run (`BLENDER render SHORT --preset preview --engine eevee`, then
+`frame-check` and `edit` with `--engine eevee`); the chain passes them on itself. Tags are lowercase letters, digits
+and hyphens; `preview` and `final` are refused. Its fingerprints, resume, scene checks and GPU lock are the same as
+the approved run's. Its live status is its own too: `review/render-status-<preset>-<tag>.json`, the page
+`review/render-<preset>-<tag>.html` and its thumbnails, so the approved run's page is never overwritten (`CLI
+render-status SHORT --preset preview --tag eevee` reads it).
+
+Each render's result has `s_per_frame` (the average over the frames it rendered fresh) and `engines`: every run of
+that preset on record in `review/engine-runs.json`, with what it measured and its MP4 while it exists. Relay those
+numbers as measured (`04-engine.md`, "Comparing the engines on real frames").
+
 ## Preview
 
 Renders and frame checks run with `run_in_background: true` (the Bash tool stops a command after 2 minutes by
-default); you are notified when they finish. If one is cut off, run the same command again: it resumes.
+default); you are notified when they finish. If one is cut off, run the same command again: it resumes. A resume
+first verifies every frame it keeps (PNG signature through the end chunk): frames a crash or power cut left cut off
+or zero-filled are deleted and rendered again, and the result's `warnings` and each shot's `damaged` name them.
 
 **After any change (build.py, short.json, a camera tweak), use the chain:** `BLENDER preview SHORT` (in the
 background) runs everything needed to get back to a checked preview, through the same code as the single commands:
@@ -126,7 +157,8 @@ scenes are missing or from another timing, or with `--rebuild`), `state done bui
 that mark), `mix`, `check` (skipped when it already passed on every shot as it is now; otherwise only changed shots
 are checked again), `render --preset preview` (it resumes; only changed shots render again, and its step says which
 were kept and why the others rendered), `frame-check --preset preview` and `edit --preset preview`. Its
-result's `steps` say what ran or was skipped and why. It stops at the first failure with "stopped at <step>: ..."
+result's `steps` say what ran or was skipped and why, and its `closing` (as the edit's) has a `note` when the
+closing card holds longer than `closing.seconds` so its voice line fits: tell the user. It stops at the first failure with "stopped at <step>: ..."
 (for example the check errors, with the checks' counts in the result): fix that and run it again. In MCP mode,
 rebuild through the MCP first and run `BLENDER preview SHORT --no-build`: it never runs build.py and refuses with
 a plain message when the .blend is not current. The chain needs every stage up to narration done. Then do steps 3,
@@ -169,7 +201,9 @@ The single steps, when you need one on its own:
    `out/<slug>-preview.mp4` (`out/<slug>.mp4` for `--preset final`) at full size into
    `review/grabs/preview-f0046.png` and so on (its result maps each second to its frame and file);
    `--sheet [--count 12] [--columns 4]` makes one quarter-size contact sheet of evenly spaced frames,
-   `review/grabs/preview-sheet.png`, for an overview. No .blend is needed. The grabs use the Standard view
+   `review/grabs/preview-sheet.png`, for an overview. Grabs of an older edit of the same video are removed first
+   (the result's `cleared` counts them), so the folder only ever holds frames of the video as it is now; a side
+   run's grabs are its own. No .blend is needed. The grabs use the Standard view
    transform, so their colours match the video (pulling frames through a default scene's AgX washes them out). Check
    captions, labels, badges and the end card where they really sit, and grab the moments where parts move against
    each other at full size: a contact sheet is too small to show thin parts passing through each other.

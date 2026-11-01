@@ -315,11 +315,19 @@ def test_a_tag_change_alone_makes_the_checks_run_again(sdir):
 
 
 def test_check_inputs_ignore_fields_the_checks_never_read(sdir):
-    """The title, picture, still_at and badge are not checked: rewording them keeps the checks current."""
+    """The title, picture and still_at are not checked: rewording them keeps the checks current."""
     _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
-    reworded = _inputs(shot=_shot(title="New", picture="reworded", still_at=0.2, badge="Simplified"))
+    reworded = _inputs(shot=_shot(title="New", picture="reworded", still_at=0.2))
     freshness.require_checks(sdir, "h", {"s01": reworded})
     assert set(freshness.reusable_checks(sdir, freshness.checks_stamp("h", {"s01": reworded}, 5))) == {"s01"}
+
+
+@pytest.mark.parametrize("over", [{"badge": "Simplified"}, {"wide": True}])
+def test_check_inputs_include_the_badge_and_wide(sdir, over):
+    """The badge may cover the subject and `wide` turns the framing checks off: changing either checks again."""
+    _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
+    changed = _inputs(shot=_shot(**over))
+    assert not freshness.reusable_checks(sdir, freshness.checks_stamp("h", {"s01": changed}, 5))
 
 
 @pytest.mark.parametrize(
@@ -381,19 +389,57 @@ def test_checks_code_ignores_line_endings(tmp_path, monkeypatch):
     lf, crlf = tmp_path / "lf.py", tmp_path / "crlf.py"
     lf.write_bytes(b"a = 1\nb = 2\n")
     crlf.write_bytes(b"a = 1\r\nb = 2\r\n")
-    monkeypatch.setattr(freshness, "_CHECKS_CODE", lf)
+    monkeypatch.setattr(freshness, "_CHECKS_CODE", (lf,))
     code = freshness.checks_code()
-    monkeypatch.setattr(freshness, "_CHECKS_CODE", crlf)
+    monkeypatch.setattr(freshness, "_CHECKS_CODE", (crlf,))
     assert freshness.checks_code() == code
 
 
-def test_checks_stamped_with_the_raw_code_hash_stay_current(sdir):
-    """Stamps written while the code hash covered the file's raw bytes (CRLF on a Windows checkout) still match."""
+def test_checks_stamped_with_only_the_checks_module_hash_are_stale(sdir):
+    """Stamps whose code hash covered bsa/blender/checks.py alone (raw or line endings ignored) can't vouch for the
+    viewer checks, the edit's text boxes or the framing notes: the checks run once more."""
     import hashlib
 
-    raw = hashlib.sha256(freshness._CHECKS_CODE.read_bytes()).hexdigest()[:16]
-    _checks(sdir, {**freshness.checks_stamp("h", {"s01": _inputs()}, 5), "code": f"{freshness.CHECKS_VERSION}:{raw}"})
+    raw = freshness._CHECKS_CODE[0].read_bytes()
+    for data in (raw, raw.replace(b"\r\n", b"\n")):
+        code = f"{freshness.CHECKS_VERSION}:{hashlib.sha256(data).hexdigest()[:16]}"
+        _checks(sdir, {**freshness.checks_stamp("h", {"s01": _inputs()}, 5), "code": code})
+        with pytest.raises(freshness.StaleError, match="checks code changed"):
+            freshness.require_checks(sdir, "h", {"s01": _inputs()})
+
+
+def test_checks_code_covers_every_file_the_findings_come_from():
+    """The viewer checks (framing, covered), the edit's text boxes they measure, the framing_call notes and the
+    framing band all change what the checks find: a change to any of them means a re-check."""
+    root = freshness._CHECKS_CODE[0].parent.parent
+    names = {p.relative_to(root).as_posix() for p in freshness._CHECKS_CODE}
+    assert {"blender/checks.py", "viewer.py", "overlays.py", "findings.py", "blender/camera.py",
+            "layout.py", "rules.py", "blender/bake.py"} <= names, names  # fmt: skip
+    assert all(p.is_file() for p in freshness._CHECKS_CODE)
+
+
+def test_a_change_to_the_viewer_code_makes_the_checks_stale(sdir, tmp_path, monkeypatch):
+    files = [tmp_path / "checks.py", tmp_path / "viewer.py"]
+    for f in files:
+        f.write_bytes(b"x = 1\n")
+    monkeypatch.setattr(freshness, "_CHECKS_CODE", tuple(files))
+    _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
     freshness.require_checks(sdir, "h", {"s01": _inputs()})
+    files[1].write_bytes(b"x = 2\n")  # only viewer.py changed
+    with pytest.raises(freshness.StaleError, match="checks code changed"):
+        freshness.require_checks(sdir, "h", {"s01": _inputs()})
+
+
+def test_a_new_caption_size_makes_the_checks_stale(sdir):
+    """The caption size moves the caption box the covered check measures: changing it means a re-check."""
+
+    def inputs(size):
+        return freshness.shot_check_inputs("fp1", Span("s01", 1, 90), _shot(), ("s01", "s02"), caption_size=size)
+
+    _checks(sdir, freshness.checks_stamp("h", {"s01": inputs(64)}, 5))
+    freshness.require_checks(sdir, "h", {"s01": inputs(64)})
+    with pytest.raises(freshness.StaleError, match="caption size changed"):
+        freshness.require_checks(sdir, "h", {"s01": inputs(96)})
 
 
 def test_frame_stamps_with_parts_match_stamps_without(tmp_path):

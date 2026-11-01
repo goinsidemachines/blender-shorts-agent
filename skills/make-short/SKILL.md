@@ -43,19 +43,21 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
   Blender prints its own log lines, so read the line starting `BSA_RESULT ` (JSON). Failure: non-zero exit, a
   `BSA_RESULT` line with `"ok": false` and the `error`, and the same plain line on stderr (relay it). Don't pass the
   .blend: each command opens `blend/short.blend` itself when it needs it, after it has marked its run as starting in
-  the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `estimate`) run one at a
+  the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `test-frames`, `estimate`) run one at a
   time per workspace, across sessions: a second one waits for the first (`<workspace>/.gpu.lock`, `08-render.md`).
   Never delete that file by hand.
 
 Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render.md` say when):
 
 - `BLENDER extremes SHORT`: renders each hero at the extremes of its motion, full resolution, before the preview.
+- `BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]`: single frames at fractions of shots, current
+  build, engine and look, reduced size, into `review/test-frames/` (takes the GPU lock).
 - `BLENDER grab SHORT --preset preview|final --at <s>...` (or `--sheet`): frames of the edited MP4, true colour.
 - `BLENDER preview SHORT`: the whole rebuild chain (build, done build, mix, check, render preview, frame-check, edit).
 - `BLENDER render SHORT --preset preview|final`: only shots whose content fingerprint changed render again (and
   `BLENDER check SHORT` re-checks only those); `--shot ID --frames 120-140,200` or `--redo-flagged` redo single
   frames that frame-check flagged (each finding has a ready `redo` command).
-- `CLI render-status SHORT [--preset preview|final] [--open]`: where the preview chain, a render, check, frame-check
+- `CLI render-status SHORT [--preset preview|final] [--tag NAME] [--open]`: where the preview chain, a render, check, frame-check
   or edit is (the current step and its progress, time left, live warnings, and whether its Blender is still running;
   when nothing runs, how the last run ended); `--open` shows the live page `review/render-<preset>.html`.
 
@@ -86,7 +88,10 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
 3. **Follow the state.** `CLI state SHORT` gives `next`. Read that stage's playbook chapter before acting, every
    time, even if you think you remember it. Never skip an approval stage (`story`, `storyboard`, `engine`). After
    `engine` is approved, run to the end without asking, unless a check fails that you can't fix after 3 attempts:
-   then show the user what fails, what you tried, and the options.
+   then show the user what fails, what you tried, and the options. If a command stops with "state.json was damaged"
+   (a crash or power cut), never re-mark stages by hand: tell the user, and on their yes run `CLI state SHORT
+   restore`, which puts back `state.json.bak` (the copy before the last save; the damaged file is kept), then
+   check `next` and redo only the stage that the backup lacks.
 4. **The user sees HTML pages, never Markdown or JSON.** At the story and storyboard approvals (and for the finished short), write the page with
    `CLI review story|storyboard|final SHORT --open` and talk about what is on it. Never paste short.json or ask the
    user to open your working files.

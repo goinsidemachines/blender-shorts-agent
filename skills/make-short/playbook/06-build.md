@@ -28,7 +28,9 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   `"contact:<other>:moves"` for parts that touch and move against each other by design), with a comment next to
   the tag saying why (see "Quality bar" below), and `"overlay"` for what is drawn on the scene rather than built in
   it (a glow halo round a pivot, a distance line, an arrow): the overlap, z-fighting, grounding and pop checks leave
-  it out, and it must still stay inside the frame (`07-checks.md`); `"surface"` for an open water surface that
+  it out, and it must still stay inside the frame (`07-checks.md`); `"overlay:may-exit"` for an overlay that leaves
+  the frame on purpose (water falling out of shot down a pipe): an overlay that `frame_edge` does not warn about;
+  `"surface"` for an open water surface that
   things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,
@@ -43,7 +45,13 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - save to `blend/short.blend`. Rebuild after every edit to build.py: when `source/build.py` is newer than
   `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (in its
   result's `warnings`, or `build_warnings` for `check` and `frame-check`, and on one stderr line), and the final
-  render and edit refuse to run.
+  render and edit refuse to run;
+- import only `bpy`, the standard library, numpy and the plugin's own `bsa` modules. Blender runs with
+  `--factory-startup`, which leaves the user's own site-packages folder off its path: a third-party package such as
+  Pillow is not importable inside Blender, even when it is installed for the very Python that Blender ships (it
+  imports in `python` on its own, then fails in the build). Draw images with numpy (and save them through
+  `bpy.data.images`), and do any other work with numpy or the standard library. The same holds for any other script
+  that runs inside Blender.
 
 Skeleton:
 
@@ -191,20 +199,44 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
 - **Frame with `bsa.blender.camera.frame_objects`, not by trial and error.** Set the camera's angle, then
   `camera.frame_objects(cam, [objects...], frames=[f0, ..., f1])` moves it along its view axis (an orthographic
   camera: its `ortho_scale`) and slides it in its own plane until the objects' bounding boxes, at every frame you
-  give (the extremes of the motion), just fill the safe area above the caption band (`bsa.layout.frame_area`: x
-  60-940, rows 220 to about 1165, 24 px inside; `margin=` to change that, `avoid=None` for a shot with no captions,
-  `aim=True` to turn the camera to the objects first, `center=False` to keep them where they sit). It returns the
-  box it reached; then look at the still. For a camera move, frame each end with `key=FRAME` (it keys that
-  position): it is safe on an already animated camera (it starts from the camera's pose now, measuring other frames
-  does not snap it back, existing keys stay), so frame and key each position in turn without clearing the
-  animation. Without `key` the new position is lost at the next frame change on a keyed camera.
+  give (the extremes of the motion), just fill the band between the top cards and the caption band, centred in it
+  (`bsa.layout.target_area`: x 60-940, rows about 321 to 1141: below the badge row, above the captions, 24 px inside;
+  `margin=` to change that, `avoid=None` for a shot with no captions, `top=None` for a shot with no badge,
+  `top=layout.top_cards_band(labels=2)` for a badge and two stacked labels, `aim=True` to turn the camera to the
+  objects first, `center=False` to keep them where they sit). To put the subject on chosen screen rows instead, pass
+  `px_top=` / `px_bottom=` (pixels from the top of the 1080x1920 frame): a tall subject's top and bottom land on
+  them, a wide one is centred between them, so a wide shot can sit low, just above the captions, instead of leaving
+  an empty floor under it. Add `px_left=` / `px_right=` for a whole target box per shot (rows 820-1250 under a
+  title card, say). `shift=True` centres with the lens shift (`shift_x` / `shift_y`, keyed with `key=`) instead of
+  sliding the camera: it keeps its angle and only moves along its view axis. The camera's real lens and sensor fit are used for the 1080x1920 frame, whatever the
+  scene's resolution is while building. Pass `shot="s02"` so messages and findings name the shot. It returns the
+  box it reached; then look at the still. `key=FRAME` keys the framed position: it is safe on an already animated
+  camera (it starts from the camera's pose now, measuring other frames does not snap it back, existing keys stay).
+  Without `key` the new position is lost at the next frame change on a keyed camera.
+- **Camera moves: `camera.move`, never two keyed ends.** Framing only the two ends of an orbit or a swing and
+  letting Blender interpolate goes wrong: location and rotation interpolate apart, and the framing also slides the
+  camera sideways, so the in-between poses look past the subject (a shot can lose its subject halfway and still
+  pass both end stills). Re-framing every 8 frames by hand is no cure either: the distance bumps between keys.
+  Frame the start (`frame_objects(cam, objs, key=f0)`), then `camera.move(cam, objs, f0, f1, orbit=90)` (degrees
+  about the vertical through the subject; `tilt=` degrees up or down; `end_at=(x, y, z)` to end where a camera
+  position says; `to=[part]` to push in to a part, or with `orbit` too). It turns the start pose about the subject
+  on a smoothstep, frames a pose every 2 frames (`every=`) into the same band with the same options as
+  `frame_objects` (`px_top=`, `shift=`, `above_ground`...), eases the distance so it never bumps, keys Euler
+  rotations without flips, and replaces the camera's keys between `f0` and `f1`. The subject stays in the band the
+  whole way; read its `warnings` as for `frame_objects`. `frame_edge` errors when most of a hero leaves the frame
+  for half a second or more (`07-checks.md`).
   `camera.frame_box(cam, lo, hi, of=obj)` frames a box instead (`lo`, `hi` its corners, in `obj`'s own coordinates,
-  following it; in the world without `of`): a part of one long mesh, with no helper object. Read the result's
-  `warnings` (also printed as a `FramingWarning`): the camera sent far off (more than 5 times the box's size or new
-  distance: the objects are not where the camera looked, often because a parent moved or turned them), the box
-  outside the view or past the clip end, the camera under the ground or inside a solid (centring slides it along
-  its own up axis: aim from above the box's centre, or use `center=False`), or the fit not settling. Fix the cause, never ignore it: such a camera
-  renders black or empty stills. A box with no size (an object with no geometry) is refused. It measures the objects
+  following it; in the world without `of`): a part of one long mesh, with no helper object. The camera never ends
+  up under the ground: centring slides it along its own up axis, so a camera aimed up from low down would sink;
+  instead it is lifted just above the ground's top and pitched down so the subject is still framed in the band (the
+  result's `lifted` names the ground). A subject wholly under the ground, or ground it cannot get above, raises
+  `FramingError` naming the shot, the camera and the ground (`above_ground=False` only warns, the old way). Read the
+  result's `warnings` (also printed as a `FramingWarning`, kept on the scene, named by the preview chain's build
+  step and listed by the checks as `framing` findings on the review page): the camera sent far off (more than 5
+  times the box's size or new distance: the objects are not where the camera looked, often because a parent moved
+  or turned them), the box outside the view or past the clip end, or the fit not settling. Fix the cause, never
+  ignore it: such a camera renders black or empty stills. A box with no size (an object with no geometry) is
+  refused. It measures the objects
   in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
   camera's) scene does not have are refused instead of measured at the origin.
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject

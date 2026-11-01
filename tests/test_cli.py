@@ -99,6 +99,9 @@ def test_new_short_with_a_topic_and_length(home, workspace):
     data = ok(run(home, "new-short", "The Lever", "--topic", "How a lever trades force for distance", "--length", "40"))
     spec = json.loads((Path(data["short"]) / "source" / "short.json").read_text(encoding="utf-8"))
     assert spec["topic"] == "How a lever trades force for distance" and spec["length_s"] == 40
+    assert isinstance(spec["length_s"], int)  # a whole number is stored as one, like every other short
+    half = ok(run(home, "new-short", "Gears", "--length", "42.5"))
+    assert json.loads((Path(half["short"]) / "source" / "short.json").read_text(encoding="utf-8"))["length_s"] == 42.5
     assert json.loads((Path(ok(run(home, "new-short", "Pulley"))["short"]) / "source" / "short.json").read_text(
         encoding="utf-8"))["length_s"] == 45  # the default
     proc = run(home, "new-short", "Too long", "--length", "200")
@@ -592,7 +595,7 @@ def test_frame_check_keeps_the_findings_of_shots_whose_frames_did_not_change(hom
     assert checked == [] and again["warnings"] == first["warnings"] == len(ids)
     assert run2.calls[-1][0][0] == run2.calls[-1][0][1]  # all frames counted done
     one = sorted((pendulum / "frames" / "final" / ids[1]).glob("*.png"))[3]
-    one.write_bytes(b"png, rendered again")
+    one.write_bytes(_png(b"rendered again"))
     again = bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
     assert checked == [ids[1]] and again["warnings"] == len(ids)
     checked.clear()
@@ -600,6 +603,123 @@ def test_frame_check_keeps_the_findings_of_shots_whose_frames_did_not_change(hom
     os.utime(one, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # same size, newer file
     bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
     assert checked == [ids[1]]
+
+
+def test_resumed_render_drops_damaged_frames_and_says_so(home, pendulum, monkeypatch):
+    """A crash or power cut mid-render leaves frames cut off or zero-filled: a resumed render verifies every kept
+    frame, deletes the bad ones so they render again (in a redo, adds them to the frames it redoes), and the result
+    says which. Empty placeholders are left to the render as before; a shot rendered whole anyway is not read."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+    from bsa import render_status as rs
+    from bsa.timeline import Span
+
+    tl = _rendered(home, pendulum, "preview")
+    spans = {s["id"]: Span(s["id"], s["f0"], s["f1"]) for s in tl["shots"]}
+    shots = [types.SimpleNamespace(id=sid) for sid in spans]
+    stamps = {sid: freshness.frames_stamp(span, None, None, "preview") for sid, span in spans.items()}
+    first, second = shots[0].id, shots[1].id
+    folder = pendulum / "frames" / "preview" / first
+    f0 = spans[first].f0
+    (folder / f"{f0 + 1:04d}.png").write_bytes(_png()[:-6])  # cut off
+    (folder / f"{f0 + 2:04d}.png").write_bytes(b"\0" * 64)  # zero-filled
+    (folder / f"{f0 + 3:04d}.png").write_bytes(b"")  # the placeholder of the frame in progress
+    other = pendulum / "frames" / "preview" / second / f"{spans[second].f0:04d}.png"
+    other.write_bytes(b"\0" * 64)
+    stamps[second] = {**stamps[second], "engine": "cycles"}  # stale: the whole shot renders again
+    damaged = bsa_blender._drop_damaged(pendulum / "frames" / "preview", shots, spans, stamps, None)
+    assert damaged == {first: [f0 + 1, f0 + 2]}
+    assert not (folder / f"{f0 + 1:04d}.png").exists() and not (folder / f"{f0 + 2:04d}.png").exists()
+    assert (folder / f"{f0 + 3:04d}.png").exists() and other.exists()
+    total = spans[first].f1 - f0 + 1
+    assert rs.frames_plan(folder, f0, spans[first].f1, stamps[first])["reused"] == total - 3
+    want = (f"shot {first}: frames {f0 + 1}-{f0 + 2} were not complete PNGs (an interrupted render left them): "
+            "deleted and rendered again")  # fmt: skip
+    assert bsa_blender._damaged_warnings(damaged) == [want]
+    (folder / f"{f0 + 5:04d}.png").write_bytes(b"\0" * 64)
+    redo = {first: [f0]}
+    assert bsa_blender._drop_damaged(pendulum / "frames" / "preview", shots[:1], spans, stamps, redo) == {first: [f0 + 5]}
+    assert redo == {first: [f0, f0 + 5]} and (folder / f"{f0 + 5:04d}.png").exists()  # redo_frames deletes it
+
+
+def test_frame_check_reports_unreadable_frames_as_errors(home, pendulum, monkeypatch):
+    """Frames an interrupted render left cut off or zero-filled are errors with a redo command, and are never handed
+    to the decoder (which may read half a frame as a whole one)."""
+    import types
+
+    import bsa_blender
+
+    _rendered(home, pendulum, "preview")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    short = bsa_blender._load(pendulum)
+    folder = pendulum / "frames" / "preview" / short.shots[0].id
+    frames = sorted(folder.glob("*.png"))
+    frames[1].write_bytes(_png()[:30])  # cut off
+    frames[2].write_bytes(b"\0" * len(_png()))  # zero-filled
+    given = []
+
+    def frame_checks(frames, load=None, progress=None, **_kw):
+        given.extend(frames)
+        return []
+
+    class Run:
+        def progress(self, *a, **kw):
+            pass
+
+    shaded = []
+
+    def shading_rows(sdir, short_, tl, tl_hash, shots, load):
+        shaded.append({shot.id: list(fs) for shot, fs in shots})
+        return []
+
+    monkeypatch.setattr(bsa_blender, "_shading_rows", shading_rows)
+    args = types.SimpleNamespace(preset="preview")
+    for _ in range(2):  # checked, then kept from the cache: the shading check never gets the damaged frames
+        with pytest.raises(bsa_blender.CliError, match="2 frame error"):
+            bsa_blender._cmd_frame_check(args, pendulum, short, Run(), frame_checks, None)
+        got = shaded[-1][short.shots[0].id]
+        assert frames[1] not in got and frames[2] not in got and frames[0] in got and frames[3] in got
+    assert frames[1] not in given and frames[2] not in given and frames[0] in given
+    data = json.loads((pendulum / "review" / "frame-checks-preview.json").read_text(encoding="utf-8"))
+    bad = [f for f in data["findings"] if f["check"] == "unreadable_frame"]
+    assert [f["frame"] for f in bad] == [int(frames[1].stem), int(frames[2].stem)]
+    assert all(f["severity"] == "error" and f["redo_frames"] == [f["frame"]] for f in bad)
+    assert "cut off" in bad[0]["message"] and frames[1].name in bad[0]["message"]
+    assert "--redo-flagged" in data["redo_all"]
+
+
+def test_one_shot_the_shading_check_cannot_read_leaves_the_others_checked(home, pendulum, monkeypatch, capsys):
+    """The shading check only adds warnings: a shot whose scene it can't read is skipped with a note, and the other
+    shots are still checked."""
+    import sys
+    import types
+
+    import bsa_blender
+    from bsa.image_checks import Finding
+
+    tl = _rendered(home, pendulum, "preview")
+    short = bsa_blender._load(pendulum)
+    (pendulum / "blend").mkdir(exist_ok=True)
+    (pendulum / "blend" / "short.blend").write_bytes(b"blend")
+    bad_id = short.shots[0].id
+
+    def scene(data, short_, sid, tl_hash):
+        if sid == bad_id:
+            raise KeyError(f"no scene for {sid}")
+        return None, types.SimpleNamespace(name=sid)
+
+    def frame_shading(scene_, numbered, sid, load):
+        return [Finding("shading", "warning", None, numbered[0][0], f"a flat face shades in {sid}")]
+
+    monkeypatch.setitem(sys.modules, "bsa.blender.shading", types.SimpleNamespace(frame_shading=frame_shading))
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_scene", scene)
+    shots = [(s, sorted((pendulum / "frames" / "preview" / s.id).glob("*.png"))) for s in short.shots]
+    rows = bsa_blender._shading_rows(pendulum, short, None, tl.get("hash"), shots, None)
+    assert sorted(r["shot"] for r in rows) == sorted(s.id for s in short.shots[1:]), rows
+    assert bad_id in capsys.readouterr().err
 
 
 def test_assets_download_goes_where_build_py_looks(home, pendulum, tmp_path, monkeypatch, capsys):
@@ -1011,6 +1131,20 @@ def test_stale_build_py_warns_and_the_final_refuses(home, pendulum, monkeypatch,
     assert "warnings" not in json.loads(io.out.split("BSA_RESULT ", 1)[1]) and "build.py" not in io.err
 
 
+def _png(note: bytes = b"") -> bytes:
+    """A complete (tiny) PNG file as far as frame-check's completeness check reads it; `note` changes its bytes."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    text = chunk(b"tEXt", b"note\0" + note) if note else b""
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + text + chunk(b"IDAT", zlib.compress(b"\0\0\0\0"))
+            + chunk(b"IEND", b""))  # fmt: skip
+
+
 def _rendered(home, short: Path, preset: str, engine=None, blend=None, shift=0) -> dict:
     """Write source/timeline.json and stamped frames for every shot, as `render` leaves them; returns the timeline.
     With `blend` (a blend/short.blend exists), each shot gets a fingerprint, cached as render caches it."""
@@ -1027,7 +1161,7 @@ def _rendered(home, short: Path, preset: str, engine=None, blend=None, shift=0) 
         folder = short / "frames" / preset / s["id"]
         folder.mkdir(parents=True, exist_ok=True)
         for f in range(span.f0, span.f1 + 1):
-            (folder / f"{f:04d}.png").write_bytes(b"png")
+            (folder / f"{f:04d}.png").write_bytes(_png())
         stamp = freshness.frames_stamp(span, engine, (fps or {}).get(s["id"]), preset)
         (folder / ".render.json").write_text(json.dumps(stamp), encoding="utf-8")
     _anchors(short, fps)  # render writes them too
@@ -1161,6 +1295,17 @@ def test_blender_stills_and_check_smoke(home, pendulum):
     result = json.loads(still.stdout.split("BSA_RESULT ", 1)[1].splitlines()[0])
     assert result["stills"] == 0 and "no hero moves" in result["warnings"][0]
 
+    quick = blender_cmd("test-frames", "pendulum", "--at", "s01:0.5", "s02:0", "--scale", "0.1")
+    assert quick.returncode == 0, quick.stdout + quick.stderr
+    result = json.loads(quick.stdout.split("BSA_RESULT ", 1)[1].splitlines()[0])
+    pngs = [Path(p) for p in result["paths"]]
+    assert len(pngs) == 2 and all(p.parent == pendulum / "review" / "test-frames" for p in pngs)
+    assert all(p.suffix == ".png" and p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" for p in pngs)
+    assert [f["shot"] for f in result["frames"]] == ["s01", "s02"]
+    assert not (pendulum.parent / ".gpu.lock").exists()  # taken and released
+    missing = blender_cmd("test-frames", "pendulum", "--at", "s99:0.5")
+    assert missing.returncode == 1 and "no shot 's99'" in missing.stderr, missing.stderr
+
     check = blender_cmd("check", "pendulum")
     report = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
     errors = [f for f in report["findings"] if f["severity"] == "error"]
@@ -1213,6 +1358,9 @@ def _past_narration(home, short: Path) -> None:
     ok(run(home, "timeline", short.name))
 
 
+FRAMING_NOTE = "scene Tower: camera Cam: frame_objects: the fit for 'Tower' did not settle in 60 steps"
+
+
 def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = None):
     """Stub the Blender-side steps of BLENDER preview; the CLI steps (timeline, state, mix) run for real."""
     import bsa_blender
@@ -1235,6 +1383,7 @@ def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = 
 
     monkeypatch.setattr(bsa_blender, "_build_script_mode", build)
     monkeypatch.setattr(bsa_blender, "_reopen", lambda sdir: calls.append("reopen"))
+    monkeypatch.setattr(bsa_blender, "_framing_notes", lambda sdir: [FRAMING_NOTE])  # what build.py's framing kept
     monkeypatch.setattr(bsa_blender, "_scenes_current", lambda *a: True)
     monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)  # the fake .blend has no scenes
     monkeypatch.setattr(bsa_blender, "cmd_check", step("check", {"errors": 0, "warnings": 1}))
@@ -1272,12 +1421,27 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     assert list(by) == ["timeline", "build", "build done", "mix", "check", "render", "frame-check", "edit"]
     assert by["timeline"]["state"] == "skipped" and by["timeline"]["summary"] == {"skipped": "the timing is current"}
     assert all(by[n]["state"] == "done" for n in list(by)[1:])
-    assert by["build"]["summary"] == {"why": "no blend/short.blend yet"} and by["render"]["summary"]["frames"] == 7
+    assert by["build"]["summary"] == {"why": "no blend/short.blend yet", "framing": [FRAMING_NOTE]}
+    assert by["render"]["summary"]["frames"] == 7
+    assert out["steps"][0]["framing"] == [FRAMING_NOTE]  # the build step names the framing warnings
     assert all(by[n]["started"] <= by[n]["finished"] for n in list(by)[1:])
     page = (pendulum / "review" / "render-preview.html").read_text(encoding="utf-8")
     assert "Steps" in page and "Done" in page
     status_out = ok(run(home, "render-status", "pendulum"))
     assert status_out["idle"] is True and "preview chain done" in status_out["summary"]
+
+
+def test_preview_chain_says_when_the_closing_card_is_held_longer(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    _fake_chain(monkeypatch, home, pendulum, [])
+    hold = {"seconds": 5.0, "set_seconds": 2.5, "note": "closing card held 5.0 s so the voice line fits"}
+    monkeypatch.setattr(bsa_blender, "cmd_edit", lambda *a, **k: {"mp4": "x-preview.mp4", "closing": hold})
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert out["closing"] == hold  # as the edit's own result says it
+    assert out["steps"][-1] == {"step": "edit", "mp4": "x-preview.mp4", "closing_note": hold["note"]}
 
 
 def test_preview_chain_stops_at_the_first_failure(home, pendulum, monkeypatch, capsys):
@@ -1396,6 +1560,52 @@ def test_grab_maps_seconds_to_frames(home, pendulum, monkeypatch, capsys):
     assert "outside the video" in capsys.readouterr().err
 
 
+def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys):
+    """Grabs from an earlier edit of the video are removed before new ones are written (a requested second that
+    lands on another frame would leave an old frame beside the new ones); a side run's grabs are its own."""
+    import os
+    import types
+
+    import bsa_blender
+
+    mp4 = pendulum / "out" / "pendulum-preview.mp4"
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"mp4 one")
+    grabs = pendulum / "review" / "grabs"
+    grabs.mkdir(parents=True)
+    for name in ("preview-f0886.png", "preview-sheet.png", "preview-eevee-f0001.png", "final-f0001.png"):
+        (grabs / name).write_bytes(b"old")
+    fake_edit = types.ModuleType("bsa.blender.edit")
+    fake_edit.probe = lambda p: {"width": 1080, "height": 1920, "fps": 30.0, "frames": 60, "has_audio": True}
+    fake_grab = types.ModuleType("bsa.blender.grab")
+    fake_grab.frame_at = lambda t, fps, n: int(t * fps) + 1
+
+    def grab_frames(mp4, frames, folder, stem):
+        for f in frames:
+            (folder / f"{stem}-f{f:04d}.png").write_bytes(b"new")
+
+    fake_grab.grab_frames = grab_frames
+    import bsa.blender
+
+    monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake_edit)
+    monkeypatch.setitem(sys.modules, "bsa.blender.grab", fake_grab)
+    monkeypatch.setattr(bsa.blender, "grab", fake_grab, raising=False)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "1"]) == 0
+    out = _result(capsys)
+    assert out["cleared"] == 2
+    assert sorted(p.name for p in grabs.glob("*.png")) == ["final-f0001.png", "preview-eevee-f0001.png",
+                                                          "preview-f0031.png"]  # fmt: skip
+    assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "0"]) == 0  # the same video
+    assert _result(capsys)["cleared"] == 0 and (grabs / "preview-f0031.png").is_file()
+    mp4.write_bytes(b"mp4 two, edited again")
+    st = mp4.stat()
+    os.utime(mp4, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "1"]) == 0
+    assert _result(capsys)["cleared"] == 2  # f0001 and f0031 came from the older video
+    assert sorted(p.name for p in grabs.glob("preview-f*.png")) == ["preview-f0031.png"]
+
+
 def test_frame_check_findings_carry_a_redo_command(tmp_path):
     import bsa_blender
     from bsa.image_checks import Finding
@@ -1436,6 +1646,24 @@ def test_redo_flagged_reads_the_last_frame_check(tmp_path):
         bsa_blender._redo_targets(tmp_path, args, None, spans)
     args.shot = "s01"
     assert bsa_blender._redo_targets(tmp_path, args, None, spans) == {"s01": [5, 6, 9]}
+
+
+def test_damaged_state_stops_with_a_plain_line_and_restores(home, pendulum):
+    """A power cut can leave state.json as zero bytes: every command stops and names the backup; `state SHORT
+    restore` puts it back (the damaged file is kept)."""
+    ok(run(home, "state", "pendulum", "done", "interview"))
+    ok(run(home, "state", "pendulum", "reset", "story"))  # a second save: the first one becomes the backup
+    (pendulum / "state.json").write_bytes(b"\0" * 593)
+    proc = run(home, "state", "pendulum")
+    assert proc.returncode == 1 and proc.stdout == ""
+    err = proc.stderr.strip()
+    assert err.startswith(f"{pendulum / 'state.json'} was damaged (593 zero bytes)"), err
+    assert "state.json.bak" in err and f"CLI state {pendulum.name} restore" in err and "Damaged" not in err
+    assert (pendulum / "state.json").read_bytes() == b"\0" * 593  # untouched
+    out = ok(run(home, "state", "pendulum", "restore"))
+    assert list(out["stages"]) == ["interview"] and out["next"] == "story"
+    assert len(list(pendulum.glob("state.damaged-*.json"))) == 1
+    assert "not damaged" in run(home, "state", "pendulum", "restore").stderr
 
 
 def test_check_findings_from_two_shots_of_one_scene_are_listed_once():

@@ -255,12 +255,14 @@ class Tracker:
 
     def __init__(self, path: Path, *, short: dict, preset: str, engine: str | None, shots: list[dict],
                  stamp: dict, seed_s_per_frame: float | None = None, clock: Callable[[], float] = time.time,
-                 render_page: Callable[[dict], object] | None = None, run: Run | None = None):  # fmt: skip
+                 render_page: Callable[[dict], object] | None = None, run: Run | None = None,
+                 key: str | None = None):  # fmt: skip
         self.path = Path(path)
         self.run = run  # an inert run (another live process owns the file) keeps this render from writing at all
         self.clock = clock
         self.render_page = render_page
         self.short, self.preset, self.engine, self.stamp = short, preset, engine, stamp
+        self.key = key or preset  # the name its files go under (bsa.engine_runs.status_key): thumbnails too
         self.seed = seed_s_per_frame
         self.settings: dict = {}
         self.shots = []
@@ -382,7 +384,7 @@ class Tracker:
 
     def set_thumb(self, shot_id: str, frame: int) -> None:
         shot = self._by_id[shot_id]
-        shot["thumb"], shot["thumb_frame"] = thumb_rel(self.preset, shot_id), frame
+        shot["thumb"], shot["thumb_frame"] = thumb_rel(self.key, shot_id), frame
 
     def add_overhead(self, seconds: float) -> None:
         self.overhead_s += seconds

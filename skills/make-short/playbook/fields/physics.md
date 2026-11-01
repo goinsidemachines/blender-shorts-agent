@@ -58,6 +58,80 @@ Write the comparison into `source/notes.md`: "simulated period 2.01 s vs 2π√(
 - Overlays that explain forces (arrows, a live plot) are drawn from the same data: an arrow for a damper's pull
   uses `pull`, not a guess. Explain the colours once in the narration or a label.
 
+## Blender rigid bodies (`bsa.blender.rigid`)
+
+Blender's own Bullet engine handles bodies that hit, rest and pile up, which the numpy models above don't cover.
+
+- **When Bullet is fine:** hinge pendulums, things dropped onto a still floor or stack, simple stacking and
+  toppling, a few bodies knocking each other over. **When the numpy models are better:** anything whose number
+  goes on screen (a period, a peak, a reduction: a closed-form or `rk4` model is exact and easy to check), damped
+  or driven oscillations (a tuned mass damper, a forced structure), collisions in a row (`contact_chain` conserves momentum and
+  gives each impact for the sound), and tiny or very fast motion.
+- **The helper:** `rigid.rigid_body_sim(build, f0, f1, substeps=10)` makes a throwaway scene at the short's fps,
+  adds a rigid-body world, calls `build(scene)` (which makes the bodies with `rigid.add_body` and joins them with
+  `rigid.add_constraint`, then returns the ones to sample), frees the point cache, steps every frame from `f0` to
+  `f1`, samples each body's `matrix_world`, and deletes the scene and the objects made only for it. It returns
+  `{name: [matrix per frame]}`; `rigid.keyframe_matrices(obj, mats, frame0=f0)` keys the motion onto the render
+  object with linear interpolation (`bake.keyframe_series` underneath). Build simple proxies in `build`, not the
+  detailed render meshes. Check the result against a sourced number as for any model (a hinge pendulum's period
+  against `2π√(L/g)`, with `verify.period_from_series`).
+
+**Traps** (the helper handles the first two and the frame stepping; the rest are yours):
+
+- **fps:** a scene from `bpy.data.scenes.new` is 24 fps. Simulated at 24 and sampled at 30, everything runs 25%
+  slow (a 4.0 s pendulum came out at 3.2 s). `rigid_body_sim` sets the short's fps.
+- **Point cache:** a second sim in the same scene silently replays the old cache (a new release angle came out at
+  the old amplitude). The helper frees it, and the cache's end frame (250 by default) is set to `f1`; past it
+  nothing moves.
+- **Origin = centre of mass:** Bullet puts the mass at the object's origin and rotates the body about it. Put the
+  origin at the centre of mass (`Set Origin > Origin to Center of Mass`) before `add_body`, or the body swings and
+  tumbles about the wrong point.
+- **Collision margin on thin parts:** Bullet pads every shape by a margin (0.04 m by default). On coins, plates or
+  thin walls that is a large fraction of the thickness, so things float above them or hit early. Pass
+  `margin=` well under the thickness (a coin 1.5 mm thick: about 0.0002) and prefer a primitive shape ("BOX",
+  "CYLINDER") over "MESH".
+- **Substeps for fast or small bodies:** at a few steps per frame a small or fast body passes through a thin part
+  in one step (tunnelling) or jitters on contact. Raise `substeps` (20 to 60) until the result stops changing.
+- **Millimetre mechanisms:** Bullet's tolerances (margins, contact thresholds) are fixed lengths, so at real
+  millimetre size a mechanism of many tiny touching parts (a lock's pin stack) can jitter, sink or blow apart even
+  when a single small part dropping on a floor behaves. If it does, build the proxies larger (10 to 50 times) with
+  `gravity` multiplied by the same factor (the motion then keeps its timing) and scale the sampled locations back
+  down before `keyframe_matrices`. Check the result against a number as usual.
+- **BOX and CYLINDER shapes are centred on the origin:** a primitive shape is the object's bounding box (or the
+  cylinder in it) centred on the object's origin, not on the mesh. A pin whose origin sits at its base gets a box
+  half below it: it starts inside its neighbour and is thrown out on the first frame. Put the origin at the
+  mesh's centre (which is also the centre of mass for a uniform part), or use "CONVEX_HULL".
+- **A MOTOR drives object2 the opposite way:** a MOTOR constraint with a positive `motor_lin_target_velocity`
+  moves `object2` along the constraint empty's **negative** X (checked in Blender 5.2: +1 m/s moved it 0.95 m
+  towards -X in a second), and a positive angular target turns it the negative way about X (+1 rad/s turned
+  it -0.49 rad in half a second). Give the velocity you
+  want with its sign flipped, and look at which way the part goes before baking a whole shot.
+- **The world only steps one frame at a time:** Bullet advances only from the frame before. Jumping frames (a
+  debug loop with `frame_set` every 6th frame) shows nothing moving, and a sim sampled out of order replays the
+  cache wrongly. `rigid_body_sim` steps every frame from `f0`; when you step a world yourself, do the same.
+- **Don't bake with `bpy.ops.rigidbody.bake_to_keyframes`:** in script mode (`blender -b`) it fails with
+  "Operator bpy.ops.anim.keyframe_insert_by_name.poll() failed, context is incorrect", whatever context override
+  you give it. Sample with `rigid.rigid_body_sim` and key with `rigid.keyframe_matrices` instead. They also remove
+  the throwaway scene, so no `RigidBodyWorld` / `RigidBodyConstraints` collections are left in the short.
+- **Damping:** Blender's defaults (0.04 linear, 0.1 angular) slowly stop a swing. `add_body` sets 0; set a real
+  value only when you mean it.
+
+**Resting on a moving body (a tray that swings, a deck that rolls):** don't make the carrier an Animated (kinematic)
+passive body keyed per frame and drop active bodies on it. Bullet moves a kinematic body by teleporting it each
+step, so friction never drags what rests on it along: coins on a swinging tray slid off sideways. Simulate in the
+carrier's own frame instead:
+
+1. In `build`, keep the carrier **still and passive** at its pose at the moment you start, with the bodies on it.
+2. Tilt gravity into that frame: pass `gravity=` as world gravity expressed in the carrier's axes,
+   `R.transposed() @ Vector((0, 0, -9.81))` where `R` is the carrier's rotation (as a 3x3 matrix) relative to its
+   rest pose at that moment. For a swing, use the angle at the drop, or run short segments with the angle at each.
+3. Sample the bodies' matrices in that frame and transform them back per frame:
+   `world = carrier.matrix_world(at frame f) @ carrier_rest.inverted() @ local`, then `keyframe_matrices`.
+
+This leaves out the fictitious forces of an accelerating carrier (centrifugal and Euler terms). They are small
+for a slow swing (a few % of g); estimate them (`ω² r` and `α r` against `g`) and write the figure in `notes.md`.
+When they are not small, model the contact yourself in numpy.
+
 ## Lessons that carry across topics
 
 - **Tiny real motion:** a structure's real movement is often invisible at true scale (millimetres or centimetres on

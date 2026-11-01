@@ -60,8 +60,14 @@ def test_checks_in_blender(blender_run):
         "test_overlay_objects_skip_physical_checks_but_stay_in_frame",
         "test_surface_tag_lets_things_cross_an_open_water_surface_but_not_a_solid",
         "test_hard_rules_flag_object_mesh_material_and_collection_names",
+        "test_an_object_switched_on_inside_the_frame_pops_in",
         "test_cradle_swing_and_collision_are_not_pops_but_a_teleport_is",
         "test_zfight_tolerance_follows_what_the_camera_can_see",
         "test_contact_moves_tag_allows_designed_motion_but_keeps_the_depth_limit",
+        "test_camera_below_the_ground_is_an_error",
+        "test_text_covering_the_subject_is_reported",
+        "test_a_label_covering_its_own_part_is_reported",
+        "test_a_small_subject_is_framing_unless_the_shot_is_wide",
+        "test_a_subject_in_one_half_leaves_the_other_empty",
     ):
         assert f"PASS {name}" in result.stdout
