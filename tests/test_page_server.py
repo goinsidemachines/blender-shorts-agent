@@ -216,6 +216,17 @@ def test_etag_304_then_change(srv):
     assert api(srv, "GET", "/api/01-pendulum/state", headers={"If-None-Match": tag}).status == 200
 
 
+def test_state_records_history_and_lists_it(srv):
+    first = body(api(srv, "GET", "/api/01-pendulum/state"))
+    story = next(s for s in first["stages"] if s["id"] == "story")
+    assert story["version"] == 1 and story["history"] == []
+    p = srv.sdir / "source" / "short.json"
+    p.write_text(p.read_text("utf-8").replace("beat.", "swing."), "utf-8")
+    snap = body(api(srv, "GET", "/api/01-pendulum/state"))
+    story = next(s for s in snap["stages"] if s["id"] == "story")
+    assert story["version"] == 2 and [h["version"] for h in story["history"]] == [1]
+    assert get(srv, f"/files/01-pendulum/{story['history'][0]['files'][0]}?t={srv.token}").status == 200
+
 def test_decision_round_trip_and_version_mismatch(srv):
     r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 9, "decision": "approve"})
     assert r.status == 409 and "version 9" in body(r)["error"]

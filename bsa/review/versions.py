@@ -19,7 +19,7 @@ def versions_path(sdir: Path) -> Path:
     return Path(sdir) / "review" / "versions.json"
 
 
-def _file_digest(sdir: Path, rel: str) -> str:
+def file_digest(sdir: Path, rel: str) -> str:
     """The sha256 of a file inside the short, or "missing" (also for a path that leaves the short)."""
     root = Path(sdir).resolve()
     path = (root / rel).resolve()
@@ -40,6 +40,9 @@ def _file_digest(sdir: Path, rel: str) -> str:
     return hit
 
 
+_file_digest = file_digest  # the old name
+
+
 def _files(node, found: list[str]) -> None:
     if isinstance(node, dict):
         if isinstance(node.get("file"), str):
@@ -55,7 +58,7 @@ def fingerprint(content: dict, sdir: Path) -> str:
     """sha256 of the content as canonical JSON, plus the digest of every nested {"file": path}'s bytes."""
     paths: list[str] = []
     _files(content, paths)
-    body = {"content": content, "files": [[p, _file_digest(sdir, p)] for p in paths]}
+    body = {"content": content, "files": [[p, file_digest(sdir, p)] for p in paths]}
     raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

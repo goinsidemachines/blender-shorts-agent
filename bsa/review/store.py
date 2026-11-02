@@ -16,6 +16,8 @@ from pathlib import Path
 from bsa import jobstate, render_status
 
 STALE_S = 10.0
+READ_TRIES = 8
+_RETRY_DENIED = os.name == "nt"  # a reader racing os.replace gets PermissionError on Windows only
 MAX_HOLD_S = 60.0  # no critical section holds a lock this long: an older lock is left over from a crash
 
 
@@ -27,10 +29,16 @@ def read_json(path: Path, default, expect: type | None = None):
     """The file's JSON; `default` when it is missing. Raises StoreDamaged when it is empty or not valid JSON, or
     (with `expect` list or dict) when it is valid JSON of another type, or a list holding anything but objects."""
     path = Path(path)
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return default
+    for i in range(READ_TRIES):
+        try:
+            raw = path.read_bytes()
+            break
+        except FileNotFoundError:
+            return default
+        except PermissionError:  # Windows: another writer is replacing the file this instant (write_atomic)
+            if not _RETRY_DENIED or i == READ_TRIES - 1:
+                raise
+            time.sleep(0.01 * (i + 1))
     if not raw.strip(b"\0 \t\r\n"):
         raise StoreDamaged(f"{path} is damaged (empty): move it aside to start it over")
     try:

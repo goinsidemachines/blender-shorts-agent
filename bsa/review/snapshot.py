@@ -470,13 +470,18 @@ _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem")}
 
 
+def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:
+    """The fingerprint a stage's version is looked up by: its content without the review blocks (_UNVERSIONED)."""
+    seen = {k: v for k, v in content.items() if k not in _UNVERSIONED.get(stage, ())}
+    return versions.fingerprint(seen, sdir)
+
+
 def _version_of(sdir: Path, stage: str, content: dict) -> int | None:
     """The one place a stage's content is fingerprinted and looked up (or added) in versions.json. None for the
     final while its MP4 is still being written: a half-written file is never a version."""
     if stage == "final" and content.get("writing"):
         return None
-    seen = {k: v for k, v in content.items() if k not in _UNVERSIONED.get(stage, ())}
-    return versions.version_of(sdir, stage, versions.fingerprint(seen, sdir))
+    return versions.version_of(sdir, stage, stage_fingerprint(sdir, stage, content))
 
 
 def stage_version(sdir: Path, stage: str, ctx: Ctx | None = None) -> int | None:

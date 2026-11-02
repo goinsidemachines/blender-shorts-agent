@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from bsa import render_status
-from bsa.review import page, server, snapshot, stages, store
+from bsa.review import history, page, server, snapshot, stages, store
 
 SERVER_FILE = ".page-server.json"
 ROOT = Path(__file__).resolve().parents[2]
@@ -240,10 +240,11 @@ def page_url(info: dict, short_key: str, stage: str | None = None, host: str = "
 
 
 def static_page(sdir: Path) -> Path:
-    """Write the page as a file, review/short.html, with the snapshot embedded."""
+    """Write the page as a file, review/short.html, with the snapshot embedded (served to a person: its history is
+    kept, history.shown)."""
     path = Path(sdir) / "review" / "short.html"
     path.parent.mkdir(parents=True, exist_ok=True)
-    html = page.render(mode="static", snapshot=snapshot.build(Path(sdir)))
+    html = page.render(mode="static", snapshot=history.shown(Path(sdir), snapshot.build(Path(sdir))))
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(html, encoding="utf-8")
     os.replace(tmp, path)

@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from bsa import feedback, jobstate, messages, render_status
 from bsa import settings as settings_mod
-from bsa.review import decisions, notes, page, snapshot, stages, store
+from bsa.review import decisions, history, notes, page, snapshot, stages, store
 
 IDLE_S = 7200
 _LAN_BIND = "0.0.0.0"  # phone access: every interface (the Host check still admits only this machine's addresses)
@@ -417,7 +417,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _state(self, name: str, sdir: Path, _body) -> None:
-        snap = snapshot.build(sdir)
+        snap = history.shown(sdir, snapshot.build(sdir))  # served to a person: what it shows is kept
         srv = self.server
         phone = srv.phone_url(name)  # the snapshot can't know the port: the phone link is added here
         if phone:

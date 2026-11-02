@@ -209,3 +209,24 @@ def test_the_lock_names_its_process_token(tmp_path):
     with store.locked(p):
         held = json.loads(Path(str(p) + ".lock").read_text())
     assert held["pid"] == os.getpid() and held["process_token"] == (render_status.process_token(os.getpid()) or "")
+
+
+def test_read_json_retries_a_file_being_replaced(tmp_path, monkeypatch):  # Windows: a reader racing os.replace
+    path = tmp_path / "notes.json"
+    path.write_text("[]", "utf-8")
+    real, calls = Path.read_bytes, []
+
+    def flaky(self):
+        calls.append(self)
+        if len(calls) < 3:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(store, "_RETRY_DENIED", True)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)
+    assert store.read_json(path, None, list) == [] and len(calls) == 3
+    calls.clear()
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    with pytest.raises(PermissionError):
+        store.read_json(path, None)

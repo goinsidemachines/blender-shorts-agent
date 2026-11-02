@@ -330,6 +330,18 @@ def test_fallback_static_page(tmp_path, monkeypatch):
     assert 'data-mode="static"' in page.read_text("utf-8")
 
 
+
+def test_static_page_records_history(tmp_path):
+    sdir = pagefix.make_short(tmp_path / "ws", "story")
+    launch.static_page(sdir)
+    p = sdir / "source" / "short.json"
+    p.write_text(p.read_text("utf-8").replace("beat.", "swing."), "utf-8")
+    page = launch.static_page(sdir)
+    snap = json.loads(_embedded_json(page).replace("<\\/", "</"))
+    story = next(s for s in snap["stages"] if s["id"] == "story")
+    assert story["version"] == 2 and [h["version"] for h in story["history"]] == [1]
+    assert (sdir / "review" / "history" / "story" / "v1" / "lines.json").is_file()
+
 # ---------------------------------------------------------------------------------------------------- CLI
 
 

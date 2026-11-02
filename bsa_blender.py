@@ -972,12 +972,23 @@ def cmd_edit(args) -> dict:
     return out
 
 
+def _drop_outgoing(sdir: Path, out_mp4: Path, preset: str, side) -> None:
+    """Clear the way for the new video. The approved final's outgoing MP4 is moved into the page's version history
+    (bsa.review.history.keep_outgoing_final) so before and after can play it; any other run's is deleted."""
+    if preset == "final" and not side.tag:
+        from bsa.review import history
+
+        history.keep_outgoing_final(sdir, out_mp4)
+    else:
+        out_mp4.unlink(missing_ok=True)
+
+
 def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     from bsa import engine_runs
 
     side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4
     out_mp4 = _mp4(sdir, short, args.preset, side)
-    out_mp4.unlink(missing_ok=True)  # a stale video must never pass for this one if the encode fails
+    _drop_outgoing(sdir, out_mp4, args.preset, side)  # a stale video must never pass for this one if the encode fails
     tl, tl_hash = _timeline(sdir, short)
     fps = _fingerprints(sdir, short, tl, tl_hash, reset_after=True)
     _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
