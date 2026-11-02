@@ -444,6 +444,24 @@ def cmd_page(args) -> dict:
     raise CliError("page SHORT and page serve are not available yet")
 
 
+def cmd_doctor(args) -> dict:
+    from bsa import doctor
+
+    st = settings.load_settings()
+    ws = st.get("workspace")
+    sdir = short_dir(args.short) if args.short else None
+    short = None
+    if sdir is not None and short_json(sdir).is_file():
+        try:
+            short = load(sdir)
+        except CliError:
+            short = None  # a bad spec is validate's finding; the font check falls back to the brand font
+    checks = doctor.run(st, Path(ws) if ws else None, short)
+    if sdir is not None:
+        doctor.save(sdir, checks)
+    return {"checks": checks, "ok": not any(c["level"] == "error" for c in checks)}
+
+
 def cmd_engine(args) -> dict:
     """The engine this short renders with and where that comes from (the engine stage, short.json's render.engine,
     or the setting), plus the seconds per frame each engine's runs measured and their MP4s (bsa.engine_runs)."""
@@ -1009,6 +1027,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--workspace", default=None)
     sp.add_argument("--lan", action="store_true")
     sp.set_defaults(fn=cmd_page)
+
+    sp = sub.add_parser("doctor", help="[SHORT]: check Blender, the GPU, the voice, the disk, the caption font and "
+                        "the page server (saved to the short's review/doctor.json)")  # fmt: skip
+    sp.add_argument("short", nargs="?", default=None)
+    sp.set_defaults(fn=cmd_doctor)
 
     sp = sub.add_parser("engine", help="SHORT: its render engine and where it comes from, and each engine's measured "
                         "seconds per frame and MP4")  # fmt: skip
