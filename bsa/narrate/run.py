@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,7 +22,7 @@ from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
 from bsa.narrate.contract import NarrationError, check_take, read_durations, voice_onset
 from bsa.narrate.local import RETRIES, WER_LIMIT
-from bsa.short import Short, spoken_text
+from bsa.short import Short, line_id_problem, spoken_text
 
 LOCAL_ENGINES = ("kokoro", "chatterbox", "chatterbox-turbo")
 HEARD_FILE = "heard.json"
@@ -131,9 +130,17 @@ def _record_seeds(out_dir: Path, seeds: dict[str, int]) -> str | None:
     return None
 
 
-# short.validate puts no limit on a line id's characters, so any id it allows is a take's file name here, except one
-# that could leave the folder: no path separator, no control character, no "..".
-_SAFE_ID = re.compile(r"[^/\\\x00-\x1f]+")
+def retake_problem(out_dir: Path, line_id: str) -> str | None:
+    """Why `line_id` can't be re-taken (None when it can); touches nothing."""
+    out_dir = Path(out_dir)
+    if line_id_problem(line_id):
+        return f"{line_id!r} is not a line id"
+    if (out_dir / f"{line_id}.wav").resolve().parent != out_dir.resolve():
+        return f"{line_id!r} is not a line id"
+    known = _read_record(out_dir).get("lines")
+    if isinstance(known, dict) and line_id not in known:
+        return f"{line_id!r} is not a line of this short (its lines: {', '.join(known) or 'none'})"
+    return None
 
 
 def retake(out_dir: Path, line_id: str) -> int:
@@ -141,11 +148,9 @@ def retake(out_dir: Path, line_id: str) -> int:
     Returns that seed. Refuses (ValueError, touching nothing) an id that isn't a plain line id, or isn't one of the
     lines narrator.json records the takes are for."""
     out_dir = Path(out_dir)
-    known = _read_record(out_dir).get("lines")
-    if not isinstance(line_id, str) or not _SAFE_ID.fullmatch(line_id) or ".." in line_id:
-        raise ValueError(f"{line_id!r} is not a line id")
-    if isinstance(known, dict) and line_id not in known:
-        raise ValueError(f"{line_id!r} is not a line of this short (its lines: {', '.join(known) or 'none'})")
+    problem = retake_problem(out_dir, line_id)
+    if problem:
+        raise ValueError(problem)
     (out_dir / f"{line_id}.wav").unlink(missing_ok=True)
     dpath = out_dir / "durations.json"
     try:

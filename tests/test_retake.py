@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bsa.narrate import run as nrun
-from bsa.short import Line, Short, Shot, load_short, validate
+from bsa.short import Line, Short, Shot, line_id_problem, load_short, validate
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = """\
@@ -135,17 +135,54 @@ def test_a_failed_closing_line_keeps_the_storys_voice_check(tmp_path):
     assert heard["why_not"] != nrun.CAPTIONS_ONLY
 
 
-WIDEST = "l 01.v2 é-À:x"  # anything short.validate allows that can't leave the folder
+BAD_IDS = ["C:x", "l:01", "a:b", "CON", "nul", "com1.v2", "a.", "../x", "a/b", "a\\b", "", " a", ".a", "a b"]
+GOOD_ID = "l01.v2_a-b"  # the widest an id can be
 
 
-def test_the_widest_valid_line_id_can_be_retaken(tmp_path):
+def _short_with(line_id):
     shot = Shot(id="s1", title="t", picture="p", scene="s")
-    short = Short(slug="s", title="T", length_s=10, lines=[Line(WIDEST, "Hello there.", "s1")], shots=[shot])
-    assert validate(short) == []
+    return Short(slug="s", title="T", length_s=10, lines=[Line(line_id, "Hello there.", "s1")], shots=[shot])
+
+
+@pytest.mark.parametrize("bad", BAD_IDS)
+def test_bad_line_ids_are_refused_by_validate_and_retake(tmp_path, bad):
+    assert line_id_problem(bad) and any("rename it" in e for e in validate(_short_with(bad)))
+    vo = tmp_path / "vo"
+    nrun.clear_stale_takes(vo, _short_with("l01"), {"provider": "kokoro"})
+    with pytest.raises(ValueError):
+        nrun.retake(vo, bad)
+    assert nrun.retake_problem(vo, bad)
+
+
+def test_the_widest_valid_line_id_is_accepted_by_validate_and_retake(tmp_path):
+    short = _short_with(GOOD_ID)
+    assert line_id_problem(GOOD_ID) is None and validate(short) == []
     vo = tmp_path / "vo"
     nrun.clear_stale_takes(vo, short, {"provider": "kokoro"})
-    (vo / f"{WIDEST}.wav").write_bytes(b"x")
-    assert nrun.retake(vo, WIDEST) == 8 and not (vo / f"{WIDEST}.wav").exists()
-    for bad in ("..", "a..b", "a/b", "a\\b", "a\x00b", "a\nb"):
-        with pytest.raises(ValueError):
-            nrun.retake(vo, bad)
+    (vo / f"{GOOD_ID}.wav").write_bytes(b"x")
+    assert nrun.retake(vo, GOOD_ID) == 8 and not (vo / f"{GOOD_ID}.wav").exists()
+
+
+def test_a_refused_retake_does_not_save_the_respelling(voiced):
+    vo = voiced.short / "audio" / "vo"
+    record = json.loads((vo / nrun.RECORD_FILE).read_text(encoding="utf-8"))
+    del record["lines"]["l02"]  # the takes are not recorded as being for l02
+    (vo / nrun.RECORD_FILE).write_text(json.dumps(record), encoding="utf-8")
+    spec = voiced.short / "source" / "short.json"
+    before = spec.read_bytes()
+    proc = voiced.run("narrate", voiced.short, "--line", "l02", "--say", "Something else.")
+    assert proc.returncode == 1 and "not a line of this short" in proc.stderr
+    assert spec.read_bytes() == before
+
+
+def test_the_closing_line_can_be_retaken_but_not_respelled(tmp_path):
+    e = setup(tmp_path, closing={"website": "example.com", "voice_line": "Visit example dot com."})
+    e.cli("narrate", e.short)
+    e.seeds.unlink()
+    before = wavs(e.short)
+    out = e.cli("narrate", e.short, "--line", "closing")
+    assert out["retake"] == {"line": "closing", "seed": 8} and e.seeds.read_text().split() == ["8"]
+    after = wavs(e.short)
+    assert after["closing.wav"] != before["closing.wav"] and after["l01.wav"] == before["l01.wav"]
+    proc = e.run("narrate", e.short, "--line", "closing", "--say", "Hello.")
+    assert proc.returncode == 1 and "voice_line" in proc.stderr

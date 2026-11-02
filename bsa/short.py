@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, fields
 from dataclasses import field as dc_field
 from pathlib import Path
@@ -124,6 +125,23 @@ def save_short(short: Short, path: Path) -> None:
     path.write_text(json.dumps(asdict(short), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+_LINE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def line_id_problem(line_id) -> str | None:
+    """Why a line id can't be used (None when it can). A take is audio/vo/<id>.wav, so an id must be a plain file
+    name on every system: letters, digits, "_", "-" and "." (not first), no trailing dot, no Windows device name."""
+    if not isinstance(line_id, str) or not _LINE_ID.fullmatch(line_id):
+        return (f"line id {line_id!r} must be letters, digits, \"_\", \"-\" or \".\" and start with a letter or "
+                "digit: rename it")
+    if line_id.endswith("."):
+        return f"line id {line_id!r} must not end with a dot: rename it"
+    if line_id.split(".")[0].lower() in _RESERVED:
+        return f"line id {line_id!r} is a reserved file name on Windows: rename it"
+    return None
+
+
 def label_text(label) -> str:
     """A shot label's words: the label itself, or its "text" when it is an object."""
     return str(label.get("text") or "") if isinstance(label, dict) else str(label)
@@ -226,6 +244,7 @@ def validate(short: Short) -> list[str]:
     errors += _dupes("fact", [f.id for f in short.facts])
     errors += _dupes("shot", [s.id for s in short.shots])
     errors += _dupes("line", [ln.id for ln in short.lines])
+    errors += [p for p in (line_id_problem(ln.id) for ln in short.lines) if p]
     errors += _dupes("asset", [a.id for a in short.assets])
 
     if not short.lines:

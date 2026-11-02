@@ -718,14 +718,16 @@ def cmd_timeline(args) -> dict:
     }
 
 
-def _restore_file(path: Path, data: bytes | None) -> None:
+def _restore_file(path: Path, data: bytes | None) -> str | None:
+    """Put a file's saved bytes back (or remove it when there were none). Returns why it couldn't, never raises."""
     try:
         if data is None:
             path.unlink(missing_ok=True)
         else:
             path.write_bytes(data)
-    except OSError:
-        pass  # the voice check's record is best-effort
+    except OSError as exc:
+        return str(exc)
+    return None
 
 
 def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
@@ -748,6 +750,7 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
     ids = [ln.id for ln in voiced.lines]
     if line_id not in ids:
         raise CliError(f"No line {line_id!r}; the lines are {', '.join(ids)}")
+    edited = None
     if say is not None:
         from bsa import closing
 
@@ -758,14 +761,18 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
         problems = validate(edited)
         if problems:
             raise CliError("That respelling isn't valid: " + "; ".join(problems))
-        save_short(edited, short_json(sdir))
-        short.lines = edited.lines  # the run below speaks the new words
-        voiced.lines = [edited.lines[[ln.id for ln in edited.lines].index(ln.id)] if ln.id != closing.LINE_ID else ln
-                        for ln in voiced.lines]  # fmt: skip
+    problem = nrun.retake_problem(sdir / "audio" / "vo", line_id)  # every refusal before anything is written
+    if problem:
+        raise CliError(problem)
     try:
         seed = nrun.retake(sdir / "audio" / "vo", line_id)
     except (ValueError, OSError) as exc:
         raise CliError(_one_line(exc)) from exc
+    if edited is not None:
+        save_short(edited, short_json(sdir))
+        new = {ln.id: ln for ln in edited.lines}
+        short.lines = edited.lines  # the run below speaks the new words
+        voiced.lines = [new.get(ln.id, ln) for ln in voiced.lines]
     return {"line": line_id, "seed": seed}
 
 
@@ -798,11 +805,13 @@ def cmd_narrate(args) -> dict:
             story_heard = heard_file.read_bytes() if heard_file.is_file() else None
             extra = narrate(sdir, voiced, s)  # only the missing take is spoken
             if extra.status != "ok":
-                _restore_file(heard_file, story_heard)  # the voice check is of the story's takes, not "captions only"
+                why = _restore_file(heard_file, story_heard)  # the voice check is of the story's takes
                 jobstate.mark_done(sdir, "narration", status="ok", provider=narrator.get("provider"),
                                    **({"message": result.message} if result.message else {}))  # fmt: skip
                 closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
                                 "closing card is silent")  # fmt: skip
+                if why:
+                    closing_note += f"; the voice check's record couldn't be restored ({_one_line(why)})"
     out = {"status": result.status, "durations": result.durations, "message": result.message}
     if retaken:
         out["retake"] = retaken
