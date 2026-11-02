@@ -491,7 +491,8 @@ def _page_open(args, sdir: Path) -> dict:
         checks = []
     health = [c for c in checks if isinstance(c, dict) and c.get("level") != "ok"
               and not (c.get("id") == "server" and out["mode"] == "server")]  # fmt: skip
-    return {**out, "health": health}
+    phone = launch.phone_url(info, sdir.name) if info is not None else None  # with page.lan only
+    return {**out, "health": health, "phone": phone}
 
 
 def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool) -> list[dict]:

@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -116,18 +117,55 @@ def _kill_tree(proc) -> None:
         proc.wait(5)
 
 
-def ensure_server(workspace: Path, *, lan: bool = False, spawn=None, timeout_s: float = 10.0) -> dict:
-    """The workspace's valid server, starting one (detached) when there is none. Raises ServerUnavailable when none
-    answers within timeout_s. A lock keeps two commands from starting two servers at once."""
+def lan_ip() -> str | None:
+    """This machine's address on the local network, or None. A UDP connect only picks the route: no packet is sent
+    (192.0.2.1 is a documentation address that never answers)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            ip = s.getsockname()[0]
+    except OSError:
+        return None
+    return None if not ip or ip.startswith(("0.", "127.")) else ip
+
+
+def phone_url(info: dict, short_key: str) -> str | None:
+    """The page's link for a phone on the same network, only when the server answers on the local network."""
+    if not info.get("lan"):
+        return None
+    ip = lan_ip()
+    return page_url(info, short_key, host=ip) if ip else None
+
+
+def _stop(info: dict) -> None:
+    """Stop the server `info` names (its pid is checked to still be that process first)."""
+    pid = info["pid"]
+    if render_status.process_token(pid) != info.get("process_token"):
+        return
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
+
+
+def _same_lan(info: dict, lan: bool) -> bool:
+    return bool(info.get("lan")) == bool(lan)
+
+
+def ensure_server(workspace: Path, *, lan: bool = False, spawn=None, stop=None, timeout_s: float = 10.0) -> dict:
+    """The workspace's valid server, starting one (detached) when there is none. A running server whose `lan` differs
+    from the one asked for is stopped and started again, so turning phone access on (or off) works at once. Raises
+    ServerUnavailable when none answers within timeout_s. A lock keeps two commands from starting two servers at
+    once."""
     workspace = Path(workspace)
     info = server_info(workspace)
-    if info is not None:
+    if info is not None and _same_lan(info, lan):
         return info
     try:
         with store.locked(workspace / SERVER_FILE, timeout_s=timeout_s + 5):
             info = server_info(workspace)  # another command may have started one while we waited
-            if info is not None:
+            if info is not None and _same_lan(info, lan):
                 return info
+            if info is not None:
+                _replace(workspace, info, stop or _stop, timeout_s)
             try:
                 proc = (spawn or _spawn)(workspace, lan)
             except OSError as e:
@@ -147,6 +185,19 @@ def ensure_server(workspace: Path, *, lan: bool = False, spawn=None, timeout_s: 
                 time.sleep(_POLL_S)
     except (TimeoutError, OSError) as e:  # the lock stayed held, or the workspace can't be written
         raise ServerUnavailable(f"the page server could not be started: {e}") from None
+
+
+def _replace(workspace: Path, old: dict, stop, timeout_s: float) -> None:
+    """Stop the server `old` names and wait until it no longer answers."""
+    stop(old)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        now = server_info(workspace)
+        if now is None or now["pid"] != old["pid"] or now["port"] != old["port"]:
+            return
+        if time.monotonic() >= deadline:
+            raise ServerUnavailable("the running page server did not stop, so phone access could not be changed")
+        time.sleep(_POLL_S)
 
 
 def _write_atomic(path: Path, data: dict) -> None:

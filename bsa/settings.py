@@ -28,6 +28,7 @@ DEFAULTS = {
     "rules": [],  # the user's hard rules for every video, in their own words (bsa.rules; CLI settings rule add)
     "rules_asked": False,  # the hard-rules question was answered (asked once, existing users too)
     "feedback": "ask",  # problems in the plugin itself (bsa.feedback): "ask" at the end, "never" ask, or "off"
+    "page": {"lan": False},  # phone access: the review page server also answers on the local network (token-protected)
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -41,6 +42,9 @@ ENUMS = {
     "sound_policy": ("any", "natural-only"),
     "feedback": ("ask", "never", "off"),
 }
+
+# Settings that are true or false (JSON booleans on the command line).
+BOOLEANS = ("page.lan",)
 
 _PROVIDER_NAMES = {
     "elevenlabs": "ElevenLabs",
@@ -139,6 +143,10 @@ def check_value(path: str, value):
             return float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{value!r} is not a valid brand.exposure: use a number of stops, e.g. 0.3") from None
+    if path in BOOLEANS:
+        if not isinstance(value, bool):
+            raise ValueError(f"{value!r} is not a valid {path}: use true or false")
+        return value
     choices = ENUMS.get(path)
     if choices is None:
         return value

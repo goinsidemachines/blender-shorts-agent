@@ -509,6 +509,20 @@ def _feedback(ctx: Ctx) -> dict | None:
     return {"sent": sent, **{k: rep[k] for k in ("entries", "title", "body", "url", "shortened", "by_severity", "ids")}}
 
 
+def _health(sdir: Path) -> list[dict]:
+    """The checks `doctor` saved in review/doctor.json that are not ok (warnings and errors), for the banner."""
+    try:
+        checks = json.loads((sdir / "review" / "doctor.json").read_text("utf-8")).get("checks")
+    except (OSError, ValueError, AttributeError):
+        return []
+    out = []
+    for c in checks if isinstance(checks, list) else []:
+        if isinstance(c, dict) and c.get("level") != "ok" and c.get("text"):
+            out.append({"id": str(c.get("id") or ""), "level": str(c.get("level")), "text": str(c["text"]),
+                        "fix": str(c["fix"]) if c.get("fix") else None})  # fmt: skip
+    return out
+
+
 def build(sdir: Path, *, settings: dict | None = None, now: float | None = None) -> dict:
     sdir = Path(sdir)
     ctx = load_ctx(sdir, settings)
@@ -545,7 +559,7 @@ def build(sdir: Path, *, settings: dict | None = None, now: float | None = None)
         "problems": problems,
         "stages": rows,
         "notes": note_list,
-        "health": [],
+        "health": _health(sdir),
         "feedback": panel,
         "phone": None,
     }

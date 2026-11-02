@@ -88,3 +88,18 @@ def test_store_loaders_raise_damaged_for_wrong_type(tmp_path):
     (sdir / "review" / "notes.json").write_text("{}", encoding="utf-8")
     with pytest.raises(store.StoreDamaged, match="notes.json"):
         notes.load(sdir)
+
+
+def test_health_is_the_doctor_checks_that_are_not_ok(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "story")
+    assert snapshot.build(sdir)["health"] == []  # no doctor.json yet
+    checks = [{"id": "blender", "level": "ok", "text": "Blender 5.2", "fix": None},
+              {"id": "disk", "level": "warn", "text": "Only 3 GB free.", "fix": "Free some space."},
+              {"id": "voice", "level": "error", "text": "No voice.", "fix": None}, "junk"]  # fmt: skip
+    (sdir / "review" / "doctor.json").write_text(json.dumps({"at": 1, "checks": checks}), "utf-8")
+    assert snapshot.build(sdir)["health"] == [
+        {"id": "disk", "level": "warn", "text": "Only 3 GB free.", "fix": "Free some space."},
+        {"id": "voice", "level": "error", "text": "No voice.", "fix": None},
+    ]
+    (sdir / "review" / "doctor.json").write_text("not json", "utf-8")
+    assert snapshot.build(sdir)["health"] == [] and snapshot.build(sdir)["phone"] is None

@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+from bsa import feedback
+
 TEMPLATES = Path(__file__).parent / "templates"
 PARTS = TEMPLATES / "page"
 MODES = ("server", "static")
@@ -19,7 +21,7 @@ _SLOT = re.compile(r"@@([A-Z]+)@@")
 
 def _part(name: str) -> str:
     path = PARTS / name
-    return path.read_text(encoding="utf-8") if path.is_file() else ""  # qr.js arrives with phone access
+    return path.read_text(encoding="utf-8")
 
 
 def _script_safe(text: str) -> str:
@@ -39,6 +41,7 @@ def render(mode: str, snapshot: dict | None = None) -> str:
     slots = {
         "TITLE": html.escape(str(title), quote=True),
         "MODE": mode,
+        "REPO": html.escape(feedback.REPO, quote=True),
         "SNAPSHOT": embedded,
         "CSS": _part("page.css").replace("</", "<\\/"),
         "QR": _script_safe(_part("qr.js")),

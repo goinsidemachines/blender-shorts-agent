@@ -172,6 +172,14 @@ Don't ask about this. Add one line to the summary at the end of the first run: "
 itself I'll note it and, at the end, ask whether you want to send it to its authors. Change with settings set
 feedback never|off" (`never`: still note, never ask; `off`: don't note). Nothing is sent unless they choose to.
 
+## Phone access (no question)
+
+Don't ask about this. Phone access is off by default. When the user wants to review on their phone, `CLI settings set
+page.lan true` makes the review page server also answer on the local network (the same Wi-Fi), still behind the
+page's own key; the next `CLI page SHORT` restarts the server with it and returns a `phone` link, and the page shows
+it with a QR code under "Open on your phone". Tell them anyone on that network who gets the link can see the short.
+Setting it back to `false` turns it off.
+
 ## Changing a setting later
 
 The user changes any setting by saying so ("use Cycles from now on", "switch to Kokoro"). Save it with `settings

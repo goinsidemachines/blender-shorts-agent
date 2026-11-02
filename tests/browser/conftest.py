@@ -83,9 +83,9 @@ def workspace(tmp_path, bsa_home):
 def live_server(workspace):
     made: list[LiveServer] = []
 
-    def start(stage: str) -> LiveServer:
+    def start(stage: str, lan: bool = False) -> LiveServer:
         sdir = pagefix.make_short(workspace, stage)
-        srv = server.make_server(workspace)
+        srv = server.make_server(workspace, lan=lan)
         thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
         live = LiveServer(srv, sdir, thread)
         process = srv.process_request

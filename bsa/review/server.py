@@ -19,7 +19,6 @@ import json
 import mimetypes
 import re
 import secrets
-import socket
 import threading
 import time
 from collections.abc import Callable
@@ -82,16 +81,6 @@ class PageServer(ThreadingHTTPServer):
             return max([self.last_activity, *self.seen.values()])
 
 
-def _lan_ip() -> str | None:
-    """This machine's address on the local network (no packet is sent), or None."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        try:
-            s.connect(("10.255.255.255", 1))
-            return s.getsockname()[0]
-        except OSError:
-            return None
-
-
 def make_server(
     workspace: Path, *, port: int = 0, lan: bool = False, token: str | None = None, clock=time.time
 ) -> PageServer:
@@ -99,7 +88,12 @@ def make_server(
     srv.workspace = Path(workspace).resolve()
     srv.token = token or secrets.token_urlsafe(24)
     srv.lan = lan
-    srv.lan_ip = _lan_ip() if lan else None
+    if lan:
+        from bsa.review import launch  # launch starts servers, so it imports this module
+
+        srv.lan_ip = launch.lan_ip()
+    else:
+        srv.lan_ip = None
     srv.hints, srv.seen, srv.hello_at = {}, {}, {}
     srv.lock = threading.Lock()
     srv.clock = clock
@@ -391,8 +385,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _state(self, name: str, sdir: Path, _body) -> None:
         snap = snapshot.build(sdir)
-        tag = snapshot.etag(snap)
         srv = self.server
+        if srv.lan and srv.lan_ip:  # the snapshot can't know the port: the phone link is added here
+            from bsa.review import launch
+
+            snap["phone"] = {"url": launch.page_url({"port": srv.port, "token": srv.token}, name, host=srv.lan_ip)}
+        tag = snapshot.etag(snap)
         with srv.lock:
             srv.seen[name] = srv.clock()
             hint = srv.hints.pop(name, None)

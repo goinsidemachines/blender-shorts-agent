@@ -311,12 +311,26 @@ fieldset.choices legend { font-weight: 800; margin-bottom: 8px; padding: 0; }
 .feedback .fb-title { font-weight: 800; overflow-wrap: anywhere; }
 a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
+/* health banners, phone access and the footer */
+.banner.health { font-weight: 600; }
+.banner .fix { font-weight: 400; }
+#bsa-phone { padding: 0 20px; max-width: 1400px; }
+#bsa-phone:empty { display: none; }
+.phone summary { cursor: pointer; font-weight: 800; }
+.phone .qr-box { width: min(240px, 100%); margin: 12px 0; }
+.phone svg.qr { display: block; width: 100%; height: auto; border-radius: 6px; }
+.phone a.src { font-weight: 600; }
+.foot { padding: 8px 20px 24px; max-width: 1400px; font-size: 13px; color: var(--muted); }
+.foot p { margin: 0; overflow-wrap: anywhere; }
+
 @media (max-width: 760px) {
   main { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 16px; }
   .top { padding: 12px 14px; flex-wrap: wrap; }
   .live span { display: none; }
   nav#bsa-stages { padding: 10px 14px; }
   #bsa-banners { padding: 12px 14px 0; }
+  #bsa-phone { padding: 0 14px; }
+  .foot { padding: 4px 14px 20px; }
   .card { padding: 14px; }
   dl.answers { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   dl.answers dd { margin-bottom: 8px; }

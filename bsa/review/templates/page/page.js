@@ -23,7 +23,7 @@
   const nodes = {
     title: $("bsa-title"), sub: $("bsa-sub"), live: $("bsa-live"), theme: $("bsa-theme"),
     nav: $("bsa-stages"), banners: $("bsa-banners"), stage: $("bsa-stage"), side: $("bsa-side"),
-    announce: $("bsa-announce"),
+    announce: $("bsa-announce"), phone: $("bsa-phone"),
   };
 
   const params = new URLSearchParams(location.search);
@@ -44,6 +44,8 @@
   let notice = null;
   let busy = false;
   let bannerKey = "";
+  let phoneKey = "";
+  let askedNotify = false;
   const pendingApprove = {}; // stage -> the version approved here, until the snapshot shows it
   const offlineNotes = []; // notes written in the offline view: they live only in this tab
 
@@ -246,6 +248,7 @@
         }
       }
       if (said.length) say(said.join(". "));
+      for (const [title, body] of newsSince(prev, data)) notify(title, body);
     }
     for (const id of Object.keys(pendingApprove)) {
       const s = stageById(id);
@@ -257,6 +260,51 @@
 
   function say(text) {
     nodes.announce.textContent = text;
+  }
+
+  // ------------------------------------------------------------------ notifications
+
+  function renderRuns(st) {
+    const r = Array.isArray(st) ? st.find((x) => x.id === "render") : null;
+    return r && r.content && Array.isArray(r.content.runs) ? r.content.runs : [];
+  }
+
+  // What is worth a notification between two snapshots: a stage that now needs a yes, and a render run that has
+  // just finished, failed or stopped answering. Never anything on the first snapshot (there is no `prev` then).
+  function newsSince(prev, data) {
+    const news = [];
+    const title = String(((data.short || {}).title) || KEY || "Your short");
+    for (const s of data.stages) {
+      const p = prev.stages.find((x) => x.id === s.id);
+      if (p && !p.needs_yes && s.needs_yes && asksYes(s)) news.push([`${s.label} needs your yes`, title]);
+    }
+    const before = new Map(renderRuns(prev.stages).map((r) => [r.key, r.state]));
+    const ended = { done: "finished", failed: "failed", stopped: "stopped answering" };
+    for (const r of renderRuns(data.stages)) {
+      const was = before.get(r.key);
+      if (was === undefined || was === r.state || !ended[r.state]) continue;
+      news.push([`${r.label} render ${ended[r.state]}`, title]);
+    }
+    return news;
+  }
+
+  function notify(title, body) {
+    try {
+      if (!("Notification" in window) || Notification.permission !== "granted") return;
+      new Notification(title, { body, tag: `bsa:${KEY}:${title}` });
+    } catch (e) { /* notifications are a nicety: the page itself shows the change */ }
+  }
+
+  // The browser asks for permission only after a click of the user's: ask once, on the first one.
+  function askNotify() {
+    if (askedNotify) return;
+    askedNotify = true;
+    document.removeEventListener("click", askNotify, true);
+    try {
+      if (!("Notification" in window) || typeof Notification.requestPermission !== "function") return;
+      const r = Notification.requestPermission();
+      if (r && typeof r.catch === "function") r.catch(() => {});
+    } catch (e) { /* an old browser or a blocked prompt: no notifications */ }
   }
 
   // ------------------------------------------------------------------ stages and what is shown
@@ -533,10 +581,17 @@
     if (paused) rows.push(["banner alert", "alert", TEXT.unreachable]);
     if (OFFLINE && !hasStages()) rows.push(["banner", null, "This saved page has nothing to show."]);
     for (const p of (snap && snap.problems) || []) rows.push(["banner", null, String(p)]);
+    for (const c of (snap && Array.isArray(snap.health) && snap.health) || []) {
+      if (!c || !c.text || (c.id === "server" && !OFFLINE)) continue; // this page is served: the server runs
+      const error = c.level === "error";
+      rows.push([`banner health${error ? " alert" : ""}`, error ? "alert" : "status", String(c.text),
+        c.fix ? String(c.fix) : null]);
+    }
     const key = JSON.stringify(rows);
     if (key === bannerKey) return; // unchanged: an alert is not announced again on every update
     bannerKey = key;
-    nodes.banners.replaceChildren(...rows.map(([cls, role, text]) => el("p", { class: cls, role }, text)));
+    nodes.banners.replaceChildren(...rows.map(([cls, role, text, fix]) => el("p", { class: cls, role }, text,
+      fix ? [" ", el("span", { class: "fix" }, fix)] : null)));
   }
 
   function stageMeta(s) {
@@ -656,6 +711,49 @@
     nodes.side.replaceChildren(...kids.filter(Boolean));
   }
 
+  // The phone link and its QR code, only when the page server answers on the local network (page.lan). Drawn again
+  // only when the link changes, so an open <details> stays open across updates.
+  function qrSvg(text) {
+    const q = BSA.qr(text);
+    const NS = "http://www.w3.org/2000/svg";
+    const quiet = 4;
+    const n = q.size + quiet * 2;
+    const svg = document.createElementNS(NS, "svg");
+    for (const [k, v] of [["viewBox", `0 0 ${n} ${n}`], ["role", "img"], ["aria-label", "QR code for the phone link"],
+      ["class", "qr"], ["shape-rendering", "crispEdges"]]) svg.setAttribute(k, v);
+    const bg = document.createElementNS(NS, "rect");
+    for (const [k, v] of [["width", n], ["height", n], ["fill", "#FFFFFF"]]) bg.setAttribute(k, String(v));
+    let d = "";
+    q.modules.forEach((row, y) => row.forEach((dark, x) => { if (dark) d += `M${x + quiet} ${y + quiet}h1v1h-1z`; }));
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "#000000");
+    svg.append(bg, path);
+    return svg;
+  }
+
+  function renderPhone() {
+    const url = !OFFLINE && snap && snap.phone && typeof snap.phone.url === "string" ? snap.phone.url : "";
+    if (url === phoneKey) return;
+    phoneKey = url;
+    if (!url) {
+      nodes.phone.replaceChildren();
+      return;
+    }
+    let code;
+    try {
+      code = qrSvg(url);
+    } catch (e) {
+      code = el("p", { class: "problem" }, `The QR code couldn't be made: ${e.message || e}`);
+    }
+    nodes.phone.replaceChildren(el("details", { class: "card phone" },
+      el("summary", null, "Open on your phone"),
+      el("p", { class: "muted" }, "Scan the code with a phone on the same Wi-Fi, or open the link on it. " +
+        "The link carries this page's key: share it only with people you trust."),
+      el("div", { class: "qr-box" }, code),
+      el("p", null, el("a", { class: "src", href: url }, url))));
+  }
+
   function hasStages() {
     return !!snap && Array.isArray(snap.stages) && snap.stages.length > 0;
   }
@@ -664,6 +762,7 @@
     if (!hasStages()) { // nothing to draw yet (or a bad saved page): the offline and unreachable banners still show
       renderBanners();
       renderLive();
+      renderPhone();
       return;
     }
     const active = document.activeElement;
@@ -675,6 +774,7 @@
     renderBanners();
     renderStage(shown);
     renderSide(shown);
+    renderPhone();
     for (const b of document.querySelectorAll("[data-act]")) b.disabled = paused || busy;
     if (focusKey) {
       const again = document.querySelector(`[data-k="${CSS.escape(focusKey)}"]`);
@@ -728,6 +828,7 @@
   if (OFFLINE) {
     render();
   } else {
+    document.addEventListener("click", askNotify, true);
     post("hello", {}).catch(() => { /* the state poll says whether the server is there */ });
     poll();
   }

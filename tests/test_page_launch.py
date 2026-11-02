@@ -338,3 +338,24 @@ def test_cli_page_unknown_stage_is_one_line(home, pendulum):
     proc = run(home, "page", "pendulum", "--stage", "nope")
     assert proc.returncode == 1 and "stage" in proc.stderr and "Traceback" not in proc.stderr
     assert not (pendulum.parent / launch.SERVER_FILE).exists()  # refused before any server starts
+
+
+def test_cli_page_restarts_the_server_when_page_lan_changes(home, pendulum):
+    pids = []
+    try:
+        out = ok(run(home, "page", "pendulum"))
+        first = launch.server_info(pendulum.parent)
+        pids.append(first["pid"])
+        assert first["lan"] is False and out["phone"] is None
+        assert ok(run(home, "settings", "set", "page.lan", "true"))["settings"]["page"]["lan"] is True
+        out = ok(run(home, "page", "pendulum"))
+        second = launch.server_info(pendulum.parent)
+        pids.append(second["pid"])
+        assert second["lan"] is True and second["pid"] != first["pid"]
+        assert render_status.process_token(first["pid"]) != first["process_token"]  # the old one is gone
+        ip = launch.lan_ip()
+        assert out["phone"] == (f"http://{ip}:{second['port']}/s/{pendulum.name}?t={second['token']}" if ip else None)
+    finally:
+        for pid in pids:
+            with contextlib.suppress(OSError):
+                _kill(pid)
