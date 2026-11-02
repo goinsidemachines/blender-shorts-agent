@@ -1,0 +1,358 @@
+"""The local page server: host, token, origin, path and size checks, the state ETag, notes, decisions and idling."""
+
+import http.client
+import json
+import os
+import threading
+import types
+
+import pagefix
+import pytest
+
+from bsa import render_status
+from bsa.review import decisions, notes, server
+
+
+def _open(srv, method, path, *, host=None, headers=None, raw=None):
+    conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+    conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+    conn.putheader("Host", host or f"127.0.0.1:{srv.port}")
+    for k, v in (headers or {}).items():
+        conn.putheader(k, v)
+    if raw is not None:
+        conn.putheader("Content-Length", str(len(raw)))
+    conn.endheaders(raw)
+    r = conn.getresponse()
+    srv.conns.append(conn)
+    return r
+
+
+def get(srv, path, *, host=None, headers=None):
+    return _open(srv, "GET", path, host=host, headers=headers)
+
+
+def api(srv, method, path, *, token=None, body=None, raw=None, origin=None, headers=None, host=None):
+    h = {server.TOKEN_HEADER: srv.token if token is None else token, **(headers or {})}
+    if origin is not None:
+        h["Origin"] = origin
+    if body is not None:
+        raw = json.dumps(body, ensure_ascii=False).encode("utf-8")  # as a browser sends it
+        h["Content-Type"] = "application/json"
+    if method == "POST" and raw is None:
+        raw = b""
+    return _open(srv, method, path, host=host, headers=h, raw=raw)
+
+
+def body(r) -> dict:
+    return json.loads(r.read())
+
+
+class Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture
+def srv(tmp_path):
+    ws = tmp_path / "My Shorts é"
+    sdir = pagefix.make_short(ws, "story")
+    clock = Clock()
+    s = server.make_server(ws, clock=clock)
+    t = threading.Thread(target=s.serve_forever, daemon=True)
+    t.start()
+    fix = types.SimpleNamespace(server=s, port=s.server_address[1], token=s.token, sdir=sdir, ws=ws, clock=clock,
+                                conns=[])  # fmt: skip
+    yield fix
+    for c in fix.conns:
+        c.close()
+    s.shutdown()
+    s.server_close()
+
+
+def test_constants():
+    assert server.IDLE_S == 7200 and server.MAX_BODY == 16_384 and server.SEEN_WINDOW_S == 30
+    assert server.SERVED_DIRS == ("stills", "review", "out") and server.TOKEN_HEADER == "X-BSA-Token"
+    assert "frame-ancestors 'none'" in server.CSP
+
+
+def test_binds_loopback_with_a_random_token(tmp_path):
+    s = server.make_server(tmp_path)
+    try:
+        assert s.server_address[0] == "127.0.0.1" and s.lan is False and len(s.token) >= 24
+        s2 = server.make_server(tmp_path)
+        assert s2.token != s.token
+        s2.server_close()
+    finally:
+        s.server_close()
+
+
+def test_host_token_and_origin_checks(srv):
+    assert get(srv, "/s/01-pendulum").status == 403  # no token
+    assert get(srv, f"/s/01-pendulum?t={srv.token}x").status == 403  # wrong token
+    assert get(srv, f"/s/01-pendulum?t={srv.token}", host="evil.test").status == 403
+    assert get(srv, f"/s/01-pendulum?t={srv.token}", host=f"127.0.0.1:{srv.port + 1}").status == 403
+    assert get(srv, f"/s/01-pendulum?t={srv.token}", host=f"localhost:{srv.port}").status == 200
+    assert get(srv, f"/s/01-pendulum?t={srv.token}").status == 200
+    assert api(srv, "GET", "/api/01-pendulum/state", token="nope").status == 403
+    assert api(srv, "GET", "/api/01-pendulum/state", token="é").status == 403  # non-ASCII never raises
+    assert get(srv, "/api/health").status == 403  # the API wants the header, not just any request
+    assert get(srv, f"/api/health?t={srv.token}").status == 403  # ... and not the query
+    r = api(srv, "GET", "/api/health")
+    assert r.status == 200 and body(r) == {"ok": True}
+    assert get(srv, "/files/01-pendulum/stills/s01.png?t=nope").status == 403
+    assert api(srv, "POST", "/api/01-pendulum/hello", body={}, origin="http://evil.test").status == 403
+    assert api(srv, "POST", "/api/01-pendulum/hello", body={}, origin="null").status == 403
+    assert api(srv, "POST", "/api/01-pendulum/hello", body={}, origin=f"http://127.0.0.1:{srv.port}").status == 200
+    assert api(srv, "POST", "/api/01-pendulum/hello", body={}).status == 200  # no Origin (the CLI): allowed
+    r = api(srv, "POST", "/api/01-pendulum/hello", body={}, token="nope")
+    assert r.status == 403 and "error" in body(r)
+
+
+def test_files_only_under_served_dirs(srv):
+    (srv.sdir / "out").mkdir(exist_ok=True)
+    for rel in (
+        "source/short.json",
+        "../01-pendulum/state.json",
+        "%2e%2e/%2e%2e/x",
+        "stills/../state.json",
+        "stills/%2e%2e/state.json",
+        "stills%2f..%2fstate.json",
+        "stills\\..\\state.json",
+        "C:/Windows/win.ini",
+        "/etc/passwd",
+        "stills",
+        "stills/",
+        "stills/nope.png",
+        "state.json",
+    ):
+        assert get(srv, f"/files/01-pendulum/{rel}?t={srv.token}").status == 404, rel
+    assert get(srv, f"/files/../01-pendulum/stills/s01.png?t={srv.token}").status == 404
+    r = get(srv, f"/files/01-pendulum/stills/s01.png?t={srv.token}")
+    assert r.status == 200 and r.getheader("Content-Type") == "image/png"
+    assert r.getheader("X-Content-Type-Options") == "nosniff"
+    assert r.read() == (srv.sdir / "stills" / "s01.png").read_bytes()
+
+
+def test_files_refuse_a_symlink_out_of_the_served_dir(srv):
+    secret = srv.sdir / "source" / "short.json"
+    link = srv.sdir / "stills" / "leak.json"
+    try:
+        os.symlink(secret, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not allowed here")
+    assert get(srv, f"/files/01-pendulum/stills/leak.json?t={srv.token}").status == 404
+
+
+def test_files_refuse_a_linked_folder_out_of_the_served_dir(srv):
+    """A directory symlink (or, on Windows without the symlink right, a junction) inside stills/ is not followed."""
+    link = srv.sdir / "stills" / "leakdir"
+    try:
+        os.symlink(srv.sdir / "source", link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        try:
+            import _winapi
+
+            _winapi.CreateJunction(str(srv.sdir / "source"), str(link))
+        except (ImportError, OSError):
+            pytest.skip("neither symlinks nor junctions are allowed here")
+    assert (link / "short.json").is_file()
+    assert get(srv, f"/files/01-pendulum/stills/leakdir/short.json?t={srv.token}").status == 404
+
+
+def test_size_limits(srv):
+    assert api(srv, "POST", "/api/01-pendulum/notes", raw=b"x" * 16_385).status == 413
+    assert api(srv, "POST", "/api/01-pendulum/notes", raw=b"not json").status == 400
+    assert api(srv, "POST", "/api/01-pendulum/notes", raw=b"[1, 2]").status == 400
+
+
+def test_note_text_limit_message(srv):  # Review Focus 5 (server side)
+    r = api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story",
+            "target": {"kind": "overall", "id": None, "version": 1}, "text": "é" * 4001})  # fmt: skip
+    assert r.status == 400 and "4000" in body(r)["error"]
+    weird = "<img src=x onerror=alert(1)></script> 🙂 שלום"
+    assert api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story",
+               "target": {"kind": "overall", "id": None, "version": 1}, "text": weird}).status == 200  # fmt: skip
+    assert notes.load(srv.sdir)[-1]["text"] == weird
+    assert notes.load(srv.sdir)[-1]["by"] == "page"
+
+
+def test_notes_send_and_withdraw(srv):
+    target = {"kind": "overall", "id": None, "version": 1}
+    a = body(api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story", "target": target,
+                                                                "text": "one"}))["note"]  # fmt: skip
+    b = body(api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story", "target": target,
+                                                                "text": "two"}))["note"]  # fmt: skip
+    r = api(srv, "POST", "/api/01-pendulum/notes", body={"op": "send", "ids": [a["id"]]})
+    assert r.status == 200 and [n["id"] for n in body(r)["sent"]] == [a["id"]]
+    assert api(srv, "POST", "/api/01-pendulum/notes", body={"op": "withdraw", "id": b["id"]}).status == 200
+    assert [n["id"] for n in notes.load(srv.sdir)] == [a["id"]]
+    r = api(srv, "POST", "/api/01-pendulum/notes", body={"op": "withdraw", "id": a["id"]})  # sent: refused
+    assert r.status == 400 and "only open notes" in body(r)["error"]
+    assert api(srv, "POST", "/api/01-pendulum/notes", body={"op": "nope"}).status == 400
+    assert api(srv, "POST", "/api/01-pendulum/notes", body={"op": "send", "ids": "n1"}).status == 400
+
+
+def test_etag_304_then_change(srv):
+    r1 = api(srv, "GET", "/api/01-pendulum/state")
+    tag = r1.getheader("ETag")
+    snap = body(r1)
+    assert r1.status == 200 and tag and snap["short"]["key"] == "01-pendulum" and snap["show"] is None
+    assert api(srv, "GET", "/api/01-pendulum/state", headers={"If-None-Match": tag}).status == 304
+    p = srv.sdir / "source" / "short.json"
+    p.write_text(p.read_text("utf-8").replace("beat.", "beat!"), "utf-8")
+    assert api(srv, "GET", "/api/01-pendulum/state", headers={"If-None-Match": tag}).status == 200
+
+
+def test_decision_round_trip_and_version_mismatch(srv):
+    r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 9, "decision": "approve"})
+    assert r.status == 409 and "version 9" in body(r)["error"]
+    r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 1, "decision": "approve"})
+    assert r.status == 200
+    made = decisions.load(srv.sdir)[-1]
+    assert made["by"] == "page" and made["applied"] is False  # the page only records; `page wait` applies
+    assert "story" not in json.loads((srv.sdir / "state.json").read_text("utf-8"))["stages"]
+    r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 1, "decision": "approve"})
+    assert r.status == 409  # already approved
+    assert api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 1,
+               "decision": "changes"}).status == 400  # no open note  # fmt: skip
+    for bad in ({"stage": "story", "version": "1", "decision": "approve"},
+                {"stage": "story", "version": True, "decision": "approve"},
+                {"stage": 3, "version": 1, "decision": "approve"}):  # fmt: skip
+        assert api(srv, "POST", "/api/01-pendulum/decision", body=bad).status == 400, bad
+    assert api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "render", "version": 1,
+               "decision": "approve"}).status == 409  # fmt: skip
+
+
+def test_changes_sends_the_open_notes(srv):
+    target = {"kind": "overall", "id": None, "version": 1}
+    api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story", "target": target, "text": "x"})
+    r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 1, "decision": "changes"})
+    assert r.status == 200 and [n["status"] for n in body(r)["notes_sent"]] == ["sent"]
+    assert decisions.load(srv.sdir)[-1]["decision"] == "changes"
+
+
+def test_damaged_decisions_answer_503(srv):
+    decisions.decisions_path(srv.sdir).write_text("{oops", "utf-8")
+    r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 1, "decision": "approve"})
+    err = body(r)["error"]
+    assert r.status == 503 and "decisions.json is damaged" in err and "\n" not in err
+    assert decisions.decisions_path(srv.sdir).read_text("utf-8") == "{oops"  # never written over
+
+
+def test_show_hint_is_one_shot_and_presence(srv):
+    r = api(srv, "GET", "/api/01-pendulum/presence")
+    assert r.status == 200 and body(r) == {"seen_s_ago": None}
+    srv.clock.t += 5
+    assert api(srv, "POST", "/api/01-pendulum/hello", body={}).status == 200
+    srv.clock.t += 3
+    assert body(api(srv, "GET", "/api/01-pendulum/presence")) == {"seen_s_ago": 3.0}
+    r1 = api(srv, "GET", "/api/01-pendulum/state")
+    tag = r1.getheader("ETag")
+    r1.read()
+    assert api(srv, "POST", "/api/01-pendulum/show", body={"stage": "nope"}).status == 400
+    assert api(srv, "POST", "/api/01-pendulum/show", body={"stage": "storyboard"}).status == 200
+    r = api(srv, "GET", "/api/01-pendulum/state", headers={"If-None-Match": tag})
+    assert r.status == 200 and body(r)["show"] == "storyboard"  # a pending hint beats the 304
+    r = api(srv, "GET", "/api/01-pendulum/state", headers={"If-None-Match": tag})
+    assert r.status == 304
+    r = api(srv, "GET", "/api/01-pendulum/state")
+    assert body(r)["show"] is None  # popped
+    assert srv.server.seen["01-pendulum"] == srv.clock.t
+
+
+def test_range_request_206(srv):
+    clip = srv.sdir / "out" / "pendulum.mp4"
+    clip.parent.mkdir(exist_ok=True)
+    data = bytes(range(100))
+    clip.write_bytes(data)
+    url = f"/files/01-pendulum/out/pendulum.mp4?t={srv.token}"
+    r = get(srv, url, headers={"Range": "bytes=0-9"})
+    assert r.status == 206 and r.read() == data[:10]
+    assert r.getheader("Content-Range") == "bytes 0-9/100" and r.getheader("Content-Type") == "video/mp4"
+    r = get(srv, url, headers={"Range": "bytes=95-"})
+    assert r.status == 206 and r.read() == data[95:]
+    r = get(srv, url, headers={"Range": "bytes=-3"})
+    assert r.status == 206 and r.read() == data[-3:]
+    r = get(srv, url, headers={"Range": "bytes=200-300"})
+    assert r.status == 416 and r.getheader("Content-Range") == "bytes */100"
+    r.read()
+    r = get(srv, url)
+    assert r.status == 200 and r.getheader("Accept-Ranges") == "bytes" and r.read() == data
+
+
+def test_csp_header_on_page(srv):
+    r = get(srv, f"/s/01-pendulum?t={srv.token}")
+    assert r.status == 200 and r.getheader("Content-Security-Policy") == server.CSP
+    assert r.getheader("Content-Type").startswith("text/html") and r.getheader("Referrer-Policy") == "no-referrer"
+    assert b"<html" in r.read().lower()
+
+
+def test_unknown_short_404(srv):
+    (srv.ws / "not-a-short").mkdir()
+    for short in ("nope", "not-a-short", "..", ".", "%2e%2e", "01-pendulum%2fstills"):
+        r = get(srv, f"/s/{short}?t={srv.token}")
+        assert r.status == 404, short
+        assert "error" in body(r)
+        assert api(srv, "GET", f"/api/{short}/state").status == 404, short
+    assert api(srv, "GET", "/api/01-pendulum/nope").status == 404
+    assert get(srv, f"/nope?t={srv.token}").status == 404
+
+
+def _running_status(sdir, pid):
+    path = render_status.status_path(sdir, "final")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"state": "running", "pid": pid, "pid_token": render_status.process_token(pid)}),
+                    encoding="utf-8")  # fmt: skip
+    return path
+
+
+def test_idle_due_after_two_hours_unless_a_job_runs(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "story")
+    clock = Clock(0.0)
+    s = server.make_server(tmp_path, clock=clock)
+    try:
+        assert not server.jobs_running(tmp_path)
+        clock.t = server.IDLE_S - 1
+        assert not server.idle_due(s)
+        s.seen["01-pendulum"] = 100.0  # a page checked in later than the start
+        clock.t = server.IDLE_S + 50
+        assert not server.idle_due(s)
+        clock.t = server.IDLE_S + 100
+        assert server.idle_due(s)
+        status = _running_status(sdir, os.getpid())
+        assert server.jobs_running(tmp_path) and not server.idle_due(s)
+        status.write_text(json.dumps({"state": "done", "pid": os.getpid()}), encoding="utf-8")
+        assert server.idle_due(s)
+        _running_status(sdir, 2**22 + 12345)  # "running" but its process is gone
+        assert not server.jobs_running(tmp_path) and server.idle_due(s)
+    finally:
+        s.server_close()
+
+
+def test_serve_stops_once_idle(tmp_path):
+    clock = Clock(0.0)
+    s = server.make_server(tmp_path, clock=clock)
+    done = threading.Event()
+
+    def run():
+        server.serve(s, tick_s=0.02)
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert not done.wait(0.2)
+    clock.t = server.IDLE_S + 1
+    assert done.wait(5)
+
+
+def test_lan_adds_only_this_machines_address(tmp_path):
+    s = server.make_server(tmp_path, lan=True, token="fixed-token-for-the-test")
+    try:
+        p = s.server_address[1]
+        assert s.lan is True and s.token == "fixed-token-for-the-test"
+        assert {f"127.0.0.1:{p}", f"localhost:{p}"} <= s.allowed_hosts
+        assert s.allowed_hosts - {f"127.0.0.1:{p}", f"localhost:{p}"} == ({f"{s.lan_ip}:{p}"} if s.lan_ip else set())
+    finally:
+        s.server_close()
