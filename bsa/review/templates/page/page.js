@@ -447,6 +447,7 @@
   function makeCtx(s) {
     return {
       el, stage: s, version: s.version, offline: OFFLINE, fileUrl, copyButton,
+      answerable: () => answerable(s), // the stage takes an answer now (none on its way, decisions readable)
       noteButton: (kind, id, label) => noteButton(s, kind, id, label),
       decide: (stage, decision, choice) => decide(stage, decision, choice),
     };

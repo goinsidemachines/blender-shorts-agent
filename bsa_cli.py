@@ -362,6 +362,7 @@ def _page_stage(stage: str | None) -> str:
 
 
 def _page_decide(args, sdir: Path) -> dict:
+    from bsa import engine_runs
     from bsa.review import decisions, notes, snapshot, stages
 
     if len(args.words) != 4:
@@ -376,11 +377,13 @@ def _page_decide(args, sdir: Path) -> dict:
     if args.by == "settings" and decision != "approve":
         raise CliError("Only an engine approval can be answered from settings.")
     choice = {"engine": args.choice} if args.choice is not None else None
-    if args.by == "settings":
-        wanted = (settings.load_settings().get("render") or {}).get("engine")
+    if args.by == "settings":  # the engine the page shows as already chosen: short.json's, else the setting
+        setting = (settings.load_settings().get("render") or {}).get("engine")
+        wanted, source = engine_runs.pick(None, engine_runs.short_engine(sdir), setting)
         if args.choice is None or args.choice != wanted:
-            raise CliError(f"The render.engine setting is {wanted!r}, so it can't answer {args.choice!r}: ask the user "
-                           "which engine to use, then record it with --by chat.")  # fmt: skip
+            where = "short.json's render.engine" if source == "short.json" else "The render.engine setting"
+            raise CliError(f"{where} is {wanted!r}, so it can't answer {args.choice!r}: ask the user which engine "
+                           "to use, then record it with --by chat.")  # fmt: skip
     current = snapshot.stage_version(sdir, stage)
     if current is None:
         raise CliError(f"The {stages.LABELS[stage]} has nothing to answer yet.")

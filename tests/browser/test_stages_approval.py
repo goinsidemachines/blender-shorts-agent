@@ -1,6 +1,7 @@
 """The Story, Storyboard, Engine and Narration stages in a real browser: what they show, the notes on lines, shots and
 stills, the enlarge dialog, and the answers they send."""
 
+import json
 import re
 
 import pytest
@@ -71,6 +72,7 @@ def test_story_fact_that_is_not_a_link_stays_text(view, live_server):
     p = open_short(view, srv)
     expect(p.get_by_text("javascript:alert(1)")).to_be_visible()
     expect(p.locator("#bsa-stage a")).to_have_count(0)
+    assert_healthy(p)
 
 
 def test_story_approve_writes_decision_then_shows_applied(view, live_server):
@@ -165,6 +167,61 @@ def test_engine_from_settings_asks_nothing(view, live_server_with_settings):
     expect(p.get_by_role("button", name="Approve")).to_have_count(0)
     expect(p.get_by_role("button", name="Send changes")).to_have_count(0)
     assert not p.title().startswith("(1)")
+    assert_healthy(p)
+
+
+def test_engine_from_short_json_asks_nothing(view, live_server):
+    srv = live_server("engine")
+    path = srv.sdir / "source" / "short.json"
+    data = json.loads(path.read_text("utf-8"))
+    data["render"] = {"engine": "cycles"}
+    path.write_text(json.dumps(data, indent=2), "utf-8")
+    p = open_short(view, srv)
+    expect(p.get_by_text("CYCLES, from this short")).to_be_visible()
+    expect(p.get_by_role("radio")).to_have_count(0)
+    expect(p.get_by_role("button", name="Approve")).to_have_count(0)
+    expect(p.get_by_role("button", name="Send changes")).to_have_count(0)
+    assert not p.title().startswith("(1)")
+    assert_healthy(p)
+
+
+def test_engine_radios_lock_when_decisions_cannot_be_read(view, live_server):
+    srv = live_server("engine")
+    (srv.sdir / "review" / "decisions.json").write_text("{not json", encoding="utf-8")
+    p = open_short(view, srv)
+    expect(p.get_by_role("radio")).to_have_count(2)
+    for radio in p.get_by_role("radio").all():
+        expect(radio).to_be_disabled()
+    assert_healthy(p)
+
+
+def test_engine_radios_lock_once_approved_here(view, live_server):
+    srv = live_server("engine")
+    p = open_short(view, srv)
+    p.get_by_role("radio", name=re.compile("EEVEE")).check()
+    p.get_by_role("button", name="Approve").click()
+    expect(p.get_by_text("Sent · waiting for Claude")).to_be_visible()
+    expect(p.get_by_role("radio", name=re.compile("EEVEE"))).to_be_checked()
+    for radio in p.get_by_role("radio").all():
+        expect(radio).to_be_disabled()
+
+
+def test_storyboard_missing_still_shows_a_placeholder(view, live_server):
+    srv = live_server("storyboard")
+    p = open_short(view, srv)
+    expect(p.locator("img.still")).to_have_count(3)
+    (srv.sdir / "stills" / "s02.png").unlink()  # the snapshot drops it: no broken img
+    expect(p.locator("img.still")).to_have_count(2, timeout=3000)
+    expect(p.locator("#shot-s02").get_by_text("Picture not made yet")).to_be_visible()
+    assert_healthy(p)
+
+
+def test_storyboard_still_that_fails_to_load_shows_a_placeholder(view, live_server):
+    srv = live_server("storyboard")
+    (srv.sdir / "stills" / "s02.jpg").write_bytes(b"not a picture")  # the .jpg wins over the .png, and won't load
+    p = open_short(view, srv)
+    expect(p.locator("#shot-s02").get_by_text("Picture not made yet")).to_be_visible()
+    expect(p.locator("#shot-s02 img")).to_have_count(0)
     assert_healthy(p)
 
 

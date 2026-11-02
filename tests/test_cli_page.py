@@ -176,6 +176,19 @@ def test_settings_answer_needs_the_matching_setting(home, pendulum):
     assert out["state"]["stages"]["engine"]["by"] == "settings"
 
 
+def test_settings_answer_accepts_the_engine_short_json_asks_for(home, pendulum):
+    path = pendulum / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["render"] = {"engine": "cycles"}
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _to(home, pendulum, "engine")
+    proc = run(home, "page", "decide", "pendulum", "engine", "approve", "--by", "settings", "--choice", "eevee")
+    assert proc.returncode == 1 and "short.json" in proc.stderr and "Traceback" not in proc.stderr
+    out = ok(run(home, "page", "decide", "pendulum", "engine", "approve", "--by", "settings", "--choice", "cycles"))
+    assert out["state"]["stages"]["engine"]["by"] == "settings"
+    assert out["state"]["stages"]["engine"]["engine"] == "cycles"
+
+
 def test_damaged_decisions_fail_with_one_plain_line(home, pendulum):
     _to(home, pendulum, "story")
     (pendulum / "review" / "decisions.json").write_text("", encoding="utf-8")

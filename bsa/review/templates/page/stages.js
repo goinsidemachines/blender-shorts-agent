@@ -167,15 +167,34 @@
     ]);
   }
 
+  // The lines that say the hook and the closing line, found by their text: {hook: id|null, closing: id|null}.
+  function hookLines(content, beats) {
+    var all = [];
+    beats.forEach(function (b) { (b.lines || []).forEach(function (ln) { all.push(ln); }); });
+    var hook = content.hook ? all.find(function (ln) { return ln.text === content.hook; }) : null;
+    var closing = content.closing ? all.slice().reverse().find(function (ln) { return ln.text === content.closing; }) : null;
+    return { hook: hook ? hook.id : null, closing: closing ? closing.id : null };
+  }
+
+  function lineTags(ctx, roles, id) {
+    var tags = [];
+    if (roles.hook === id) tags.push(tag(ctx, "Hook"), " ");
+    if (roles.closing === id) tags.push(tag(ctx, "Closing line"), " ");
+    return tags;
+  }
+
+  // The hook or closing line on its own, when no line of the beats says it.
+  function quoteBlock(ctx, label, text) {
+    return text ? ctx.el("p", { class: "quote" }, tag(ctx, label), " ", String(text)) : null;
+  }
+
   BSA.stages.story = function (content, ctx) {
     var beats = content.beats || [];
-    var all = [];
-    beats.forEach(function (b) { (b.lines || []).forEach(function (ln) { all.push(ln.id); }); });
-    var first = all[0];
-    var last = all[all.length - 1];
+    var roles = hookLines(content, beats);
     var facts = content.facts || [];
     return ctx.el("div", { class: "st-story" },
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
+      roles.hook ? null : quoteBlock(ctx, "Hook", content.hook),
       section(ctx, "The story", ctx.el("ol", { class: "beats" }, beats.map(function (b) {
         return ctx.el("li", { class: "beat" },
           ctx.el("span", { class: "num", "aria-hidden": "true" }, String(b.n)),
@@ -183,13 +202,13 @@
             ctx.el("div", { class: "beat-head" }, ctx.el("h4", null, String(b.title || b.shot)), tag(ctx, b.badge)),
             b.picture ? ctx.el("p", { class: "muted picture" }, String(b.picture)) : null,
             ctx.el("ul", { class: "lines" }, (b.lines || []).map(function (ln) {
-              var role = ln.id === first ? "Hook" : ln.id === last ? "Closing line" : null;
               return ctx.el("li", { class: "line" },
-                ctx.el("p", { class: "line-text" }, role ? tag(ctx, role) : null, " ", String(ln.text)),
+                ctx.el("p", { class: "line-text" }, lineTags(ctx, roles, ln.id), String(ln.text)),
                 ctx.noteButton("line", ln.id, "+ Note on line " + ln.id));
             })),
             paceBar(ctx, b.pace)));
       }))),
+      roles.closing ? null : quoteBlock(ctx, "Closing line", content.closing),
       section(ctx, "Facts", facts.length ? ctx.el("ul", { class: "facts" }, facts.map(function (f) {
         return ctx.el("li", null, ctx.el("p", null, String(f.claim || "")), source(ctx, f));
       })) : ctx.el("p", { class: "muted" }, "No facts are quoted in this short.")),
@@ -265,10 +284,18 @@
     z.close.focus();
   }
 
+  function placeholder(ctx) {
+    return ctx.el("div", { class: "ph" }, "Picture not made yet");
+  }
+
+  // A still that opens the enlarge dialog; a placeholder when there is no picture or it fails to load.
   function thumb(ctx, frame, item, label) {
-    return ctx.el("button", { type: "button", class: "thumb", "data-k": item.key, "aria-label": label,
+    if (!item.file || !ctx.fileUrl(item.file)) return placeholder(ctx);
+    var btn = ctx.el("button", { type: "button", class: "thumb", "data-k": item.key, "aria-label": label,
       onclick: function () { openZoom(ctx, frame || {}, item); } },
-    ctx.el("img", { class: "still", src: ctx.fileUrl(item.file), alt: item.alt, loading: "lazy" }));
+    ctx.el("img", { class: "still", src: ctx.fileUrl(item.file), alt: item.alt, loading: "lazy",
+      onerror: function () { if (btn.isConnected) btn.replaceWith(placeholder(ctx)); } }));
+    return btn;
   }
 
   function timing(ctx, content) {
@@ -295,8 +322,7 @@
     var item = { key: "enlarge:" + s.id, file: s.still, alt: "Shot " + s.n + ": " + (s.title || s.id),
       title: title + " (" + s.time + ")", cards: cards };
     return ctx.el("li", { class: "shot", id: "shot-" + s.id, tabindex: "-1" },
-      s.still ? thumb(ctx, content.frame, item, "Enlarge shot " + s.n)
-        : ctx.el("div", { class: "ph" }, "Picture not made yet"),
+      thumb(ctx, content.frame, item, "Enlarge shot " + s.n),
       ctx.el("div", { class: "meta" },
         ctx.el("span", { class: "tag" }, s.id + (s.badge ? " · " + s.badge : "")),
         ctx.el("h4", null, title),
@@ -319,7 +345,7 @@
   function closingCard(ctx, content) {
     var c = content.closing;
     if (!c) return null;
-    var item = { key: "enlarge:closing", file: { file: c.file }, alt: "Closing card", title: "Closing card (the end)",
+    var item = { key: "enlarge:closing", file: c.file ? { file: c.file } : null, alt: "Closing card", title: "Closing card (the end)",
       cards: [] };
     return ctx.el("li", { class: "shot closing", id: "shot-closing", tabindex: "-1" },
       thumb(ctx, content.frame, item, "Enlarge the closing card"),
@@ -359,23 +385,24 @@
     if (picked[key]) return picked[key];
     var d = stage.decision;
     if (d && d.version === stage.version && d.choice && d.choice.engine) return d.choice.engine;
-    return content.from === "short.json" ? content.engine : null;
+    return null;
   }
 
   BSA.stages.engine = function (content, ctx) {
     var name = function (e) { return String(e || "").toUpperCase(); };
-    if (content.from === "settings") {
+    if (!asksEngine(content)) {
+      var short = content.from === "short.json";
       return ctx.el("div", { class: "st-engine" },
-        ctx.el("p", { class: "big" }, name(content.engine) + ", from your settings"),
-        ctx.el("p", { class: "muted" }, "Nothing to choose here. The render.engine setting picks it for every short."));
+        ctx.el("p", { class: "big" }, name(content.engine) + (short ? ", from this short" : ", from your settings")),
+        ctx.el("p", { class: "muted" }, short
+          ? "Nothing to choose here. The short's short.json picks it (render.engine)."
+          : "Nothing to choose here. The render.engine setting picks it for every short."));
     }
     var s = ctx.stage;
     var now = currentPick(content, s);
-    var open = !!s.needs_yes && !s.waiting_for_claude;
+    var open = ctx.answerable(); // locked while an answer is on its way or decisions can't be read
     return ctx.el("div", { class: "st-engine" },
       ctx.el("p", { class: "lead" }, "Pick the engine that renders this short, then approve."),
-      content.from === "short.json"
-        ? ctx.el("p", { class: "muted" }, "This short asks for " + name(content.engine) + ".") : null,
       ctx.el("fieldset", { class: "choices" },
         ctx.el("legend", null, "Render engine"),
         (content.choices || []).map(function (ch) {
@@ -390,9 +417,12 @@
         })));
   };
 
-  BSA.stages.engine.asks = function (content) {
-    return content.from !== "settings";
-  };
+  // An engine that comes from the user's settings or from short.json is already chosen: nothing to ask.
+  function asksEngine(content) {
+    return content.from !== "settings" && content.from !== "short.json";
+  }
+
+  BSA.stages.engine.asks = asksEngine;
 
   BSA.stages.engine.choice = function (content, stage) {
     var e = currentPick(content, stage);
