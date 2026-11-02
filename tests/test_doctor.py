@@ -26,9 +26,11 @@ def test_all_ok(monkeypatch, tmp_path):
     checks = doctor.run({"narrator": {"provider": "none"}}, tmp_path)
     assert [c["id"] for c in checks] == ["blender", "gpu", "voice", "disk", "font", "server"]
     levels = {c["id"]: c["level"] for c in checks}
-    assert levels["blender"] == "ok" and "4.5" in checks[0]["text"]
+    assert levels["blender"] == "ok"
+    assert "4.5" in checks[0]["text"]
     assert levels["gpu"] == levels["voice"] == levels["disk"] == levels["font"] == "ok"
-    assert levels["server"] == "warn" and "not started yet" in checks[-1]["text"]
+    assert levels["server"] == "warn"
+    assert "not started yet" in checks[-1]["text"]
 
 
 def test_server_details_make_the_server_ok(monkeypatch, tmp_path):
@@ -86,7 +88,8 @@ def test_voice_levels(monkeypatch, tmp_path):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "x")
     assert voice({"provider": "elevenlabs"})["level"] == "ok"
     unset = voice({"provider": None})
-    assert unset["level"] == "warn" and "00-first-run" in unset["fix"]
+    assert unset["level"] == "warn"
+    assert "00-first-run" in unset["fix"]
 
 
 def test_variable_caption_font_warns(monkeypatch, tmp_path):
@@ -94,7 +97,9 @@ def test_variable_caption_font_warns(monkeypatch, tmp_path):
     monkeypatch.setattr(fonts, "font_info_or_none", lambda path, index=0: {
         "variable": True, "default_weight": 400, "default_instance": "Regular", "family": "Inter"})
     font = next(c for c in doctor.run({"brand": {"font": "Inter"}}, tmp_path) if c["id"] == "font")
-    assert font["level"] == "warn" and "variable font" in font["text"] and font["fix"]
+    assert font["level"] == "warn"
+    assert "variable font" in font["text"]
+    assert font["fix"]
 
 
 def test_font_not_installed_warns(monkeypatch, tmp_path):
@@ -126,3 +131,29 @@ def test_cli_doctor_saves_for_the_short(home, pendulum):
 def test_cli_doctor_without_a_short(home):
     out = ok(run(home, "doctor"))
     assert out["checks"][0]["id"] == "blender"
+
+
+def test_weighted_font_in_the_short_workspace_cache_is_ok(tmp_path):
+    cache = tmp_path / "ws" / ".assets-cache"
+    (cache / "fonts").mkdir(parents=True)
+    (cache / "fonts" / fonts.cached_font_name("Zzfamily", 600)).write_bytes(b"not a real font")
+    settings = {"brand": {"font": "Zzfamily@600"}}
+    font = next(c for c in doctor.run(settings, tmp_path, cache_dirs=[cache]) if c["id"] == "font")
+    assert font["level"] == "ok"
+    bare = next(c for c in doctor.run(settings, tmp_path, cache_dirs=[tmp_path / "none"]) if c["id"] == "font")
+    assert bare["level"] == "warn"
+
+
+def test_variable_font_advice_names_a_cached_weight(monkeypatch, tmp_path):
+    monkeypatch.setattr(fonts, "resolve", lambda name, *a, **k: (Path("f.ttf"), "Inter", None))
+    monkeypatch.setattr(fonts, "font_info_or_none", lambda path, index=0: {
+        "variable": True, "default_weight": 400, "default_instance": "Regular", "family": "Inter"})
+    monkeypatch.setattr(fonts, "cached_weights", lambda family, cache_dirs=None: [600])
+    font = next(c for c in doctor.run({"brand": {"font": "Inter"}}, tmp_path) if c["id"] == "font")
+    assert "Inter@600" in font["fix"]
+
+
+def test_gpu_without_a_workspace_says_so():
+    gpu = next(c for c in doctor.run({}, None) if c["id"] == "gpu")
+    assert gpu["level"] == "ok"
+    assert "No workspace" in gpu["text"]

@@ -47,7 +47,9 @@ def _blender(settings: dict) -> dict:
 def _gpu(workspace: Path | None) -> dict:
     from bsa import gpulock, render_status
 
-    holder = gpulock.read(gpulock.lock_path(workspace)) if workspace else None
+    if not workspace:
+        return _check("gpu", "ok", "No workspace is set yet, so there is no GPU lock to check.")
+    holder = gpulock.read(gpulock.lock_path(workspace))
     if holder and render_status.is_alive(holder):
         return _check("gpu", "warn", f"The GPU is busy: {gpulock.describe_holder(holder)}.",
                       "Wait for that job to end (a new render waits for it by itself).")  # fmt: skip
@@ -98,19 +100,20 @@ def _disk(workspace: Path | None) -> dict:
     return _check("disk", "ok", text)
 
 
-def _font(settings: dict, short) -> dict:
+def _font(settings: dict, short, cache_dirs: list[Path] | None = None) -> dict:
     from bsa import fonts
 
     style = getattr(short, "style", None) or {}
     name = str(style.get("font") or (settings.get("brand") or {}).get("font") or "").strip()
     if not name:
         return _check("font", "ok", "No caption font is set: captions use the default.")
-    path, used, note = fonts.resolve(name)
+    path, used, note = fonts.resolve(name, cache_dirs=cache_dirs)
     if path is None or note:
         return _check("font", "warn", (note or f"font {name!r} is not installed").rstrip("."),
                       "Install the font, or pick an installed one (CLI fonts shows some).")  # fmt: skip
     info = fonts.font_info_or_none(path)
-    warning = fonts.variable_warning(info, used or name) if info else None
+    cached = fonts.cached_weights(info.get("family") or used or name, cache_dirs) if info and info.get("variable") else []
+    warning = fonts.variable_warning(info, used or name, cached) if info else None
     if warning:
         return _check("font", "warn", f"{used or name} is a variable font.", warning)
     return _check("font", "ok", f"Caption font {used or name} is installed.")
@@ -123,9 +126,10 @@ def _server(server: dict | None) -> dict:
     return _check("server", "ok", f"The review page server is running on port {server.get('port')}.")
 
 
-def run(settings: dict, workspace: Path | None, short=None, server: dict | None = None) -> list[dict]:
+def run(settings: dict, workspace: Path | None, short=None, server: dict | None = None,
+        cache_dirs: list[Path] | None = None) -> list[dict]:  # fmt: skip
     settings = settings or {}
-    return [_blender(settings), _gpu(workspace), _voice(settings), _disk(workspace), _font(settings, short),
+    return [_blender(settings), _gpu(workspace), _voice(settings), _disk(workspace), _font(settings, short, cache_dirs),
             _server(server)]  # fmt: skip
 
 

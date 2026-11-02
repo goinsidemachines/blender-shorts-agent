@@ -445,7 +445,7 @@ def cmd_page(args) -> dict:
 
 
 def cmd_doctor(args) -> dict:
-    from bsa import doctor
+    from bsa import doctor, fonts
 
     st = settings.load_settings()
     ws = st.get("workspace")
@@ -456,7 +456,7 @@ def cmd_doctor(args) -> dict:
             short = load(sdir)
         except CliError:
             short = None  # a bad spec is validate's finding; the font check falls back to the brand font
-    checks = doctor.run(st, Path(ws) if ws else None, short)
+    checks = doctor.run(st, Path(ws) if ws else None, short, cache_dirs=fonts.font_caches(sdir))
     if sdir is not None:
         doctor.save(sdir, checks)
     return {"checks": checks, "ok": not any(c["level"] == "error" for c in checks)}
