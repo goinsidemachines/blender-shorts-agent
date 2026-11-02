@@ -20,7 +20,7 @@ import numpy as np
 
 from bsa.audio import recorded
 from bsa.audio.sfx import KINDS, SR
-from bsa.short import Short
+from bsa.short import Short, line_id_problem
 from bsa.timeline import Timeline
 
 VOICE_DBFS = -15
@@ -99,6 +99,9 @@ def _voice(tl: Timeline, takes_dir: Path | None, n: int) -> np.ndarray:
     if takes_dir is None:
         return vo
     for span in tl.lines:
+        problem = line_id_problem(span.id)
+        if problem:
+            raise ValueError(problem)  # a take is read from <takes_dir>/<id>.wav: never from outside it
         path = Path(takes_dir) / f"{span.id}.wav"
         if not path.exists():
             continue

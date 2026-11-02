@@ -133,8 +133,9 @@ def _record_seeds(out_dir: Path, seeds: dict[str, int]) -> str | None:
 def retake_problem(out_dir: Path, line_id: str) -> str | None:
     """Why `line_id` can't be re-taken (None when it can); touches nothing."""
     out_dir = Path(out_dir)
-    if line_id_problem(line_id):
-        return f"{line_id!r} is not a line id"
+    problem = line_id_problem(line_id)
+    if problem:
+        return problem
     if (out_dir / f"{line_id}.wav").resolve().parent != out_dir.resolve():
         return f"{line_id!r} is not a line id"
     known = _read_record(out_dir).get("lines")
@@ -274,7 +275,17 @@ def _elevenlabs_checked(short: Short, narrator: dict, out_dir: Path, durations: 
     return NarrationResult("ok", durations, _unclear_message(_unclear(heard, [ln.id for ln in short.lines])))
 
 
+def check_line_ids(short: Short) -> None:
+    """Refuse (ValueError, with the rule's "rename it" message) a short with a line id that isn't a plain file name:
+    takes are written, rewritten and deleted as <id>.wav, so it is checked before anything is touched."""
+    for ln in short.lines:
+        problem = line_id_problem(ln.id)
+        if problem:
+            raise ValueError(problem)
+
+
 def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> NarrationResult:
+    check_line_ids(short)
     short_dir = Path(short_dir)
     narrator = settings.get("narrator") or {}
     provider = narrator.get("provider")
@@ -322,6 +333,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     """Delete takes made by another narrator, voice or speed, or for a line whose text has changed since, and
     record what the takes left on disk are for. Takes still current are kept, so an interrupted run resumes.
     Returns the ids of the takes deleted."""
+    check_line_ids(short)
     out_dir = Path(out_dir)
     record_path = out_dir / RECORD_FILE
     want = _takes_record(short, narrator)
@@ -332,6 +344,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     same_voice = isinstance(had, dict) and all(had.get(k) == want[k] for k in ("provider", "voice", "speed", "command"))
     old_lines = had.get("lines", {}) if same_voice else {}
     removed = []
+    waiting = {lid for lid in take_seeds(out_dir) if not (out_dir / f"{lid}.wav").is_file()}  # a re-take's line
     for wav in sorted(out_dir.glob("*.wav")):
         lid = wav.stem
         if not same_voice or old_lines.get(lid) != want["lines"].get(lid):
@@ -341,7 +354,8 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
         (out_dir / "durations.json").unlink(missing_ok=True)
     # a seed belongs to a take of this voice and these words, even while a retake waits for its take
     had_seeds = take_seeds(out_dir) if same_voice else {}
-    want["seeds"] = {lid: n for lid, n in had_seeds.items() if old_lines.get(lid) == want["lines"].get(lid)}
+    want["seeds"] = {lid: n for lid, n in had_seeds.items()
+                     if old_lines.get(lid) == want["lines"].get(lid) or lid in waiting}  # fmt: skip
     out_dir.mkdir(parents=True, exist_ok=True)
     record_path.write_text(json.dumps(want, indent=2, ensure_ascii=False), encoding="utf-8")
     return removed

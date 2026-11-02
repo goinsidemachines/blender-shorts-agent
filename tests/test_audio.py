@@ -46,6 +46,15 @@ def test_mix_length_exact():
     assert np.abs(out).max() <= 1.0
 
 
+def test_mix_refuses_a_span_id_that_is_not_a_plain_file_name(tmp_path):
+    outside = tmp_path / "x.wav"
+    _write_take(outside, 0.5 * np.ones(SR))
+    for bad in ("C:x", "../x", "a/b", "nul"):
+        tl = Timeline(30, 300, [Span("s01", 1, 300)], [Span(bad, 31, 60)], [])
+        with pytest.raises(ValueError, match="rename it"):
+            mix(tl, _short([]), tmp_path / "vo")
+
+
 def test_levels(tmp_path):
     t = np.arange(SR) / SR
     _write_take(tmp_path / "l1.wav", 0.5 * np.sin(2 * np.pi * 440 * t))

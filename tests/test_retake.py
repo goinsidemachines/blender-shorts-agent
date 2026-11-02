@@ -94,7 +94,8 @@ def test_retake_remakes_only_that_line_with_the_next_seed(voiced):
 
 
 def test_retake_with_say_writes_the_respelling(voiced):
-    voiced.cli("narrate", voiced.short, "--line", "l03", "--say", "Four times longer, two times slower.")
+    out = voiced.cli("narrate", voiced.short, "--line", "l03", "--say", "Four times longer, two times slower.")
+    assert out["retake"]["seed"] == 8 and voiced.seeds.read_text().split() == ["8"]  # the seed really used
     assert load_short(voiced.short / "source" / "short.json").lines[2].say == "Four times longer, two times slower."
 
 
@@ -186,3 +187,29 @@ def test_the_closing_line_can_be_retaken_but_not_respelled(tmp_path):
     assert after["closing.wav"] != before["closing.wav"] and after["l01.wav"] == before["l01.wav"]
     proc = e.run("narrate", e.short, "--line", "closing", "--say", "Hello.")
     assert proc.returncode == 1 and "voice_line" in proc.stderr
+
+
+@pytest.mark.parametrize("bad", ["C:x", "../x", "a/b", "nul"])
+def test_narrate_refuses_a_bad_line_id_before_touching_anything(tmp_path, bad):
+    e = setup(tmp_path)
+    spec = e.short / "source" / "short.json"
+    data = json.loads(spec.read_text(encoding="utf-8"))
+    data["lines"][0]["id"] = bad
+    spec.write_text(json.dumps(data), encoding="utf-8")  # never went through validate
+    outside = e.short / "audio" / "x.wav"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"keep")
+    before = sorted(str(p) for p in e.short.rglob("*"))
+    proc = e.run("narrate", e.short)
+    assert proc.returncode == 1 and "rename it" in proc.stderr, proc.stdout + proc.stderr
+    assert outside.read_bytes() == b"keep" and sorted(str(p) for p in e.short.rglob("*")) == before
+    assert not e.seeds.exists()
+
+
+def test_the_narrator_entry_points_refuse_a_bad_line_id(tmp_path):
+    short = _short_with("C:x")
+    with pytest.raises(ValueError, match="rename it"):
+        nrun.narrate(tmp_path, short, {"narrator": {"provider": "kokoro"}})
+    with pytest.raises(ValueError, match="rename it"):
+        nrun.clear_stale_takes(tmp_path / "vo", short, {"provider": "kokoro"})
+    assert not (tmp_path / "vo").exists()

@@ -769,7 +769,11 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
     except (ValueError, OSError) as exc:
         raise CliError(_one_line(exc)) from exc
     if edited is not None:
-        save_short(edited, short_json(sdir))
+        try:
+            save_short(edited, short_json(sdir))
+        except OSError as exc:
+            raise CliError(f"The take was thrown away (next seed {seed}), but short.json couldn't be saved with the "
+                           f"new words ({_one_line(exc)}): run the same command again.") from exc  # fmt: skip
         new = {ln.id: ln for ln in edited.lines}
         short.lines = edited.lines  # the run below speaks the new words
         voiced.lines = [new.get(ln.id, ln) for ln in voiced.lines]
@@ -777,7 +781,7 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
 
 
 def cmd_narrate(args) -> dict:
-    from bsa.narrate.run import HEARD_FILE, clear_stale_takes, narrate
+    from bsa.narrate.run import HEARD_FILE, check_line_ids, clear_stale_takes, narrate
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
@@ -790,6 +794,10 @@ def cmd_narrate(args) -> dict:
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
     narrator = s.get("narrator") or {}
+    try:
+        check_line_ids(voiced)  # before anything is deleted or spoken
+    except ValueError as exc:
+        raise CliError(_one_line(exc)) from exc
     retaken = _prepare_retake(sdir, short, voiced, s, args)
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
     from bsa.narrate import custom
