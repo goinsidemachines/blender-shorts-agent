@@ -6,34 +6,49 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bsa import closing as closing_mod
 from bsa.narrate.local import WER_LIMIT
 from bsa.narrate.run import HEARD_FILE
 from bsa.review import worddiff
-from bsa.short import Short, spoken_text
+from bsa.short import Line, Short, spoken_text
 
 NOT_NARRATED = "Not narrated yet."
+UNREADABLE = "The voice check file can't be read."
 
 
 def _read(vo: Path) -> dict | None:
-    try:
-        data = json.loads((vo / HEARD_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    """heard.json as a dict; None when it is not there; ValueError when it can't be read."""
+    path = vo / HEARD_FILE
+    if not path.is_file():
         return None
-    return data if isinstance(data, dict) else None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(UNREADABLE) from exc
+    if not isinstance(data, dict):
+        raise ValueError(UNREADABLE)  # noqa: TRY004 - one reason for every unreadable shape
+    return data
 
 
-def _row(line_id: str, text: str, entry: dict | None, vo: Path, now_text: str | None) -> dict:
-    """One line. Nothing heard counts for a line whose take is gone (a re-take is waiting) or whose words changed
-    since: those show as unchecked, never with the old heard text."""
-    row = {"id": line_id, "text": text, "said": None, "wer": None, "ok": None, "diff": None, "stale": False,
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _row(line: Line, entry: dict | None, vo: Path, heard_at: float | None) -> dict:
+    """One line. Nothing heard counts for a line whose take is gone or newer than heard.json (a re-take is under
+    way) or whose words changed since: those show as unchecked, never with the old heard text."""
+    text = spoken_text(line)
+    row = {"id": line.id, "text": text, "said": None, "wer": None, "ok": None, "diff": None, "stale": False,
            "waiting": False}  # fmt: skip
     if entry is None:
         return row
-    if not (vo / f"{line_id}.wav").is_file():
+    wav = _mtime(vo / f"{line.id}.wav")
+    if wav is None or (heard_at is not None and wav > heard_at):
         row["waiting"] = True
         return row
-    if now_text is not None and entry.get("text") != now_text:
+    if entry.get("text") != text:
         row["stale"] = True
         return row
     said, wer = entry.get("said"), entry.get("wer")
@@ -49,17 +64,18 @@ def _row(line_id: str, text: str, entry: dict | None, vo: Path, now_text: str | 
 
 def block(sdir: Path, short: Short, narration: dict) -> dict:
     """{"lines": [{"id", "text", "said", "wer", "ok", "diff", "stale", "waiting"}], "checked", "why_not"}: the short's
-    lines in order, then the closing line when it was narrated."""
+    lines in order."""
     vo = Path(sdir) / "audio" / "vo"
-    data = _read(vo)
+    try:
+        data = _read(vo)
+    except ValueError as exc:
+        return {"lines": [], "checked": False, "why_not": str(exc)}
     if data is None:
         return {"lines": [], "checked": False, "why_not": NOT_NARRATED}
     heard = data.get("lines") if isinstance(data.get("lines"), dict) else {}
     heard = {k: v for k, v in heard.items() if isinstance(v, dict)}
-    rows = [_row(ln.id, spoken_text(ln), heard.get(ln.id), vo, spoken_text(ln)) for ln in short.lines]
-    extra = heard.get(closing_mod.LINE_ID)
-    if extra is not None and all(r["id"] != closing_mod.LINE_ID for r in rows):
-        rows.append(_row(closing_mod.LINE_ID, str(extra.get("text") or ""), extra, vo, None))
+    heard_at = _mtime(vo / HEARD_FILE)
+    rows = [_row(ln, heard.get(ln.id), vo, heard_at) for ln in short.lines]
     why_not = data.get("why_not")
     return {
         "lines": rows,

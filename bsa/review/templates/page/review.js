@@ -273,11 +273,12 @@
       if (row.stale) verdict.push(el("p", { class: "muted" }, "Not checked since the line changed"));
       else if (row.waiting) verdict.push(el("p", { class: "muted" }, "Waiting for a new take"));
       else if (row.ok === false) verdict.push(el("p", { class: "voice-bad" }, "Didn't pass the check"));
-      var heard = row.said === null || row.said === undefined || row.stale || row.waiting ? null : String(row.said);
+      var unheard = row.stale || row.waiting;
+      var heard = row.said === null || row.said === undefined || unheard ? null : String(row.said);
       var diff = row.diff ? diffCell(ctx, row) : [];
       return el("tr", { "data-line": String(row.id) },
         el("td", null, el("strong", null, String(row.id)), el("br"), String(row.text)),
-        el("td", null, heard === null ? el("span", { class: "muted" }, row.ok === null && !row.stale && !row.waiting ? "Not checked" : "") : heard),
+        el("td", null, heard === null ? el("span", { class: "muted" }, unheard ? "Not heard yet" : row.ok === null ? "Not checked" : "") : heard),
         el("td", null, diff, verdict,
           ctx.noteButton("line", row.id, "Re-take: " + row.id, "Re-take this line")));
     });

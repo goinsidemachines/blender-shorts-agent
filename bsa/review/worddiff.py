@@ -34,12 +34,7 @@ def diff(want: str, got: str) -> list[list[str]]:
             ops += [["extra", w] for w in b[j0 + paired : j1]]
     for i in range(len(ops) - 1, -1, -1):  # slide an extra/missing word right over equal words
         k = i
-        while k + 1 < len(ops) and ops[i][0] in ("extra", "missing") and ops[k + 1] == ["same", ops[i][1]]:
+        while k + 1 < len(ops) and ops[k][0] in ("extra", "missing") and ops[k + 1] == ["same", ops[k][1]]:
             ops[k], ops[k + 1] = ops[k + 1], ops[k]
             k += 1
     return ops
-
-
-def wer(want: str, got: str) -> float:
-    """Word error rate: differing words over the words wanted."""
-    return sum(1 for op, _ in diff(want, got) if op != "same") / max(len(words(want)), 1)

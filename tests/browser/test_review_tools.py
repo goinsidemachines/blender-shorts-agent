@@ -262,6 +262,7 @@ def test_voice_table_shows_a_deleted_take_as_waiting(view, live_server):
     p = open_short(view, srv, stage="narration")
     row = p.locator("tr[data-line='l02']")
     expect(row.get_by_text("Waiting for a new take")).to_be_visible()
+    expect(row.get_by_text("Not heard yet")).to_be_visible()
     expect(row.locator("mark")).to_have_count(0)
     expect(row.get_by_text("length set the beat")).to_have_count(0)
     assert_healthy(p)
