@@ -131,7 +131,9 @@ def _record_seeds(out_dir: Path, seeds: dict[str, int]) -> str | None:
     return None
 
 
-_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+# short.validate puts no limit on a line id's characters, so any id it allows is a take's file name here, except one
+# that could leave the folder: no path separator, no control character, no "..".
+_SAFE_ID = re.compile(r"[^/\\\x00-\x1f]+")
 
 
 def retake(out_dir: Path, line_id: str) -> int:
@@ -140,7 +142,7 @@ def retake(out_dir: Path, line_id: str) -> int:
     lines narrator.json records the takes are for."""
     out_dir = Path(out_dir)
     known = _read_record(out_dir).get("lines")
-    if not isinstance(line_id, str) or not _SAFE_ID.fullmatch(line_id):
+    if not isinstance(line_id, str) or not _SAFE_ID.fullmatch(line_id) or ".." in line_id:
         raise ValueError(f"{line_id!r} is not a line id")
     if isinstance(known, dict) and line_id not in known:
         raise ValueError(f"{line_id!r} is not a line of this short (its lines: {', '.join(known) or 'none'})")

@@ -7,6 +7,7 @@ Every command prints one JSON object on stdout. On failure it exits non-zero wit
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from dataclasses import asdict
@@ -717,8 +718,59 @@ def cmd_timeline(args) -> dict:
     }
 
 
+def _restore_file(path: Path, data: bytes | None) -> None:
+    try:
+        if data is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(data)
+    except OSError:
+        pass  # the voice check's record is best-effort
+
+
+def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
+    """narrate --line ID [--say TEXT]: refuse (nothing touched) what can't be re-taken, write the respelling, and
+    throw the line's take away with the next seed. Returns {"line", "seed"}, or None without --line."""
+    from bsa.narrate import run as nrun
+    from bsa.short import save_short, validate
+
+    line_id, say = getattr(args, "line", None), getattr(args, "say", None)
+    if line_id is None:
+        if say is not None:
+            raise CliError("--say needs --line: say which line to re-take with these words.")
+        return None
+    if say is not None and not say.strip():
+        raise CliError("--say can't be empty: give the words the voice should say.")
+    if "narration" not in jobstate.load_state(sdir)["stages"]:
+        raise CliError("Narrate the short first: CLI narrate SHORT")
+    if (s.get("narrator") or {}).get("provider") in (None, "none"):
+        raise CliError("This short uses captions only, so there is no take to re-take.")
+    ids = [ln.id for ln in voiced.lines]
+    if line_id not in ids:
+        raise CliError(f"No line {line_id!r}; the lines are {', '.join(ids)}")
+    if say is not None:
+        from bsa import closing
+
+        if line_id == closing.LINE_ID:
+            raise CliError("The closing line's words are the closing setting's voice_line: change it there.")
+        edited = copy.deepcopy(short)
+        next(ln for ln in edited.lines if ln.id == line_id).say = say
+        problems = validate(edited)
+        if problems:
+            raise CliError("That respelling isn't valid: " + "; ".join(problems))
+        save_short(edited, short_json(sdir))
+        short.lines = edited.lines  # the run below speaks the new words
+        voiced.lines = [edited.lines[[ln.id for ln in edited.lines].index(ln.id)] if ln.id != closing.LINE_ID else ln
+                        for ln in voiced.lines]  # fmt: skip
+    try:
+        seed = nrun.retake(sdir / "audio" / "vo", line_id)
+    except (ValueError, OSError) as exc:
+        raise CliError(_one_line(exc)) from exc
+    return {"line": line_id, "seed": seed}
+
+
 def cmd_narrate(args) -> dict:
-    from bsa.narrate.run import clear_stale_takes, narrate
+    from bsa.narrate.run import HEARD_FILE, clear_stale_takes, narrate
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
@@ -731,6 +783,7 @@ def cmd_narrate(args) -> dict:
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
     narrator = s.get("narrator") or {}
+    retaken = _prepare_retake(sdir, short, voiced, s, args)
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
     from bsa.narrate import custom
 
@@ -741,13 +794,18 @@ def cmd_narrate(args) -> dict:
     else:  # the story first, so a closing line the voice can't say never costs the short its voice
         result = narrate(sdir, short, s)
         if result.status == "ok" and voiced is not short:
+            heard_file = sdir / "audio" / "vo" / HEARD_FILE
+            story_heard = heard_file.read_bytes() if heard_file.is_file() else None
             extra = narrate(sdir, voiced, s)  # only the missing take is spoken
             if extra.status != "ok":
+                _restore_file(heard_file, story_heard)  # the voice check is of the story's takes, not "captions only"
                 jobstate.mark_done(sdir, "narration", status="ok", provider=narrator.get("provider"),
                                    **({"message": result.message} if result.message else {}))  # fmt: skip
                 closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
                                 "closing card is silent")  # fmt: skip
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    if retaken:
+        out["retake"] = retaken
     log = sdir / "audio" / "vo" / custom.LOG_FILE
     if log.is_file():  # the user's own tool's output; its fallbacks and warnings would otherwise pass unseen
         out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
@@ -1158,12 +1216,18 @@ def build_parser() -> argparse.ArgumentParser:
     for name, fn, text in [
         ("validate", cmd_validate, "check short.json (sources, ids, sizes)"),
         ("timeline", cmd_timeline, "write source/timeline.json (from the takes if narrated)"),
-        ("narrate", cmd_narrate, "generate the narration (never blocks) and re-time the short"),
         ("mix", cmd_mix, "write audio/mix.wav (voice + effects + source/sound.py)"),
     ]:
         sp = sub.add_parser(name, help=text)
         sp.add_argument("short")
         sp.set_defaults(fn=fn)
+
+    sp = sub.add_parser("narrate", help="SHORT [--line ID [--say TEXT]]: generate the narration (never blocks) and "
+                        "re-time the short; --line re-takes that one line with the next seed")  # fmt: skip
+    sp.add_argument("short")
+    sp.add_argument("--line", default=None, help="re-take this line only (a different reading)")
+    sp.add_argument("--say", default=None, help="with --line: respell the line's spoken words first")
+    sp.set_defaults(fn=cmd_narrate)
 
     sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE | list [MODEL] | test-custom")
     sp.add_argument("action", choices=["suggest", "plan", "install", "sample", "list", "test-custom"])
