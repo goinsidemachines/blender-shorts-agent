@@ -1,6 +1,7 @@
 """Starting or reusing the workspace's page server, opening the page and confirming it checked in, the static
 fallback, and CLI page SHORT / page serve."""
 
+import contextlib
 import http.client
 import json
 import os
@@ -142,6 +143,61 @@ def test_no_check_in_says_false(live):
     assert out["opened"] is False and out["url"] and out["already_open"] is False
 
 
+def test_a_polling_tab_does_not_confirm_a_forced_open(live):
+    live.hello()
+    stop = threading.Event()
+
+    def poll():  # the open tab polls state every 0.1 s; the browser call opens nothing
+        while not stop.wait(0.1):
+            conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+            conn.request("GET", "/api/01-pendulum/state", headers={server.TOKEN_HEADER: live.server.token})
+            conn.getresponse().read()
+            conn.close()
+
+    t = threading.Thread(target=poll, daemon=True)
+    t.start()
+    try:
+        out = launch.open_page(live.ws, live.sdir, force=True, browser=lambda url: True, wait_s=0.8)
+    finally:
+        stop.set()
+        t.join(5)
+    assert out["opened"] is False and out["already_open"] is False
+    assert live.server.seen["01-pendulum"] > live.server.hello_at["01-pendulum"]  # it did poll during the wait
+
+
+def test_presence_polls_never_overrun_wait_s(live, monkeypatch):
+    timeouts = []
+    real = launch._request
+    monkeypatch.setattr(launch, "_request", lambda *a, **k: timeouts.append(k.get("timeout_s")) or real(*a, **k))
+    t0 = time.monotonic()
+    launch.open_page(live.ws, live.sdir, force=True, browser=lambda url: True, wait_s=0.3)
+    assert time.monotonic() - t0 < 1.5 and all(t is not None and t <= 2.0 for t in timeouts[1:])
+    assert min(timeouts[2:]) < 0.3
+
+
+def test_ensure_fails_at_once_when_the_server_dies(tmp_path):
+    ws = tmp_path / "ws"
+    pagefix.make_short(ws, "story")
+    t0 = time.monotonic()
+    with pytest.raises(launch.ServerUnavailable, match="stopped"):
+        launch.ensure_server(ws, spawn=lambda ws, lan: subprocess.Popen([sys.executable, "-c", "pass"]), timeout_s=20)
+    assert time.monotonic() - t0 < 10
+
+
+def test_ensure_kills_a_server_that_never_answers(tmp_path):
+    ws = tmp_path / "ws"
+    pagefix.make_short(ws, "story")
+    procs = []
+
+    def spawn(ws, lan):
+        procs.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]))
+        return procs[-1]
+
+    with pytest.raises(launch.ServerUnavailable, match="did not answer"):
+        launch.ensure_server(ws, spawn=spawn, timeout_s=0.5)
+    assert procs[0].poll() is not None
+
+
 def test_an_old_check_in_does_not_confirm_a_new_open(live):
     live.hello()
     out = launch.open_page(live.ws, live.sdir, force=True, browser=lambda url: True, wait_s=0.5)
@@ -253,9 +309,9 @@ def test_fallback_static_page(tmp_path, monkeypatch):
 
 
 def test_cli_page_starts_a_detached_server_that_outlives_the_call(home, pendulum):
-    out = ok(run(home, "page", "pendulum", "--stage", "story"))  # BROWSER is a no-op in run()
-    info = launch.server_info(pendulum.parent)
     try:
+        out = ok(run(home, "page", "pendulum", "--stage", "story"))  # BROWSER is a no-op in run()
+        info = launch.server_info(pendulum.parent)
         assert info and out["url"].startswith(f"http://127.0.0.1:{info['port']}/s/")
         assert out["mode"] == "server" and out["opened"] is False and out["stage"] == "story"
         assert out["url"].endswith("#story")
@@ -265,9 +321,11 @@ def test_cli_page_starts_a_detached_server_that_outlives_the_call(home, pendulum
         again = ok(run(home, "page", "pendulum"))
         assert again["url"].split("?")[0] == out["url"].split("?")[0].split("#")[0]
         assert launch.server_info(pendulum.parent)["pid"] == info["pid"]  # reused, not a second server
+        checks = ok(run(home, "doctor", "pendulum"))["checks"]  # the same workspace rule: it finds the server
+        assert {c["id"]: c["level"] for c in checks}["server"] == "ok"
     finally:
-        if info:
-            _kill(info["pid"])
+        with contextlib.suppress(OSError, ValueError, KeyError):  # whatever failed, never leave a server running
+            _kill(json.loads((pendulum.parent / launch.SERVER_FILE).read_text("utf-8"))["pid"])
 
 
 def test_cli_page_unknown_stage_is_one_line(home, pendulum):

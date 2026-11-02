@@ -245,14 +245,16 @@ def test_damaged_decisions_answer_503(srv):
 
 def test_show_hint_is_one_shot_and_presence(srv):
     r = api(srv, "GET", "/api/01-pendulum/presence")
-    assert r.status == 200 and body(r) == {"seen_s_ago": None}
+    assert r.status == 200 and body(r) == {"seen_s_ago": None, "hello_s_ago": None}
     srv.clock.t += 5
     assert api(srv, "POST", "/api/01-pendulum/hello", body={}).status == 200
     srv.clock.t += 3
-    assert body(api(srv, "GET", "/api/01-pendulum/presence")) == {"seen_s_ago": 3.0}
+    assert body(api(srv, "GET", "/api/01-pendulum/presence")) == {"seen_s_ago": 3.0, "hello_s_ago": 3.0}
     r1 = api(srv, "GET", "/api/01-pendulum/state")
     tag = r1.getheader("ETag")
     r1.read()
+    srv.clock.t += 2  # a state poll is a check-in, but not a hello: only a newly loaded page says hello
+    assert body(api(srv, "GET", "/api/01-pendulum/presence")) == {"seen_s_ago": 2.0, "hello_s_ago": 5.0}
     assert api(srv, "POST", "/api/01-pendulum/show", body={"stage": "nope"}).status == 400
     assert api(srv, "POST", "/api/01-pendulum/show", body={"stage": "storyboard"}).status == 200
     r = api(srv, "GET", "/api/01-pendulum/state", headers={"If-None-Match": tag})

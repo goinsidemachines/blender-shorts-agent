@@ -12,6 +12,7 @@ import contextlib
 import http.client
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -100,6 +101,21 @@ def _spawn(workspace: Path, lan: bool):
     return subprocess.Popen(cmd, **kw)  # our own CLI, no shell
 
 
+def _kill_tree(proc) -> None:
+    """Stop a spawned server and its children (on Windows a venv's python.exe is a launcher with the real python as
+    its child)."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True,
+                           timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)  # fmt: skip
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)  # start_new_session made it a group leader
+    with contextlib.suppress(OSError):
+        proc.kill()
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        proc.wait(5)
+
+
 def ensure_server(workspace: Path, *, lan: bool = False, spawn=None, timeout_s: float = 10.0) -> dict:
     """The workspace's valid server, starting one (detached) when there is none. Raises ServerUnavailable when none
     answers within timeout_s. A lock keeps two commands from starting two servers at once."""
@@ -113,15 +129,20 @@ def ensure_server(workspace: Path, *, lan: bool = False, spawn=None, timeout_s: 
             if info is not None:
                 return info
             try:
-                (spawn or _spawn)(workspace, lan)
+                proc = (spawn or _spawn)(workspace, lan)
             except OSError as e:
                 raise ServerUnavailable(f"the page server did not start: {e}") from None
+            poll = getattr(proc, "poll", None)  # a Popen; a test's spawn may return anything
             deadline = time.monotonic() + timeout_s
             while True:
                 info = server_info(workspace)
                 if info is not None:
                     return info
+                if poll is not None and poll() is not None:
+                    raise ServerUnavailable(f"the page server stopped as it started (exit code {proc.returncode})")
                 if time.monotonic() >= deadline:
+                    if poll is not None:
+                        _kill_tree(proc)  # never leave a server running that nobody can find
                     raise ServerUnavailable(f"the page server did not answer within {timeout_s:g}s")
                 time.sleep(_POLL_S)
     except (TimeoutError, OSError) as e:  # the lock stayed held, or the workspace can't be written
@@ -170,12 +191,18 @@ def static_page(sdir: Path) -> Path:
     return path
 
 
-def _seen_s_ago(info: dict, key: str) -> float | None:
+def _presence(info: dict, key: str, timeout_s: float = 2.0) -> tuple[float | None, float | None]:
+    """(seconds since the page's last check-in of any kind, seconds since its last hello), None when never or
+    when the server can't say."""
     try:
-        seen = _request(info, "GET", f"/api/{quote(key, safe='')}/presence").get("seen_s_ago")
+        reply = _request(info, "GET", f"/api/{quote(key, safe='')}/presence", timeout_s=timeout_s)
     except OSError:
-        return None
-    return seen if isinstance(seen, (int, float)) and not isinstance(seen, bool) else None
+        return None, None
+
+    def num(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    return num(reply.get("seen_s_ago")), num(reply.get("hello_s_ago"))
 
 
 def _call_browser(browser, url: str) -> None:
@@ -186,8 +213,9 @@ def _call_browser(browser, url: str) -> None:
 def open_page(workspace: Path, sdir: Path, *, stage: str | None = None, force: bool = False, browser=None,
               wait_s: float = 10.0, clock=time.time, sleep=time.sleep, ensure=ensure_server) -> dict:  # fmt: skip
     """Open the short's page and say whether it really opened: a tab that checked in within the last 30 s is left
-    alone (it is switched to `stage`) unless `force`; otherwise the browser is called and the page must check in
-    within wait_s. Without a server the page is a static file, opened but never claimed as opened."""
+    alone (it is switched to `stage`) unless `force`; otherwise the browser is called and a newly loaded page must
+    say hello within wait_s (a state poll from a tab already open is no proof). Without a server the page is a static
+    file, opened but never claimed as opened."""
     if stage is not None and stage not in stages.PAGE_STAGES:
         raise ValueError(f"unknown stage {stage!r}; expected one of {', '.join(stages.PAGE_STAGES)}")
     browser = browser or webbrowser.open
@@ -205,15 +233,17 @@ def open_page(workspace: Path, sdir: Path, *, stage: str | None = None, force: b
     if stage is not None:
         with contextlib.suppress(OSError):  # a tab that misses the hint still opens at its own stage
             _request(info, "POST", f"/api/{quote(key, safe='')}/show", {"stage": stage})
-    seen = _seen_s_ago(info, key)
+    seen, _hello = _presence(info, key)
     if not force and seen is not None and seen < server.SEEN_WINDOW_S:
         return {**result, "opened": True, "already_open": True}
     called = clock()
     _call_browser(browser, result["url"])
     while True:
-        seen = _seen_s_ago(info, key)
-        if seen is not None and seen <= clock() - called:  # a check-in after the browser call
+        left = wait_s - (clock() - called)
+        _seen, hello = _presence(info, key, timeout_s=min(2.0, max(left, 0.05)))
+        # only a hello after the browser call confirms it: a tab already open polls state, which is no proof
+        if hello is not None and hello <= clock() - called:
             return {**result, "opened": True}
         if clock() - called >= wait_s:
             return result
-        sleep(0.25)
+        sleep(min(0.25, max(wait_s - (clock() - called), 0)))

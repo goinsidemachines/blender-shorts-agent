@@ -61,7 +61,8 @@ class PageServer(ThreadingHTTPServer):
     lan: bool
     lan_ip: str | None
     hints: dict[str, str]
-    seen: dict[str, float]
+    seen: dict[str, float]  # the last check-in of any kind (a hello or a state poll), per short
+    hello_at: dict[str, float]  # the last hello: a page that has just loaded
     clock: Callable[[], float]
     last_activity: float
     allowed_hosts: frozenset[str]
@@ -97,7 +98,7 @@ def make_server(
     srv.token = token or secrets.token_urlsafe(24)
     srv.lan = lan
     srv.lan_ip = _lan_ip() if lan else None
-    srv.hints, srv.seen = {}, {}
+    srv.hints, srv.seen, srv.hello_at = {}, {}, {}
     srv.lock = threading.Lock()
     srv.clock = clock
     srv.last_activity = clock()
@@ -406,14 +407,15 @@ class _Handler(BaseHTTPRequestHandler):
     def _presence(self, name: str, _sdir: Path, _body) -> None:
         srv = self.server
         with srv.lock:
-            at = srv.seen.get(name)
+            at, hello = srv.seen.get(name), srv.hello_at.get(name)
             now = srv.clock()
-        self._json(200, {"seen_s_ago": None if at is None else now - at})
+        self._json(200, {"seen_s_ago": None if at is None else now - at,
+                         "hello_s_ago": None if hello is None else now - hello})  # fmt: skip
 
     def _hello(self, name: str, _sdir: Path, _body) -> None:
         srv = self.server
         with srv.lock:
-            srv.seen[name] = srv.clock()
+            srv.seen[name] = srv.hello_at[name] = srv.clock()
         self._json(200, {"ok": True})
 
     def _show(self, name: str, _sdir: Path, body: dict) -> None:

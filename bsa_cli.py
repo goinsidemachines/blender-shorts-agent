@@ -509,10 +509,10 @@ def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save
 def cmd_doctor(args) -> dict:
     from bsa.review import launch
 
-    ws = settings.load_settings().get("workspace")
     sdir = short_dir(args.short) if args.short else None
-    server = launch.server_info(sdir.parent if sdir is not None else Path(ws)) if (sdir or ws) else None
-    checks = _doctor_checks(sdir, Path(ws) if ws else None, server, save=True)
+    ws = settings.load_settings().get("workspace")
+    ws = sdir.parent if sdir is not None else Path(ws) if ws else None  # where the short really is, as page SHORT
+    checks = _doctor_checks(sdir, ws, launch.server_info(ws) if ws else None, save=True)
     return {"checks": checks, "ok": not any(c["level"] == "error" for c in checks)}
 
 
