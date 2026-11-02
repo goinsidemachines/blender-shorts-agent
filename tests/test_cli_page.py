@@ -187,9 +187,9 @@ def test_damaged_decisions_fail_with_one_plain_line(home, pendulum):
     assert "problem" in out["page_notes"]
 
 
-def test_unwritten_page_commands_and_bad_stage_are_plain_errors(home, pendulum):
-    proc = run(home, "page", "pendulum")
-    assert proc.returncode == 1 and "not available yet" in proc.stderr
+def test_bad_page_words_and_bad_stage_are_plain_errors(home, pendulum):
+    proc = run(home, "page", "pendulum", "extra")
+    assert proc.returncode == 1 and "usage: page SHORT" in proc.stderr and "Traceback" not in proc.stderr
     proc = run(home, "page", "decide", "pendulum", "render", "approve", "--by", "chat")
     assert proc.returncode == 1 and "nothing to approve" in proc.stderr
 

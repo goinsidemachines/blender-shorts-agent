@@ -441,24 +441,78 @@ def cmd_page(args) -> dict:
         args.short = args.words[1]
         sdir = short_dir(args.short)
         return {"decide": _page_decide, "note": _page_note, "wait": _page_wait}[args.words[0]](args, sdir)
-    raise CliError("page SHORT and page serve are not available yet")
+    if args.words[0] == "serve":
+        return _page_serve(args)
+    if len(args.words) != 1:
+        raise CliError(f"usage: page SHORT [--open] [--stage STAGE]; unexpected {' '.join(args.words[1:])!r}")
+    args.short = args.words[0]
+    return _page_open(args, short_dir(args.short))
 
 
-def cmd_doctor(args) -> dict:
+def _page_serve(args) -> dict:
+    """The detached page server's own process: serve the workspace until idle."""
+    from bsa.review import launch
+
+    ws = args.workspace or settings.load_settings().get("workspace")
+    if not ws or not Path(ws).is_dir():
+        raise CliError("page serve needs --workspace PATH (an existing folder) or the workspace setting")
+    launch.run_server(Path(ws).resolve(), args.lan)
+    return {"stopped": True}
+
+
+def _page_open(args, sdir: Path) -> dict:
+    """Start or reuse the workspace's server, run doctor when this short has never had one, and open the page."""
+    from bsa.review import launch, stages
+
+    if args.stage is not None and args.stage not in stages.PAGE_STAGES:
+        raise CliError(f"unknown stage {args.stage!r}; expected one of {', '.join(stages.PAGE_STAGES)}")
+    ws = sdir.parent  # the server serves the shorts of the folder this one is in
+    lan = bool(args.lan or (settings.load_settings().get("page") or {}).get("lan") is True)
+    try:
+        info, failed = launch.ensure_server(ws, lan=lan), None
+    except launch.ServerUnavailable as exc:
+        info, failed = None, exc
+    doctor_json = sdir / "review" / "doctor.json"
+    if not doctor_json.is_file():
+        _doctor_checks(sdir, ws, info, save=True)
+
+    def ensure(_ws):
+        if failed is not None:
+            raise failed
+        return info
+
+    out = launch.open_page(ws, sdir, stage=args.stage, force=args.open, ensure=ensure)
+    try:
+        checks = json.loads(doctor_json.read_text("utf-8")).get("checks") or []
+    except (OSError, ValueError, AttributeError):
+        checks = []
+    health = [c for c in checks if isinstance(c, dict) and c.get("level") != "ok"
+              and not (c.get("id") == "server" and out["mode"] == "server")]  # fmt: skip
+    return {**out, "health": health}
+
+
+def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool) -> list[dict]:
     from bsa import doctor, fonts
 
-    st = settings.load_settings()
-    ws = st.get("workspace")
-    sdir = short_dir(args.short) if args.short else None
     short = None
     if sdir is not None and short_json(sdir).is_file():
         try:
             short = load(sdir)
         except CliError:
             short = None  # a bad spec is validate's finding; the font check falls back to the brand font
-    checks = doctor.run(st, Path(ws) if ws else None, short, cache_dirs=fonts.font_caches(sdir))
-    if sdir is not None:
+    checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
+    if save and sdir is not None:
         doctor.save(sdir, checks)
+    return checks
+
+
+def cmd_doctor(args) -> dict:
+    from bsa.review import launch
+
+    ws = settings.load_settings().get("workspace")
+    sdir = short_dir(args.short) if args.short else None
+    server = launch.server_info(sdir.parent if sdir is not None else Path(ws)) if (sdir or ws) else None
+    checks = _doctor_checks(sdir, Path(ws) if ws else None, server, save=True)
     return {"checks": checks, "ok": not any(c["level"] == "error" for c in checks)}
 
 
