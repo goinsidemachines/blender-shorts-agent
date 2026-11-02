@@ -153,6 +153,41 @@ def mark_applied(sdir: Path, decision_id: str) -> dict:
     return done
 
 
+def claim(sdir: Path, decision_id: str) -> bool:
+    """Mark the decision applied if nobody has; True for the one caller that did (it must now act on it)."""
+    won = [False]
+
+    def fn(items):
+        for d in items:
+            if d["id"] == decision_id:
+                if not d["applied"]:
+                    d["applied"] = won[0] = True
+                return items
+        raise ValueError(f"no decision {decision_id!r}")
+
+    _update(sdir, fn)
+    return won[0]
+
+
+def unclaim(sdir: Path, decision_id: str) -> None:
+    """Give a claimed decision back (acting on it failed), so it can be tried again."""
+
+    def fn(items):
+        for d in items:
+            if d["id"] == decision_id:
+                d["applied"] = False
+        return items
+
+    _update(sdir, fn)
+
+
+def get(sdir: Path, decision_id: str) -> dict:
+    for d in load(sdir):
+        if d["id"] == decision_id:
+            return d
+    raise ValueError(f"no decision {decision_id!r}")
+
+
 def supersede(sdir: Path, stages_: Iterable[str]) -> int:
     """Retire every live decision of these stages (their content changed under them); returns how many."""
     wanted = set(stages_)

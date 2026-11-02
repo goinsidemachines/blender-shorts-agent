@@ -95,6 +95,68 @@ def test_chat_and_page_approve_race_marks_state_once(home, pendulum):
     assert codes.count(0) == 1 and len([d for d in decisions.load(pendulum) if d["decision"] == "approve"]) == 1
 
 
+def test_apply_decision_marks_the_stage_done_once(home, pendulum, monkeypatch):
+    import bsa_cli
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _to(home, pendulum, "story")
+    entry = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+    calls = []
+    real = jobstate.mark_done
+    monkeypatch.setattr(jobstate, "mark_done", lambda *a, **k: (calls.append(k), real(*a, **k)))
+    first = bsa_cli._apply_decision(pendulum, entry)
+    second = bsa_cli._apply_decision(pendulum, entry)  # the loser of a race
+    assert len(calls) == 1 and first["applied"] and second["applied"]
+    assert jobstate.load_state(pendulum)["stages"]["story"]["decision"] == entry["id"]
+
+
+def test_a_failed_apply_gives_the_claim_back(home, pendulum, monkeypatch):
+    import bsa_cli
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _to(home, pendulum, "story")
+    entry = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(jobstate, "mark_done", boom)
+    try:
+        bsa_cli._apply_decision(pendulum, entry)
+    except OSError:
+        pass
+    assert [d["id"] for d in decisions.unapplied(pendulum)] == [entry["id"]]
+
+
+def test_wait_racing_decide_marks_state_once(home, pendulum):
+    _to(home, pendulum, "story")
+    env = {**os.environ, "BSA_HOME": str(home)}
+    waiter = subprocess.Popen(
+        [sys.executable, str(CLI), "page", "wait", "pendulum", "--stage", "story", "--timeout", "10", "--poll", "0.05"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    deciders = [
+        subprocess.Popen(
+            [sys.executable, str(CLI), "page", "decide", "pendulum", "story", "approve", "--by", by],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for by in ("page", "chat")
+    ]  # fmt: skip
+    codes = [p.wait(60) for p in deciders]
+    assert codes.count(0) == 1 and waiter.wait(60) == 0
+    (only,) = [d for d in decisions.load(pendulum) if d["decision"] == "approve"]
+    assert only["applied"] and jobstate.load_state(pendulum)["stages"]["story"]["decision"] == only["id"]
+
+
+def test_small_refusals(home, pendulum):
+    _to(home, pendulum, "story")
+    proc = run(home, "state", "pendulum", "reset")
+    assert proc.returncode == 1 and "reset STAGE" in proc.stderr and "None" not in proc.stderr
+    proc = run(home, "page", "decide", "pendulum", "story", "changes", "--by", "settings", "--note", "x")
+    assert proc.returncode == 1 and "from settings" in proc.stderr
+    assert notes.load(pendulum) == []
+
+
 def test_changes_need_a_note_and_send_the_stage_notes(home, pendulum):
     _to(home, pendulum, "story")
     proc = run(home, "page", "decide", "pendulum", "story", "changes", "--by", "chat")

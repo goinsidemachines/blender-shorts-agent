@@ -1549,17 +1549,13 @@ def _warn_stale_build(args, out: dict) -> None:
 
 def _add_page_notes(args, out: dict) -> None:
     """A result for a short says what is waiting on its review page (notes, answers Claude hasn't acted on)."""
-    key = getattr(args, "short", None)
-    if not key or not isinstance(out, dict):
-        return
-    try:
-        from bsa.review import inbox
+    from bsa.review import inbox
 
-        waiting = inbox.page_notes(_short_dir(key))
+    try:
+        sdir = _short_dir(args.short) if getattr(args, "short", None) else None
     except Exception:  # noqa: BLE001 - a short that doesn't resolve has no page
-        return
-    if waiting is not None:
-        out["page_notes"] = waiting
+        sdir = None
+    inbox.attach(out, sdir)
 
 
 def _emit(obj: dict) -> None:

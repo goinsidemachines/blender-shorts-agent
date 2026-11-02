@@ -290,6 +290,8 @@ def cmd_state(args) -> dict:
     sdir = short_dir(args.short)
     if args.action == "done":
         info = {}
+        if args.stage is None:
+            raise CliError("usage: state SHORT done STAGE [--info JSON]")
         if args.info:
             try:
                 info = json.loads(args.info)
@@ -305,6 +307,8 @@ def cmd_state(args) -> dict:
             jobstate.reset_from(sdir, "checks")
         jobstate.mark_done(sdir, args.stage, **info)
     elif args.action == "reset":
+        if args.stage is None:
+            raise CliError("usage: state SHORT reset STAGE")
         from bsa.review import decisions, stages
 
         later = jobstate.STAGES[jobstate.STAGES.index(args.stage) :]
@@ -330,16 +334,23 @@ def _require_approval(sdir: Path, stage: str) -> None:
 
 
 def _apply_decision(sdir: Path, entry: dict) -> dict:
-    """Act on a decision: an approval of an approval stage marks the stage done (after the story's gate); every
-    decision is then marked applied. Returns the decision as stored."""
+    """Act on a decision: claim it (marks it applied, once, under the store lock); the winner marks an approved
+    approval stage done (after the story's gate). A failure gives the claim back and is raised. Returns the decision
+    as stored."""
     from bsa.review import decisions
 
-    if entry["decision"] == "approve" and entry["stage"] in jobstate.APPROVALS:
-        if entry["stage"] == "story":
-            _gate(sdir, "story")
-        jobstate.mark_done(sdir, entry["stage"], decision=entry["id"], version=entry["version"], by=entry["by"],
-                           **(entry["choice"] or {}))  # fmt: skip
-    return decisions.mark_applied(sdir, entry["id"])
+    if not decisions.claim(sdir, entry["id"]):  # decide and wait raced: the other one is acting on it
+        return decisions.get(sdir, entry["id"])
+    try:
+        if entry["decision"] == "approve" and entry["stage"] in jobstate.APPROVALS:
+            if entry["stage"] == "story":
+                _gate(sdir, "story")
+            jobstate.mark_done(sdir, entry["stage"], decision=entry["id"], version=entry["version"], by=entry["by"],
+                               **(entry["choice"] or {}))  # fmt: skip
+    except BaseException:
+        decisions.unclaim(sdir, entry["id"])
+        raise
+    return decisions.get(sdir, entry["id"])
 
 
 def _page_stage(stage: str | None) -> str:
@@ -362,6 +373,8 @@ def _page_decide(args, sdir: Path) -> dict:
         raise CliError(f"usage: page decide SHORT STAGE approve|changes (not {decision!r})")
     if args.by is None:
         raise CliError("page decide needs --by page|chat|settings")
+    if args.by == "settings" and decision != "approve":
+        raise CliError("Only an engine approval can be answered from settings.")
     choice = {"engine": args.choice} if args.choice is not None else None
     if args.by == "settings":
         wanted = (settings.load_settings().get("render") or {}).get("engine")
@@ -378,12 +391,12 @@ def _page_decide(args, sdir: Path) -> dict:
             raise CliError("Add a note saying what to change first.")
     elif stage == "story" and version == current:
         _gate(sdir, "story")  # a story that doesn't validate is refused before anything is recorded
+    if args.note:
+        notes.add(sdir, stage, {"kind": "overall", "id": None, "version": version}, args.note, "chat")
     try:
         entry = decisions.record(sdir, stage, version, decision, args.by, current=current, choice=choice)
     except decisions.DecisionRefused as exc:
         raise CliError(str(exc)) from exc
-    if args.note:
-        notes.add(sdir, stage, {"kind": "overall", "id": None, "version": version}, args.note, "chat")
     sent = notes.send_stage(sdir, stage) if decision == "changes" or args.note else []
     entry = _apply_decision(sdir, entry)
     return {"decision": entry, "state": _state(sdir), "notes_sent": sent}
@@ -991,7 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--note", default=None)
     sp.add_argument("--reply", default=None)
     sp.add_argument("--version", type=int, default=None)
-    sp.add_argument("--timeout", type=float, default=None)
+    sp.add_argument("--timeout", type=float, default=None, help="seconds page wait waits (default 600)")
     sp.add_argument("--poll", type=float, default=1.0)
     sp.add_argument("--workspace", default=None)
     sp.add_argument("--lan", action="store_true")
@@ -1091,17 +1104,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _add_page_notes(args, out) -> None:
     """A result for a short says what is waiting on its review page (notes, answers Claude hasn't acted on)."""
-    key = getattr(args, "short", None)
-    if not key or not isinstance(out, dict):
-        return
-    try:
-        from bsa.review import inbox
+    from bsa.review import inbox
 
-        waiting = inbox.page_notes(short_dir(key))
+    try:
+        sdir = short_dir(args.short) if getattr(args, "short", None) else None
     except Exception:  # noqa: BLE001 - a short that doesn't resolve has no page
-        return
-    if waiting is not None:
-        out["page_notes"] = waiting
+        sdir = None
+    inbox.attach(out, sdir)
 
 
 if __name__ == "__main__":
