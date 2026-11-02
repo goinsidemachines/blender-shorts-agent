@@ -128,7 +128,7 @@ def test_cli_engine_proposes_short_json_engine_and_shows_runs(home, pendulum):
     (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
     out = ok(run(home, "engine", pendulum.name))
     assert (out["engine"], out["from"], out["approved"]) == ("eevee", "short.json", None)
-    ok(run(home, "state", pendulum.name, "done", "engine", "--info", '{"engine": "cycles"}'))
+    _approve(home, pendulum, "cycles")
     er.record_render(pendulum, "preview", er.EngineRun("cycles"), frames=2, seconds=8.0)
     out = ok(run(home, "engine", pendulum.name))
     assert (out["engine"], out["from"], out["approved"], out["short_json"]) == ("cycles", "engine stage", "cycles",
@@ -145,12 +145,15 @@ def test_bsa_blender_engine_falls_back_to_short_json(home, pendulum, monkeypatch
     spec["render"] = {"engine": "eevee"}
     (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
     assert bsa_blender._engine(pendulum) == "eevee"
-    ok(run(home, "state", pendulum.name, "done", "engine", "--info", '{"engine": "cycles"}'))
+    _approve(home, pendulum, "cycles")
     assert bsa_blender._engine(pendulum) == "cycles"
 
 
 def _approve(home, short: Path, engine: str) -> None:
-    ok(run(home, "state", short.name, "done", "engine", "--info", json.dumps({"engine": engine})))
+    ok(run(home, "state", short.name, "done", "interview"))
+    for stage in ("story", "storyboard"):
+        ok(run(home, "page", "decide", short.name, stage, "approve", "--by", "chat"))
+    ok(run(home, "page", "decide", short.name, "engine", "approve", "--by", "chat", "--choice", engine))
 
 
 def test_a_side_edit_writes_its_own_mp4_and_leaves_the_approved_run(home, pendulum, monkeypatch, capsys):

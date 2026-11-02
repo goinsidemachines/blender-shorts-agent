@@ -1547,6 +1547,21 @@ def _warn_stale_build(args, out: dict) -> None:
     print(f"warning: {freshness.BUILD_CHANGED}", file=sys.stderr, flush=True)
 
 
+def _add_page_notes(args, out: dict) -> None:
+    """A result for a short says what is waiting on its review page (notes, answers Claude hasn't acted on)."""
+    key = getattr(args, "short", None)
+    if not key or not isinstance(out, dict):
+        return
+    try:
+        from bsa.review import inbox
+
+        waiting = inbox.page_notes(_short_dir(key))
+    except Exception:  # noqa: BLE001 - a short that doesn't resolve has no page
+        return
+    if waiting is not None:
+        out["page_notes"] = waiting
+
+
 def _emit(obj: dict) -> None:
     print(RESULT_PREFIX + json.dumps(obj, default=str), flush=True)
 
@@ -1567,6 +1582,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             out = args.fn(args)
         _warn_stale_build(args, out)
+        _add_page_notes(args, out)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
         plain = isinstance(exc, (freshness.StaleError, CliError, jobstate.StateDamaged))
         message = _one_line(exc if plain else f"{type(exc).__name__}: {exc}")

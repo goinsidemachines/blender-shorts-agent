@@ -17,6 +17,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from bsa import jobstate, messages, settings, workspace  # needs the plugin root on sys.path (above)
+from bsa.review import store  # needs the plugin root on sys.path (above)
 
 ERROR_LIMIT = 600  # the one plain error line is trimmed at a sentence or clause boundary past this
 
@@ -298,16 +299,136 @@ def cmd_state(args) -> dict:
                 raise CliError("--info must be a JSON object")
         if args.stage in ("interview", "story"):
             _gate(sdir, args.stage)
+        if args.stage in jobstate.APPROVALS:
+            _require_approval(sdir, args.stage)
         if args.stage == "build":  # a rebuild invalidates the checks and every render made from the old build
             jobstate.reset_from(sdir, "checks")
         jobstate.mark_done(sdir, args.stage, **info)
     elif args.action == "reset":
+        from bsa.review import decisions, stages
+
+        later = jobstate.STAGES[jobstate.STAGES.index(args.stage) :]
+        decisions.supersede(sdir, [s for s in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES) if s in later])
         jobstate.reset_from(sdir, args.stage)
     elif args.action == "restore":  # state.json damaged: put state.json.bak back
         jobstate.restore(sdir)
     elif args.action is not None:
         raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     return _state(sdir)
+
+
+def _require_approval(sdir: Path, stage: str) -> None:
+    """story, storyboard and engine are marked done only through `page decide`, which leaves an applied approval of
+    the stage's current version."""
+    from bsa.review import decisions, snapshot
+
+    version = snapshot.stage_version(sdir, stage)
+    found = decisions.approved(sdir, stage, version) if version is not None else None
+    if not found or not found["applied"]:
+        raise CliError(f"Approvals are recorded with CLI page decide SHORT {stage} approve --by page|chat (the {stage} "
+                       f"has no approval for its current version {version})")  # fmt: skip
+
+
+def _apply_decision(sdir: Path, entry: dict) -> dict:
+    """Act on a decision: an approval of an approval stage marks the stage done (after the story's gate); every
+    decision is then marked applied. Returns the decision as stored."""
+    from bsa.review import decisions
+
+    if entry["decision"] == "approve" and entry["stage"] in jobstate.APPROVALS:
+        if entry["stage"] == "story":
+            _gate(sdir, "story")
+        jobstate.mark_done(sdir, entry["stage"], decision=entry["id"], version=entry["version"], by=entry["by"],
+                           **(entry["choice"] or {}))  # fmt: skip
+    return decisions.mark_applied(sdir, entry["id"])
+
+
+def _page_stage(stage: str | None) -> str:
+    from bsa.review import stages
+
+    if stage not in stages.PAGE_STAGES:
+        raise CliError(f"{stage!r} is not a page stage; expected one of {', '.join(stages.PAGE_STAGES)}")
+    return stage
+
+
+def _page_decide(args, sdir: Path) -> dict:
+    from bsa.review import decisions, notes, snapshot, stages
+
+    if len(args.words) != 4:
+        raise CliError("usage: page decide SHORT STAGE approve|changes --by page|chat|settings")
+    stage, decision = _page_stage(args.words[2]), args.words[3]
+    if stage not in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES):
+        raise CliError(f"The {stages.LABELS[stage]} has nothing to approve.")
+    if decision not in decisions.DECISIONS:
+        raise CliError(f"usage: page decide SHORT STAGE approve|changes (not {decision!r})")
+    if args.by is None:
+        raise CliError("page decide needs --by page|chat|settings")
+    choice = {"engine": args.choice} if args.choice is not None else None
+    if args.by == "settings":
+        wanted = (settings.load_settings().get("render") or {}).get("engine")
+        if args.choice is None or args.choice != wanted:
+            raise CliError(f"The render.engine setting is {wanted!r}, so it can't answer {args.choice!r}: ask the user "
+                           "which engine to use, then record it with --by chat.")  # fmt: skip
+    current = snapshot.stage_version(sdir, stage)
+    if current is None:
+        raise CliError(f"The {stages.LABELS[stage]} has nothing to answer yet.")
+    version = args.version if args.version is not None else current
+    if decision == "changes":
+        open_notes = [n for n in notes.load(sdir) if n["stage"] == stage and n["status"] in ("open", "sent")]
+        if not open_notes and not args.note:
+            raise CliError("Add a note saying what to change first.")
+    elif stage == "story" and version == current:
+        _gate(sdir, "story")  # a story that doesn't validate is refused before anything is recorded
+    try:
+        entry = decisions.record(sdir, stage, version, decision, args.by, current=current, choice=choice)
+    except decisions.DecisionRefused as exc:
+        raise CliError(str(exc)) from exc
+    if args.note:
+        notes.add(sdir, stage, {"kind": "overall", "id": None, "version": version}, args.note, "chat")
+    sent = notes.send_stage(sdir, stage) if decision == "changes" or args.note else []
+    entry = _apply_decision(sdir, entry)
+    return {"decision": entry, "state": _state(sdir), "notes_sent": sent}
+
+
+def _page_note(args, sdir: Path) -> dict:
+    from bsa.review import notes
+
+    if len(args.words) != 4 or args.words[3] not in notes.ANSWERS or args.reply is None:
+        raise CliError("usage: page note SHORT ID done|declined --reply TEXT")
+    try:
+        return {"note": notes.answer(sdir, args.words[2], args.words[3], args.reply)}
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+
+
+def _page_wait(args, sdir: Path) -> dict:
+    import time
+
+    from bsa.review import decisions, notes, snapshot
+
+    if len(args.words) != 2 or args.stage is None:
+        raise CliError("usage: page wait SHORT --stage STAGE [--timeout S] [--poll S]")
+    stage = _page_stage(args.stage)
+    deadline = time.monotonic() + (args.timeout if args.timeout is not None else 600.0)
+    poll = max(args.poll, 0.05)
+    while True:
+        version = snapshot.stage_version(sdir, stage)
+        waiting = [d for d in decisions.unapplied(sdir) if d["stage"] == stage and d["version"] == version]
+        sent = [n for n in notes.load(sdir) if n["stage"] == stage and n["status"] == "sent"]
+        if waiting or sent or time.monotonic() >= deadline:
+            entry = _apply_decision(sdir, waiting[-1]) if waiting else None
+            return {"stage": stage, "version": version, "decision": entry, "notes": sent,
+                    "applied": entry is not None, "timed_out": not (waiting or sent)}  # fmt: skip
+        time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
+
+
+def cmd_page(args) -> dict:
+    if args.words[0] in ("decide", "note", "wait"):
+        if len(args.words) < 2:
+            raise CliError(f"usage: page {args.words[0]} SHORT ...")
+        args.short = args.words[1]
+        sdir = short_dir(args.short)
+        return {"decide": _page_decide, "note": _page_note, "wait": _page_wait}[args.words[0]](args, sdir)
+    raise CliError("page SHORT and page serve are not available yet")
 
 
 def cmd_engine(args) -> dict:
@@ -859,6 +980,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--info", default=None)
     sp.set_defaults(fn=cmd_state)
 
+    sp = sub.add_parser("page", help="decide SHORT STAGE approve|changes --by page|chat|settings [--choice ENGINE] "
+                        "[--note TEXT] [--version N] | note SHORT ID done|declined --reply TEXT | wait SHORT --stage "
+                        "STAGE [--timeout S] | SHORT [--open] | serve")  # fmt: skip
+    sp.add_argument("words", nargs="+")
+    sp.add_argument("--open", action="store_true")
+    sp.add_argument("--stage", default=None)
+    sp.add_argument("--by", choices=["page", "chat", "settings"], default=None)
+    sp.add_argument("--choice", default=None)
+    sp.add_argument("--note", default=None)
+    sp.add_argument("--reply", default=None)
+    sp.add_argument("--version", type=int, default=None)
+    sp.add_argument("--timeout", type=float, default=None)
+    sp.add_argument("--poll", type=float, default=1.0)
+    sp.add_argument("--workspace", default=None)
+    sp.add_argument("--lan", action="store_true")
+    sp.set_defaults(fn=cmd_page)
+
     sp = sub.add_parser("engine", help="SHORT: its render engine and where it comes from, and each engine's measured "
                         "seconds per frame and MP4")  # fmt: skip
     sp.add_argument("short")
@@ -938,7 +1076,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         out = args.fn(args)
-    except (CliError, jobstate.StateDamaged) as exc:
+    except (CliError, jobstate.StateDamaged, store.StoreDamaged) as exc:
         if getattr(exc, "payload", None) is not None:
             print(json.dumps(exc.payload, indent=2, default=str))
         print(_one_line(exc), file=sys.stderr)
@@ -946,8 +1084,24 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
         print(_one_line(f"{type(exc).__name__}: {exc}"), file=sys.stderr)
         return 1
+    _add_page_notes(args, out)
     print(json.dumps(out, indent=2, default=str))
     return 0
+
+
+def _add_page_notes(args, out) -> None:
+    """A result for a short says what is waiting on its review page (notes, answers Claude hasn't acted on)."""
+    key = getattr(args, "short", None)
+    if not key or not isinstance(out, dict):
+        return
+    try:
+        from bsa.review import inbox
+
+        waiting = inbox.page_notes(short_dir(key))
+    except Exception:  # noqa: BLE001 - a short that doesn't resolve has no page
+        return
+    if waiting is not None:
+        out["page_notes"] = waiting
 
 
 if __name__ == "__main__":

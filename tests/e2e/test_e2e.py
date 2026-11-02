@@ -79,15 +79,15 @@ def test_script_mode_end_to_end(tmp_path):
 
     assert p.cli("validate", "pendulum")["ok"]
     p.cli("state", "pendulum", "done", "interview")
-    p.cli("state", "pendulum", "done", "story")
+    p.cli("page", "decide", "pendulum", "story", "approve", "--by", "chat")
     timeline = p.cli("timeline", "pendulum")
     p.build(short)
     stills = p.blender_cmd("stills", "pendulum", blend=blend)["stills"]
     assert len(stills) == 3 and all(Path(s).stat().st_size > 0 for s in stills)
     board = Path(p.cli("review", "storyboard", "pendulum")["page"])
     assert board == short / "review" / "storyboard.html" and board.is_file()
-    p.cli("state", "pendulum", "done", "storyboard")
-    p.cli("state", "pendulum", "done", "engine", "--info", json.dumps({"engine": "eevee"}))
+    p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
+    p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
 
     narration = p.cli("narrate", "pendulum")
     assert narration["status"] == "captions-only"

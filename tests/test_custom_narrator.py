@@ -165,8 +165,9 @@ def test_cli_narrate_keeps_the_voice_tools_log(tmp_path):
     cli("settings", "set", "workspace", ws)
     short = Path(cli("new-short", "Pendulum")["short"])
     shutil.copyfile(root / "tests" / "e2e" / "pendulum" / "source" / "short.json", short / "source" / "short.json")
-    for stage in ("interview", "story", "storyboard"):
-        cli("state", short, "done", stage)
+    cli("state", short, "done", "interview")
+    for stage in ("story", "storyboard"):
+        cli("page", "decide", short, stage, "approve", "--by", "chat")
     cli("settings", "set", "narrator.provider", "custom")
     cli("settings", "set", "narrator.command", f'"{sys.executable}" "{tool}" --lines {{lines}} --out {{out}}')
     cli("settings", "set", "narrator.verify", "false")

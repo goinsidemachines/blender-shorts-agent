@@ -126,10 +126,10 @@ def test_new_short_needs_workspace(home):
 
 def test_state_done_and_reset(home, pendulum):
     ok(run(home, "state", "pendulum", "done", "interview"))
-    ok(run(home, "state", "pendulum", "done", "story", "--info", '{"note": "approved"}'))
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
     state = ok(run(home, "state", "pendulum"))
     assert state["next"] == "storyboard"
-    assert state["stages"]["story"]["note"] == "approved"
+    assert state["stages"]["story"]["by"] == "chat"
     state = ok(run(home, "state", "pendulum", "reset", "story"))
     assert state["next"] == "story"
     proc = run(home, "state", "pendulum", "done", "nonsense")
@@ -284,19 +284,20 @@ def test_story_needs_a_valid_spec(home, pendulum):
     spec = json.loads(SAMPLE.read_text(encoding="utf-8"))
     spec["lines"][0]["shot"] = "nope"
     (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
-    proc = run(home, "state", "pendulum", "done", "story")
+    proc = run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat")
     assert proc.returncode == 1 and "unknown shot" in proc.stderr and "validate" in proc.stderr
     assert "story" not in ok(run(home, "state", "pendulum"))["stages"]
 
 
 def _approve_storyboard(home, short="pendulum"):
-    for stage in ("interview", "story", "storyboard"):
-        ok(run(home, "state", short, "done", stage))
+    ok(run(home, "state", short, "done", "interview"))
+    for stage in ("story", "storyboard"):
+        ok(run(home, "page", "decide", short, stage, "approve", "--by", "chat"))
 
 
 def test_narrate_refuses_before_the_storyboard_is_approved(home, pendulum):
     ok(run(home, "settings", "set", "narrator.provider", "elevenlabs"))
-    ok(run(home, "state", "pendulum", "done", "story"))
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
     proc = run(home, "narrate", "pendulum")
     assert proc.returncode == 1 and "storyboard" in proc.stderr and "Traceback" not in proc.stderr
     assert "narration" not in ok(run(home, "state", "pendulum"))["stages"]
@@ -404,12 +405,12 @@ def test_validate_and_story_need_every_rule_answered(home, pendulum):
     ok(run(home, "state", "pendulum", "done", "interview"))
     proc = run(home, "validate", "pendulum")
     assert proc.returncode == 1 and "r1" in proc.stderr and "rules_check" in proc.stderr
-    proc = run(home, "state", "pendulum", "done", "story")
+    proc = run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat")
     assert proc.returncode == 1 and "rules_check" in proc.stderr
     _with_rules_check(pendulum, {"r1": "Only the pendulum and the clock"})
     out = ok(run(home, "validate", "pendulum"))
     assert not any("hard rule" in w for w in out["warnings"])
-    ok(run(home, "state", "pendulum", "done", "story"))
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
 
 
 def test_review_pages_show_the_rules_and_how_they_were_kept(home, pendulum):
