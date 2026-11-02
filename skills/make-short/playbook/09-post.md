@@ -20,7 +20,14 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
 2. `CLI validate SHORT` (the post must not break the spec).
 3. `CLI page SHORT --stage final` switches the page to the Final stage: the final video, the checks summary and the
    user's hard rules with how this short kept each (`rules_check`: re-read it against the finished video first);
-   each finding says its shot, and a frame finding its redo command. Say "the page has switched to the final video"
+   each finding says its shot, and a frame finding its redo command. Under the video is its timeline (shots,
+   captions, sounds, findings, holds and the closing card, each at its frame; "Note at this moment" leaves a frame
+   note), the fact panel "Facts behind every line" (each line's facts and sources, and every number on screen with
+   the fact behind it; it opens by itself when something is flagged), and, once the user has seen an earlier final,
+   "Compare with version N" to play that video beside this one. Notes from these tools are handled as SKILL.md rule
+   4 says (a frame note: grab and look at that frame; "Needs a source": add a sourced fact or reword the line). If
+   the page says the video was cut from an older timing, run the final edit again (`08-render.md`) before you hand
+   over. Say "the page has switched to the final video"
    (`opened` false: say so and give the `url` as a link). Final is not a gate: its "Looks good" is the user's
    acknowledgement, so never wait for it. The Post stage next to it has the post text with copy buttons and the
    asset credits. When the user wants the post text changed (in chat, or a note on the page), edit `post`,

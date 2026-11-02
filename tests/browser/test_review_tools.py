@@ -472,3 +472,42 @@ def test_final_compare_video_and_focus_survive_a_live_update(view, live_server):
     expect(button).to_have_attribute("aria-expanded", "true")
     expect(button).to_be_focused()
     assert_healthy(p)
+
+
+def test_every_review_tool_on_one_short(view, live_server):
+    """One finished short, each stage in turn: Story's fact panel, Narration's voice table, the Render run's
+    timeline and the Final's timeline with its fact panel."""
+    srv = live_server("done")
+    _stand_in_video(srv)
+    pagefix.with_numbers(srv.sdir)
+    pagefix.write_heard(srv.sdir, {"l02": "length set the beat"})
+    p = open_short(view, srv, stage="final")
+    nav = p.get_by_role("navigation", name="Stages")
+
+    nav.get_by_role("button", name="Story", exact=True).click()
+    expect(p.get_by_role("heading", level=2, name="Story")).to_be_visible()
+    card = p.locator("details.facts-panel")
+    expect(card).to_have_attribute("open", "")
+    expect(card.get_by_text("Has a number but cites no fact")).to_be_visible()
+    expect(p.get_by_role("button", name="Needs a source: l04")).to_be_visible()
+    assert_healthy(p)
+
+    nav.get_by_role("button", name="Narration", exact=True).click()
+    row = p.locator("tr[data-line='l02']")
+    expect(row.locator("mark", has_text="set")).to_be_visible()
+    expect(p.get_by_role("button", name="Re-take: l02")).to_be_visible()
+    assert_healthy(p)
+
+    nav.get_by_role("button", name="Render", exact=True).click()
+    panel = p.get_by_role("tabpanel")
+    expect(panel.locator("video")).to_have_count(1)
+    expect(panel.get_by_role("slider", name="Frame")).to_be_visible()
+    expect(panel.get_by_role("button", name="Note at this moment")).to_be_visible()
+    assert_healthy(p)
+
+    nav.get_by_role("button", name="Final", exact=True).click()
+    stage = p.locator("#bsa-stage")
+    expect(stage.get_by_role("slider", name="Frame")).to_be_visible()
+    expect(stage.get_by_role("button", name="Note at this moment")).to_be_visible()
+    expect(stage.locator("details.facts-panel")).to_have_attribute("open", "")
+    assert_healthy(p)

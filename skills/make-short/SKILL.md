@@ -127,6 +127,40 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
      asks, then `CLI page note SHORT ID done --reply "what you changed"`, or `CLI page note SHORT ID declined
      --reply "why not"`. A note on a stage that is already approved means going back: ask the user before you
      reset anything (`CLI state SHORT reset STAGE`).
+   - **What a note points at:** each note has a `target` (`kind`, `id`, and for a frame `shot`) and the user's
+     `text`; read both. Three kinds come from the page's review tools:
+     - **A frame note** (`kind` `frame`, from "Note at this moment" under a video's timeline) means "look at frame
+       N" of that video. Frames count from 1 in the edited video, at 30 fps. Grab it with `BLENDER grab SHORT
+       --preset final --at S`, where `S = (N - 0.5) / 30` (the middle of the frame: frame 412 is `--at 13.7167`),
+       and look at the PNG it writes (its result names the file) before you change anything. On Final the `id` is
+       `N`. A Render note's id is `<run key>:<N>`, and the run key names the video: `preview`, `final`, or
+       `<preset>-<tag>` for a side run. Add `--preset <preset>` and, for a side run, `--tag <tag>`: `preview:412`
+       is `BLENDER grab SHORT --preset preview --at 13.7167`, `preview-eevee:412` is `BLENDER grab SHORT --preset
+       preview --tag eevee --at 13.7167`. Its `shot` says which shot the frame is in (null on the closing card):
+       fix that shot, then rebuild as usual (`BLENDER preview SHORT`, and the final again when it was made).
+       When the page says "This video was cut from an older timing", its markers are hidden and frame numbers
+       may not match the current timing: run the edit again first (`playbook/08-render.md`).
+     - **"Re-take this line"** (a `line` note on Narration, from the voice check; its `id` is the line's id): run
+       `CLI narrate SHORT --line ID` with `run_in_background: true`. It throws away only that line's take and
+       speaks it again with the next seed; every other take is kept. When the voice misread a word (the voice
+       check shows what Whisper heard against the line), add `--say "..."`: the words spelled the way the voice
+       should say them, saved as the line's `say` (the caption still shows `text`). The closing line can't be
+       respelled this way: change the `closing.voice_line` setting instead. The new take has another length, so
+       the timing changes: once the build stage is reached, run `BLENDER preview SHORT` in the background (it
+       reruns the timeline, the mix and the edit as needed), and, when the final was made, `BLENDER render SHORT --preset final`, `BLENDER
+       frame-check SHORT --preset final` and `BLENDER edit SHORT --preset final` again (`playbook/08-render.md`).
+       Then answer the note: `CLI page note SHORT ID done --reply "re-took l02 ..."`. If `narrate` refuses (no
+       narration yet, captions only, an unknown line), relay its message in the reply and decline the note.
+     - **"Needs a source"** (a `line` note from the fact panel, "Facts behind every line", on Story or Final): the
+       line states a number that no fact backs. Either add a fact to `facts` in short.json with a real source
+       (`playbook/honesty.md`: never invent a source) and cite it from the line, or reword the line without the
+       number. Then `CLI validate SHORT`, and answer the note (`CLI page note SHORT ID done --reply "..."`). A
+       number in a shot's label needs a fact cited by a line of the same shot. Once the story is approved, a
+       reworded line changes it: ask the user first, then `CLI narrate SHORT` in the background (only the changed
+       line's take is remade) and rebuild as for a re-take.
+   - **Before and after:** Story, Storyboard and Final keep the last 3 versions the user saw, and the page offers
+     "Compare with version N" (a word diff of the lines, the frames side by side, or the two videos). Nothing to
+     run for it: a note left while comparing is about the version shown now unless its text says otherwise.
    - **Final is not a gate:** its "Looks good" is the user's acknowledgement; never wait for it. It shows up in
      `CLI page notes SHORT` as an unapplied `final` decision: apply it with `CLI page wait SHORT --stage final`.
    - **The feedback panel** shows on the Post stage only after the user said yes to seeing the plugin's notes

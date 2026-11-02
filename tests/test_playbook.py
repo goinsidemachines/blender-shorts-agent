@@ -262,3 +262,39 @@ def test_a_timed_out_wait_is_rerun_only_while_its_stage_still_waits():
         assert re.search(r"only while (that|the \w+) stage still waits for a yes|only while the \w+ still waits", t), name
         if stage:
             assert f"still has `next` {stage}" in t, name
+
+
+def test_frame_notes_are_read_as_a_frame_to_look_at():
+    t = _flat(_read("SKILL.md"))
+    assert "look at frame N" in t and "BLENDER grab SHORT --preset final --at" in t
+    assert "(N - 0.5) / 30" in t and "<run key>:<N>" in t and "--tag <tag>" in t
+
+
+def test_retake_notes_renarrate_one_line_then_rebuild():
+    skill = _flat(_read("SKILL.md"))
+    t = skill + " " + _flat(_read("playbook/05-narration.md"))
+    assert "CLI narrate SHORT --line ID" in t and "--say" in t and "BLENDER preview SHORT" in t
+    retake = skill.split("Re-take this line", 1)[1][:1300]
+    assert "run_in_background" in retake and "BLENDER preview SHORT" in retake and "CLI page note SHORT" in retake
+
+
+def test_needs_a_source_adds_a_fact_or_rewords():
+    t = _flat(_read("SKILL.md"))
+    need = t.split("Needs a source", 1)[1][:700]
+    assert "`facts`" in need and "reword" in need and "CLI validate SHORT" in need and "CLI page note SHORT" in need
+
+
+def test_whisper_install_hint_is_documented():
+    t = _flat(_read("playbook/05-narration.md"))
+    assert "whisper-small.en" in t and "CLI voice plan whisper-small.en" in t and "why_not" in t
+    assert "audio/vo/heard.json" in t and "ElevenLabs" in t.split("heard.json", 1)[1]
+
+
+def test_stale_timeline_means_edit_again():
+    t = _flat(_read("playbook/08-render.md"))
+    assert "older timing" in t and re.search(r"older timing.{0,400}BLENDER edit SHORT --preset", t)
+
+
+def test_post_chapter_names_the_final_review_tools():
+    t = _flat(_read("playbook/09-post.md"))
+    assert "timeline" in t and "Facts behind every line" in t and "Compare with version N" in t

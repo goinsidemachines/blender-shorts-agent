@@ -36,6 +36,32 @@ finished.
      retry in a loop, do not ask the user to fix it now.
    - `status: captions-only` without a message: the user chose captions only. Say nothing.
 
+## The voice check on the page
+
+Every narrate run records what Whisper heard in each take in `audio/vo/heard.json` (per line: the words asked for,
+what was heard, and the word error rate), or, when the takes weren't checked, `checked: false` with `why_not`.
+Every voice is checked the same way, ElevenLabs takes too, and the user's own tool. The page's Narration stage shows
+it as a table, one row per line: the words heard with the misheard ones marked, and whether the take passed. A
+take that is being made again shows "Waiting for a new take" until the next check.
+
+- **Re-taking one line.** The user asks for it with "Re-take this line" on that row (a note on the line), or in
+  chat. Run `CLI narrate SHORT --line ID` with `run_in_background: true`: only that take is thrown away and spoken
+  again, with the next seed, so it reads differently; the other takes are kept. The result has `retake` (`line`,
+  `seed`). When the voice misread a word, add `--say "..."` with the words spelled the way the voice should say
+  them (`CLI narrate SHORT --line l02 --say "the ess-capement turns"`): it is saved as the line's
+  `say`, and the caption still shows `text`. `--say` needs `--line`, and the closing line's words are the
+  `closing.voice_line` setting, not a respelling. The new take has another length, so the timing changes: once
+  the build stage is done, run `BLENDER preview SHORT` in the background (it reruns the timeline, the mix and the
+  edit as needed) and, when the final was made, the final render, frame-check and edit again (`08-render.md`).
+  Then answer the note (`CLI page note SHORT ID done --reply "..."`).
+- **Whisper missing.** When `why_not` says Whisper isn't installed, the page shows "Whisper isn't installed, so
+  the takes weren't checked. CLI voice plan whisper-small.en shows what it downloads." Offer it once, at a calm
+  moment (never mid-render): run `CLI voice plan whisper-small.en`, show its plan (name, source, licence, size)
+  and, only on a clear yes, `CLI voice install whisper-small.en` with `run_in_background: true`. The next
+  `narrate` checks the takes. Narration never waits for it.
+- Any other `why_not` (the check is turned off, or the file can't be read) is shown on the page as it is; say it
+  in one line if the user asks.
+
 Captions-only shorts are paced for reading time (about 2.6 words a second), not stretched to imaginary narration.
 
 ## After narration: the timing changed
