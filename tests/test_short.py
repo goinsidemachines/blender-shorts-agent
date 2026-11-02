@@ -136,5 +136,5 @@ def test_line_fact_flags_codes():
     from bsa.short import line_fact_flags
 
     assert line_fact_flags(Line("l01", "No digits", "s01", ["f1"]), {"f1"}) == []
-    assert line_fact_flags(Line("l01", "In 1999", "s01", ["x", "f1"]), {"f1"}) == ["unknown_fact:x"]
-    assert line_fact_flags(Line("l01", "In 1999", "s01", ["x"]), {"f1"}) == ["unknown_fact:x", "number_without_fact"]
+    assert line_fact_flags(Line("l01", "In 1999", "s01", ["x", "f1"]), {"f1"}) == [("unknown_fact", "x")]
+    assert line_fact_flags(Line("l01", "In 1999", "s01", ["x"]), {"f1"}) == [("unknown_fact", "x"), ("number_without_fact", None)]

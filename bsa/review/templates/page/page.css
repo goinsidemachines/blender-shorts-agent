@@ -393,7 +393,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .fact-line { padding: 8px 12px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border); }
 .fact-line p { margin: 0 0 4px; overflow-wrap: anywhere; }
 .fact-line.flagged { background: var(--warn-soft); }
-.fact-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fact-item { margin: 4px 0 6px; }
 a.chip { color: var(--fg); text-decoration: underline; }
 .facts-panel .voice-bad, .facts-panel tr.flagged { font-weight: 800; }
 .facts-panel tr.flagged td { background: var(--warn-soft); }

@@ -4,7 +4,6 @@ them, and every number a viewer sees on screen with the fact that backs it. Read
 from __future__ import annotations
 
 import re
-from decimal import Decimal
 from urllib.parse import urlparse
 
 from bsa.short import Short, label_text, line_fact_flags
@@ -17,7 +16,7 @@ FLAG_WORDS = {
 # One number: digit groups of three joined by commas (a thousands separator) or plain digits, then an optional
 # decimal part. A comma anywhere else ends the number. Scanning left to right takes the whole run of digits, so a
 # number is never read out of the middle of a longer one.
-_NUMBER = re.compile(r"(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d+)?")
+_NUMBER = re.compile(r"(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d+)?|\.\d+")
 
 
 def is_link(url: str) -> bool:
@@ -26,7 +25,9 @@ def is_link(url: str) -> bool:
 
 
 def _normal(raw: str) -> str:
-    return format(Decimal(raw.replace(",", "")).normalize(), "f")  # "f": never exponent form (1E+2 is "100")
+    whole, _, frac = raw.replace(",", "").partition(".")  # strings, not Decimal: no rounding of long numbers
+    whole, frac = whole.lstrip("0") or "0", frac.rstrip("0")
+    return f"{whole}.{frac}" if frac else whole
 
 
 def numbers(text: str) -> list[str]:
@@ -34,9 +35,8 @@ def numbers(text: str) -> list[str]:
     return [_normal(m.group(0)) for m in _NUMBER.finditer(str(text))]
 
 
-def _flag_word(code: str) -> str:
-    kind, _, rest = code.partition(":")
-    return FLAG_WORDS[kind].format(id=rest)
+def _flag_word(kind: str, fact_id: str | None) -> str:
+    return FLAG_WORDS[kind].format(id=fact_id or "")
 
 
 def _row(where: str, text: str, number: str, facts: list) -> dict:
@@ -57,7 +57,7 @@ def panel(short: Short) -> dict:
         cited = [by_id[fid] for fid in dict.fromkeys(ln.facts) if fid in by_id]
         pool = cited_in_shot.setdefault(ln.shot, [])
         pool += [f for f in cited if f not in pool]
-        flags = [_flag_word(c) for c in line_fact_flags(ln, ids)]
+        flags = [_flag_word(kind, fid) for kind, fid in line_fact_flags(ln, ids)]
         flagged = flagged or bool(flags)
         facts = [{"id": f.id, "claim": f.claim, "source": f.source, "is_link": is_link(f.source)} for f in cited]
         lines.append({"id": ln.id, "text": ln.text, "flags": flags, "facts": facts})

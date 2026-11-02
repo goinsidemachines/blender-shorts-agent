@@ -292,15 +292,17 @@
   };
 
   // The fact panel: per line the facts it cites and what is wrong, then every number on screen and the fact behind it.
-  var factsOpen = null; // the user's choice, kept across live updates; null until they toggle it
+  var factsOpen = {}; // stage id -> open, set only by the user's own toggle; absent until they touch it
 
-  function factChip(ctx, f) {
-    var label = String(f.id);
+  // A cited fact: its id (a link when the source is one), the claim, and the source as text when it isn't a link.
+  function factItem(ctx, f) {
     var chip = f.is_link
-      ? ctx.el("a", { class: "chip", href: String(f.source), target: "_blank", rel: "noopener noreferrer",
-        title: String(f.claim || "") }, label)
-      : ctx.el("span", { class: "chip", title: String(f.claim || "") + " (" + String(f.source || "") + ")" }, label);
-    return chip;
+      ? ctx.el("a", { class: "chip", href: String(f.source), target: "_blank", rel: "noopener noreferrer" }, String(f.id))
+      : ctx.el("span", { class: "chip" }, String(f.id));
+    return ctx.el("div", { class: "fact-item" },
+      chip,
+      ctx.el("p", { class: "muted" }, String(f.claim || "")),
+      f.is_link ? null : ctx.el("p", { class: "muted" }, "Source: " + String(f.source || "")));
   }
 
   review.facts = function (ctx, panel) {
@@ -310,11 +312,11 @@
     if (!lines.length && !rows.length) return null;
     var items = lines.map(function (ln) {
       var flags = ln.flags || [];
+      var cited = ln.facts || [];
       return el("li", { class: "fact-line" + (flags.length ? " flagged" : ""), "data-line": String(ln.id) },
-        el("p", { title: String(ln.text) }, el("strong", null, "Line " + ln.id)),
-        el("p", { class: "fact-chips" },
-          (ln.facts || []).length ? (ln.facts || []).map(function (f) { return factChip(ctx, f); })
-            : el("span", { class: "muted" }, "Cites no fact")),
+        el("p", null, el("strong", null, "Line " + ln.id)),
+        el("p", { class: "muted" }, String(ln.text)),
+        cited.length ? cited.map(function (f) { return factItem(ctx, f); }) : el("p", { class: "muted" }, "Cites no fact"),
         flags.map(function (w) { return el("p", { class: "voice-bad" }, String(w)); }),
         flags.length ? ctx.noteButton("line", ln.id, "Needs a source: " + ln.id, "Needs a source") : null);
     });
@@ -335,8 +337,17 @@
       el("summary", null, "Facts behind every line"),
       el("ul", { class: "fact-lines" }, items),
       rows.length ? el("h4", null, "Numbers on screen") : null, table);
-    card.open = factsOpen === null ? !!panel.flagged : factsOpen;
-    card.addEventListener("toggle", function () { factsOpen = card.open; });
+    var stage = String((ctx.stage && ctx.stage.id) || "");
+    var user = Object.prototype.hasOwnProperty.call(factsOpen, stage);
+    var want = user ? factsOpen[stage] : !!panel.flagged; // untouched: open whenever something is flagged
+    card.open = want;
+    // The toggle event from setting `open` above arrives later; only a change from what we set is the user's.
+    var set = want;
+    card.addEventListener("toggle", function () {
+      if (card.open === set) return;
+      set = card.open;
+      factsOpen[stage] = card.open;
+    });
     return card;
   };
 

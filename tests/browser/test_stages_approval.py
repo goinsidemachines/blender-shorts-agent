@@ -24,7 +24,7 @@ def live_server_with_settings(live_server, bsa_home):
 def test_story_renders_and_line_note(view, live_server):
     srv = live_server("story")
     p = open_short(view, srv)
-    expect(p.get_by_text("A pendulum swings like clockwork.")).to_be_visible()
+    expect(p.locator(".st-story .beats").get_by_text("A pendulum swings like clockwork.")).to_be_visible()
     p.get_by_role("button", name="Note on line l02").click()
     p.get_by_role("textbox").fill("Say 'beat'")
     p.get_by_role("button", name="Save note").click()
@@ -70,7 +70,7 @@ def test_story_fact_that_is_not_a_link_stays_text(view, live_server):
     path.write_text(path.read_text("utf-8").replace("https://en.wikipedia.org/wiki/Pendulum_(mechanics)",
                                                     "javascript:alert(1)"), "utf-8")  # fmt: skip
     p = open_short(view, srv)
-    expect(p.get_by_text("javascript:alert(1)")).to_be_visible()
+    expect(p.locator("#bsa-stage ul.facts").get_by_text("javascript:alert(1)")).to_be_visible()
     expect(p.locator("#bsa-stage a")).to_have_count(0)
     assert_healthy(p)
 

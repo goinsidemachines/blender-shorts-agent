@@ -3,7 +3,7 @@
 import pagefix
 
 from bsa.review import facts, snapshot
-from bsa.short import Fact, Line, Short, Shot
+from bsa.short import Fact, Line, Short, Shot, validate
 
 
 def short_with(fact_claim="A claim", line_text="Plain.", cites=("f1",), labels=(), source="https://example.com/x"):
@@ -28,6 +28,8 @@ def test_numbers_edge_cases():
     assert facts.numbers("100 and 1,000,000") == ["100", "1000000"]
     assert facts.numbers("10.0 and 0.50") == ["10", "0.5"]
     assert facts.numbers("no digits") == []
+    assert facts.numbers(".5 and 0.50 and 007") == ["0.5", "0.5", "7"]
+    assert facts.numbers("12345678901234567890123456789.10") == ["12345678901234567890123456789.1"]  # no rounding
 
 
 def test_a_number_inside_a_longer_number_is_no_match():
@@ -35,12 +37,14 @@ def test_a_number_inside_a_longer_number_is_no_match():
     assert not any(r["ok"] for r in facts.panel(s)["on_screen"])
 
 
-def test_flags_reuse_validate(tmp_path):
+def test_flag_words_match_what_validate_says():
     s = short_with(line_text="It weighs 660 tonnes", cites=())
     p = facts.panel(s)
     assert p["lines"][0]["flags"] == ["Has a number but cites no fact"] and p["flagged"] is True
+    assert validate(s) == ["line l01 contains a number but cites no fact"]
     s = short_with(cites=("nope",))
     assert facts.panel(s)["lines"][0]["flags"] == ["Cites a fact that isn't in the list (nope)"]
+    assert validate(s) == ["line l01 cites unknown fact 'nope'"]
     assert facts.panel(short_with())["flagged"] is False
 
 
@@ -61,13 +65,17 @@ def test_fact_chips_say_whether_the_source_is_a_link():
 def test_fact_panel_never_moves_a_version(tmp_path):
     for stage in ("story", "final"):
         sdir = pagefix.make_short(tmp_path / stage, stage)
-        ctx = snapshot.load_ctx(sdir, {})
-        content = snapshot.BUILDERS[stage](ctx)
+        content = snapshot.BUILDERS[stage](snapshot.load_ctx(sdir, {}))
         assert content["facts_panel"]["lines"]
-        before = snapshot.stage_version(sdir, stage, ctx)
+        before = snapshot.stage_version(sdir, stage, snapshot.load_ctx(sdir, {}))
         content["facts_panel"] = {"lines": [], "on_screen": [{"number": "changed"}], "flagged": True}
         assert snapshot._version_of(sdir, stage, content) == before
-    # on the final, the panel follows the story's words, which the final's own content does not hold
+
+
+def test_final_version_ignores_the_story_words_the_panel_follows(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "final")
+    before = snapshot.stage_version(sdir, "final", snapshot.load_ctx(sdir, {}))
     pagefix.with_numbers(sdir)
-    assert snapshot.BUILDERS["final"](snapshot.load_ctx(sdir, {}))["facts_panel"]["flagged"] is True
-    assert snapshot.stage_version(sdir, "final", snapshot.load_ctx(sdir, {})) == before
+    ctx = snapshot.load_ctx(sdir, {})
+    assert snapshot.BUILDERS["final"](ctx)["facts_panel"]["flagged"] is True
+    assert snapshot.stage_version(sdir, "final", ctx) == before

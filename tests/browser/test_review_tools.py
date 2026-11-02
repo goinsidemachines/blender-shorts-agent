@@ -275,6 +275,8 @@ def test_fact_panel_flags_and_needs_a_source_note(view, live_server):
     card = p.locator("details.facts-panel")
     expect(card).to_have_attribute("open", "")  # something is flagged, so it opens by itself
     expect(card.get_by_text("Has a number but cites no fact")).to_be_visible()
+    expect(card.locator(".fact-line[data-line='l04']").get_by_text("Clocks kept time this way for 270 years.")).to_be_visible()  # the line's own text
+    expect(card.get_by_text("not on its mass").first).to_be_visible()  # the fact's claim, in view
     expect(card.get_by_text("No fact has this number").first).to_be_visible()
     expect(card.locator("a.chip[rel='noopener noreferrer']").first).to_be_visible()
     version = snapshot.stage_version(srv.sdir, "story", snapshot.load_ctx(srv.sdir, {}))
@@ -296,4 +298,9 @@ def test_fact_panel_shows_on_final(view, live_server):
     assert not card.evaluate("c => c.open")  # nothing flagged on the plain pendulum
     card.locator("summary").click()
     expect(card.get_by_text("f-period").first).to_be_visible()
+    expect(card.locator(".fact-line[data-line='l02']").get_by_text("Length sets the beat.")).to_be_visible()
+    expect(card.get_by_text("not on its mass").first).to_be_visible()  # the claim, readable without a hover
+    card.locator("summary").click()  # the user closed it: a live update keeps it closed
+    p.wait_for_timeout(1500)
+    assert not card.evaluate("c => c.open")
     assert_healthy(p)

@@ -128,9 +128,6 @@ def _rule_rows(ctx: Ctx, short: Short) -> list[dict]:
     return rules.panel_rows(rules.effective(ctx.settings, short), short)
 
 
-_is_link = facts.is_link
-
-
 def _story(ctx: Ctx) -> dict | None:
     short = _short(ctx)
     tl = _reading_timeline(ctx, short)
@@ -169,7 +166,7 @@ def _story(ctx: Ctx) -> dict | None:
         "closing": short.lines[-1].text if short.lines else "",
         "beats": beats,
         "facts": [
-            {"id": f.id, "claim": f.claim, "source": f.source, "is_link": _is_link(f.source)} for f in short.facts
+            {"id": f.id, "claim": f.claim, "source": f.source, "is_link": facts.is_link(f.source)} for f in short.facts
         ],
         "look": {"note": pages.LOOK_NOTES.get(look or ""), "options": options},
         "assets": {"pending": _asset_rows(_pending_assets(ctx.sdir)), "downloaded": _asset_rows(short.assets)},
