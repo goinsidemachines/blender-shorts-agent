@@ -527,3 +527,23 @@ def test_final_can_be_answered_while_current_or_done(tmp_path):
                 c.close()
             s.shutdown()
             s.server_close()
+
+
+def test_a_range_response_is_capped_and_holds_no_file_open(srv, monkeypatch):
+    """A video asks for "bytes=0-": each answer is at most RANGE_CAP bytes, read and closed before it is sent, so a
+    page streaming the MP4 never holds it open for long (on Windows that would make the edit's replace fail)."""
+    assert 1 << 20 <= server.RANGE_CAP <= 8 << 20
+    monkeypatch.setattr(server, "RANGE_CAP", 10)
+    clip = srv.sdir / "out" / "pendulum.mp4"
+    clip.parent.mkdir(exist_ok=True)
+    data = bytes(range(100))
+    clip.write_bytes(data)
+    url = f"/files/01-pendulum/out/pendulum.mp4?t={srv.token}"
+    r = get(srv, url, headers={"Range": "bytes=0-"})
+    assert r.status == 206 and r.read() == data[:10] and r.getheader("Content-Range") == "bytes 0-9/100"
+    r = get(srv, url, headers={"Range": "bytes=95-"})
+    assert r.status == 206 and r.read() == data[95:] and r.getheader("Content-Range") == "bytes 95-99/100"
+    r = get(srv, url, headers={"Range": "bytes=-30"})
+    assert r.read() == data[70:80] and r.getheader("Content-Range") == "bytes 70-79/100"
+    r = get(srv, url)
+    assert r.status == 200 and r.read() == data  # no Range: the whole file, as before

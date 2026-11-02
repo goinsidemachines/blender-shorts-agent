@@ -6,6 +6,7 @@ import shutil
 import threading
 
 import pagefix
+import pytest
 
 from bsa.review import history, snapshot, versions
 
@@ -296,3 +297,98 @@ def test_the_edit_keeps_only_the_approved_finals_outgoing_mp4(tmp_path):
         assert not (out / name).exists()
     kept = list(history.root(sdir, "final").glob("*.mp4"))
     assert [p.read_bytes() for p in kept] == [b"pendulum.mp4"]
+
+
+def test_a_refused_final_edit_keeps_the_postable_mp4(tmp_path, monkeypatch):
+    """Every refusal (stale timing, frames not rendered, checks not current) comes before the outgoing final is
+    moved away: a refused edit leaves out/<slug>.mp4 in place."""
+    import types
+
+    import bsa_blender
+    from bsa import engine_runs, freshness
+
+    sdir = pagefix.make_short(tmp_path, "story")
+    mp4 = sdir / "out" / "pendulum.mp4"
+    mp4.parent.mkdir(exist_ok=True)
+    mp4.write_bytes(b"the approved final")
+    short = bsa_blender._load(sdir)
+    monkeypatch.setattr(bsa_blender, "_engine_run", lambda sdir, args: engine_runs.EngineRun(None))
+    monkeypatch.setattr(bsa_blender, "_timeline", lambda sdir, short: (None, "hash"))
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: {})
+    monkeypatch.setattr(bsa_blender, "_rendered", lambda *a, **k: [])
+    monkeypatch.setattr(bsa_blender, "_check_keys", lambda *a, **k: {})
+    monkeypatch.setattr(bsa_blender, "_parts", lambda *a, **k: {})
+
+    def refuse(*a, **k):
+        raise freshness.StaleError("the scene checks have not run on this build")
+
+    args = types.SimpleNamespace(preset="final")
+    monkeypatch.setattr(freshness, "require_checks", refuse)
+    with pytest.raises(freshness.StaleError):
+        bsa_blender._cmd_edit(args, sdir, short, None, None)
+    assert mp4.read_bytes() == b"the approved final" and not history.root(sdir, "final").exists()
+    monkeypatch.setattr(bsa_blender, "_rendered", refuse)
+    with pytest.raises(freshness.StaleError):
+        bsa_blender._cmd_edit(args, sdir, short, None, None)
+    monkeypatch.setattr(bsa_blender, "_timeline", refuse)
+    with pytest.raises(freshness.StaleError):
+        bsa_blender._cmd_edit(args, sdir, short, None, None)
+    assert mp4.read_bytes() == b"the approved final"
+
+
+def test_the_edits_drop_waits_for_the_page_then_says_close_the_tab(tmp_path, monkeypatch):
+    """Windows: a page streaming the MP4 makes the replace or delete fail a moment. Both drop paths retry, for up
+    to DROP_WAIT_S, then fail with a plain message."""
+    import bsa_blender
+    from bsa import engine_runs
+
+    assert 30 <= bsa_blender.DROP_WAIT_S <= 40
+    sdir = pagefix.make_short(tmp_path, "story")
+    out = sdir / "out"
+    out.mkdir(exist_ok=True)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(bsa_blender.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(bsa_blender.time, "sleep", lambda s: clock.update(t=clock["t"] + s))
+    real_replace, real_unlink, denied = os.replace, type(out).unlink, []
+
+    def busy(n):
+        def deny(*a, **k):
+            if len(denied) < n:
+                denied.append(a)
+                raise PermissionError(13, "The process cannot access the file", str(a[0]))
+            return (real_unlink if len(a) == 1 else real_replace)(*a, **k)
+        return deny
+
+    for name, preset, run, patch in (("pendulum.mp4", "final", engine_runs.EngineRun(None), "replace"),
+                                     ("pendulum-preview.mp4", "preview", engine_runs.EngineRun(None), "unlink")):  # fmt: skip
+        (out / name).write_bytes(name.encode())
+        denied.clear()
+        target = (history.os, "replace") if patch == "replace" else (type(out), "unlink")
+        monkeypatch.setattr(*target, busy(3))
+        bsa_blender._drop_outgoing(sdir, out / name, preset, run)
+        assert len(denied) == 3 and not (out / name).exists()
+        (out / name).write_bytes(name.encode())
+        denied.clear()
+        monkeypatch.setattr(*target, busy(10**6))
+        with pytest.raises(bsa_blender.CliError, match="close the page tab") as err:
+            bsa_blender._drop_outgoing(sdir, out / name, preset, run)
+        assert name in str(err.value) and (out / name).is_file()
+        assert clock["t"] >= bsa_blender.DROP_WAIT_S
+        monkeypatch.setattr(*target, real_replace if patch == "replace" else real_unlink)
+        clock["t"] = 0.0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows refuses to replace a file another process holds open")
+def test_the_edits_drop_waits_for_a_real_open_handle(tmp_path):
+    import bsa_blender
+    from bsa import engine_runs
+
+    sdir = pagefix.make_short(tmp_path, "story")
+    mp4 = sdir / "out" / "pendulum.mp4"
+    mp4.parent.mkdir(exist_ok=True)
+    mp4.write_bytes(b"the approved final")
+    f = mp4.open("rb")  # the page server streaming it
+    threading.Timer(0.6, f.close).start()
+    bsa_blender._drop_outgoing(sdir, mp4, "final", engine_runs.EngineRun(None))
+    assert f.closed and not mp4.exists()
+    assert [p.read_bytes() for p in history.root(sdir, "final").glob("*.mp4")] == [b"the approved final"]

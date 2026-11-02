@@ -15,6 +15,7 @@ import glob
 import json
 import re
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -972,15 +973,33 @@ def cmd_edit(args) -> dict:
     return out
 
 
+DROP_WAIT_S = 35.0  # how long the edit waits for a page streaming the outgoing MP4 to let go of it (Windows)
+
+
+def _while_the_page_reads(fn, mp4: Path):
+    """fn(), retried while Windows refuses it with PermissionError because the review page is streaming `mp4` this
+    instant (each of its range answers holds the file only a moment). After DROP_WAIT_S, a CliError."""
+    deadline = time.monotonic() + DROP_WAIT_S
+    while True:
+        try:
+            return fn()
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise CliError(f"{mp4.name} is still open in another program, most likely the review page playing it "
+                               f"({exc.strerror or exc}): close the page tab and run the edit again.") from exc  # fmt: skip
+            time.sleep(0.25)
+
+
 def _drop_outgoing(sdir: Path, out_mp4: Path, preset: str, side) -> None:
     """Clear the way for the new video. The approved final's outgoing MP4 is moved into the page's version history
-    (bsa.review.history.keep_outgoing_final) so before and after can play it; any other run's is deleted."""
+    (bsa.review.history.keep_outgoing_final) so before and after can play it; any other run's is deleted. Both wait
+    for a page streaming the file (_while_the_page_reads)."""
     if preset == "final" and not side.tag:
         from bsa.review import history
 
-        history.keep_outgoing_final(sdir, out_mp4)
+        _while_the_page_reads(lambda: history.keep_outgoing_final(sdir, out_mp4), out_mp4)
     else:
-        out_mp4.unlink(missing_ok=True)
+        _while_the_page_reads(lambda: out_mp4.unlink(missing_ok=True), out_mp4)
 
 
 def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
@@ -988,7 +1007,6 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
 
     side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4
     out_mp4 = _mp4(sdir, short, args.preset, side)
-    _drop_outgoing(sdir, out_mp4, args.preset, side)  # a stale video must never pass for this one if the encode fails
     tl, tl_hash = _timeline(sdir, short)
     fps = _fingerprints(sdir, short, tl, tl_hash, reset_after=True)
     _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
@@ -1019,6 +1037,9 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
                             out_mp4,
                             settings.load_settings(), preset=args.preset, anchors=anchors, hero_boxes=heroes,
                             label_heroes=label_heroes, closing=end)  # fmt: skip
+    # every refusal is behind us: only now does the outgoing video go (a refused edit leaves the postable final in
+    # out/), and before the encode, so a stale video never passes for this one if the encode fails
+    _drop_outgoing(sdir, out_mp4, args.preset, side)
     run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
     info = edit.probe(path)

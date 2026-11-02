@@ -45,6 +45,7 @@ CSP = (
 )
 _DRAIN_MAX = 1 << 20  # an oversized body up to this size is read and dropped, so the 413 reaches the client
 _CHUNK = 64 * 1024
+RANGE_CAP = 4 * 1024 * 1024  # the most one 206 sends: read whole and closed first, the browser asks for the rest
 _BAD_IN_NAME = ("/", "\\", ":", "\0")
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 FILES_CSP = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'"
@@ -391,7 +392,13 @@ class _Handler(BaseHTTPRequestHandler):
             if bad:
                 return self._send(416, b"", ctype, {**guard, "Content-Range": f"bytes */{size}"})
             status = 206
+            end = min(end, start + RANGE_CAP - 1)
         length = max(end - start + 1, 0)
+        body = None
+        if status == 206:  # read now and close: a paused video must not hold the file open (Windows: no replace)
+            with target.open("rb") as f:
+                f.seek(start)
+                body = f.read(length)
         self._started = True
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -404,6 +411,11 @@ class _Handler(BaseHTTPRequestHandler):
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
+        if body is not None:
+            self.wfile.write(body)
+            if len(body) < length:  # the file shrank under us: the promised length can't be kept
+                self.close_connection = True
+            return
         with target.open("rb") as f:
             f.seek(start)
             left = length

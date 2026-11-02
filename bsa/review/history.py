@@ -266,14 +266,7 @@ def keep_outgoing_final(sdir: Path, mp4: Path) -> Path | None:
     r.mkdir(parents=True, exist_ok=True)
     dest = r / f"{_sha256(mp4)[:16]}.mp4"
     with store.locked(r / INDEX, timeout_s=LOCK_S):
-        for i in range(8):
-            try:
-                os.replace(mp4, dest)
-                break
-            except PermissionError:  # Windows: the page is streaming it this instant
-                if i == 7:
-                    raise
-                time.sleep(0.05 * (i + 1))
+        os.replace(mp4, dest)  # PermissionError on Windows while the page streams it: the edit waits and retries
         os.utime(dest)  # the newest: the one just kept is never pruned
         others = [p for p in r.glob("*.mp4") if p != dest and p.is_file()]
         others.sort(key=lambda p: p.stat().st_mtime_ns, reverse=True)
