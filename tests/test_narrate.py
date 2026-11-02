@@ -67,6 +67,12 @@ def _no_real_whisper(monkeypatch):
     monkeypatch.setattr(nrun, "_local", SimpleNamespace(hear=lambda lns, out: None))
 
 
+@pytest.fixture
+def whisper_on(monkeypatch):
+    """The Whisper check counts as installed, so local.hear reaches its (faked) runner."""
+    monkeypatch.setattr(install, "installed", lambda: {local.WHISPER_MODEL: True})
+
+
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     monkeypatch.setattr(elevenlabs, "_sleep", lambda s: None)
@@ -265,7 +271,7 @@ def test_verify_none_when_not_installed(tmp_path):
     assert local.verify(lines("l01"), tmp_path, run=lambda c, **k: completed(5)) is None
 
 
-def test_verify_parses_wer(tmp_path):
+def test_verify_parses_wer(tmp_path, whisper_on):
     out = json.dumps({"l01": {"text": "x", "wer": 0.25}}) + "\n"
     assert local.verify(lines("l01"), tmp_path, run=lambda c, **k: completed(0, "noise\n" + out)) == {"l01": 0.25}
 
@@ -620,9 +626,99 @@ def test_take_seeds_empty_without_a_record(tmp_path):
     assert nrun.take_seeds(tmp_path) == {}
 
 
-def test_hear_returns_what_was_said(tmp_path):
+def test_hear_returns_what_was_said(tmp_path, whisper_on):
     out = json.dumps({"l01": {"text": "text for l one", "wer": 0.25}}) + "\n"
     assert local.hear(lines("l01"), tmp_path, run=lambda c, **k: completed(0, out)) == {
         "l01": {"said": "text for l one", "wer": 0.25}
     }
     assert local.hear(lines("l01"), tmp_path, run=lambda c, **k: completed(5)) is None
+
+
+def test_default_check_without_whisper_starts_nothing(tmp_path, bsa_home, monkeypatch):
+    """ElevenLabs (and custom) takes are checked by the plugin's runner only when Whisper is installed: without it,
+    nothing is spawned (a `uv run` on a missing runner could sync, i.e. download) and heard.json says how to get it."""
+    monkeypatch.setattr(nrun, "_local", local)  # the real default checker
+
+    def no_process(*a, **k):
+        raise AssertionError(f"a process was started: {a}")
+
+    monkeypatch.setattr(local.subprocess, "run", no_process)
+
+    def el(lns, voice, speed, out):
+        for x in lns:
+            write_wav(out / f"{x.id}.wav")
+        return {x.id: 1.0 for x in lns}
+
+    settings = {"narrator": {"provider": "elevenlabs", "voice": "v", "speed": 1.0}}
+    res = nrun.narrate(tmp_path, make_short("l01"), settings, elevenlabs=el)
+    assert res.status == "ok"
+    h = heard_json(tmp_path)
+    assert h["checked"] is False and h["why_not"] == nrun.WHISPER_MISSING
+    assert local.verify(lines("l01"), tmp_path) is None
+
+
+def test_a_kept_unclear_take_is_reported_not_retried(tmp_path):
+    """Retries belong to the run that spoke the take: re-running narration never drifts a kept take's seed."""
+    vo = tmp_path / "audio" / "vo"
+    gens = []
+    unclear = SimpleNamespace(generate=takes_gen(gens), verify=lambda lns, out: {x.id: 0.5 for x in lns})
+    nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=unclear)
+    assert [g[2] for g in gens] == [7, 8, 9]
+    res = nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=unclear)
+    assert [g[2] for g in gens] == [7, 8, 9]  # nothing spoken again
+    assert nrun.take_seeds(vo) == {"l01": 9} and "l01" in res.message
+
+
+def test_retake_refuses_an_unknown_or_unsafe_line(tmp_path):
+    vo = tmp_path / "vo"
+    nrun.clear_stale_takes(vo, _take_short(), KOKORO["narrator"])
+    write_wav(vo / "l01.wav")
+    for bad in ("l99", "../l01", "l01/../l01", "", "a\\b"):
+        with pytest.raises(ValueError):
+            nrun.retake(vo, bad)
+    assert (vo / "l01.wav").exists() and nrun.take_seeds(vo) == {}
+    assert nrun.retake(vo, "l01") == 8
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"l01": "not a dict", "l02": {"said": "bye now", "wer": 0.0}},
+        {"l01": {"said": "x", "wer": "high"}, "l02": {"said": "bye now", "wer": 0.0}},
+        {"l01": {"said": 3, "wer": None}, "l02": {"said": "bye now", "wer": 0.0}},
+    ],
+)
+def test_odd_checker_output_counts_as_unchecked(tmp_path, raw):
+    gens = []
+    fake = SimpleNamespace(generate=takes_gen(gens), hear=lambda lns, out: raw)
+    res = nrun.narrate(tmp_path, _take_short(), KOKORO, local=fake)
+    assert res.status == "ok" and res.message is None and len(gens) == 1
+    h = heard_json(tmp_path)
+    assert h["checked"] is True
+    assert h["lines"]["l01"] == {"text": "Hello there.", "said": None, "wer": None}
+    assert h["lines"]["l02"] == {"text": "Bye now.", "said": "bye now", "wer": 0.0}
+
+
+def test_odd_verify_output_counts_as_unchecked(tmp_path):
+    fake = SimpleNamespace(generate=gen, verify=lambda lns, out: {"l01": "x", "l02": True})
+    res = nrun.narrate(tmp_path, _take_short(), KOKORO, local=fake)
+    assert res.status == "ok" and heard_json(tmp_path)["lines"]["l01"]["wer"] is None
+    fake = SimpleNamespace(generate=gen, verify=lambda lns, out: ["not", "a", "dict"])
+    res = nrun.narrate(tmp_path, _take_short(), KOKORO, local=fake)
+    h = heard_json(tmp_path)
+    assert res.status == "ok" and h["checked"] is False and h["why_not"].startswith("The check couldn't run")
+
+
+def test_seeds_that_cannot_be_saved_never_cost_the_voice(tmp_path, monkeypatch):
+    real = nrun._write_json
+
+    def flaky(path, data):
+        if Path(path).name == "narrator.json":
+            raise OSError("disk full")
+        return real(path, data)
+
+    monkeypatch.setattr(nrun, "_write_json", flaky)
+    fake = SimpleNamespace(generate=gen, verify=lambda lns, out: {x.id: 0.0 for x in lns})
+    res = nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=fake)
+    assert res.status == "ok" and "seeds couldn't be saved" in res.message
+    assert heard_json(tmp_path)["checked"] is True

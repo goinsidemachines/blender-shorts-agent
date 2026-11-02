@@ -12,6 +12,7 @@ from bsa.narrate.contract import NarrationError
 from bsa.settings import bsa_home
 
 WER_LIMIT = 0.15
+WHISPER_MODEL = "whisper-small.en"
 RETRIES = 2  # an unclear take is spoken again with its seed + 1, then + 2
 _GPU_DEFAULT = "the GPU is busy or out of memory"
 
@@ -68,9 +69,20 @@ def generate(
     return contract.read_durations(out_dir, [ln.id for ln in lines])
 
 
-def hear(lines, out_dir: Path, run=subprocess.run) -> dict[str, dict] | None:
+def whisper_installed() -> bool:
+    """The Whisper check's environment and weights are in <bsa_home>/voices (no process started, nothing synced)."""
+    try:
+        return bool(install.installed().get(WHISPER_MODEL))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def hear(lines, out_dir: Path, run=None) -> dict[str, dict] | None:
     """What Whisper heard in each take and its word error rate, {id: {"said", "wer"}}; None when Whisper isn't
-    installed."""
+    installed. Nothing is started when it isn't (a `uv run` on a missing runner could sync, i.e. download)."""
+    if not whisper_installed():
+        return None
+    run = run or subprocess.run
     out_dir = Path(out_dir)
     lines_file = out_dir / "lines.json"
     contract.write_lines(lines_file, lines)
@@ -88,7 +100,7 @@ def hear(lines, out_dir: Path, run=subprocess.run) -> dict[str, dict] | None:
     }
 
 
-def verify(lines, out_dir: Path, run=subprocess.run) -> dict[str, float] | None:
+def verify(lines, out_dir: Path, run=None) -> dict[str, float] | None:
     """Word error rate per line, or None when Whisper isn't installed."""
     heard = hear(lines, out_dir, run=run)
     return None if heard is None else {i: v["wer"] for i, v in heard.items()}

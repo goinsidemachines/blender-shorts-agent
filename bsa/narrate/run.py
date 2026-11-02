@@ -11,7 +11,9 @@ object with `generate(command, lines, out_dir, seed=7, voice=None, speed=1.0)` (
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,10 +53,9 @@ def _scrub(text: str) -> str:
 
 
 def _fallback(provider, exc: Exception) -> NarrationResult:
-    reason = str(exc) if isinstance(exc, NarrationError) else f"{type(exc).__name__}: {exc}"
     name = {"custom": "voice tool", "elevenlabs": "ElevenLabs"}.get(provider, provider)
     msg = (
-        f"The {name} narration didn't work ({_scrub(reason).rstrip('.')}), "
+        f"The {name} narration didn't work ({_reason(exc)}), "
         "so this short uses captions only; you can add a voice later."
     )
     return NarrationResult("captions-only", None, msg)
@@ -64,18 +65,38 @@ def _reason(exc: Exception) -> str:
     return _scrub(str(exc) if isinstance(exc, NarrationError) else f"{type(exc).__name__}: {exc}").rstrip(".")
 
 
+def _wer(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _heard_entries(raw: dict, from_hear: bool) -> dict[str, dict]:
+    """The checker's output, coerced: an entry that isn't a dict (or a number, from verify) or whose word error rate
+    isn't a number is left out, so that line counts as unchecked and never costs the voice."""
+    out = {}
+    for i, v in raw.items():
+        entry = v if from_hear else {"said": None, "wer": v}
+        if not isinstance(entry, dict) or _wer(entry.get("wer")) is None:
+            continue
+        said = entry.get("said")
+        out[str(i)] = {"said": said if isinstance(said, str) else None, "wer": _wer(entry.get("wer"))}
+    return out
+
+
 def _hear(mod, lines, out_dir) -> tuple[dict | None, str | None]:
     """(heard, why_not): what Whisper heard per line, {id: {"said", "wer"}}, from the checker's `hear`, else its
     `verify` (word error rates only, so "said" is None). Best-effort: a failure is a reason, never an error."""
+    from_hear = getattr(mod, "hear", None) is not None
     try:
-        if getattr(mod, "hear", None) is not None:
-            heard = mod.hear(lines, out_dir)
-        else:
-            wer = mod.verify(lines, out_dir)
-            heard = None if wer is None else {i: {"said": None, "wer": float(w)} for i, w in wer.items()}
+        raw = mod.hear(lines, out_dir) if from_hear else mod.verify(lines, out_dir)
     except Exception as exc:  # noqa: BLE001 - the check is best-effort and must never block
         return None, f"The check couldn't run: {_reason(exc)}."
-    return (heard, None) if heard is not None else (None, WHISPER_MISSING)
+    if raw is None:
+        return None, WHISPER_MISSING
+    if not isinstance(raw, dict):
+        return None, f"The check couldn't run: it returned {type(raw).__name__}, not a result per line."
+    return _heard_entries(raw, from_hear), None
 
 
 def _read_record(out_dir: Path) -> dict:
@@ -99,16 +120,30 @@ def take_seeds(out_dir: Path) -> dict[str, int]:
     return {str(k): v for k, v in seeds.items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
-def _record_seeds(out_dir: Path, seeds: dict[str, int]) -> None:
+def _record_seeds(out_dir: Path, seeds: dict[str, int]) -> str | None:
+    """Record the seeds the takes were spoken with. Best-effort: returns why it couldn't, never raises OSError."""
     record = _read_record(out_dir)
     record["seeds"] = {**take_seeds(out_dir), **seeds}
-    _write_json(Path(out_dir) / RECORD_FILE, record)
+    try:
+        _write_json(Path(out_dir) / RECORD_FILE, record)
+    except OSError as exc:
+        return f"The takes' seeds couldn't be saved ({exc}), so a re-take may repeat a reading."
+    return None
+
+
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
 def retake(out_dir: Path, line_id: str) -> int:
     """Throw one line's take away so the next narration speaks it again with the next seed (a different reading).
-    Returns that seed."""
+    Returns that seed. Refuses (ValueError, touching nothing) an id that isn't a plain line id, or isn't one of the
+    lines narrator.json records the takes are for."""
     out_dir = Path(out_dir)
+    known = _read_record(out_dir).get("lines")
+    if not isinstance(line_id, str) or not _SAFE_ID.fullmatch(line_id):
+        raise ValueError(f"{line_id!r} is not a line id")
+    if isinstance(known, dict) and line_id not in known:
+        raise ValueError(f"{line_id!r} is not a line of this short (its lines: {', '.join(known) or 'none'})")
     (out_dir / f"{line_id}.wav").unlink(missing_ok=True)
     dpath = out_dir / "durations.json"
     try:
@@ -119,7 +154,9 @@ def retake(out_dir: Path, line_id: str) -> int:
         del durations[line_id]
         _write_json(dpath, durations)
     seed = take_seeds(out_dir).get(line_id, FIRST_SEED) + 1
-    _record_seeds(out_dir, {line_id: seed})
+    problem = _record_seeds(out_dir, {line_id: seed})
+    if problem:
+        raise OSError(problem)  # a re-take is only worth its new seed
     return seed
 
 
@@ -156,8 +193,10 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
     """Only lines without a good take on disk are spoken (clear_stale_takes has already removed takes of another
     voice, speed or text), so an interrupted, re-taken or reworded run remakes only what it must. Each take is
     spoken with its line's seed (take_seeds: 7 for a first take, the next one after a retake) and every seed used
-    is recorded; an unclear take is spoken again with its seed + 1, then + 2. `speak(lines, seed)` makes the takes
-    and returns seconds per line; `hear(lines)` returns (heard, why_not) as _hear does. Writes heard.json."""
+    is recorded; an unclear take spoken in this call is spoken again with its seed + 1, then + 2. An unclear take
+    kept from an earlier run already had its retries: it is reported, not spoken again. `speak(lines, seed)` makes
+    the takes and returns seconds per line; `hear(lines)` returns (heard, why_not) as _hear does. Writes
+    heard.json."""
     seeds = take_seeds(out_dir)
     kept = [ln for ln in short.lines if (out_dir / f"{ln.id}.wav").is_file() and not check_take(out_dir / f"{ln.id}.wav")]
     todo = [ln for ln in short.lines if ln not in kept]
@@ -165,18 +204,23 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
     by_seed: dict[int, list] = {}
     for ln in todo:
         by_seed.setdefault(seeds.get(ln.id, FIRST_SEED), []).append(ln)
+    notes: list[str] = []
+    used: dict[str, int] = {}
     for seed, lns in by_seed.items():
         durations.update(speak(lns, seed))
-        _record_seeds(out_dir, {ln.id: seed for ln in lns})
-    seeds = take_seeds(out_dir)
+        used.update({ln.id: seed for ln in lns})
+        notes.append(_record_seeds(out_dir, {ln.id: seed for ln in lns}))
     heard, why_not = hear(short.lines) if check else (None, CHECK_OFF)
     still_bad: list[str] = []
     by_id = {ln.id: ln for ln in short.lines}
     for lid in _unclear(heard, by_id):
-        base = seeds.get(lid, FIRST_SEED)
+        if lid not in used:  # kept from an earlier run, which already retried it
+            still_bad.append(lid)
+            continue
+        base = used[lid]
         for step in range(1, RETRIES + 1):
             durations.update(speak([by_id[lid]], base + step))
-            _record_seeds(out_dir, {lid: base + step})
+            notes.append(_record_seeds(out_dir, {lid: base + step}))
             again = (hear([by_id[lid]])[0] or {}).get(lid)
             if again is not None:
                 heard[lid] = again
@@ -185,7 +229,9 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
         else:
             still_bad.append(lid)
     write_heard(out_dir, short.lines, heard, why_not)
-    return NarrationResult("ok", {ln.id: durations[ln.id] for ln in short.lines}, _unclear_message(still_bad))
+    note = next((n for n in notes if n), None)
+    message = " ".join(m for m in (_unclear_message(still_bad), note) if m) or None
+    return NarrationResult("ok", {ln.id: durations[ln.id] for ln in short.lines}, message)
 
 
 def _local_narrate(provider: str, short: Short, narrator: dict, out_dir: Path, mod) -> NarrationResult:
