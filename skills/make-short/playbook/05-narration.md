@@ -51,16 +51,18 @@ take that is being made again shows "Waiting for a new take" until the next chec
   them (`CLI narrate SHORT --line l02 --say "the ess-capement turns"`): it is saved as the line's
   `say`, and the caption still shows `text`. `--say` needs `--line`, and the closing line's words are the
   `closing.voice_line` setting, not a respelling. The new take has another length, so the timing changes: once
-  the build stage is done, run `BLENDER preview SHORT` in the background (it reruns the timeline, the mix and the
-  edit as needed) and, when the final was made, the final render, frame-check and edit again (`08-render.md`).
+  the short has been built, run `BLENDER preview SHORT` in the background (it reruns the timeline, the mix, the
+  render of the frames that changed, the frame-check and the edit as needed) and, when the final was made, the
+  final render, frame-check and edit again (`08-render.md`). The closing line has its own row once it has been
+  narrated, with the same "Re-take this line" (`CLI narrate SHORT --line closing`).
   Then answer the note (`CLI page note SHORT ID done --reply "..."`).
 - **Whisper missing.** When `why_not` says Whisper isn't installed, the page shows "Whisper isn't installed, so
   the takes weren't checked. CLI voice plan whisper-small.en shows what it downloads." Offer it once, at a calm
   moment (never mid-render): run `CLI voice plan whisper-small.en`, show its plan (name, source, licence, size)
   and, only on a clear yes, `CLI voice install whisper-small.en` with `run_in_background: true`. The next
   `narrate` checks the takes. Narration never waits for it.
-- Any other `why_not` (the check is turned off, or the file can't be read) is shown on the page as it is; say it
-  in one line if the user asks.
+- Any other `why_not` (the check is turned off, captions only, or the file can't be read) is shown on the page as
+  it is; say it in one line if the user asks.
 
 Captions-only shorts are paced for reading time (about 2.6 words a second), not stretched to imaginary narration.
 

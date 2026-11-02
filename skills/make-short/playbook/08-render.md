@@ -146,17 +146,18 @@ Once a run's edit has made its video, the Render stage shows that run in its own
 `Preview · eevee`) with the video and a timeline under it: a frame slider and rows of markers for the shots, the
 captions, the sounds, the findings (the scene checks and that run's frame checks), the holds and the closing
 card, each at its frame. Clicking a marker shows that frame; findings that have no frame are listed under the
-timeline. The Final stage has the same timeline for the final video. "Note at this moment" leaves a frame note: on the Render stage its
-id is `<run key>:<frame>` (`preview:412`, `preview-eevee:412`), on Final the frame alone; read it as SKILL.md rule
-4 says (grab that frame and look at it).
+timeline. The Final stage has the same timeline for the final video. "Note at this moment" leaves a frame note: on
+the Render stage its id is `<run key>:<frame>` (`preview:412`, `preview-eevee:412`), on Final the frame alone; read
+it as SKILL.md rule 4 says (grab that frame and look at it).
 
 When the timing changed after a video was cut (a re-take, a new narration, a timeline change), the page says "This
-video was cut from an older timing; run the edit again to line up the markers." and hides the markers, because
-they would point at the wrong frames. Run the edit again for that video: `BLENDER preview SHORT` for the preview
-(it reruns what the new timing needs, then the edit), and for the final `BLENDER render SHORT --preset final`,
-`BLENDER frame-check SHORT --preset final` and `BLENDER edit SHORT --preset final` (shots whose frames are current
-are kept); a side run's edit takes its own `--engine` / `--tag`. The banner goes away by itself once the new edit is
-made.
+video was cut from an older timing; run the edit again to line up the markers." and hides the markers, because they
+would point at the wrong frames. Run the edit again for that video: `BLENDER preview SHORT` for the preview (it reruns
+what the new timing needs, render and frame-check included, then the edit), and for the final `BLENDER render SHORT
+--preset final`, `BLENDER frame-check SHORT --preset final` and `BLENDER edit SHORT --preset final` (shots whose
+frames are current are kept); a side run's edit takes its own `--engine` / `--tag`. The banner goes away by itself
+once the new edit is made. A video edited before edits kept their timing record shows "This video has no timing
+record; run the edit again to line up the markers." instead: the same fix.
 
 Each render's result has `s_per_frame` (the average over the frames it rendered fresh) and `engines`: every run of
 that preset on record in `review/engine-runs.json`, with what it measured and its MP4 while it exists. Relay those

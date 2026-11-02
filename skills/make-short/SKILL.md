@@ -146,9 +146,10 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
        check shows what Whisper heard against the line), add `--say "..."`: the words spelled the way the voice
        should say them, saved as the line's `say` (the caption still shows `text`). The closing line can't be
        respelled this way: change the `closing.voice_line` setting instead. The new take has another length, so
-       the timing changes: once the build stage is reached, run `BLENDER preview SHORT` in the background (it
-       reruns the timeline, the mix and the edit as needed), and, when the final was made, `BLENDER render SHORT --preset final`, `BLENDER
-       frame-check SHORT --preset final` and `BLENDER edit SHORT --preset final` again (`playbook/08-render.md`).
+       the timing changes: once the short has been built, run `BLENDER preview SHORT` in the background (it
+       reruns the timeline, the mix, the render of the frames that changed, the frame-check and the edit as
+       needed), and, when the final was made, `BLENDER render SHORT --preset final`, `BLENDER frame-check SHORT
+       --preset final` and `BLENDER edit SHORT --preset final` again (`playbook/08-render.md`).
        Then answer the note: `CLI page note SHORT ID done --reply "re-took l02 ..."`. If `narrate` refuses (no
        narration yet, captions only, an unknown line), relay its message in the reply and decline the note.
      - **"Needs a source"** (a `line` note from the fact panel, "Facts behind every line", on Story or Final): the
@@ -156,8 +157,12 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
        (`playbook/honesty.md`: never invent a source) and cite it from the line, or reword the line without the
        number. Then `CLI validate SHORT`, and answer the note (`CLI page note SHORT ID done --reply "..."`). A
        number in a shot's label needs a fact cited by a line of the same shot. Once the story is approved, a
-       reworded line changes it: ask the user first, then `CLI narrate SHORT` in the background (only the changed
-       line's take is remade) and rebuild as for a re-take.
+       reworded line changes it: ask the user first. Once narrated, run `CLI narrate SHORT` in the background
+       (only the changed line's take is remade) and rebuild as for a re-take.
+     - **A `finding` note** (from "+ Note on finding" on Final) is about one finding of the checks
+       (`review/checks.json` or `review/frame-checks-final.json`; its `id` is a short hash, the page shows which
+       finding). Open that finding's `redo` command when it has one (it renders the flagged frames again), or else
+       the shot it names; fix what it says, then rebuild as usual.
    - **Before and after:** Story, Storyboard and Final keep the last 3 versions the user saw, and the page offers
      "Compare with version N" (a word diff of the lines, the frames side by side, or the two videos). Nothing to
      run for it: a note left while comparing is about the version shown now unless its text says otherwise.
