@@ -180,6 +180,15 @@ Make a short about why a bike wheel ticks when you stop pedalling.
 The first run asks a few questions (where to save shorts, which voice, your render preference, brand or fresh look,
 your hard rules, your handle) and remembers the answers.
 
+**Staying up to date.** Plugins from a marketplace like this one don't update by themselves unless you turn it on
+once: run `/plugin`, open the **Marketplaces** tab, pick **blender-shorts-agent** and choose **Enable auto-update**.
+Claude Code then fetches each new release in the background and tells you to run `/reload-plugins`. Or update by
+hand whenever a [new release](https://github.com/goinsidemachines/blender-shorts-agent/releases) comes out:
+
+```
+/plugin update blender-shorts-agent@blender-shorts-agent
+```
+
 **Script mode or MCP mode.** By default the plugin drives Blender in the background from the command line. If you
 use the [Blender MCP](docs/mcp-setup.md) add-on, it can build in your open Blender instead, so you watch the scene
 come together.
