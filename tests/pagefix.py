@@ -245,3 +245,16 @@ def write_heard(sdir: Path, lines: dict[str, str], *, checked: bool = True, why_
             (vo / f"{ln.id}.wav").write_bytes(b"RIFF")
     data = {"checked": checked, "why_not": why_not, "lines": entries}
     (vo / HEARD_FILE).write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def with_numbers(sdir: Path) -> None:
+    """Put two numbers on screen that no fact backs: l03 states "4 m" and "1 m" and cites f-period (whose claim has
+    no number); l04 states "270" and cites nothing."""
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for line in data["lines"]:
+        if line["id"] == "l03":
+            line["text"] = "A 4 m pendulum swings half as fast as a 1 m one."
+        elif line["id"] == "l04":
+            line["text"] = "Clocks kept time this way for 270 years."
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")

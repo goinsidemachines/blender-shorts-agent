@@ -121,3 +121,20 @@ def test_near_labels_round_trip(tmp_path):
     s = _short(shots=[Shot("s01", "Hook", "pic", "Scene", labels=[{"text": "Light", "near": "Light bob"}])])
     save_short(s, tmp_path / "short.json")
     assert load_short(tmp_path / "short.json") == s
+
+
+def test_validate_messages_are_unchanged_by_the_helper():
+    s = _short(lines=[Line("l01", "It weighs 660 tonnes", "s01", ["nope"])])
+    assert validate(s) == ["line l01 cites unknown fact 'nope'", "line l01 contains a number but cites no fact"]
+    s = _short(lines=[Line("l01", "Plain.", "s01", [], say="seven")], facts=[])
+    assert validate(s) == []
+    s = _short(lines=[Line("l01", "Plain.", "s01", [], say="in 1999")])
+    assert validate(s) == ["line l01 contains a number but cites no fact"]
+
+
+def test_line_fact_flags_codes():
+    from bsa.short import line_fact_flags
+
+    assert line_fact_flags(Line("l01", "No digits", "s01", ["f1"]), {"f1"}) == []
+    assert line_fact_flags(Line("l01", "In 1999", "s01", ["x", "f1"]), {"f1"}) == ["unknown_fact:x"]
+    assert line_fact_flags(Line("l01", "In 1999", "s01", ["x"]), {"f1"}) == ["unknown_fact:x", "number_without_fact"]

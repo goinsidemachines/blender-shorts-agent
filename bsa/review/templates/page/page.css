@@ -385,3 +385,15 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   border-radius: 4px; }
 .voice .voice-bad { margin: 6px 0 0; font-weight: 800; }
 .voice .note { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--r-sm); background: var(--soft); }
+
+.facts-panel { margin: 12px 0; padding: 12px 14px; }
+.facts-panel summary { cursor: pointer; font-weight: 800; }
+.facts-panel h4 { margin: 14px 0 0; }
+.fact-lines { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.fact-line { padding: 8px 12px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border); }
+.fact-line p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.fact-line.flagged { background: var(--warn-soft); }
+.fact-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+a.chip { color: var(--fg); text-decoration: underline; }
+.facts-panel .voice-bad, .facts-panel tr.flagged { font-weight: 800; }
+.facts-panel tr.flagged td { background: var(--warn-soft); }

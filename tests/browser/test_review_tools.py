@@ -266,3 +266,34 @@ def test_voice_table_shows_a_deleted_take_as_waiting(view, live_server):
     expect(row.locator("mark")).to_have_count(0)
     expect(row.get_by_text("length set the beat")).to_have_count(0)
     assert_healthy(p)
+
+
+def test_fact_panel_flags_and_needs_a_source_note(view, live_server):
+    srv = live_server("story")
+    pagefix.with_numbers(srv.sdir)
+    p = open_short(view, srv, stage="story")
+    card = p.locator("details.facts-panel")
+    expect(card).to_have_attribute("open", "")  # something is flagged, so it opens by itself
+    expect(card.get_by_text("Has a number but cites no fact")).to_be_visible()
+    expect(card.get_by_text("No fact has this number").first).to_be_visible()
+    expect(card.locator("a.chip[rel='noopener noreferrer']").first).to_be_visible()
+    version = snapshot.stage_version(srv.sdir, "story", snapshot.load_ctx(srv.sdir, {}))
+    p.get_by_role("button", name="Needs a source: l04").click()
+    expect(p.get_by_role("textbox")).to_have_value("Needs a source")
+    p.get_by_role("button", name="Save note").click()
+    assert _until(lambda: bool(notes.load(srv.sdir)))
+    assert notes.load(srv.sdir)[-1]["target"] == {"kind": "line", "id": "l04", "version": version}
+    assert_healthy(p)
+
+
+def test_fact_panel_shows_on_final(view, live_server):
+    srv = live_server("done")
+    _stand_in_video(srv)
+    p = open_short(view, srv, stage="final")
+    card = p.locator("details.facts-panel")
+    expect(card).to_be_visible()
+    expect(card.locator("summary")).to_have_text("Facts behind every line")
+    assert not card.evaluate("c => c.open")  # nothing flagged on the plain pendulum
+    card.locator("summary").click()
+    expect(card.get_by_text("f-period").first).to_be_visible()
+    assert_healthy(p)

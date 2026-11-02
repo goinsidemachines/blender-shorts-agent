@@ -21,7 +21,7 @@ from bsa import engine_runs, feedback, jobstate, messages, render_status, rules
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
 from bsa.narrate.run import HEARD_FILE
-from bsa.review import decisions, notes, pages, stages, store, track, versions, voice
+from bsa.review import decisions, facts, notes, pages, stages, store, track, versions, voice
 from bsa.short import Short, label_text, load_short
 from bsa.timeline import build_timeline, pacing
 
@@ -128,9 +128,7 @@ def _rule_rows(ctx: Ctx, short: Short) -> list[dict]:
     return rules.panel_rows(rules.effective(ctx.settings, short), short)
 
 
-def _is_link(url: str) -> bool:
-    parts = urlparse(url.strip())
-    return parts.scheme in ("http", "https") and bool(parts.netloc)
+_is_link = facts.is_link
 
 
 def _story(ctx: Ctx) -> dict | None:
@@ -176,6 +174,7 @@ def _story(ctx: Ctx) -> dict | None:
         "look": {"note": pages.LOOK_NOTES.get(look or ""), "options": options},
         "assets": {"pending": _asset_rows(_pending_assets(ctx.sdir)), "downloaded": _asset_rows(short.assets)},
         "rules": _rule_rows(ctx, short),
+        "facts_panel": facts.panel(short),
     }
 
 
@@ -436,6 +435,7 @@ def _final(ctx: Ctx) -> dict | None:
         "rules": _rule_rows(ctx, short),
         "closing": _closing_card(ctx, short),
         "timeline": timeline,
+        "facts_panel": facts.panel(short),
         **({"timeline_problem": timeline_problem} if timeline_problem else {}),
     }
 
@@ -469,7 +469,8 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"engine": ("runs",), "narration": ("voice",), "final": ("timeline", "timeline_problem")}
+_UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
+                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem")}
 
 
 def _version_of(sdir: Path, stage: str, content: dict) -> int | None:

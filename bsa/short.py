@@ -211,6 +211,16 @@ def _has_digit(text: str) -> bool:
     return any(ch.isdigit() for ch in text)
 
 
+def line_fact_flags(line: Line, fact_ids: set[str]) -> list[str]:
+    """What is wrong with a line's facts: "unknown_fact:<id>" for each cited id not in `fact_ids`, then
+    "number_without_fact" when its caption or its spoken words have a digit and it cites no known fact."""
+    flags = [f"unknown_fact:{fid}" for fid in line.facts if fid not in fact_ids]
+    spoken = line.say if isinstance(line.say, str) else ""
+    if (_has_digit(line.text) or _has_digit(spoken)) and not any(fid in fact_ids for fid in line.facts):
+        flags.append("number_without_fact")
+    return flags
+
+
 def _dupes(kind: str, ids: list[str]) -> list[str]:
     seen: set[str] = set()
     out = []
@@ -262,16 +272,15 @@ def validate(short: Short) -> list[str]:
     for ln in short.lines:
         if ln.shot not in shot_ids:
             errors.append(f"line {ln.id} refers to unknown shot {ln.shot!r}")
-        for fid in ln.facts:
-            if fid not in fact_ids:
-                errors.append(f"line {ln.id} cites unknown fact {fid!r}")
-        cites = any(fid in fact_ids for fid in ln.facts)
-        if cites:
+        flags = line_fact_flags(ln, fact_ids)
+        for code in flags:
+            if code.startswith("unknown_fact:"):
+                errors.append(f"line {ln.id} cites unknown fact {code.partition(':')[2]!r}")
+        if any(fid in fact_ids for fid in ln.facts):
             cited_by_shot[ln.shot] = True
         if ln.say is not None and (not isinstance(ln.say, str) or not ln.say.strip()):
             errors.append(f"line {ln.id} say must be the spoken words (non-empty text), got {ln.say!r}")
-        spoken = ln.say if isinstance(ln.say, str) else ""
-        if (_has_digit(ln.text) or _has_digit(spoken)) and not cites:
+        if "number_without_fact" in flags:
             errors.append(f"line {ln.id} contains a number but cites no fact")
 
     # A label's number counts as sourced when a line in the same shot cites a fact.

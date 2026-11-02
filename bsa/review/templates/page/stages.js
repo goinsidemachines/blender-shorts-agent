@@ -188,6 +188,10 @@
     return text ? ctx.el("p", { class: "quote" }, tag(ctx, label), " ", String(text)) : null;
   }
 
+  function factsPanel(ctx, panel) {
+    return panel && BSA.review && BSA.review.facts ? BSA.review.facts(ctx, panel) : null;
+  }
+
   BSA.stages.story = function (content, ctx) {
     var beats = content.beats || [];
     var roles = hookLines(content, beats);
@@ -212,6 +216,7 @@
       section(ctx, "Facts", facts.length ? ctx.el("ul", { class: "facts" }, facts.map(function (f) {
         return ctx.el("li", null, ctx.el("p", null, String(f.claim || "")), source(ctx, f));
       })) : ctx.el("p", { class: "muted" }, "No facts are quoted in this short.")),
+      factsPanel(ctx, content.facts_panel),
       look(ctx, content.look),
       assets(ctx, content.assets),
       rulesPanel(ctx, content.rules, "Every short follows these. Check that this story keeps each one."));
@@ -665,6 +670,7 @@
       track ? section(ctx, "Timeline", track) : null,
       ackBlock(ctx, content),
       section(ctx, "Checks", findingsBlock(ctx, content)),
+      factsPanel(ctx, content.facts_panel),
       rulesPanel(ctx, content.rules, "How this short keeps each of your rules."),
       closingInfo(ctx, content.closing));
   };

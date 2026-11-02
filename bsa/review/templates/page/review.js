@@ -291,5 +291,54 @@
     return el("div", { class: "voice" }, out);
   };
 
+  // The fact panel: per line the facts it cites and what is wrong, then every number on screen and the fact behind it.
+  var factsOpen = null; // the user's choice, kept across live updates; null until they toggle it
+
+  function factChip(ctx, f) {
+    var label = String(f.id);
+    var chip = f.is_link
+      ? ctx.el("a", { class: "chip", href: String(f.source), target: "_blank", rel: "noopener noreferrer",
+        title: String(f.claim || "") }, label)
+      : ctx.el("span", { class: "chip", title: String(f.claim || "") + " (" + String(f.source || "") + ")" }, label);
+    return chip;
+  }
+
+  review.facts = function (ctx, panel) {
+    var el = ctx.el;
+    var lines = (panel && panel.lines) || [];
+    var rows = (panel && panel.on_screen) || [];
+    if (!lines.length && !rows.length) return null;
+    var items = lines.map(function (ln) {
+      var flags = ln.flags || [];
+      return el("li", { class: "fact-line" + (flags.length ? " flagged" : ""), "data-line": String(ln.id) },
+        el("p", { title: String(ln.text) }, el("strong", null, "Line " + ln.id)),
+        el("p", { class: "fact-chips" },
+          (ln.facts || []).length ? (ln.facts || []).map(function (f) { return factChip(ctx, f); })
+            : el("span", { class: "muted" }, "Cites no fact")),
+        flags.map(function (w) { return el("p", { class: "voice-bad" }, String(w)); }),
+        flags.length ? ctx.noteButton("line", ln.id, "Needs a source: " + ln.id, "Needs a source") : null);
+    });
+    var table = null;
+    if (rows.length) {
+      table = el("div", { class: "tablewrap", role: "region", "aria-label": "Numbers on screen", tabindex: "0" },
+        el("table", null,
+          el("thead", null, el("tr", null, ["Where", "Shown", "Number", "Fact"].map(function (h) {
+            return el("th", { scope: "col" }, h);
+          }))),
+          el("tbody", null, rows.map(function (r) {
+            return el("tr", { class: r.ok ? "" : "flagged" },
+              el("td", null, String(r.where)), el("td", null, String(r.text)), el("td", null, String(r.number)),
+              el("td", null, r.ok ? String(r.fact) : el("span", { class: "voice-bad" }, "No fact has this number")));
+          }))));
+    }
+    var card = el("details", { class: "card facts-panel" },
+      el("summary", null, "Facts behind every line"),
+      el("ul", { class: "fact-lines" }, items),
+      rows.length ? el("h4", null, "Numbers on screen") : null, table);
+    card.open = factsOpen === null ? !!panel.flagged : factsOpen;
+    card.addEventListener("toggle", function () { factsOpen = card.open; });
+    return card;
+  };
+
   review.STALE = STALE;
 })();
