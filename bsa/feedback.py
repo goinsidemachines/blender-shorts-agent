@@ -145,6 +145,36 @@ def decline(short_dir: Path) -> int:
     return _mark(short_dir, "declined")
 
 
+def allow_panel(short_dir: Path) -> None:
+    """The user said yes to seeing the notes: the review page's Post stage shows the feedback panel from now on
+    (this short is not asked again). Nothing is marked reported here."""
+    data = _load(short_dir)
+    data["panel"] = _now()
+    data["asked"] = data.get("asked") or data["panel"]
+    _save(short_dir, data)
+
+
+def panel_allowed(short_dir: Path, setting: str | None) -> bool:
+    """The Post stage shows the feedback panel: the user said yes (allow_panel), the setting is not `off`, and there
+    is something to show."""
+    return (setting or "ask") != "off" and bool(_load(short_dir).get("panel")) and bool(entries(short_dir))
+
+
+def mark_reported(short_dir: Path, ids: list[str]) -> int:
+    """The user copied the report or opened it on GitHub: mark these pending entries reported. Returns how many."""
+    wanted = {str(i) for i in ids}
+    data = _load(short_dir)
+    n = 0
+    for e in data["entries"]:
+        if isinstance(e, dict) and e.get("id") in wanted and e.get("status", "new") == "new":
+            e["status"], e["reported_at"] = "reported", _now()
+            n += 1
+    if n:
+        data["asked"] = data.get("asked") or _now()
+        _save(short_dir, data)
+    return n
+
+
 # --------------------------------------------------------------------------- redaction
 
 
@@ -272,7 +302,7 @@ def report(short_dir: Path, *, workspace=None, home=None, scrub=(), mark: bool =
     if mark and items:
         _mark(short_dir, "reported")
     return {"title": title, "body": body, "url": url, "shortened": shortened, "entries": len(clean),
-            "by_severity": counts(clean)}  # fmt: skip
+            "by_severity": counts(clean), "ids": [str(e.get("id")) for e in clean]}  # fmt: skip
 
 
 def _link(title: str, entries_text: str, env: str) -> str:

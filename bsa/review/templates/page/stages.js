@@ -447,4 +447,232 @@
       ctx.el("p", { class: "muted" }, "Claude records the voice for every line. Add a note beside this stage if it needs a change."),
       dl);
   };
+
+  // ------------------------------------------------------------------ Render
+
+  var STATE_WORDS = { running: "Running", done: "Done", failed: "Failed", stopped: "Stopped", pending: "Waiting",
+    rendering: "Rendering", skipped: "Skipped", none: "Not started" };
+  var renderTab = null; // the run tab picked on this page, kept across live updates
+
+  function stateChip(ctx, state) {
+    var s = String(state || "none");
+    return ctx.el("span", { class: "chip run-" + s }, STATE_WORDS[s] || s);
+  }
+
+  // A render-status thumbnail's URL; its frame number makes the browser load a newer picture under the same name.
+  function thumbUrl(ctx, t) {
+    var url = ctx.fileUrl(t);
+    if (!url || t.frame === null || t.frame === undefined) return url;
+    return url + (url.indexOf("?") >= 0 ? "&" : "?") + "f=" + encodeURIComponent(t.frame);
+  }
+
+  function noFrame(ctx) {
+    return ctx.el("div", { class: "ph frame-img" }, "No frame yet");
+  }
+
+  function frameImg(ctx, t, alt) {
+    if (!t || !thumbUrl(ctx, t)) return noFrame(ctx);
+    var img = ctx.el("img", { class: "frame-img", src: thumbUrl(ctx, t), alt: alt, loading: "lazy",
+      onerror: function () { if (img.isConnected) img.replaceWith(noFrame(ctx)); } });
+    return img;
+  }
+
+  function runPanel(ctx, r, shown) {
+    var f = r.frames || {};
+    var total = Number(f.total) || 0;
+    var done = Number(f.done) || 0;
+    var percent = total ? Math.round(100 * done / total) : null;
+    var eta = r.state === "running" ? duration(r.eta_s) : null;
+    var shots = r.shots || [];
+    return ctx.el("div", { class: "run-panel", role: "tabpanel", id: "bsa-run-" + r.key, "aria-labelledby": "bsa-tab-" + r.key,
+      tabindex: "0", hidden: !shown },
+    ctx.el("p", { class: "run-sum" }, stateChip(ctx, r.state), " ", String(r.summary || "")),
+    percent === null ? null : ctx.el("div", { class: "progress", role: "progressbar", "aria-label": r.label + ": frames done",
+      "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(percent) },
+    ctx.el("span", { style: "width:" + percent + "%" })),
+    total ? ctx.el("p", { class: "frames" }, ctx.el("strong", null, done + " of " + total + " frames"),
+      eta ? ctx.el("span", { class: "muted" }, " · about " + eta + " left") : null) : null,
+    (r.steps || []).length ? section(ctx, "Steps", ctx.el("ol", { class: "steps" }, r.steps.map(function (s) {
+      return ctx.el("li", { class: "step" }, ctx.el("span", { class: "step-name" }, String(s.name)), stateChip(ctx, s.state));
+    }))) : null,
+    r.latest ? section(ctx, "Latest frame", ctx.el("div", { class: "latest" },
+      frameImg(ctx, r.latest, "Latest frame of the " + r.label + " run"))) : null,
+    shots.length ? section(ctx, "Shots", ctx.el("ul", { class: "run-shots" }, shots.map(function (s) {
+      return ctx.el("li", { class: "run-shot" },
+        frameImg(ctx, s.thumb, "Shot " + s.id + ", the last frame rendered"),
+        ctx.el("p", null, ctx.el("strong", null, String(s.id)), " ", stateChip(ctx, s.state)),
+        ctx.el("p", { class: "muted" }, (Number(s.done) || 0) + " of " + (Number(s.total) || 0) + " frames"));
+    }))) : null);
+  }
+
+  BSA.stages.render = function (content, ctx) {
+    var runs = content.runs || [];
+    if (!runs.length) {
+      return ctx.el("p", { class: "muted" }, "No render has started yet. Progress shows here as soon as one does.");
+    }
+    var keys = runs.map(function (r) { return r.key; });
+    if (keys.indexOf(renderTab) < 0) {
+      var running = runs.find(function (r) { return r.state === "running"; });
+      renderTab = (running || runs[0]).key;
+    }
+    var tabs = [];
+    var panels = [];
+    function pick(i, focus) {
+      renderTab = keys[i];
+      tabs.forEach(function (b, j) {
+        b.setAttribute("aria-selected", String(i === j));
+        b.tabIndex = i === j ? 0 : -1;
+        panels[j].hidden = i !== j;
+      });
+      if (focus) tabs[i].focus();
+    }
+    runs.forEach(function (r, i) {
+      var on = r.key === renderTab;
+      tabs.push(ctx.el("button", { type: "button", role: "tab", class: "run-tab" + (r.side ? " side" : ""), id: "bsa-tab-" + r.key,
+        "aria-controls": "bsa-run-" + r.key, "aria-selected": String(on), tabindex: on ? "0" : "-1",
+        "data-k": "render-tab:" + r.key, onclick: function () { pick(i, false); } }, String(r.label)));
+      panels.push(runPanel(ctx, r, on));
+    });
+    var list = ctx.el("div", { class: "run-tabs", role: "tablist", "aria-label": "Renders",
+      onkeydown: function (e) {
+        var at = tabs.indexOf(document.activeElement);
+        if (at < 0) return;
+        var to = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[e.key];
+        if (to === undefined) return;
+        e.preventDefault();
+        pick((to + tabs.length) % tabs.length, true);
+      } }, tabs);
+    return ctx.el("div", { class: "st-render" },
+      ctx.el("p", { class: "lead" }, "Live progress of every render. A side run (another engine to compare) has its own tab."),
+      list, panels);
+  };
+
+  // ------------------------------------------------------------------ Final
+
+  var player = null; // {key, node}: the same video element across live updates, so playback is not reset
+
+  function video(ctx, ref) {
+    var url = ctx.fileUrl(ref);
+    var key = url + "#" + ctx.version;
+    if (player && player.key === key) return player.node;
+    var node = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", src: url,
+      "aria-label": "The final video" }, "Your browser cannot play this video.");
+    player = { key: key, node: node };
+    return node;
+  }
+
+  function closingInfo(ctx, c) {
+    if (!c) return null;
+    return section(ctx, "Closing card", ctx.el("div", { class: "closing-info" },
+      ctx.el("img", { class: "closing-img", src: ctx.fileUrl(c.file), alt: "Closing card", loading: "lazy" }),
+      ctx.el("div", null,
+        ctx.el("p", null, "Held " + oneDecimal(c.held) + " s at the end. It adds no music or sound."),
+        ctx.el("p", null, c.said ? "Said over it: “" + c.said + "”" : "Nothing is said over it."),
+        (c.warnings || []).length ? ctx.el("ul", { class: "warns" }, c.warnings.map(function (w) {
+          return ctx.el("li", null, ctx.el("strong", null, "Warning: "), String(w));
+        })) : null)));
+  }
+
+  function plural(n, word) {
+    return n + " " + word + (n === 1 ? "" : "s");
+  }
+
+  function findingsBlock(ctx, content) {
+    var list = content.findings || [];
+    if (!list.length) {
+      return ctx.el("p", { class: "summary " + (content.checks_run ? "ok" : "meh") },
+        content.checks_run ? "All checks passed. No problems found." : "Scene checks not run yet.");
+    }
+    var errors = list.filter(function (f) { return f.severity === "error"; }).length;
+    var warnings = list.length - errors;
+    var parts = [];
+    if (errors) parts.push(plural(errors, "problem") + " to fix");
+    if (warnings) parts.push(plural(warnings, "warning"));
+    return [
+      ctx.el("p", { class: "summary " + (errors ? "bad" : "meh") }, parts.join(", ")),
+      ctx.el("ul", { class: "findings" }, list.map(function (f) {
+        var err = f.severity === "error";
+        var check = String(f.check || "").replace(/_/g, " ");
+        return ctx.el("li", { class: "finding " + (err ? "error" : "warning") },
+          ctx.el("p", { class: "finding-head" }, ctx.el("span", { class: "sev" }, err ? "Problem" : "Warning"), " ",
+            ctx.el("strong", null, check)),
+          ctx.el("p", null, String(f.message || "")),
+          f.where ? ctx.el("p", { class: "where" }, String(f.where)) : null,
+          f.redo ? ctx.el("p", { class: "where" }, "Render again: ", ctx.el("code", null, String(f.redo))) : null,
+          ctx.noteButton("finding", f.id, "+ Note on finding: " + check + (f.where ? ", " + f.where : "")));
+      })),
+      (content.redo_all || []).map(function (c) {
+        return ctx.el("p", { class: "where" }, "Render every flagged frame again: ", ctx.el("code", null, String(c)));
+      }),
+    ];
+  }
+
+  // "Looks good" records an acknowledgement (an approve on Final), not a gate: notes on Final are change requests.
+  function ackBlock(ctx, content) {
+    if (content.acked) {
+      return ctx.el("p", { class: "state ok" }, ctx.el("span", { class: "tick", "aria-hidden": "true" }, "✓"),
+        "You said it looks good.");
+    }
+    return ctx.el("div", { class: "ack" },
+      ctx.el("p", { class: "muted" }, "Watch it through. A note on anything asks Claude for a change, and Claude asks you " +
+        "before rendering again."),
+      ctx.el("button", { type: "button", class: "btn primary", "data-act": "1", "data-k": "ack:final",
+        onclick: function () { ctx.decide("final", "approve"); } }, ctx.offline ? "Copy: Looks good" : "Looks good · go to Post"));
+  }
+
+  BSA.stages.final = function (content, ctx) {
+    var size = typeof content.size_mb === "number" ? " · " + content.size_mb.toFixed(1) + " MB" : "";
+    return ctx.el("div", { class: "st-final" },
+      content.video ? ctx.el("div", { class: "video-wrap" }, video(ctx, content.video),
+        ctx.el("p", { class: "muted" }, String(content.video.file).split("/").pop() + size))
+        : ctx.el("p", { class: "muted" }, "The final video is not made yet."),
+      ackBlock(ctx, content),
+      section(ctx, "Checks", findingsBlock(ctx, content)),
+      rulesPanel(ctx, content.rules, "How this short keeps each of your rules."),
+      closingInfo(ctx, content.closing));
+  };
+
+  // ------------------------------------------------------------------ Post
+
+  // The plugin feedback panel: only in the snapshot once the user said yes. Copy and Open on GitHub mark the entries
+  // reported; showing it does not.
+  function feedbackPanel(ctx, fb) {
+    if (!fb) return null;
+    var ids = fb.ids || [];
+    var sev = Object.keys(fb.by_severity || {}).map(function (k) { return fb.by_severity[k] + " " + k; }).join(", ");
+    return ctx.el("section", { class: "st-sec feedback", "aria-labelledby": "bsa-feedback-h" },
+      ctx.el("h3", { id: "bsa-feedback-h" }, "Plugin feedback"),
+      ctx.el("p", null, "Claude noted " + plural(Number(fb.entries) || 0, "problem") + " in the plugin itself" +
+        (sev ? " (" + sev + ")" : "") + ". This is exactly what would be sent, with paths, keys and your settings left out."),
+      ctx.el("p", { class: "muted" }, "Nothing is sent unless you submit it on GitHub yourself."),
+      fb.shortened ? ctx.el("p", { class: "muted" }, "The full text is too long for a link, so GitHub opens with a shortened " +
+        "version. Copy the full text and paste it into the issue.") : null,
+      ctx.el("p", { class: "fb-title" }, String(fb.title || "")),
+      ctx.el("pre", { class: "copytext", tabindex: "0", role: "region", "aria-label": "The report" }, String(fb.body || "")),
+      ctx.el("div", { class: "btns" },
+        ctx.el("button", { type: "button", class: "btn", "data-act": "1", "data-k": "feedback-copy",
+          onclick: function () { ctx.feedbackShared(ids, String(fb.body || "")); } }, "Copy the report"),
+        ctx.el("a", { class: "btn primary", href: String(fb.url || ""), target: "_blank", rel: "noopener noreferrer",
+          "data-k": "feedback-open", onclick: function () { ctx.feedbackShared(ids); } }, "Open on GitHub")));
+  }
+
+  BSA.stages.post = function (content, ctx) {
+    var credits = content.credits || [];
+    return ctx.el("div", { class: "st-post" },
+      ctx.el("p", { class: "lead" }, "Ready to copy for YouTube Shorts, Reels or TikTok. You upload it yourself."),
+      ctx.el("div", { class: "fields" }, (content.fields || []).map(function (f) {
+        var name = String(f.label || f.key).toLowerCase();
+        var text = String(f.text || "");
+        return ctx.el("div", { class: "field" },
+          ctx.el("div", { class: "field-head" }, ctx.el("h4", null, String(f.label || f.key)),
+            text ? ctx.el("button", { type: "button", class: "btn small", "data-k": "copy:" + f.key,
+              onclick: function () { ctx.copy(text, "the " + name); } }, "Copy the " + name) : null),
+          text ? ctx.el("pre", { class: "copytext" }, text) : ctx.el("p", { class: "muted" }, "Not written yet."),
+          ctx.noteButton("field", f.key, "+ Note on the " + name));
+      })),
+      closingInfo(ctx, content.closing),
+      section(ctx, "Credits", credits.length ? table(ctx, "Asset credits", ["Name", "From", "Licence", "Size"], assetRows(credits))
+        : ctx.el("p", { class: "muted" }, "No outside assets were used.")),
+      feedbackPanel(ctx, ctx.feedback));
+  };
 })();

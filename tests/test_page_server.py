@@ -438,3 +438,24 @@ def test_files_are_sandboxed_and_html_or_svg_only_downloads(srv):
     r = get(srv, f"/files/01-pendulum/review/old.html?t={srv.token}", headers={"Range": "bytes=0-3"})
     assert r.status == 206 and r.getheader("Content-Disposition") == "attachment"
     assert r.getheader("Content-Security-Policy") == server.FILES_CSP
+
+
+def test_feedback_reported_marks_only_the_given_entries(srv, bsa_home):
+    from bsa import feedback
+
+    path = "/api/01-pendulum/feedback-reported"
+    feedback.add(srv.sdir, "blocking", "one")
+    feedback.add(srv.sdir, "rough-edge", "two")
+    r = api(srv, "POST", path, body={"ids": ["f1"]})
+    assert r.status == 409 and feedback.pending(srv.sdir)  # the user has not said yes to the panel yet
+    feedback.allow_panel(srv.sdir)
+    for bad in ({}, {"ids": "f1"}, {"ids": [1]}):
+        assert api(srv, "POST", path, body=bad).status == 400, bad
+    r = api(srv, "POST", path, body={"ids": ["f1"]})
+    assert r.status == 200 and body(r) == {"reported": 1}
+    assert [e["id"] for e in feedback.pending(srv.sdir)] == ["f2"]
+    assert api(srv, "GET", path).status == 404
+    from bsa import settings as settings_mod
+
+    settings_mod.save_settings({"feedback": "off"})
+    assert api(srv, "POST", path, body={"ids": ["f2"]}).status == 409 and feedback.pending(srv.sdir)

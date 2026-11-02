@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from bsa import closing as closing_mod
-from bsa import engine_runs, jobstate, messages, rules
+from bsa import engine_runs, feedback, jobstate, messages, render_status, rules
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
 from bsa.review import decisions, notes, pages, stages, store, versions
@@ -297,8 +298,133 @@ def _narration(ctx: Ctx) -> dict | None:
     }
 
 
-def _later(ctx: Ctx) -> dict | None:
-    return None
+APPROVED_RUNS = ("preview", "final")  # the approved engine's runs; any other status key is a side run
+_RUN_KEY = re.compile(r"^(preview|final)(-[a-z0-9][a-z0-9-]{0,31})?$")  # bsa.engine_runs.status_key names
+
+
+def _thumb(sdir: Path, rel: str | None, frame) -> dict | None:
+    """A render-status thumbnail (named relative to review/) as a file ref, None until it exists. `frame` lets the
+    page load a thumbnail again when the render writes a newer one under the same name."""
+    if not isinstance(rel, str) or not rel or not (sdir / "review" / rel).is_file():
+        return None
+    return {"file": f"review/{rel}", "frame": frame if isinstance(frame, int) else None}
+
+
+def _run_label(key: str, preset: str) -> str:
+    tag = key[len(preset) + 1 :] if key.startswith(preset + "-") else ""
+    return preset.capitalize() + (f" · {tag}" if tag else "")
+
+
+def _run(sdir: Path, key: str, status: dict, now: float) -> dict:
+    d = render_status.describe(status, now, ago=False)
+    preset = str(status.get("preset") or key.split("-")[0])
+    state = "stopped" if d.get("stale") else str(status.get("state") or "none")
+    shots = []
+    for s in d.get("shots") or []:
+        if isinstance(s, dict) and s.get("id"):
+            shots.append({"id": str(s["id"]), "state": s.get("state"), "done": s.get("done"), "total": s.get("total"),
+                          "thumb": _thumb(sdir, s.get("thumb"), s.get("thumb_frame"))})  # fmt: skip
+    current = d.get("current") if isinstance(d.get("current"), dict) else {}
+    latest = next((s["thumb"] for s in shots if s["id"] == current.get("shot") and s["thumb"]), None)
+    if latest is None:
+        latest = next((s["thumb"] for s in reversed(shots) if s["thumb"]), None)
+    run = status.get("run") if isinstance(status.get("run"), dict) else {}
+    steps = [{"name": str(s.get("name")), "state": s.get("state")} for s in run.get("steps") or [] if isinstance(s, dict)]
+    return {
+        "key": key,
+        "label": _run_label(key, preset),
+        "side": key not in APPROVED_RUNS,
+        "state": state,
+        "summary": str(d.get("summary") or ""),
+        "frames": d.get("frames") if isinstance(d.get("frames"), dict) else {},
+        "eta_s": d.get("eta_s") if state == "running" else None,
+        "steps": steps,
+        "shots": shots,
+        "latest": latest,
+    }
+
+
+def _render(ctx: Ctx) -> dict | None:
+    """Every run's live status: the approved engine's preview and final first, then the side runs. Not versioned:
+    progress is not something to approve."""
+    found = {}
+    for path in (ctx.sdir / "review").glob("render-status-*.json"):
+        key = path.stem.removeprefix("render-status-")
+        if _RUN_KEY.match(key):
+            status = render_status.read_status(path)
+            if status is not None:
+                found[key] = status
+    keys = [k for k in APPROVED_RUNS if k in found] + sorted(k for k in found if k not in APPROVED_RUNS)
+    now = time.time()
+    runs = []
+    for k in keys:
+        try:
+            runs.append(_run(ctx.sdir, k, found[k], now))
+        except Exception as e:  # noqa: BLE001 - one odd status file must not hide the other runs
+            runs.append({"key": k, "label": _run_label(k, k.split("-")[0]), "side": k not in APPROVED_RUNS,
+                         "state": "none", "summary": _plain(ctx.sdir, f"render-status-{k}.json can't be read: "
+                                                                     f"{type(e).__name__}: {e}"),
+                         "frames": {}, "eta_s": None, "steps": [], "shots": [], "latest": None})  # fmt: skip
+    return {"runs": runs}
+
+
+def finding_id(f: pages.ReviewFinding) -> str:
+    """A finding's id, stable across rebuilds: the first 10 hex characters of sha1(check|message|frame|shots)."""
+    frame = "" if f.frame is None else str(f.frame)
+    raw = f"{f.check}|{f.message}|{frame}|{','.join(f.shots)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+
+
+def _where(f: pages.ReviewFinding) -> str:
+    shots = f.shots
+    parts = [
+        f"shot{'s' if len(shots) > 1 else ''} {', '.join(shots)}" if shots else "",
+        f"scene {f.scene}" if f.scene else "",
+        str(f.obj) if f.obj else "",
+        f"frame {f.frame}" if f.frame is not None else "",
+    ]
+    return " · ".join(x for x in parts if x)
+
+
+def _final(ctx: Ctx) -> dict | None:
+    """The final video, the checks' findings (each with a stable id for a note), the hard rules and the closing
+    card. Whether the user said it looks good (`acked`) is added after the version is taken (see _stage)."""
+    short = _short(ctx)
+    mp4 = ctx.sdir / "out" / f"{short.slug}.mp4"
+    found, redo_all = pages.load_findings(ctx.sdir)
+    rows, seen = [], set()
+    for f in found:
+        fid = finding_id(f)
+        if fid in seen:  # the same finding in two files is one finding
+            continue
+        seen.add(fid)
+        rows.append({"id": fid, "check": f.check, "severity": f.severity, "message": f.message, "where": _where(f),
+                     "redo": f.redo})  # fmt: skip
+    size = mp4.stat().st_size if mp4.is_file() else None
+    return {
+        "video": {"file": f"out/{short.slug}.mp4"} if size is not None else None,
+        "size_mb": round(size / 1_000_000, 1) if size is not None else None,
+        "findings": rows,
+        "redo_all": redo_all,
+        "checks_run": (ctx.sdir / "review" / "checks.json").is_file(),
+        "rules": _rule_rows(ctx, short),
+        "closing": _closing_card(ctx, short),
+    }
+
+
+POST_FIELDS = (("title", "Title"), ("description", "Description"), ("hashtags", "Hashtags"))
+
+
+def _post(ctx: Ctx) -> dict | None:
+    """The post text to copy (a note on any field), the closing card and the asset credits."""
+    short = _short(ctx)
+    post = short.post if isinstance(short.post, dict) else {}
+    fields = []
+    for key, label in POST_FIELDS:
+        value = post.get(key)
+        text = " ".join(str(v) for v in value) if isinstance(value, list) else str(value or "")
+        fields.append({"key": key, "label": label, "text": text})
+    return {"fields": fields, "closing": _closing_card(ctx, short), "credits": _asset_rows(short.assets)}
 
 
 BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
@@ -307,9 +433,9 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
     "storyboard": _storyboard,
     "engine": _engine,
     "narration": _narration,
-    "render": _later,
-    "final": _later,
-    "post": _later,
+    "render": _render,
+    "final": _final,
+    "post": _post,
 }
 
 
@@ -357,12 +483,28 @@ def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[s
     mine = [d for d in live if d.get("stage") == stage]
     out["decision"] = mine[-1] if mine else None
     v = out["version"]
+    if stage in stages.ACK_STAGES and isinstance(out["content"], dict):  # after the version: acking must not move it
+        out["content"]["acked"] = v is not None and any(
+            d.get("decision") == "approve" and d.get("version") == v for d in mine
+        )
     if status == "current" and v is not None:
         approves = [d for d in mine if d.get("decision") == "approve" and d.get("version") == v]
         if stage in stages.APPROVAL_STAGES:
             out["needs_yes"] = not approves
         out["waiting_for_claude"] = any(not d.get("applied") for d in approves)
     return out
+
+
+def _feedback(ctx: Ctx) -> dict | None:
+    """The plugin feedback panel's report, only once the user said yes to seeing it (feedback.allow_panel) and never
+    with the setting `off`. Redacted like the CLI's report. Building it never marks anything reported."""
+    if not feedback.panel_allowed(ctx.sdir, ctx.settings.get("feedback")):
+        return None
+    s = ctx.short
+    own = [t for t in [s.title, *(ln.text for ln in s.lines)] if t and t.strip()] if s else []
+    rep = feedback.report(ctx.sdir, workspace=ctx.settings.get("workspace"),
+                          scrub=feedback.settings_scrub(ctx.settings) + own, mark=False)  # fmt: skip
+    return {k: rep[k] for k in ("entries", "title", "body", "url", "shortened", "by_severity", "ids")}
 
 
 def build(sdir: Path, *, settings: dict | None = None, now: float | None = None) -> dict:
@@ -384,6 +526,11 @@ def build(sdir: Path, *, settings: dict | None = None, now: float | None = None)
     rows = [_stage(ctx, s, status[s], live, problems) for s in stages.PAGE_STAGES]
     current = next((s for s in stages.PAGE_STAGES if status[s] == "current"), stages.PAGE_STAGES[-1])
     short = ctx.short
+    panel = None
+    try:
+        panel = _feedback(ctx)
+    except Exception as e:  # noqa: BLE001 - a bad input must never break the page
+        problems.append(_plain(sdir, f"the plugin feedback can't be shown: {type(e).__name__}: {e}"))
     return {
         "schema": SCHEMA,
         "generated": time.time() if now is None else now,
@@ -397,7 +544,7 @@ def build(sdir: Path, *, settings: dict | None = None, now: float | None = None)
         "stages": rows,
         "notes": note_list,
         "health": [],
-        "feedback": None,
+        "feedback": panel,
         "phone": None,
     }
 

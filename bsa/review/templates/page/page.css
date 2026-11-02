@@ -246,6 +246,71 @@ fieldset.choices legend { font-weight: 800; margin-bottom: 8px; padding: 0; }
 .choice input { width: 20px; height: 20px; accent-color: var(--accent); margin: 0; }
 .choice-name { font-weight: 800; }
 
+/* Render */
+.run-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.run-tab { font-weight: 800; font-size: 14px; padding: 8px 14px; min-height: 44px; border-radius: var(--r-pill);
+  border: var(--ink-border); background: var(--chip); color: var(--fg); cursor: pointer; }
+.run-tab.side { border-style: dashed; }
+.run-tab[aria-selected="true"] { background: var(--accent); color: var(--on-accent); box-shadow: var(--pop); }
+.run-panel { padding: 14px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border);
+  min-width: 0; }
+.run-sum { margin: 0; overflow-wrap: anywhere; }
+.chip.run-done { background: var(--ok-soft); }
+.chip.run-running, .chip.run-rendering { background: var(--soft); }
+.chip.run-failed, .chip.run-stopped { background: var(--warn-soft); }
+.progress { height: 14px; margin-top: 12px; border-radius: var(--r-pill); background: var(--chip);
+  border: 1.5px solid var(--ink); overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--ok); }
+.frames { margin: 6px 0 0; }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.step { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: var(--r-pill);
+  background: var(--card); border: 1.5px solid var(--chip); font-size: 13px; font-weight: 700; }
+.latest { max-width: 220px; }
+.frame-img { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 10px;
+  background: var(--chip); }
+.run-shots { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+.run-shot { min-width: 0; font-size: 13px; }
+.run-shot p { margin: 6px 0 0; }
+
+/* Final */
+.video-wrap { max-width: 360px; }
+.player { display: block; width: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: var(--r-sm);
+  border: var(--ink-border); }
+.video-wrap p { margin: 6px 0 0; font-size: 13px; }
+.ack { margin-top: 14px; }
+.ack p { margin: 0 0 8px; }
+.st-final > .state { margin-top: 14px; }
+.summary { margin: 0 0 10px; padding: 8px 12px; border-radius: var(--r-sm); font-weight: 800; background: var(--chip); }
+.summary.ok { background: var(--ok-soft); }
+.summary.bad { background: var(--warn-soft); }
+.findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.finding { padding: 10px 14px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border);
+  overflow-wrap: anywhere; }
+.finding.error { border-left-width: 8px; }
+.finding p { margin: 0 0 6px; }
+.finding .sev { font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: var(--r-pill);
+  background: var(--chip); }
+.finding.error .sev { background: var(--warn-soft); }
+.where { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.where code, .finding code { color: var(--fg); }
+.closing-info { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.closing-img { width: 120px; aspect-ratio: 9 / 16; object-fit: cover; border-radius: 10px; background: var(--chip);
+  border: var(--ink-border); }
+.closing-info p { margin: 0 0 6px; overflow-wrap: anywhere; }
+
+/* Post */
+.fields { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.field { padding: 12px 14px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border);
+  min-width: 0; }
+.field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.field-head h4 { margin: 0; }
+.copytext { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--card); color: var(--fg);
+  border: 1.5px solid var(--chip); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px;
+  max-height: 320px; overflow: auto; }
+.feedback .fb-title { font-weight: 800; overflow-wrap: anywhere; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+
 @media (max-width: 760px) {
   main { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 16px; }
   .top { padding: 12px 14px; flex-wrap: wrap; }

@@ -113,6 +113,41 @@
     return ok;
   }
 
+  // Copy text that is not an answer for Claude (a post field): `what` says what was copied.
+  async function copyPlain(text, what) {
+    const ok = await copyText(text);
+    notice = ok ? `Copied ${what}.` : "Couldn't copy. Select the text and copy it by hand.";
+    actionError = null;
+    say(notice);
+    render();
+    return ok;
+  }
+
+  // The plugin feedback panel's Copy (with `text`) or Open on GitHub (without): either one marks the shown entries
+  // reported on the page server. Showing the panel never does.
+  async function feedbackShared(ids, text) {
+    if (text !== undefined) {
+      const ok = await copyText(text);
+      if (!ok) {
+        notice = null;
+        actionError = "Couldn't copy. Select the report's text and copy it by hand.";
+        render();
+        return false;
+      }
+    }
+    const done = text !== undefined ? "Copied the report. Paste it into a new issue on GitHub if you want to send it."
+      : "GitHub opens in a new tab. Nothing is sent until you submit it there yourself.";
+    if (OFFLINE || !ids.length) {
+      notice = done;
+      say(done);
+      render();
+      return true;
+    }
+    return act(() => post("feedback-reported", { ids }), {
+      after: (ok) => { if (ok) { notice = done; say(done); } },
+    });
+  }
+
   async function copyAnswer(text) {
     const ok = await copyText(text);
     notice = ok ? "Copied. Paste it in the chat with Claude." : "Couldn't copy. Select the text and copy it by hand.";
@@ -450,6 +485,9 @@
       answerable: () => answerable(s), // the stage takes an answer now (none on its way, decisions readable)
       noteButton: (kind, id, label) => noteButton(s, kind, id, label),
       decide: (stage, decision, choice) => decide(stage, decision, choice),
+      copy: (text, what) => copyPlain(text, what),
+      feedback: (snap && snap.feedback) || null, // the plugin feedback panel's report, only once the user said yes
+      feedbackShared: (ids, text) => feedbackShared(ids || [], text),
     };
   }
 

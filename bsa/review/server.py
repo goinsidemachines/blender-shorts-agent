@@ -4,7 +4,8 @@ It binds 127.0.0.1 on a free port (the local network only with lan=True) and che
 the Host header (127.0.0.1:<port> or localhost:<port>, plus the LAN address with lan), the token (the `t` query for
 the page and its files, the X-BSA-Token header for the API, compared in constant time), and on POST a same-origin
 Origin when one is sent. Only a short's stills/, review/ and out/ are served, never anything outside them (symlinks
-included). It never runs commands; its only writes are notes and decisions (and the versions a snapshot records).
+included). It never runs commands; its only writes are notes, decisions, the versions a snapshot records and the
+plugin feedback's "reported" mark.
 A page Approve only records the decision; `page wait` applies it. With lan=True it binds every interface (0.0.0.0)
 but still answers only a Host of 127.0.0.1, localhost or this machine's one LAN address, with the same token.
 A connection whose request got an error reply, or whose body was not read in full, is closed, so leftover bytes are
@@ -26,7 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from bsa import messages, render_status
+from bsa import feedback, messages, render_status
+from bsa import settings as settings_mod
 from bsa.review import decisions, notes, page, snapshot, stages, store
 
 IDLE_S = 7200
@@ -470,6 +472,20 @@ class _Handler(BaseHTTPRequestHandler):
         sent = notes.send_stage(sdir, stage) if decision == "changes" else []
         self._json(200, {"decision": entry, "notes_sent": sent})
 
+    def _feedback_reported(self, _name: str, sdir: Path, body: dict) -> None:
+        """The user copied the plugin feedback report or opened it on GitHub: mark those entries reported. Only
+        while the panel is shown (the user said yes, and the setting is not `off`)."""
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+            raise ValueError("feedback-reported needs ids: a list of feedback entry ids")
+        try:
+            setting = settings_mod.load_settings().get("feedback")
+        except Exception:  # noqa: BLE001 - unreadable settings: the default, `ask`
+            setting = None
+        if not feedback.panel_allowed(sdir, setting):
+            raise _Refuse(409, "The plugin feedback is not shown for this short.")
+        self._json(200, {"reported": feedback.mark_reported(sdir, ids)})
+
 
 _API = {
     ("GET", "state"): _Handler._state,
@@ -478,4 +494,5 @@ _API = {
     ("POST", "notes"): _Handler._notes,
     ("POST", "decision"): _Handler._decision,
     ("POST", "show"): _Handler._show,
+    ("POST", "feedback-reported"): _Handler._feedback_reported,
 }
