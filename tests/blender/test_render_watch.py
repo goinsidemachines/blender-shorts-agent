@@ -12,7 +12,6 @@ from bsa import render_status as rs
 from bsa.blender import render
 from bsa.blender import scene as scene_mod
 from bsa.blender.render_watch import Watch
-from bsa.review import pages
 from bsa.short import Short
 from bsa.timeline import Span
 
@@ -49,10 +48,8 @@ def _run(sc, sdir, shots, percent=10):
     for sid, f0, f1 in shots:
         stamp = freshness.frames_stamp(Span(sid, f0, f1), "eevee", "fp", "preview")
         plan.append({"id": sid, "f0": f0, "f1": f1, **rs.frames_plan(sdir / "frames" / sid, f0, f1, stamp)})
-    page = rs.page_path(sdir, "preview")
     tracker = rs.Tracker(rs.status_path(sdir, "preview"), short={"slug": "t", "title": "T", "dir": str(sdir)},
-                         preset="preview", engine="eevee", shots=plan, stamp={"timeline": "h"},
-                         render_page=lambda st: pages.render_status_page(rs.describe(st), page))  # fmt: skip
+                         preset="preview", engine="eevee", shots=plan, stamp={"timeline": "h"})  # fmt: skip
     with Watch(tracker, sdir, "preview") as watch:
         tracker.start()
         for sid, f0, f1 in shots:
@@ -83,7 +80,7 @@ def test_status_follows_a_resumed_render():
     assert s["shots"][1]["reused"] == 2 and s["shots"][1]["rendered"] == 1
 
 
-def test_settings_thumbnails_and_page():
+def test_settings_and_thumbnails():
     sc = _scene()
     sdir = Path(tempfile.mkdtemp())
     s = _run(sc, sdir, [("s01", 1, 3)], percent=20)
@@ -99,8 +96,7 @@ def test_settings_thumbnails_and_page():
     assert img.size[0] == 216
     assert s["checks"]["frames_checked"] >= 1 and s["checks"]["errors"] == 0
     assert s["avg_s_per_frame"] > 0 and s["overhead_s"] >= 0
-    html = rs.page_path(sdir, "preview").read_text(encoding="utf-8")
-    assert "Done" in html and "render-status/preview-s01.jpg" in html
+    assert s["state"] == "done" and not list((sdir / "review").glob("*.html"))  # the one page shows it
     for lst in (bpy.app.handlers.render_pre, bpy.app.handlers.render_write, bpy.app.handlers.render_cancel):
         assert not any(getattr(fn, "__self__", None).__class__ is Watch for fn in lst)
 

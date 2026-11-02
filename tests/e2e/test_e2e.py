@@ -2,7 +2,6 @@
 Blender's Python, BLENDER commands in background Blender), JSON on stdout or a BSA_RESULT line, one plain line on
 stderr on failure. Integration bugs are fixed in the owning modules, never here."""
 
-import html
 import json
 import os
 import shutil
@@ -16,6 +15,13 @@ SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source"
 RESULT = "BSA_RESULT "
 
 pytestmark = [pytest.mark.blender, pytest.mark.slow]
+
+
+def _stage(short: Path, stage: str) -> dict:
+    """One stage of the short's page, as the page's snapshot gives it."""
+    from bsa.review import snapshot
+
+    return next(s for s in snapshot.build(short, settings={})["stages"] if s["id"] == stage)
 
 
 class Pipeline:
@@ -84,8 +90,9 @@ def test_script_mode_end_to_end(tmp_path):
     p.build(short)
     stills = p.blender_cmd("stills", "pendulum", blend=blend)["stills"]
     assert len(stills) == 3 and all(Path(s).stat().st_size > 0 for s in stills)
-    board = Path(p.cli("review", "storyboard", "pendulum")["page"])
-    assert board == short / "review" / "storyboard.html" and board.is_file()
+    board = p.cli("review", "storyboard", "pendulum")  # the old command now gives the one page's link
+    assert board["page"].endswith("#storyboard") and board["deprecated"] == "use CLI page SHORT"
+    assert _stage(short, "storyboard")["needs_yes"] is True
     p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
     p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
 
@@ -108,8 +115,7 @@ def test_script_mode_end_to_end(tmp_path):
     assert status["settings"]["engine"] == "eevee" and status["settings"]["percent"] == 50
     assert status["checks"]["frames_checked"] >= 1 and status["checks"]["errors"] == 0
     assert all((short / "review" / sh["thumb"]).is_file() for sh in status["shots"] if sh["thumb"])
-    assert Path(status["page"]) == short / "review" / "render-preview.html"
-    assert "Done" in Path(status["page"]).read_text(encoding="utf-8")
+    assert status["page"].endswith("#render") and not list((short / "review").glob("*.html"))
     assert status["kind"] == "render" and status["previous"]["kind"] == "check"  # the check's run, superseded
     assert status["previous"]["state"] == "done"
     again = p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)  # resumed: nothing to render
@@ -139,7 +145,6 @@ def test_script_mode_end_to_end(tmp_path):
     assert probe["fps"] == pytest.approx(30.0)
     assert probe["frames"] == timeline["n_frames"]
     assert probe["has_audio"] is True
-    assert (short / "review" / "storyboard.html").is_file()
     assert p.cli("state", "pendulum")["next"] == "final"
 
     # ---- only what changed renders again
@@ -164,7 +169,6 @@ def test_script_mode_end_to_end(tmp_path):
     assert by["s03"]["rendered"] == by["s03"]["frames"] and by["s03"]["why"] == "fingerprint changed"
     status = p.cli("render-status", "pendulum", "--preset", "preview")
     assert [sh["reason"] for sh in status["shots"]] == [None, None, "fingerprint changed"]
-    assert "rendered again: fingerprint changed" in Path(status["page"]).read_text(encoding="utf-8")
     check = p.blender_cmd("check", "pendulum", blend=blend)
     assert check["checked"] == ["s03"] and sorted(check["kept"]) == ["s01", "s02"]
 
@@ -208,13 +212,15 @@ def test_script_mode_end_to_end(tmp_path):
     assert [s["rendered"] for s in same["shots"]] == [0, 0, 0], same["shots"]
     p.blender_cmd("edit", "pendulum", "--preset", "preview")
 
-    # ---- review final reads what check and frame-check wrote (issue #13)
-    page = Path(p.cli("review", "final", "pendulum")["page"]).read_text(encoding="utf-8")
+    # ---- the page's Final stage reads what check and frame-check wrote (issue #13)
+    final = _stage(short, "final")["content"]
+    wheres = [f["where"] for f in final["findings"]]
     for f in json.loads((short / "review" / "checks.json").read_text(encoding="utf-8"))["findings"]:
-        assert f"shot{'s' if len(f['shots']) > 1 else ''} {', '.join(f['shots'])}" in page
+        assert any(f"shot{'s' if len(f['shots']) > 1 else ''} {', '.join(f['shots'])}" in w for w in wheres)
+    redos = {f["redo"] for f in final["findings"]}
     for f in frame_check["findings"]:
         if f.get("redo"):
-            assert html.escape(f["redo"]) in page
+            assert f["redo"] in redos
 
     # ---- a refusal still prints its BSA_RESULT, with the error
     cmd = [p.blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", str(ROOT / "bsa_blender.py"),

@@ -1,13 +1,13 @@
 ---
 name: make-short
-description: Make a finished, ready-to-post narrated explainer short (1080x1920 MP4 for YouTube Shorts, Reels or TikTok) entirely in Blender, with visual approval pages and checks for wrong animation, missing textures and render artifacts. Use when the user asks for a short, reel or vertical explainer video made in Blender, or comes back to one they started.
+description: Make a finished, ready-to-post narrated explainer short (1080x1920 MP4 for YouTube Shorts, Reels or TikTok) entirely in Blender, with a live review page for approvals and checks for wrong animation, missing textures and render artifacts. Use when the user asks for a short, reel or vertical explainer video made in Blender, or comes back to one they started.
 ---
 
 # Make a short
 
 You take the user from an idea to a finished vertical MP4 (captions, narration when available, sound effects) plus
-a title, description and hashtags. The user approves the story and the storyboard on HTML pages and the render
-engine in chat (with both time estimates); after that you run to the end on your own.
+a title, description and hashtags. The user approves the story, the storyboard and the render engine on one review page
+(the engine with both time estimates), or in chat; after that you run to the end on your own.
 
 ## 1. Find the plugin and Blender first
 
@@ -57,9 +57,10 @@ Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render
 - `BLENDER render SHORT --preset preview|final`: only shots whose content fingerprint changed render again (and
   `BLENDER check SHORT` re-checks only those); `--shot ID --frames 120-140,200` or `--redo-flagged` redo single
   frames that frame-check flagged (each finding has a ready `redo` command).
-- `CLI render-status SHORT [--preset preview|final] [--tag NAME] [--open]`: where the preview chain, a render, check, frame-check
+- `CLI render-status SHORT [--preset preview|final] [--tag NAME]`: where the preview chain, a render, check, frame-check
   or edit is (the current step and its progress, time left, live warnings, and whether its Blender is still running;
-  when nothing runs, how the last run ended); `--open` shows the live page `review/render-<preset>.html`.
+  when nothing runs, how the last run ended). Its `page` is the review page's Render stage, which shows the same
+  live: `CLI page SHORT --stage render` switches the page there.
 
 `SHORT` in commands is the short's number, slug or folder path (`3`, `pendulum`, or the full path). Always use the
 short's number (or its folder path): a slug works only while no other short has the same one, and the commands
@@ -92,9 +93,31 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    (a crash or power cut), never re-mark stages by hand: tell the user, and on their yes run `CLI state SHORT
    restore`, which puts back `state.json.bak` (the copy before the last save; the damaged file is kept), then
    check `next` and redo only the stage that the backup lacks.
-4. **The user sees HTML pages, never Markdown or JSON.** At the story and storyboard approvals (and for the finished short), write the page with
-   `CLI review story|storyboard|final SHORT --open` and talk about what is on it. Never paste short.json or ask the
-   user to open your working files.
+4. **The user sees one review page, never Markdown or JSON.** Every stage of a short (interview, story,
+   storyboard, engine, narration, render, final, post) is on one local page that updates itself as the files
+   change. Talk about what is on it; never paste short.json or ask the user to open your working files.
+   - **Open it once, at the interview:** `CLI page SHORT` (`playbook/01-interview.md`). Its result has `url` and
+     `opened`. When `opened` is false, the page did not open (or never checked in): tell the user it didn't open
+     and give the `url` as a link they can click. Never carry on as if it opened. Relay anything in `health`.
+   - **Show a stage:** when the tab is already open, `CLI page SHORT --stage STAGE` switches it there (Python can't
+     bring the browser window to the front), so say so: "the page has switched to the storyboard".
+   - **Wait for a yes:** after showing a stage that needs one (story, storyboard, engine), run `CLI page wait SHORT
+     --stage STAGE` with `run_in_background: true` and end your turn. It returns when the user approves on the page
+     (`applied: true`: the stage is marked done), sends notes (`notes`, or a `changes` decision), or after 10
+     minutes (`timed_out: true`: run it again, in the background, while you wait).
+   - **A yes in chat** is recorded with `CLI page decide SHORT STAGE approve --by chat` (for the engine add
+     `--choice cycles|eevee`); a change asked in chat with `CLI page decide SHORT STAGE changes --by chat --note
+     "..."`. That is the only way to approve: `CLI state` refuses to mark story, storyboard or engine done.
+   - **The engine from short.json or the `render.engine` setting** needs no question: record it with `CLI page
+     decide SHORT engine approve --by settings --choice ENGINE` (`playbook/04-engine.md`).
+   - **Notes from the page:** any command's result can carry `page_notes` (notes and decisions the user left on the
+     page, waiting for you). Read and answer every one before the next step, and again when resuming a short: do
+     what it asks, then `CLI page note SHORT ID done --reply "what you changed"`, or `CLI page note SHORT ID
+     declined --reply "why not"`. A note on a stage that is already approved means going back: ask the user before
+     you reset anything (`CLI state SHORT reset STAGE`).
+   - **Final is not a gate:** its "Looks good" is the user's acknowledgement; never wait for it.
+   - **The feedback panel** shows on the Post stage only after the user said yes to seeing the plugin's notes
+     (`CLI feedback report SHORT`, `playbook/09-post.md`).
 5. **Narration never blocks** (`playbook/05-narration.md`). Any narrator problem means captions only, said once, and
    the short goes on. **Never download** anything (voices, assets) without first showing the plan
    (`CLI voice plan ...`, `CLI assets plan ...`: name, source, licence, size) and getting a clear yes.
@@ -109,8 +132,9 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    through `bsa_mcp_build.py`, which reloads the plugin's code first). If it isn't connected,
    use script mode without asking.
 9. **Resuming:** when the user comes back to a short ("carry on with the watch short"), find it
-   (`CLI state SHORT`), say in one line where it stands, and continue from `next`. Renders resume from the frames
-   already on disk.
+   (`CLI state SHORT`), say in one line where it stands, answer any `page_notes` in its result, and continue
+   from `next`. Run `CLI page SHORT` again so the user has the page (the same `opened` rule). Renders resume from
+   the frames already on disk.
 10. **Long commands run in the background.** The Bash tool stops a command after 2 minutes by default (10 at
    most), which kills a long render. Run these with `run_in_background: true` and carry on when you are notified
    that they finished, never with a timeout: `BLENDER render SHORT --preset preview|final`, `BLENDER estimate
@@ -133,9 +157,9 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
 |---|---|---|---|
 | (first run) | `playbook/00-first-run.md` | settings saved | `settings set` |
 | `interview` | `playbook/01-interview.md` | topic, audience, length agreed | you: `CLI state SHORT done interview` |
-| `story` | `playbook/02-story.md` | user approves the story page | you: `CLI state SHORT done story` |
-| `storyboard` | `playbook/03-storyboard.md` | user approves the storyboard page | you: `CLI state SHORT done storyboard` |
-| `engine` | `playbook/04-engine.md` | user says yes to an engine | you: `CLI state SHORT done engine --info '{"engine": "cycles"}'` |
+| `story` | `playbook/02-story.md` | user approves the story on the page or in chat | `CLI page wait SHORT --stage story` (a page yes) or you: `CLI page decide SHORT story approve --by chat` |
+| `storyboard` | `playbook/03-storyboard.md` | user approves the storyboard on the page or in chat | `CLI page wait SHORT --stage storyboard` or you: `CLI page decide SHORT storyboard approve --by chat` |
+| `engine` | `playbook/04-engine.md` | user says yes to an engine (or it comes from short.json or the setting) | `CLI page wait SHORT --stage engine`, or you: `CLI page decide SHORT engine approve --by chat --choice cycles` (`--by settings` when it comes from short.json or the setting) |
 | `narration` | `playbook/05-narration.md` | narration made, or captions only | `CLI narrate SHORT` marks it itself |
 | `build` | `playbook/06-build.md` | full scene rebuilt to the final timing, mix written | you: `CLI state SHORT done build` |
 | `checks` | `playbook/07-checks.md` | no error findings | `BLENDER check SHORT` marks it only when there are no errors |
@@ -153,7 +177,7 @@ SECONDS... | --sheet` pulls frames of the edited video at its own colours into `
 (`playbook/08-render.md`).
 
 Going back: `CLI state SHORT reset STAGE` clears that stage and every later one (for example, the user changes the
-story after the storyboard: `reset story`, revise, show the story page again).
+story after the storyboard: `reset story`, revise, show the story on the page again and wait for a new yes).
 
 Always-relevant chapters: `playbook/craft-short-form.md` (hook, pacing, captions), `playbook/honesty.md`,
 `playbook/look-and-brand.md`, `playbook/sound.md`, `playbook/assets.md`, `playbook/mcp-mode.md`, and the field
@@ -172,7 +196,8 @@ chapter for the topic (`playbook/fields/physics.md` for mechanisms, structures, 
   source/sound.py       optional extra sound bed built from simulation data
   source/styles.json    style options for the story page (no-brand users)
   source/notes.md       your own working notes (facts checked, decisions)
-  stills/  audio/vo/  audio/mix.wav  blend/  frames/preview|final/<shot>/  review/*.html  out/*.mp4
+  review/               notes, decisions, live render status (the page reads them; short.html only without a server)
+  stills/  audio/vo/  audio/mix.wav  blend/  frames/preview|final/<shot>/  out/*.mp4
 ```
 
 The workspace has its own `.gitignore` (`*`). Never write a user's short into the plugin folder.

@@ -7,8 +7,10 @@ the end on your own.
    the short sets its own (`"render": {"engine": "eevee"}`, for a short whose look calls for one engine; `CLI
    validate` refuses any other value), else `settings`. A short's own engine wins over the setting: **propose it**
    ("This short asks for EEVEE in short.json: go with EEVEE?"), with the estimate below if the user wants the
-   times, and wait for a yes as in step 6. Otherwise, if `settings` has `render.engine` set to `cycles` or `eevee`
-   (the user said "always"), use it: say which in one line and mark the stage done with that engine. Otherwise:
+   times. Otherwise, if `settings` has `render.engine` set to `cycles` or `eevee` (the user said "always"), use it.
+   Either way the page already shows that engine as chosen and asks nothing: say which in one line and record it
+   with `CLI page decide SHORT engine approve --by settings --choice ENGINE` (the engine `CLI engine` named; it
+   refuses any other). Otherwise:
 2. **Check the machine:** `CLI machine` (CPU, cores, RAM, each GPU with its video memory and how much is free).
 3. **Estimate:** `BLENDER estimate SHORT` renders one frame per scene at final quality in each engine and returns
    `eevee_s` and `cycles_s` for the whole short. It takes a few minutes; say so first, and run it with
@@ -23,8 +25,13 @@ the end on your own.
 5. **Video memory:** run `CLI machine --need-gb 6` before recommending a GPU render (use about 4 GB for EEVEE). If it
    returns a `vram_warning`, pass it on as it is ("another program is using 11 GB of video memory: closing it would
    help") and include it in the recommendation. Do the same before any later GPU render or GPU voice run.
-6. **Wait for a yes.** Then `CLI state SHORT done engine --info '{"engine": "cycles"}'` (or `eevee`). If the user
-   says "always" ("always use Cycles"), also `CLI settings set render.engine cycles`.
+6. **Show it and wait for a yes.** `CLI page SHORT --stage engine` switches the page to the engine choice (both
+   times, your recommendation); say "the page has switched to the engine" (`opened` false: say so and give the
+   `url` as a link). Then run `CLI page wait SHORT --stage engine` with `run_in_background: true` and end your turn.
+   `applied: true` with an `approve` decision means the user picked an engine on the page and the stage is done
+   with it; `notes` mean answer them (`CLI page note SHORT ID done --reply "..."`) and wait again; `timed_out: true`
+   means run the wait again. A yes in chat: `CLI page decide SHORT engine approve --by chat --choice cycles` (or
+   `eevee`). If the user says "always" ("always use Cycles"), also `CLI settings set render.engine cycles`.
 
 From here on, do not ask the user anything unless a check fails that you can't fix after 3 attempts.
 
@@ -35,7 +42,9 @@ When the user wants to see the other engine before (or after) choosing, render i
 the engine). A side run renders into its own folder and video, `frames/preview-eevee/` and
 `out/<slug>-preview-eevee.mp4`, with its own frame-check findings (`review/frame-checks-preview-eevee.json`). It
 never touches the approved engine's frames or video, and it never changes the engine stage or marks `preview`:
-switching engines is still `CLI state SHORT done engine --info '{"engine": "eevee"}'` after the user says yes.
+switching engines is still the user's yes and a new engine approval (`CLI page decide SHORT engine approve --by chat
+--choice eevee`). Once the engine stage is approved, that means going back first: `CLI state SHORT reset engine`
+clears it and every later stage, so ask the user before you do it.
 The same options work on `BLENDER render`, `frame-check`, `edit` and `grab`, for the final preset too
 (`out/<slug>-final-eevee.mp4`). Fingerprints, resume and the GPU lock work for side runs exactly as for the
 approved one.

@@ -146,16 +146,6 @@ def test_long_report_is_shortened_in_the_url(short):
     assert "problem 39" in rep["body"]  # the full text is still on the page
 
 
-def test_report_page_has_copy_and_github_button(short):
-    feedback.add(short, "blocking", "edit crashed", happened="<script>alert(1)</script>")
-    rep = feedback.report(short)
-    page = feedback.render_page(rep, short / "review" / "plugin-feedback.html")
-    html = page.read_text(encoding="utf-8")
-    assert "Copy" in html and "Open on GitHub" in html
-    assert "<script>alert(1)</script>" not in html
-    assert "Submit" in html  # the user submits on GitHub themselves
-
-
 def test_feedback_module_never_touches_the_network():
     src = (ROOT / "bsa" / "feedback.py").read_text(encoding="utf-8")
     for word in ("urllib.request", "http.client", "socket", "requests", "webbrowser"):
@@ -207,12 +197,11 @@ def test_cli_add_list_report_decline(cli_short):
     assert lst["pending"] == 1 and lst["ask"] and lst["setting"] == "ask"
     assert lst["by_severity"] == {"wrong-output": 1}
     rep = ok(run(home, "feedback", "report", sdir))
-    page = Path(rep["page"])
-    assert page == sdir / "review" / "plugin-feedback.html" and page.is_file()
-    assert rep["url"].startswith(feedback.REPO)
+    assert rep["page"].endswith("#post") and not (sdir / "review" / "plugin-feedback.html").exists()
+    assert rep["url"].startswith(feedback.REPO) and feedback.panel_allowed(sdir, "ask")
     assert not ok(run(home, "feedback", "list", sdir))["ask"]
     ok(run(home, "feedback", "add", sdir, "--severity", "rough-edge", "--summary", "later"))
-    assert ok(run(home, "feedback", "decline", sdir))["declined"] == 1
+    assert ok(run(home, "feedback", "decline", sdir))["declined"] == 2  # report marks nothing: the page does
 
 
 def test_cli_setting_off_and_never(cli_short):
@@ -244,7 +233,8 @@ def test_skill_says_when_to_note_feedback():
 
 def test_post_chapter_asks_once_and_never_submits():
     text = _flat(ROOT / "skills" / "make-short" / "playbook" / "09-post.md")
-    for words in ("feedback list", "feedback report SHORT --open", "feedback decline", "Submit", "Never submit"):
+    for words in ("feedback list", "feedback report SHORT", "CLI page SHORT --stage post", "feedback decline", "Submit",
+                  "Never submit"):  # fmt: skip
         assert words in text, words
 
 

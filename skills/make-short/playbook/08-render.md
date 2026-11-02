@@ -44,8 +44,8 @@ moving subject and parent its moving parts under it.
 ## Watching a render (and the rest of the chain)
 
 Every `BLENDER preview`, `BLENDER render`, `BLENDER check`, `BLENDER frame-check` and `BLENDER edit` keeps a live
-status while it runs: `review/render-status-<preset>.json` and the page `review/render-preview.html` /
-`review/render-final.html` (`BLENDER check` shows on the preview page unless given `--preset final`).
+status while it runs: `review/render-status-<preset>.json`, which the review page's Render stage shows live
+(`BLENDER check` shows with the preview unless given `--preset final`).
 
 - **The chain.** `BLENDER preview` lists its steps (timeline, build, build done, mix, check, render, frame-check,
   edit), each pending, running, done, skipped (with why: "the .blend is current", "already passed on every shot as
@@ -66,19 +66,20 @@ status while it runs: `review/render-status-<preset>.json` and the page `review/
   keeps one line about the previous run (how it ended and when), so an old "done" never passes for this run. A run
   that is still going in another process is left alone (the new one is not recorded there).
 
-The page refreshes itself while something runs.
+The page updates itself while something runs.
 
 - **When the chain or a render starts** (the preview chain or the final render, in the background), run
-  `CLI render-status SHORT --preset preview|final --open` once it has started: it opens the page for the user. Say
-  in one line that it shows the progress live.
+  `CLI page SHORT --stage render` once it has started: it switches the open page to the Render stage (or opens the
+  page: when `opened` is false, say it didn't open and give the `url` as a link). Say in one line that the page has
+  switched to the render and shows the progress live.
 - **When the user asks where it is** (or you need to know), run `CLI render-status SHORT [--preset ...]` instead of
   counting PNGs. Relay its `summary` (e.g. "preview chain running: step 5 of 8, check: 340 of 1200 frames (28%),
   shot s03 (scene Clock), about 4 min left"). `step` is the current step (name, index of total, progress); `idle:
   true` means nothing is running and `last_run` says how the last run ended and when. `alive` says whether its
   Blender is still running; `stale: true` means it says running but its process is gone (killed, crashed, the
   session ended): run the same command again (`BLENDER preview` skips the steps already current, a render resumes
-  from the frames on disk). It works for every step, after a session ended or the computer restarted, and rewrites
-  the page with the true state. Each run has a `run_id` and `started_at`, and the summary ends "(run started
+  from the frames on disk). It works for every step, after a session ended or the computer restarted, and the
+  page shows the true state too. Each run has a `run_id` and `started_at`, and the summary ends "(run started
   14:02:31)": if that is before you launched the command, it is the last run, not yours (`note` says so). Blender
   takes a few seconds to start before the new run writes "starting": check again then.
 - Live warnings are early news, not the verdict: `BLENDER frame-check` still checks every frame afterwards.
@@ -135,9 +136,9 @@ are never overwritten, the engine stage keeps its engine, and a side edit never 
 same options on every command of one side run (`BLENDER render SHORT --preset preview --engine eevee`, then
 `frame-check` and `edit` with `--engine eevee`); the chain passes them on itself. Tags are lowercase letters, digits
 and hyphens; `preview` and `final` are refused. Its fingerprints, resume, scene checks and GPU lock are the same as
-the approved run's. Its live status is its own too: `review/render-status-<preset>-<tag>.json`, the page
-`review/render-<preset>-<tag>.html` and its thumbnails, so the approved run's page is never overwritten (`CLI
-render-status SHORT --preset preview --tag eevee` reads it).
+the approved run's. Its live status is its own too: `review/render-status-<preset>-<tag>.json` and its thumbnails,
+so the approved run's status is never overwritten (`CLI render-status SHORT --preset preview --tag eevee` reads it,
+and the page's Render stage shows it beside the approved run).
 
 Each render's result has `s_per_frame` (the average over the frames it rendered fresh) and `engines`: every run of
 that preset on record in `review/engine-runs.json`, with what it measured and its MP4 while it exists. Relay those
@@ -217,8 +218,8 @@ The single steps, when you need one on its own:
    refuses to start unless `BLENDER check SHORT` passed on every shot as it is now and this timing (rebuilt since?
    check again: it re-checks only changed shots). Long renders survive the
    session ending: if the user comes back later, run the same command and it carries on from the frames on disk.
-   Tell the user roughly how long it will take (from the estimate) and that they can leave it running, and open
-   the live page (`CLI render-status SHORT --preset final --open`). While it renders is a good time to write the
+   Tell the user roughly how long it will take (from the estimate) and that they can leave it running, and switch
+   the page to the render (`CLI page SHORT --stage render`, with the same `opened` rule). While it renders is a good time to write the
    post text (`09-post.md` step 1): it never makes the frames or checks stale.
 2. `BLENDER frame-check SHORT --preset final` (in the background too), fix errors, and look at a sample of final frames yourself (noise
    and fireflies show up here, not in the preview).

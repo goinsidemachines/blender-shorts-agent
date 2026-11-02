@@ -346,23 +346,18 @@ def test_mix_writes_wav_and_runs_sound_py(home, pendulum):
         assert w.getnframes() == round(data["n_frames"] / 30 * 48000)
 
 
-def test_review_story_and_storyboard(home, pendulum):
+def test_story_stage_has_style_options_and_pending_downloads(home, pendulum):
+    from bsa.review import snapshot
+
     (pendulum / "source" / "styles.json").write_text(
         json.dumps([{"name": "Dusk", "description": "warm"}, {"name": "Lab", "description": "cool"}]), encoding="utf-8"
     )
-    story = Path(ok(run(home, "review", "story", "pendulum"))["page"])
-    html = story.read_text(encoding="utf-8")
-    assert "stills/style-2.jpg" in html
-    board = Path(ok(run(home, "review", "storyboard", "pendulum"))["page"])
-    assert board == pendulum / "review" / "storyboard.html" and board.is_file()
-
-
-def test_review_story_shows_pending_downloads(home, pendulum):
     plan = [{"id": "brushed_steel", "name": "Brushed Steel", "kind": "textures", "source": "Poly Haven",
              "license": "CC0", "files": [], "bytes": 5_200_000}]  # fmt: skip
     (pendulum / "source" / "assets-plan.json").write_text(json.dumps(plan), encoding="utf-8")
-    html = Path(ok(run(home, "review", "story", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "Brushed Steel" in html and "5.2 MB" in html and "after your yes" in html
+    story = snapshot._story(snapshot.load_ctx(pendulum, {}))
+    assert [o["name"] for o in story["look"]["options"]] == ["Dusk", "Lab"]
+    assert [a["name"] for a in story["assets"]["pending"]] == ["Brushed Steel"]
 
 
 def test_settings_rules_add_list_remove(home):
@@ -413,16 +408,21 @@ def test_validate_and_story_need_every_rule_answered(home, pendulum):
     ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
 
 
-def test_review_pages_show_the_rules_and_how_they_were_kept(home, pendulum):
+def test_page_stages_show_the_rules_and_how_they_were_kept(home, pendulum, monkeypatch):
+    from bsa.review import snapshot
+
     ok(run(home, "settings", "rule", "add", "No people", "--kind", "no_humans"))
     ok(run(home, "settings", "rule", "add", "Keep it <modest>"))
     _with_rules_check(pendulum, {"r1": {"kept": "Clock parts only", "cleared": {"hand": "the clock's hand"}}})
-    for page in ("story", "storyboard", "final"):
-        html = Path(ok(run(home, "review", page, "pendulum"))["page"]).read_text(encoding="utf-8")
-        assert "Your hard rules" in html, page
-        assert "No people" in html and "Keep it &lt;modest&gt;" in html and "Clock parts only" in html, page
-        assert "Not answered yet" in html, page  # r2 has no note
-        assert "the clock&#x27;s hand" in html, page
+    ok(run(home, "timeline", "pendulum"))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    ctx = snapshot.load_ctx(pendulum)
+    for stage in ("story", "storyboard", "final"):
+        rows = {r["text"]: r for r in snapshot.BUILDERS[stage](ctx)["rules"]}
+        assert set(rows) == {"No people", "Keep it <modest>"}, stage  # the page escapes what it shows
+        assert rows["No people"]["kept"] == "Clock parts only" and rows["No people"]["checked"], stage
+        assert rows["Keep it <modest>"]["kept"] is None, stage  # r2 has no note: "Not answered yet"
+        assert "the clock's hand" in str(rows["No people"]["cleared"]), stage
 
 
 def test_mix_follows_a_natural_sounds_rule(home, pendulum):
@@ -430,14 +430,6 @@ def test_mix_follows_a_natural_sounds_rule(home, pendulum):
     ok(run(home, "timeline", "pendulum"))
     data = ok(run(home, "mix", "pendulum"))
     assert data["sound_policy"] == "natural-only"
-
-
-def test_review_final_reads_findings(home, pendulum):
-    (pendulum / "review" / "checks.json").write_text(json.dumps({"findings": [
-        {"check": "faceted", "severity": "warning", "obj": "Bob", "frame": 3, "message": "looks faceted"}]}),
-        encoding="utf-8")  # fmt: skip
-    page = Path(ok(run(home, "review", "final", "pendulum"))["page"])
-    assert "looks faceted" in page.read_text(encoding="utf-8")
 
 
 def test_voice_list_and_plan(home):
@@ -481,8 +473,8 @@ def test_settings_set_rejects_unknown_choices(home):
     assert ok(run(home, "settings", "set", "narrator.provider", "Kokoro"))["settings"]["narrator"]["provider"] == "kokoro"
 
 
-def test_review_final_reads_what_check_and_frame_check_write_now(home, pendulum, monkeypatch):
-    """Issue #13: review final reads review/checks.json and the frame-check JSON as the current check and
+def test_final_stage_reads_what_check_and_frame_check_write_now(home, pendulum, monkeypatch):
+    """Issue #13: the page's Final stage reads review/checks.json and the frame-check JSON as the current check and
     frame-check write them (shot, scene, shots, redo, redo_frames, a flicker's box...) and keys added later, and
     shows the shot and the redo command."""
     import types
@@ -515,15 +507,23 @@ def test_review_final_reads_what_check_and_frame_check_write_now(home, pendulum,
     data = json.loads((pendulum / "review" / "frame-checks-final.json").read_text(encoding="utf-8"))
     assert {"shot", "box", "redo", "redo_frames"} <= set(data["findings"][0])
     assert tl["n_frames"]
-    html = Path(ok(run(home, "review", "final", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "looks faceted" in html and "the frame flickers" in html
-    assert f"shot {s1.id}" in html and f"shots {s1.id}, {s2.id}" in html and "scene Lever" in html
-    assert "BLENDER render" in html and "--redo-flagged" in html  # each redo command, and the one for all
+    from bsa.review import snapshot
+
+    final = snapshot._final(snapshot.load_ctx(pendulum, {}))
+    rows = {f["message"]: f for f in final["findings"]}
+    assert "looks faceted" in rows and "the frame flickers" in rows and final["checks_run"] is True
+    wheres = [f["where"] for f in final["findings"]]
+    assert any(f"shot {s1.id}" in w for w in wheres) and any(f"shots {s1.id}, {s2.id}" in w for w in wheres)
+    assert any("scene Lever" in w for w in wheres)
+    assert rows["the frame flickers"]["redo"].startswith("BLENDER render")  # each redo command, and the one for all
+    assert any("--redo-flagged" in r for r in final["redo_all"])
 
 
-def test_review_final_without_checks_says_not_run(home, pendulum):
-    html = Path(ok(run(home, "review", "final", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "All checks passed" not in html and "checks not run" in html.lower()
+def test_final_stage_without_checks_says_not_run(home, pendulum):
+    from bsa.review import snapshot
+
+    final = snapshot._final(snapshot.load_ctx(pendulum, {}))
+    assert final["checks_run"] is False and final["findings"] == []
 
 
 @pytest.mark.parametrize(("argv", "preset", "kind"), [
@@ -831,7 +831,7 @@ def test_a_standalone_edit_records_itself_as_a_one_step_run(home, pendulum, monk
     (step,) = s["run"]["steps"]
     assert step["name"] == "edit" and step["state"] == "done" and step["summary"]["mp4"]
     assert step["progress"]["done"] == step["progress"]["total"] == 3
-    assert "Done" in rs.page_path(pendulum, "preview").read_text(encoding="utf-8")
+    assert not list((pendulum / "review").glob("*.html"))  # the page's Render stage shows the status
 
 
 def test_a_failed_check_is_recorded_on_the_status_page(home, pendulum, monkeypatch):
@@ -1426,8 +1426,7 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     assert by["render"]["summary"]["frames"] == 7
     assert out["steps"][0]["framing"] == [FRAMING_NOTE]  # the build step names the framing warnings
     assert all(by[n]["started"] <= by[n]["finished"] for n in list(by)[1:])
-    page = (pendulum / "review" / "render-preview.html").read_text(encoding="utf-8")
-    assert "Steps" in page and "Done" in page
+    assert not (pendulum / "review" / "render-preview.html").exists()  # the page's Render stage shows it
     status_out = ok(run(home, "render-status", "pendulum"))
     assert status_out["idle"] is True and "preview chain done" in status_out["summary"]
 

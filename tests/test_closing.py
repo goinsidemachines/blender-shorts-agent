@@ -89,16 +89,6 @@ def test_a_card_held_longer_for_its_line_says_so():
     assert plain == {"seconds": 2.5, "set_seconds": 2.5}
 
 
-def test_the_review_page_says_how_long_the_card_holds(tmp_path):
-    from bsa.review.pages import _closing_html
-
-    card = {**CARD, "png": str(tmp_path / "closing.png"), "warnings": []}
-    assert "at least 2.5 s" in _closing_html(card, tmp_path / "final.html")
-    note = "closing card held 4.5 s so the voice line fits (its take is 3.8 s; closing.seconds is 2.5)"
-    html = _closing_html({**card, "held_s": 4.5, "hold_note": note}, tmp_path / "final.html")
-    assert "held 4.5 s" in html and note in html and "at least" not in html
-
-
 def _take(path, seconds):
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)

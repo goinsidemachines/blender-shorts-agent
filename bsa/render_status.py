@@ -1,5 +1,5 @@
-"""Live render status: while `BLENDER render` runs it keeps `review/render-status-<preset>.json` (and the page
-`review/render-<preset>.html`) up to date, so anyone can see where a render is, how fast it goes and what the frame
+"""Live render status: while `BLENDER render` runs it keeps `review/render-status-<preset>.json` up to date (the
+review page's Render stage shows it), so anyone can see where a render is, how fast it goes and what the frame
 checks found, without counting PNGs. A reader tells a dead render from a running one by its process (pid plus the
 process's start time, so a reused pid is not mistaken for the render). Pure: stdlib + numpy-free; no bpy."""
 
@@ -36,10 +36,6 @@ STALL_MIN_S = 120.0  # the page says "no update for a while" after max(this, 10 
 
 def status_path(short_dir: Path, preset: str) -> Path:
     return Path(short_dir) / "review" / f"render-status-{preset}.json"
-
-
-def page_path(short_dir: Path, preset: str) -> Path:
-    return Path(short_dir) / "review" / f"render-{preset}.html"
 
 
 def thumb_rel(preset: str, shot: str) -> str:
@@ -251,7 +247,7 @@ def stuck_from_digests(history: list[tuple[int, int]]) -> list[Finding]:
 class Tracker:
     """The render's running status. The render calls start, begin_shot, frame_started / frame_written for each fresh
     frame, end_shot, and finish; writes are throttled to one per THROTTLE_S except at shot changes, new findings
-    and the end. `render_page(status)` writes the HTML page after each JSON write."""
+    and the end. `render_page(status)`, when given, is called after each JSON write."""
 
     def __init__(self, path: Path, *, short: dict, preset: str, engine: str | None, shots: list[dict],
                  stamp: dict, seed_s_per_frame: float | None = None, clock: Callable[[], float] = time.time,

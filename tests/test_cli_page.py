@@ -216,3 +216,40 @@ def test_bsa_blender_results_carry_page_notes(home, pendulum, monkeypatch, capsy
     assert bsa_blender.main(["anchors", "pendulum"]) == 0
     line = [x for x in capsys.readouterr().out.splitlines() if x.startswith("BSA_RESULT ")][-1]
     assert json.loads(line[len("BSA_RESULT ") :])["page_notes"] == {"count": 1, "ids": ["n1"], "decisions": []}
+
+
+# ------------------------------------------------------------------- the old commands point at the one page
+
+
+def _no_browser_run(home, *args):
+    from tests import test_page_launch
+
+    return test_page_launch.run(home, *args)  # BROWSER is a no-op: nothing opens on the developer's screen
+
+
+def test_review_returns_the_one_page_url(home, pendulum):
+    out = ok(_no_browser_run(home, "review", "story", "pendulum"))
+    assert "/s/" in out["page"] and out["page"].endswith("#story") and out["stage"] == "story"
+    assert out["deprecated"] == "use CLI page SHORT" and "opened" not in out
+    assert not (pendulum / "review" / "story.html").exists()
+    out = ok(_no_browser_run(home, "review", "storyboard", "pendulum", "--open"))
+    assert out["page"].endswith("#storyboard") and out["opened"] is False  # the no-op browser never checks in
+    assert not list((pendulum / "review").glob("*.html"))
+
+
+def test_render_status_writes_no_html(home, pendulum):
+    out = ok(_no_browser_run(home, "render-status", "pendulum"))
+    assert out["page"].endswith("#render") and "/s/" in out["page"] and out["alive"] is False
+    assert out["status_file"].endswith("render-status-preview.json")
+    assert not list((pendulum / "review").glob("render-*.html"))
+
+
+def test_feedback_report_allows_the_panel_without_marking(home, pendulum):
+    from bsa import feedback
+
+    ok(_no_browser_run(home, "feedback", "add", "pendulum", "--severity", "rough-edge", "--summary", "odd"))
+    out = ok(_no_browser_run(home, "feedback", "report", "pendulum"))
+    assert out["page"].endswith("#post") and out["url"].startswith(feedback.REPO) and out["entries"] == 1
+    assert {"title", "shortened", "by_severity"} <= set(out)
+    assert feedback.panel_allowed(pendulum, "ask") and len(feedback.pending(pendulum)) == 1  # nothing marked
+    assert not (pendulum / "review" / "plugin-feedback.html").exists()

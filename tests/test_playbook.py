@@ -15,10 +15,51 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def test_engine_is_approved_in_chat_not_on_a_page():
+def test_engine_is_approved_on_the_page_or_in_chat():
     text = _flat(_read("SKILL.md"))
-    assert "three things on HTML pages" not in text
-    assert re.search(r"story and the storyboard on HTML pages.*render engine in chat", text), text[:600]
+    assert "three things on HTML pages" not in text and "HTML pages" not in text
+    assert re.search(r"story, the storyboard and the render engine on one review page.*or in chat", text), text[:600]
+    engine = _flat(_read("playbook/04-engine.md"))
+    assert "CLI page decide SHORT engine approve --by settings --choice" in engine
+    assert "CLI page decide SHORT engine approve --by chat --choice" in engine
+
+
+def test_page_is_opened_at_the_interview_and_never_assumed():
+    t = _flat(_read("playbook/01-interview.md"))
+    assert "CLI page SHORT" in t and re.search(r"opened.{0,40}false.*link", t)
+    skill = _flat(_read("SKILL.md"))
+    assert "CLI page SHORT" in skill and re.search(r"opened.{0,40}false.*link", skill)
+
+
+def test_approval_chapters_use_the_page_loop():
+    for ch, stage in (("02-story.md", "story"), ("03-storyboard.md", "storyboard"), ("04-engine.md", "engine")):
+        t = _flat(_read(f"playbook/{ch}"))
+        assert f"CLI page wait SHORT --stage {stage}" in t and "run_in_background" in t, ch
+        assert f"CLI page decide SHORT {stage} approve" in t and f"state SHORT done {stage}" not in t, ch
+
+
+def test_no_doc_marks_an_approval_stage_done_by_hand():
+    paths = [SKILL / "SKILL.md", *sorted((SKILL / "playbook").rglob("*.md"))]
+    for path in paths:
+        t = _flat(path.read_text(encoding="utf-8"))
+        for stage in ("story", "storyboard", "engine"):
+            assert f"state SHORT done {stage}" not in t and f"state done {stage}" not in t, (path.name, stage)
+    cli = (ROOT / "bsa_cli.py").read_text(encoding="utf-8")
+    assert not re.search(r"state SHORT done (story|storyboard|engine)\b", cli)
+
+
+def test_page_notes_are_answered_before_the_next_step():
+    t = _flat(_read("SKILL.md"))
+    assert "page_notes" in t and "CLI page note SHORT" in t
+    assert re.search(r"page_notes.{0,300}(before the next step|resum)", t), t
+
+
+def test_no_chapter_points_at_the_retired_pages():
+    for f in SKILL.rglob("*.md"):
+        text = f.read_text("utf-8")
+        assert "review/render-preview.html" not in text and "plugin-feedback.html" not in text, f.name
+        assert "CLI review " not in text, f.name  # `CLI page SHORT` opens the one page
+        assert not re.search(r"(render-status|feedback report)[^`]*--open", text), f.name
 
 
 def test_long_commands_run_in_the_background():
@@ -26,7 +67,7 @@ def test_long_commands_run_in_the_background():
     skill = _flat(_read("SKILL.md"))
     assert "run_in_background" in skill
     for cmd in ("render", "estimate", "voice install", "narrate", "frame-check"):
-        assert cmd in skill.split("run_in_background", 1)[1][:1500], cmd
+        assert cmd in skill.split("Long commands run in the background", 1)[1][:1500], cmd
     for chapter, cmds in (("04-engine.md", ["estimate"]), ("05-narration.md", ["narrate", "voice install"]),
                           ("08-render.md", ["render SHORT --preset final", "frame-check SHORT --preset final"])):
         text = _flat(_read(f"playbook/{chapter}"))

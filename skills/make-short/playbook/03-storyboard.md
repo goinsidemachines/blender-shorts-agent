@@ -21,8 +21,14 @@ sees how the scene progresses and where every line lands before anything long is
 6. **Hard rules:** read `CLI settings rules` and look at every still against each rule (a silhouette in a window,
    a face in a texture, a logo on a downloaded model, words on a sign). Fix the scene, and update `rules_check` if
    what keeps a rule changed. The page shows the rules beside the shots.
-7. **Show it:** `CLI review storyboard SHORT --open`. In chat: how long it runs, anything you simplified or badged,
-   and "Does this storyboard work, or what should change?"
+7. **Show it:** `CLI page SHORT --stage storyboard` switches the page to the storyboard; say "the page has switched
+   to the storyboard" (the same `opened` rule as at the interview: false means say so and give the `url` as a
+   link). In chat: how long it runs, anything you simplified or badged, and "Does this storyboard work? Approve it
+   on the page, or tell me what should change."
+8. **Wait:** `CLI page wait SHORT --stage storyboard` with `run_in_background: true`, and end your turn. `applied:
+   true` with an `approve` decision means the user approved on the page and the stage is done; `notes` (or a
+   `changes` decision) mean fix the shots, answer each note (`CLI page note SHORT ID done --reply "..."`, or
+   `declined` and why), re-run the stills, show it again and wait again; `timed_out: true` means run the wait again.
 
-When the user approves: `CLI state SHORT done storyboard`. Story changes at this point mean
-`CLI state SHORT reset story` and back to `02-story.md`.
+A yes in chat instead: `CLI page decide SHORT storyboard approve --by chat`. Story changes at this point mean `CLI
+state SHORT reset story` and back to `02-story.md` (ask the user first when the note is on the approved story).

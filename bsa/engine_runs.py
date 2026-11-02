@@ -97,9 +97,9 @@ def mp4_path(short_dir: Path, slug: str, preset: str, run: EngineRun) -> Path:
 
 
 def status_key(preset: str, run: EngineRun | None) -> str:
-    """The name a run's live status goes under (bsa.render_status: review/render-status-<key>.json, the page
-    review/render-<key>.html and the thumbnails render-status/<key>-<shot>.jpg): the preset for the approved run, as
-    always; `<preset>-<tag>` for a side run, so it never touches the approved run's status, page or thumbnails."""
+    """The name a run's live status goes under (bsa.render_status: review/render-status-<key>.json and the
+    thumbnails render-status/<key>-<shot>.jpg): the preset for the approved run, as always; `<preset>-<tag>` for a
+    side run, so it never touches the approved run's status or thumbnails."""
     return f"{preset}{run.suffix if run is not None else ''}"
 
 

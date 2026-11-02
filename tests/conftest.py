@@ -2,6 +2,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -99,3 +100,25 @@ def chromium_missing() -> str | None:
     except Exception as e:  # noqa: BLE001 - any launch failure means no usable Chromium
         return f"Chromium can't start: run `uv run playwright install chromium` ({type(e).__name__})"
     return None
+
+
+@pytest.fixture(autouse=True)
+def _no_page_server_left(request):
+    """Commands like `page`, `review` and `render-status` start the workspace's page server, detached so it outlives
+    the call: stop any a test left in its tmp_path workspaces."""
+    yield
+    tmp = request.node.funcargs.get("tmp_path") if hasattr(request.node, "funcargs") else None
+    if tmp is None:
+        return
+    from bsa import render_status
+    from bsa.review import launch
+
+    for path in [*Path(tmp).glob(launch.SERVER_FILE), *Path(tmp).glob(f"*/{launch.SERVER_FILE}")]:
+        info = launch._read_file(path.parent)
+        if info is None or info["pid"] == os.getpid():  # an in-thread test server is its own fixture's to stop
+            continue
+        launch._stop(info)
+        for _ in range(50):
+            if render_status.process_token(info["pid"]) != info["process_token"]:
+                break
+            time.sleep(0.1)

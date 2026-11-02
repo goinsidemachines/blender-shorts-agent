@@ -446,17 +446,14 @@ def _redo_targets(sdir: Path, args, short, spans, run=None) -> dict[str, list[in
 
 
 def _recording(sdir: Path, short, preset: str, step: str, key: str | None = None):
-    """The live status this step records itself in (review/render-status-<key>.json and its page; `key` defaults to
+    """The live status this step records itself in (review/render-status-<key>.json; `key` defaults to
     the preset, a side run's is _status_key's): inside the preview chain the chain's own step, on its own a one-step
     run that supersedes the last run shown there."""
     from bsa import render_status as rs
-    from bsa.review import pages
 
     key = key or preset
-    page = rs.page_path(sdir, key)
     return rs.recording(rs.status_path(sdir, key), short={"slug": short.slug, "title": short.title, "dir": str(sdir)},
-                        preset=preset, step=step,
-                        render_page=lambda status: pages.render_status_page(rs.describe(status), page))  # fmt: skip
+                        preset=preset, step=step)  # fmt: skip
 
 
 def _progress_cb(fn):
@@ -549,7 +546,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     measured = tracker.snapshot()  # the seconds per frame this run measured, for the engine comparison
     engine_runs.record_render(sdir, args.preset, side, frames=len(tracker.durations), seconds=tracker.render_s)
     out = {"preset": args.preset, "engine": engine, "shots": done, "anchors": anchors,
-           "status": str(rs.status_path(sdir, key)), "page": str(rs.page_path(sdir, key)),
+           "status": str(rs.status_path(sdir, key)),
            "s_per_frame": measured.get("avg_s_per_frame"), "engines": engine_runs.compare(sdir, args.preset)}  # fmt: skip
     if side.tag:
         out.update(tag=side.tag, frames_dir=str(root))
@@ -598,14 +595,13 @@ def _damaged_warnings(damaged: dict) -> list[str]:
 
 def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, fps, tl_hash: str, redo=None, run=None,
                   root: Path | None = None, key: str | None = None):  # fmt: skip
-    """The live status of this render (review/render-status-<key>.json, review/render-<key>.html and the
-    thumbnails review/render-status/<key>-<shot>.jpg), the render handlers that keep it current, and the plan per
+    """The live status of this render (review/render-status-<key>.json and the thumbnails
+    review/render-status/<key>-<shot>.jpg, which the page's Render stage shows), the render handlers that keep it current, and the plan per
     shot ({shot id: total, reused, stale, reason}). `root` is the frames folder (default frames/<preset>; a side
     run's own, bsa.engine_runs); `key` the name the status goes under (default the preset; a side run's own,
     bsa.engine_runs.status_key)."""
     from bsa import render_status as rs
     from bsa.blender.render_watch import Watch
-    from bsa.review import pages
 
     root = root or sdir / "frames" / preset
     plan = {}
@@ -621,7 +617,6 @@ def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, 
                  "reason": f"redoing frames {freshness.frames_spec(redo[shot.id])}"}  # fmt: skip
         plan[shot.id] = p
     key = key or preset
-    page = rs.page_path(sdir, key)
     tracker = rs.Tracker(
         rs.status_path(sdir, key),
         short={"slug": short.slug, "title": short.title, "dir": str(sdir)},
@@ -630,7 +625,6 @@ def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, 
         shots=[{"id": s.id, "f0": spans[s.id].f0, "f1": spans[s.id].f1, **plan[s.id]} for s in shots],
         stamp={"timeline": tl_hash, "fingerprints": {s.id: (fps or {}).get(s.id) for s in shots}},
         seed_s_per_frame=rs.seed_from_estimate(sdir, engine, preset),
-        render_page=lambda status: pages.render_status_page(rs.describe(status), page),
         run=run,
         key=key,
     )
@@ -1314,12 +1308,9 @@ def cmd_preview(args) -> dict:
     key = _status_key(sdir, args, "preview")  # a bad --engine / --tag is refused before anything runs
     short = _load(sdir)
     from bsa import render_status as rs
-    from bsa.review import pages
 
-    page = rs.page_path(sdir, key)  # a side run's chain has its own status and page
     with rs.Run(rs.status_path(sdir, key), short={"slug": short.slug, "title": short.title, "dir": str(sdir)},
-                preset="preview", kind="preview", steps=rs.CHAIN_STEPS,
-                render_page=lambda status: pages.render_status_page(rs.describe(status), page)) as chain:  # fmt: skip
+                preset="preview", kind="preview", steps=rs.CHAIN_STEPS) as chain:  # a side run's chain: its own status
         return _preview_chain(args, sdir, short, chain, bsa_cli)
 
 
@@ -1607,17 +1598,12 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
     status = rs.status_path(sdir, preset) if preset else None
     said = []
 
-    def page(doc: dict) -> None:
-        from bsa.review import pages
-
-        pages.render_status_page(rs.describe(doc), rs.page_path(sdir, preset))
-
     def on_wait(text: str) -> None:
         if not said:
             print(f"{short} {command} is {text}", file=sys.stderr, flush=True)
         said.append(text)
         if status is not None:
-            rs.note_waiting(status, text, render_page=page)
+            rs.note_waiting(status, text)
 
     try:
         ctx = gpulock.held(gpulock.lock_path(sdir.parent), short=short, command=command,
@@ -1626,7 +1612,7 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
     except gpulock.GpuBusy as exc:
         raise CliError(str(exc)) from exc
     if said and status is not None:
-        rs.note_waiting(status, None, render_page=page)
+        rs.note_waiting(status, None)
     try:
         yield
     finally:
@@ -1636,7 +1622,7 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
 def _say_starting(args):
     """For a command that records a live status: write "starting" (this process, the command) to it at once,
     before the command reads anything or opens the .blend, so the last run is never shown as current meanwhile.
-    Returns (status path, page writer), or None. A status problem never stops the command."""
+    Returns the status path, or None. A status problem never stops the command."""
     if args.command not in RECORDING:
         return None
     try:
@@ -1653,16 +1639,9 @@ def _say_starting(args):
             key = _status_key(sdir, args, preset)
         except CliError:
             return None  # a bad --engine / --tag: the command refuses it; never write over the approved run's status
-        page = rs.page_path(sdir, key)
-
-        def render_page(status, page=page):  # imported here: the status file is written before the page code loads
-            from bsa.review import pages
-
-            pages.render_status_page(rs.describe(status), page)
-
         path = rs.status_path(sdir, key)
-        if rs.starting(path, short=short, preset=preset, kind=args.command, render_page=render_page):
-            return path, render_page
+        if rs.starting(path, short=short, preset=preset, kind=args.command):
+            return path
     except Exception as exc:  # noqa: BLE001 - status only
         print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     return None
@@ -1674,7 +1653,7 @@ def _settle_starting(status, error: str | None) -> None:
     try:
         from bsa import render_status as rs
 
-        rs.settle_starting(status[0], error, render_page=status[1])
+        rs.settle_starting(status, error)
     except Exception as exc:  # noqa: BLE001 - status only
         print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 

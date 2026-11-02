@@ -315,7 +315,7 @@ def _url(title: str, blocks: str, env: str, items: list[dict]) -> tuple[str, boo
     url = _link(title, blocks, env)
     if len(url) <= URL_LIMIT:
         return url, False
-    note = "The full text was too long for a link: paste it here from the plugin-feedback page.\n\n"
+    note = "The full text was too long for a link: paste it here from the review page's feedback panel.\n\n"
     lines = [f"- {e['id']} ({e.get('severity')}): {e.get('summary')}" for e in items]
     while True:
         text = note + "\n".join(lines)
@@ -326,23 +326,3 @@ def _url(title: str, blocks: str, env: str, items: list[dict]) -> tuple[str, boo
     if len(url) > URL_LIMIT:
         url = _link(title[:80], note.strip(), env[:200])
     return url, True
-
-
-def render_page(rep: dict, out: Path) -> Path:
-    """review/plugin-feedback.html: the redacted report with a Copy button and an "Open on GitHub" button."""
-    from string import Template
-
-    from bsa.review import pages
-
-    esc = pages._esc
-    shortened = ("<p class=\"note\">The full text is too long for a link, so GitHub opens with a shortened version. "
-                 "Copy the full text below and paste it into the issue.</p>") if rep.get("shortened") else ""  # fmt: skip
-    sev = ", ".join(f"{n} {s}" for s, n in (rep.get("by_severity") or {}).items())
-    text = Template((Path(pages.__file__).parent / "templates" / "feedback.html").read_text(encoding="utf-8"))
-    html = text.substitute(css=pages._css(), title=esc(rep["title"]), count=esc(rep.get("entries", 0)),
-                           severity=esc(sev), url=esc(rep["url"]), body=esc(rep["body"]),
-                           shortened=shortened)  # fmt: skip
-    out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html, encoding="utf-8")
-    return out

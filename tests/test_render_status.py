@@ -1,5 +1,5 @@
 """The live render status: what a render writes while it runs, how a reader tells a dead render from a running one,
-the page that shows it, and CLI render-status."""
+what describe() gives the page's Render stage, and CLI render-status."""
 
 import json
 import os
@@ -378,40 +378,29 @@ def _status(tmp_path, clock, state="running"):
     return t.snapshot()
 
 
-def test_page_shows_progress_settings_shots_and_warnings(tmp_path):
-    from bsa.review import pages
-
+def test_describe_gives_progress_settings_shots_and_warnings(tmp_path):
     clock = Clock()
-    status = rs.describe(_status(tmp_path, clock), now=clock.t)
-    out = pages.render_status_page(status, tmp_path / "review" / "render-preview.html")
-    html = out.read_text(encoding="utf-8")
-    assert "Pendulum" in html and "preview" in html.lower()
-    assert "7 of 20" in html and "35%" in html
-    assert "RTX 4090" in html and "1080" in html and "50%" in html
-    assert 'src="render-status/preview-s01.jpg?f=7"' in html
-    assert "s02" in html
-    assert "30 firefly pixels &lt;b&gt;" in html and "<b>" not in html.split("30 firefly pixels")[1][:10]
-    assert "location.reload" in html  # refreshes itself while running
-    assert "Running" in html
+    d = rs.describe(_status(tmp_path, clock), now=clock.t)
+    assert d["short"]["title"] == "Pendulum" and d["preset"] == "preview" and d["state"] == "running"
+    assert d["frames"]["done"] == 7 and d["frames"]["total"] == 20 and d["percent"] == 35.0
+    assert d["settings"]["gpu"].endswith("RTX 4090") and d["settings"]["resolution"] == [1080, 1920]
+    s01, s02 = d["shots"]
+    assert s01["thumb"] == "render-status/preview-s01.jpg" and s01["thumb_frame"] == 7 and s02["id"] == "s02"
+    assert d["checks"]["findings"][0]["message"] == "30 firefly pixels <b>"  # raw: the page escapes what it shows
+    assert d["alive"] and "7 of 20 frames (35%)" in d["summary"]
 
 
-def test_page_for_a_finished_render_does_not_refresh(tmp_path):
-    from bsa.review import pages
-
+def test_describe_a_finished_render(tmp_path):
     clock = Clock()
-    status = rs.describe(_status(tmp_path, clock, state="done"), now=clock.t)
-    html = pages.render_status_page(status, tmp_path / "p.html").read_text(encoding="utf-8")
-    assert "Done" in html and "location.reload" not in html
+    d = rs.describe(_status(tmp_path, clock, state="done"), now=clock.t)
+    assert d["state"] == "done" and not d["alive"] and "done" in d["summary"]
 
 
-def test_page_for_a_dead_render_says_it_stopped(tmp_path):
-    from bsa.review import pages
-
+def test_describe_a_dead_render_says_how_to_go_on(tmp_path):
     clock = Clock()
     status = dict(_status(tmp_path, clock), pid=999_999_999, pid_token="gone")
-    html = pages.render_status_page(rs.describe(status, now=clock.t + 5), tmp_path / "p.html").read_text("utf-8")
-    assert "Not running" in html and "location.reload" not in html
-    assert "render SHORT --preset preview" in html
+    d = rs.describe(status, now=clock.t + 5)
+    assert d["stale"] and not d["alive"] and "render SHORT --preset preview" in d["summary"]
 
 
 # --------------------------------------------------------------------------- CLI render-status
@@ -441,10 +430,10 @@ def test_cli_render_status_before_any_render(short):
     out = json.loads(proc.stdout)
     assert out["state"] == "none" and out["alive"] is False
     assert "no final render" in out["summary"]
-    assert Path(out["page"]).is_file()
+    assert out["page"].endswith("#render") and not list((sdir / "review").glob("*.html"))
 
 
-def test_cli_render_status_reports_a_dead_render_and_rewrites_its_page(short):
+def test_cli_render_status_reports_a_dead_render(short):
     home, sdir = short
     clock = Clock()
     t, _ = _tracker(sdir, clock)
@@ -459,9 +448,7 @@ def test_cli_render_status_reports_a_dead_render_and_rewrites_its_page(short):
     assert out["preset"] == "preview" and out["state"] == "running"
     assert out["alive"] is False and out["stale"] is True
     assert out["frames"]["done"] == 6
-    page = Path(out["page"])
-    assert page == sdir / "review" / "render-preview.html"
-    assert "Not running" in page.read_text(encoding="utf-8")
+    assert out["page"].endswith("#render") and not (sdir / "review" / "render-preview.html").exists()
 
 
 # --------------------------------------------------------------------------- docs
@@ -471,7 +458,7 @@ def test_docs_mention_the_live_status():
     skill = (ROOT / "skills" / "make-short" / "SKILL.md").read_text(encoding="utf-8")
     render = " ".join((ROOT / "skills" / "make-short" / "playbook" / "08-render.md").read_text("utf-8").split())
     assert "CLI render-status SHORT" in skill
-    assert "render-status" in render and "render-preview.html" in render and "render-final.html" in render
+    assert "render-status" in render and "render-status-<preset>.json" in render and "CLI page SHORT --stage render" in render
     assert "current step" in render and "BLENDER check" in render and "previous run" in render
 
 
@@ -662,14 +649,11 @@ def test_starting_leaves_a_live_run_of_another_process_alone(tmp_path):
         proc.wait()
 
 
-def test_a_starting_page_renders(tmp_path):
-    from bsa.review import pages
-
+def test_a_starting_run_says_so(tmp_path):
     clock = Clock()
     _starting(tmp_path, clock, kind="preview")
-    page = rs.page_path(tmp_path, "preview")
-    pages.render_status_page(rs.describe(_read(tmp_path), now=clock.t), page)
-    assert "starting" in page.read_text(encoding="utf-8").lower()
+    d = rs.describe(_read(tmp_path), now=clock.t)
+    assert d["phase"] == "starting" and "starting" in d["summary"]
 
 
 def test_a_dead_running_run_is_superseded_as_stopped(tmp_path):
@@ -750,9 +734,7 @@ def test_describe_a_dead_chain(tmp_path):
     assert "gone" in d["summary"] and "check" in d["summary"] and "BLENDER preview" in d["summary"]
 
 
-def test_chain_page_shows_the_steps_the_current_one_and_the_previous_run(tmp_path):
-    from bsa.review import pages
-
+def test_describe_a_chain_gives_the_steps_the_current_one_and_the_previous_run(tmp_path):
     clock = Clock()
     with _run_obj(tmp_path, clock, steps=["render"], kind="render") as run, run.step("render"):
         pass
@@ -765,16 +747,15 @@ def test_chain_page_shows_the_steps_the_current_one_and_the_previous_run(tmp_pat
                                 {"id": "s02", "total": 120, "done": 0, "state": "checking"}])  # fmt: skip
             clock.tick(5)
             run.progress(80, 160, current="shot s02 (scene Clock)", force=True)
-            html = pages.render_status_page(rs.describe(_read(tmp_path), now=clock.t),
-                                            tmp_path / "p.html").read_text("utf-8")  # fmt: skip
-    assert "Running" in html and "location.reload" in html
-    assert 'class="step-row running current"' in html
-    assert "80 of 160 frames" in html and "s02 (scene Clock)" in html
-    assert "skipped" in html and "the timing is current" in html
-    assert "Previous run" in html and "render done" in html
-    assert "Steps" in html
-    done = pages.render_status_page(rs.describe(_read(tmp_path), now=clock.t), tmp_path / "q.html").read_text("utf-8")
-    assert "location.reload" not in done and "Done" in done
+            d = rs.describe(_read(tmp_path), now=clock.t)
+    assert d["state"] == "running" and d["alive"] and d["step"]["name"] == "check"
+    assert d["step"]["progress"]["done"] == 80 and "80 of 160 frames" in d["summary"]
+    assert "s02 (scene Clock)" in d["summary"]
+    assert _step(d, "timeline")["state"] == "skipped"
+    assert _step(d, "timeline")["summary"] == {"skipped": "the timing is current"}
+    assert d["previous"]["kind"] == "render" and d["previous"]["state"] == "done"
+    done = rs.describe(_read(tmp_path), now=clock.t)
+    assert done["state"] == "done" and not done["alive"]
 
 
 def test_cli_render_status_shows_a_running_step_without_a_render(short):

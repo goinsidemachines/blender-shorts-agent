@@ -56,8 +56,8 @@ def test_side_runs_never_share_the_approved_paths(tmp_path):
     assert er.mp4_path(tmp_path, "pend", "final", side).name == "pend-final-eevee.mp4"
 
 
-def test_side_runs_have_their_own_live_status_page_and_thumbnails(tmp_path):
-    """The live status (render-status-<key>.json, render-<key>.html, render-status/<key>-<shot>.jpg) of a side run
+def test_side_runs_have_their_own_live_status_and_thumbnails(tmp_path):
+    """The live status (render-status-<key>.json, render-status/<key>-<shot>.jpg) of a side run
     is keyed on its own name; the approved run's stay exactly as they were."""
     from bsa import render_status as rs
 
@@ -65,10 +65,8 @@ def test_side_runs_have_their_own_live_status_page_and_thumbnails(tmp_path):
     assert er.status_key("preview", approved) == "preview" and er.status_key("final", None) == "final"
     assert er.status_key("preview", side) == "preview-fast"
     assert rs.status_path(tmp_path, er.status_key("preview", approved)).name == "render-status-preview.json"
-    assert rs.page_path(tmp_path, er.status_key("preview", approved)).name == "render-preview.html"
     assert rs.thumb_rel(er.status_key("preview", approved), "s01") == "render-status/preview-s01.jpg"
     assert rs.status_path(tmp_path, er.status_key("preview", side)).name == "render-status-preview-fast.json"
-    assert rs.page_path(tmp_path, er.status_key("preview", side)).name == "render-preview-fast.html"
     assert rs.thumb_rel(er.status_key("preview", side), "s01") == "render-status/preview-fast-s01.jpg"
 
 
@@ -189,7 +187,7 @@ def test_a_side_edit_writes_its_own_mp4_and_leaves_the_approved_run(home, pendul
     _assert_side_status(pendulum, "preview", "eevee", status, "edit")
     side = ok(run(home, "render-status", pendulum.name, "--preset", "preview", "--tag", "eevee"))
     assert side["status_file"].endswith("render-status-preview-eevee.json") and side["last_run"]["kind"] == "edit"
-    assert {p: p.read_bytes() for p in status} == status  # reading it leaves the approved page alone too
+    assert {p: p.read_bytes() for p in status} == status  # reading it leaves the approved status alone too
     assert built["frames_root"] == pendulum / "frames" / "preview-eevee"
     assert built["out_mp4"] == pendulum / "out" / "pendulum-preview-eevee.mp4"
     assert approved.read_bytes() == b"approved"
@@ -243,26 +241,25 @@ def test_a_side_frame_check_keeps_its_own_findings_and_redo_commands(home, pendu
 
 
 def _approved_status(sdir, preset):
-    """The approved run's live status and page, as a finished run left them."""
+    """The approved run's live status, as a finished run left it."""
     from bsa import render_status as rs
 
-    path, page = rs.status_path(sdir, preset), rs.page_path(sdir, preset)
+    path = rs.status_path(sdir, preset)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"version": 2, "state": "done", "kind": "render", "preset": preset, "pid": 1,
                                 "started": 1.0, "finished": 2.0, "updated": 2.0,
                                 "run": {"kind": "render", "current": None, "steps": []}}), encoding="utf-8")  # fmt: skip
-    page.write_text("approved page", encoding="utf-8")
-    return {path: path.read_bytes(), page: page.read_bytes()}
+    return {path: path.read_bytes()}
 
 
 def _assert_side_status(sdir, preset, tag, approved, kind):
-    """A side run left the approved run's status and page alone and recorded itself under its own name."""
+    """A side run left the approved run's status alone and recorded itself under its own name."""
     from bsa import render_status as rs
 
     assert {p: p.read_bytes() for p in approved} == approved
     side = rs.read_status(rs.status_path(sdir, f"{preset}-{tag}"))
     assert side and side["kind"] == kind, side
-    assert rs.page_path(sdir, f"{preset}-{tag}").is_file()
+    assert not list((sdir / "review").glob("*.html"))  # the page's Render stage shows it: no page of its own
 
 
 def test_render_and_preview_take_engine_and_tag():
@@ -338,7 +335,7 @@ def test_a_side_render_uses_its_own_folder_and_records_what_it_measured(home, pe
     trackers[-1].set_thumb(trackers[-1].shots[0]["id"], 1)
     assert trackers[-1].shots[0]["thumb"].startswith("render-status/preview-eevee-")
     assert out["status"].endswith("render-status-preview-eevee.json")
-    assert out["page"].endswith("render-preview-eevee.html")
+    assert "page" not in out  # the one page's Render stage shows it (CLI page SHORT --stage render)
     assert calls and all(folder.parent == pendulum / "frames" / "preview-eevee" and engine == "eevee"
                          for folder, engine in calls)  # fmt: skip
     assert {p: p.read_bytes() for p in (pendulum / "frames" / "preview").rglob("*") if p.is_file()} == approved

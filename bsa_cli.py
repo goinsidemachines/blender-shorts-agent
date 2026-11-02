@@ -255,12 +255,6 @@ def _rule_problems(short) -> tuple[list[str], list[str]]:
     return rules.problems(short, settings.load_settings())
 
 
-def _rule_rows(short) -> list[dict]:
-    from bsa import rules
-
-    return rules.panel_rows(rules.effective(settings.load_settings(), short), short)
-
-
 def _gate(sdir: Path, stage: str) -> None:
     """The interview is done only when short.json has a title, topic, audience and a length the user agreed; the
     story only when the spec validates."""
@@ -628,8 +622,9 @@ def cmd_narrate(args) -> dict:
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
-        raise CliError("Narration is made only after the storyboard is approved: show the storyboard page and get a "
-                       "yes first (then CLI state SHORT done storyboard).")  # fmt: skip
+        raise CliError("Narration is made only after the storyboard is approved: show the storyboard on the page "
+                       "and get a yes first (CLI page wait SHORT --stage storyboard, or CLI page decide SHORT "
+                       "storyboard approve --by chat).")  # fmt: skip
     short = load(sdir)
     s = settings.load_settings()
     from bsa import closing
@@ -722,68 +717,38 @@ def cmd_mix(args) -> dict:
     return out
 
 
-def _pending_assets(sdir: Path) -> list:
-    """Assets planned with `assets plan` and not downloaded yet."""
-    from bsa.short import Asset
+DEPRECATED_PAGE = "use CLI page SHORT"
 
-    path = _plan_path(sdir)
-    if not path.is_file():
-        return []
-    return [Asset(**a) for a in json.loads(path.read_text(encoding="utf-8"))]
+
+def _one_page(sdir: Path, stage: str, open_: bool) -> dict:
+    """The short's one review page at `stage`: {"page": its link} (the workspace's server is started or reused, as
+    `page SHORT` does). With `open_` it is opened, or a tab already open switches to the stage, and "opened" says
+    whether it really did (`page SHORT --stage STAGE`)."""
+    from bsa.review import launch
+
+    if open_:
+        out = _page_open(argparse.Namespace(stage=stage, open=False, lan=False), sdir)
+        return {"page": out["url"], "stage": stage, "opened": out["opened"]}
+    lan = (settings.load_settings().get("page") or {}).get("lan") is True
+    try:
+        info = launch.ensure_server(sdir.parent, lan=lan)
+    except launch.ServerUnavailable:  # no server: the page as a file, review/short.html
+        return {"page": f"{launch.static_page(sdir).as_uri()}#{stage}", "stage": stage}
+    return {"page": launch.page_url(info, sdir.name, stage), "stage": stage}
 
 
 def cmd_review(args) -> dict:
-    from bsa.review import pages
-
+    """The one page at the story, storyboard or final stage (the separate review pages are retired)."""
     sdir = short_dir(args.short)
-    short = load(sdir)
-    out = sdir / "review" / f"{args.page}.html"
-    if args.page == "story":
-        styles_path = sdir / "source" / "styles.json"
-        options = None
-        look = settings.look_mode(settings.load_settings(), short)
-        if styles_path.is_file() and look != "brand":  # the brand has no look options
-            styles = json.loads(styles_path.read_text(encoding="utf-8"))
-            options = [{**o, "thumb": f"stills/style-{i}.jpg"} for i, o in enumerate(styles, 1)]
-        try:
-            tl, _ = current_timeline(sdir, short)
-        except Exception:  # noqa: BLE001 - broken takes: pace the page at reading speed
-            tl = _reading_timeline(short)
-        rows, _ = _pacing(short, tl)
-        page = pages.render_story(short, out, options, _pending_assets(sdir), pacing=rows, rules=_rule_rows(short),
-                                  look=look)
-    elif args.page == "storyboard":
-        tl, _ = current_timeline(sdir, short)
-        page = pages.render_storyboard(short, tl, sdir / "stills", out, rules=_rule_rows(short),
-                                       closing=_closing_info(sdir, short))
-    else:
-        final = sdir / "out" / f"{short.slug}.mp4"
-        mp4 = final if final.exists() else sdir / "out" / f"{short.slug}-preview.mp4"
-        findings, redo_all = pages.load_findings(sdir)  # rows as check and frame-check write them; unknown keys ignored
-        page = pages.render_final(short, findings, mp4, out, (sdir / "review" / "checks.json").is_file(), redo_all,
-                                  rules=_rule_rows(short), closing=_closing_info(sdir, short))  # fmt: skip
-    if args.open:
-        pages.open_page(page)
-    return {"page": str(page)}
-
-
-def _closing_info(sdir: Path, short) -> dict | None:
-    """The closing card for the review pages while the short has one (BLENDER stills, closing or edit make it)."""
-    from bsa import closing
-    from bsa.review import pages
-
-    if not closing.active(settings.load_settings(), short):
-        return None
-    return pages.closing_info(sdir / "stills")
+    return {**_one_page(sdir, args.page, args.open), "deprecated": DEPRECATED_PAGE}
 
 
 def cmd_render_status(args) -> dict:
     """Where the preview chain, a render or a check, frame-check or edit is: its status file plus `alive` (its
     Blender process is still running), `stale` (it says running but the process is gone), `step` (the current step
     and its progress), `idle` and `last_run` (how the last run ended, when nothing runs) and a one-line `summary`.
-    Rewrites the page when the run can't (it is not running) so the page shows the true state too."""
+    `page` is the one page's Render stage, which shows the same status live."""
     from bsa import render_status as rs
-    from bsa.review import pages
 
     sdir = short_dir(args.short)
     presets = [args.preset] if args.preset else ["preview", "final"]
@@ -806,13 +771,11 @@ def cmd_render_status(args) -> dict:
         out["alive"] = False
     else:
         out = rs.describe(status)
-    page = rs.page_path(sdir, preset)
-    if not out["alive"] or not page.is_file():
-        pages.render_status_page(out, page)
-    out["page"] = str(page)
+    page = _one_page(sdir, "render", args.open)
+    out["page"] = page["page"]
+    if "opened" in page:
+        out["opened"] = page["opened"]
     out["status_file"] = str(rs.status_path(sdir, preset))
-    if args.open:
-        pages.open_page(page)
     return out
 
 
@@ -845,14 +808,11 @@ def cmd_feedback(args) -> dict:
            "ask": feedback.should_ask(sdir, setting), "file": str(feedback.feedback_path(sdir))}  # fmt: skip
     if args.action == "list":
         return {**out, "entries": feedback.entries(sdir)}
+    feedback.allow_panel(sdir)  # the user said yes: the Post stage shows the notes, and they are not asked again
     rep = feedback.report(sdir, workspace=s.get("workspace"), scrub=feedback.settings_scrub(s) + _short_text(sdir),
-                          mark=True)  # fmt: skip
-    page = feedback.render_page(rep, sdir / "review" / "plugin-feedback.html")
-    if args.open:
-        from bsa.review import pages
-
-        pages.open_page(page)
-    return {"page": str(page), "title": rep["title"], "url": rep["url"], "shortened": rep["shortened"],
+                          mark=False)  # marked reported only when the user copies it or opens it on GitHub
+    page = _one_page(sdir, "post", args.open)
+    return {**page, "title": rep["title"], "url": rep["url"], "shortened": rep["shortened"],
             "entries": rep["entries"], "by_severity": rep["by_severity"]}  # fmt: skip
 
 
@@ -1111,17 +1071,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("args", nargs="*")
     sp.set_defaults(fn=cmd_voice)
 
-    sp = sub.add_parser("review", help="write (and --open) a review page")
+    sp = sub.add_parser("review", help="story|storyboard|final SHORT [--open]: the one page's link at that stage "
+                        "(deprecated: use page SHORT --stage STAGE)")  # fmt: skip
     sp.add_argument("page", choices=["story", "storyboard", "final"])
     sp.add_argument("short")
-    sp.add_argument("--open", action="store_true")
+    sp.add_argument("--open", action="store_true", help="open the page at that stage (page SHORT --stage STAGE)")
     sp.set_defaults(fn=cmd_review)
 
-    sp = sub.add_parser("render-status", help="SHORT [--preset preview|final] [--open]: where the preview chain or a render is")
+    sp = sub.add_parser("render-status", help="SHORT [--preset preview|final] [--open]: where the preview chain or a "
+                        "render is (the page's Render stage shows it live)")  # fmt: skip
     sp.add_argument("short")
     sp.add_argument("--preset", choices=["preview", "final"], help="default: the most recently updated")
     sp.add_argument("--tag", default=None, help="a side run's status (its tag: the engine's name for --engine alone)")
-    sp.add_argument("--open", action="store_true", help="open the live page review/render-<preset>.html")
+    sp.add_argument("--open", action="store_true", help="open the one page at its Render stage")
     sp.set_defaults(fn=cmd_render_status)
 
     sp = sub.add_parser("fonts", help="[NAME]: is NAME installed, plus a few installed fonts to suggest")
@@ -1150,7 +1112,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--stage")
     sp.add_argument("--blender", help="Blender version, if known")
     sp.add_argument("--mode", choices=["script", "mcp"], help="script or MCP mode, if known")
-    sp.add_argument("--open", action="store_true", help="open review/plugin-feedback.html (report)")
+    sp.add_argument("--open", action="store_true", help="open the one page at its Post stage (report)")
     sp.set_defaults(fn=cmd_feedback)
     return p
 
