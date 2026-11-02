@@ -188,6 +188,26 @@ def get(sdir: Path, decision_id: str) -> dict:
     raise ValueError(f"no decision {decision_id!r}")
 
 
+def supersede_stale(sdir: Path, stage: str, current: int | None) -> list[str]:
+    """Retire the stage's decisions not applied yet that answered another version than `current`: the content
+    changed under them, so they can never be applied (a stale change already sent its notes; a stale approval
+    approved content the user has not seen since). Returns their ids."""
+    if current is None:
+        return []
+    gone: list[str] = []
+
+    def fn(items):
+        for d in items:
+            if d["stage"] == stage and not d["applied"] and not d["superseded"] and d["version"] != current:
+                d["superseded"] = True
+                gone.append(d["id"])
+        return items
+
+    if any(d["stage"] == stage and d["version"] != current for d in unapplied(sdir)):  # write only when needed
+        _update(sdir, fn)
+    return gone
+
+
 def supersede(sdir: Path, stages_: Iterable[str]) -> int:
     """Retire every live decision of these stages (their content changed under them); returns how many."""
     wanted = set(stages_)

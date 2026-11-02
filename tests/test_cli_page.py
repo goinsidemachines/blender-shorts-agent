@@ -286,3 +286,41 @@ def test_feedback_report_allows_the_panel_without_marking(home, pendulum):
     assert {"title", "shortened", "by_severity"} <= set(out)
     assert feedback.panel_allowed(pendulum, "ask") and len(feedback.pending(pendulum)) == 1  # nothing marked
     assert not (pendulum / "review" / "plugin-feedback.html").exists()
+
+
+def _change_the_story(short):
+    path = short / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["lines"][0]["text"] += " Changed."
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_wait_supersedes_decisions_on_an_older_version_then_waits(home, pendulum, monkeypatch):
+    from bsa.review import snapshot
+
+    monkeypatch.setenv("BSA_HOME", str(home))  # the CLI's settings: the same content, the same versions
+    _to(home, pendulum, "story")
+    assert snapshot.stage_version(pendulum, "story") == 1  # the version the page showed
+    approve = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+    changes = decisions.record(pendulum, "story", 1, "changes", "page", current=1)
+    _change_the_story(pendulum)  # Claude edited the story (acting on notes) before applying them
+    assert snapshot.stage_version(pendulum, "story") == 2
+    out = ok(run(home, "page", "wait", "pendulum", "--stage", "story", "--timeout", "1"))
+    assert out["superseded"] == [approve["id"], changes["id"]] and out["version"] == 2
+    assert out["timed_out"] is True and out["applied"] is False and out["decision"] is None  # it waited normally
+    assert "story" not in jobstate.load_state(pendulum)["stages"]  # the old approval never marks the new story
+    assert decisions.unapplied(pendulum) == [] and ok(run(home, "page", "notes", "pendulum"))["decisions"] == []
+    again = ok(run(home, "page", "wait", "pendulum", "--stage", "story", "--timeout", "0.3"))
+    assert again["superseded"] == []
+
+
+def test_notes_supersedes_stale_decisions_and_lists_stages_waiting_for_a_yes(home, pendulum):
+    _to(home, pendulum, "story")
+    out = ok(run(home, "page", "notes", "pendulum"))  # the page showed version 1 of the story
+    assert out["waiting_for_yes"] == ["story"] and out["superseded"] == []
+    stale = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+    _change_the_story(pendulum)
+    out = ok(run(home, "page", "notes", "pendulum"))
+    assert out["superseded"] == [stale["id"]] and out["decisions"] == [] and out["waiting_for_yes"] == ["story"]
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
+    assert "story" not in ok(run(home, "page", "notes", "pendulum"))["waiting_for_yes"]

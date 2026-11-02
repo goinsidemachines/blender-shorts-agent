@@ -35,9 +35,12 @@ the end on your own.
    `CLI settings set render.engine cycles`.
 
 Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage engine`
-lists them. Act only on `sent` notes (an `open` note is the user still writing: leave it); an unapplied decision is
-applied by `CLI page wait SHORT --stage engine`, which returns at once. Coming back to a short whose `next` is the
-engine you already showed: don't redo this chapter, just run that wait in the background again and end your turn.
+lists them. Decisions first, before you change anything: an unapplied decision is applied by `CLI page wait SHORT
+--stage engine`, which returns at once; one on an older version of the engine is dropped automatically
+(`superseded`) and the page asks the user again for the new version. Then act only on `sent` notes (an `open` note
+is the user still writing: leave it). Coming back to a short whose `next` is the engine: when `CLI page notes SHORT`
+lists engine in `waiting_for_yes`, the page already asks for it, so don't redo this chapter: just run that wait in
+the background again and end your turn.
 
 From here on, do not ask the user anything unless a check fails that you can't fix after 3 attempts.
 

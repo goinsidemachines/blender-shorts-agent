@@ -59,8 +59,9 @@ Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render
   frames that frame-check flagged (each finding has a ready `redo` command).
 - `CLI render-status SHORT [--preset preview|final] [--tag NAME]`: where the preview chain, a render, check, frame-check
   or edit is (the current step and its progress, time left, live warnings, and whether its Blender is still running;
-  when nothing runs, how the last run ended). Its `page` is the review page's Render stage, which shows the same
-  live: `CLI page SHORT --stage render` switches the page there.
+  when nothing runs, how the last run ended). Its `page` is the link to the review page's Render stage, which
+  shows the same live, while the page server runs; when none runs it is null and `page_hint` says how to open it
+  (`CLI page SHORT --stage render`, which also switches an open page there). It never starts a server itself.
 
 `SHORT` in commands is the short's number, slug or folder path (`3`, `pendulum`, or the full path). Always use the
 short's number (or its folder path): a slug works only while no other short has the same one, and the commands
@@ -113,11 +114,14 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
      decide SHORT engine approve --by settings --choice ENGINE` (`playbook/04-engine.md`).
    - **Notes from the page:** any command's result can carry `page_notes` (ids of notes and decisions the user
      left on the page). Handle them before the next step, and again when resuming a short: `CLI page notes SHORT
-     [--stage STAGE]` lists them in full. Act only on notes whose `status` is `sent`; an `open` note is the user
-     still writing, so leave it. For each sent note do what it asks, then `CLI page note SHORT ID done --reply
-     "what you changed"`, or `CLI page note SHORT ID declined --reply "why not"`. For each decision there, run
-     `CLI page wait SHORT --stage <its stage>`: it applies it and returns at once. A note on a stage that is already
-     approved means going back: ask the user before you reset anything (`CLI state SHORT reset STAGE`).
+     [--stage STAGE]` lists them in full. Decisions first, before you change anything: for each decision there,
+     run `CLI page wait SHORT --stage <its stage>`, which applies it and returns at once. A decision on an older
+     version of a stage (its content changed since the user answered) is dropped automatically (`superseded` in
+     the result) and the page asks the user again for the new version. Then the notes: act only on notes whose
+     `status` is `sent`; an `open` note is the user still writing, so leave it. For each sent note do what it
+     asks, then `CLI page note SHORT ID done --reply "what you changed"`, or `CLI page note SHORT ID declined
+     --reply "why not"`. A note on a stage that is already approved means going back: ask the user before you
+     reset anything (`CLI state SHORT reset STAGE`).
    - **Final is not a gate:** its "Looks good" is the user's acknowledgement; never wait for it.
    - **The feedback panel** shows on the Post stage only after the user said yes to seeing the plugin's notes
      (`CLI feedback report SHORT`, `playbook/09-post.md`).
@@ -136,10 +140,11 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    use script mode without asking.
 9. **Resuming:** when the user comes back to a short ("carry on with the watch short"), find it
    (`CLI state SHORT`), say in one line where it stands, handle any `page_notes` in its result (`CLI page notes
-   SHORT`, as in rule 4: sent notes and unapplied decisions only), and continue from `next`. Run `CLI page SHORT`
-   again so the user has the page (the same `opened` rule). When `next` is an approval stage (story, storyboard,
-   engine) you had already shown, don't redo its chapter: run `CLI page wait SHORT --stage <next>` in the
-   background again and end your turn. Renders resume from the frames already on disk.
+   SHORT`, as in rule 4: decisions first, then sent notes), and continue from `next`. Run `CLI page SHORT` again
+   so the user has the page (the same `opened` rule). When `next` is in the `waiting_for_yes` list of `CLI page
+   notes SHORT` (an approval stage the page already shows and asks a yes for), don't redo its chapter: run `CLI
+   page wait SHORT --stage <next>` in the background again and end your turn. Renders resume from the frames
+   already on disk.
 10. **Long commands run in the background.** The Bash tool stops a command after 2 minutes by default (10 at
    most), which kills a long render. Run these with `run_in_background: true` and carry on when you are notified
    that they finished, never with a timeout: `BLENDER render SHORT --preset preview|final`, `BLENDER estimate

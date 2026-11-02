@@ -36,6 +36,9 @@ A yes in chat instead: `CLI page decide SHORT storyboard approve --by chat`. Sto
 state SHORT reset story` and back to `02-story.md` (ask the user first when the note is on the approved story).
 
 Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage storyboard`
-lists them. Act only on `sent` notes (an `open` note is the user still writing: leave it); an unapplied decision is
-applied by `CLI page wait SHORT --stage storyboard`, which returns at once. Coming back to a short whose `next` is the
-storyboard you already showed: don't redo this chapter, just run that wait in the background again and end your turn.
+lists them. Decisions first, before you change anything: an unapplied decision is applied by `CLI page wait SHORT
+--stage storyboard`, which returns at once; one on an older version of the storyboard is dropped automatically
+(`superseded`) and the page asks the user again for the new version. Then act only on `sent` notes (an `open` note
+is the user still writing: leave it). Coming back to a short whose `next` is the storyboard: when `CLI page notes SHORT`
+lists storyboard in `waiting_for_yes`, the page already asks for it, so don't redo this chapter: just run that wait in
+the background again and end your turn.

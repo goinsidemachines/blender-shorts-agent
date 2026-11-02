@@ -229,7 +229,7 @@ def test_only_sent_notes_are_acted_on_and_decisions_are_applied_by_wait():
     for name in ("SKILL.md", "playbook/02-story.md", "playbook/03-storyboard.md", "playbook/04-engine.md"):
         t = _flat(_read(name))
         assert "CLI page notes SHORT" in t, name
-        assert re.search(r"Act only on (notes whose `status` is )?`sent`", t), name
+        assert re.search(r"act only on (notes whose `status` is )?`sent`", t, re.IGNORECASE), name
         assert "`open` note is the user still writing" in t, name
         assert re.search(r"page wait SHORT --stage <?[a-z ]+>?`?,? which (applies it and )?returns at once|applies it "
                          r"and returns at once", t), name  # fmt: skip
@@ -237,11 +237,21 @@ def test_only_sent_notes_are_acted_on_and_decisions_are_applied_by_wait():
 
 def test_resume_reruns_the_wait_for_an_approval_already_shown():
     skill = _flat(_read("SKILL.md"))
-    assert re.search(r"Resuming.{0,900}approval stage.{0,200}run `CLI page wait SHORT --stage <next>` in the "
-                     r"background again", skill)  # fmt: skip
+    assert re.search(r"Resuming.{0,900}`next` is in the `waiting_for_yes` list of `CLI page notes SHORT`.{0,250}run "
+                     r"`CLI page wait SHORT --stage <next>` in the background again", skill)  # fmt: skip
     for ch, stage in (("02-story.md", "story"), ("03-storyboard.md", "storyboard"), ("04-engine.md", "engine")):
         t = _flat(_read(f"playbook/{ch}"))
-        assert f"whose `next` is the {stage} you already showed: don't redo this chapter" in t, ch
+        assert f"lists {stage} in `waiting_for_yes`" in t and "don't redo this chapter" in t, ch
+
+
+def test_decisions_are_applied_before_notes_and_stale_ones_dropped():
+    for name in ("SKILL.md", "playbook/02-story.md", "playbook/03-storyboard.md", "playbook/04-engine.md"):
+        t = _flat(_read(name))
+        first, notes = t.find("Decisions first, before you change anything"), t.find("act only on", 0)
+        notes = t.lower().find("act only on")
+        assert 0 <= first < notes, name
+        assert re.search(r"older version of (a|the) \w+.{0,120}dropped automatically.{0,40}`superseded`.{0,60}asks "
+                         r"the user again for the new version", t), name  # fmt: skip
 
 
 def test_a_timed_out_wait_is_rerun_only_while_its_stage_still_waits():

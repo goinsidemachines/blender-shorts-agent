@@ -420,14 +420,17 @@ def _page_wait(args, sdir: Path) -> dict:
     stage = _page_stage(args.stage)
     deadline = time.monotonic() + (args.timeout if args.timeout is not None else 600.0)
     poll = max(args.poll, 0.05)
+    superseded: list[str] = []
     while True:
         version = snapshot.stage_version(sdir, stage)
+        superseded += decisions.supersede_stale(sdir, stage, version)  # answers to content that has changed since
         waiting = [d for d in decisions.unapplied(sdir) if d["stage"] == stage and d["version"] == version]
         sent = [n for n in notes.load(sdir) if n["stage"] == stage and n["status"] == "sent"]
         if waiting or sent or time.monotonic() >= deadline:
             entry = _apply_decision(sdir, waiting[-1]) if waiting else None
             return {"stage": stage, "version": version, "decision": entry, "notes": sent,
-                    "applied": entry is not None, "timed_out": not (waiting or sent)}  # fmt: skip
+                    "applied": entry is not None, "timed_out": not (waiting or sent),
+                    "superseded": superseded}  # fmt: skip
         time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
 
 
@@ -439,15 +442,23 @@ def _page_notes(args, sdir: Path) -> dict:
     if len(args.words) != 2:
         raise CliError("usage: page notes SHORT [--stage STAGE]")
     stage = _page_stage(args.stage) if args.stage is not None else None
+    from bsa.review import snapshot
+
     try:
+        superseded = []
+        for s in sorted({d["stage"] for d in decisions.unapplied(sdir)}):
+            superseded += decisions.supersede_stale(sdir, s, snapshot.stage_version(sdir, s))
         found = [n for n in notes.load(sdir) if n["status"] in ("open", "sent")]
         waiting = decisions.unapplied(sdir)
     except store.StoreDamaged as exc:
         raise CliError(str(exc)) from exc
+    snap = snapshot.build(sdir)
     keys = ("id", "stage", "target", "text", "status", "by")
     return {"notes": [{k: n.get(k) for k in keys} for n in found if stage in (None, n["stage"])],
             "decisions": [{k: d.get(k) for k in ("id", "stage", "version", "decision")} for d in waiting
-                          if stage in (None, d["stage"])]}  # fmt: skip
+                          if stage in (None, d["stage"])],
+            "superseded": superseded,
+            "waiting_for_yes": [s["id"] for s in snap["stages"] if s["needs_yes"]]}  # fmt: skip
 
 
 def cmd_page(args) -> dict:
