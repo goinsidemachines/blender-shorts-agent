@@ -138,6 +138,19 @@ def test_feedback_panel_rules(tmp_path):
     assert snapshot.build(sdir, settings={"feedback": "off"})["feedback"] is None
     snap = snapshot.build(sdir, settings={})
     assert snap["feedback"]["entries"] == 1 and feedback.pending(sdir)  # building never marks reported
+    assert snap["feedback"]["sent"] is False
+
+
+def test_feedback_panel_says_sent_once_every_entry_is_reported(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    feedback.add(sdir, "rough-edge", "a thing")
+    feedback.allow_panel(sdir)
+    feedback.mark_reported(sdir, ["f1"])
+    fb = snapshot.build(sdir, settings={})["feedback"]
+    assert fb["sent"] is True and fb["entries"] == 1
+    feedback.add(sdir, "blocking", "a new thing")  # noted after the report: the panel shows only that one
+    fb = snapshot.build(sdir, settings={})["feedback"]
+    assert fb["sent"] is False and fb["ids"] == ["f2"]
 
 
 def test_feedback_panel_content_is_redacted(tmp_path):

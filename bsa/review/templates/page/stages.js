@@ -638,6 +638,13 @@
   // reported; showing it does not.
   function feedbackPanel(ctx, fb) {
     if (!fb) return null;
+    if (fb.sent) {
+      return ctx.el("section", { class: "st-sec feedback", "aria-labelledby": "bsa-feedback-h" },
+        ctx.el("h3", { id: "bsa-feedback-h" }, "Plugin feedback"),
+        ctx.el("p", { class: "state ok" }, ctx.el("span", { class: "tick", "aria-hidden": "true" }, "✓"), "Sent, thank you."),
+        ctx.el("p", { class: "muted" }, "You copied the report or opened it on GitHub. If you haven't submitted the issue " +
+          "yet, paste the report into it there; nothing is sent until you do."));
+    }
     var ids = fb.ids || [];
     var sev = Object.keys(fb.by_severity || {}).map(function (k) { return fb.by_severity[k] + " " + k; }).join(", ");
     return ctx.el("section", { class: "st-sec feedback", "aria-labelledby": "bsa-feedback-h" },

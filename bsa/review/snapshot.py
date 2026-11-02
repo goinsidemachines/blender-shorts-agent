@@ -497,14 +497,16 @@ def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[s
 
 def _feedback(ctx: Ctx) -> dict | None:
     """The plugin feedback panel's report, only once the user said yes to seeing it (feedback.allow_panel) and never
-    with the setting `off`. Redacted like the CLI's report. Building it never marks anything reported."""
+    with the setting `off`. Redacted like the CLI's report, of the pending entries; `sent` when none is pending (all
+    reported). Building it never marks anything reported."""
     if not feedback.panel_allowed(ctx.sdir, ctx.settings.get("feedback")):
         return None
     s = ctx.short
     own = [t for t in [s.title, *(ln.text for ln in s.lines)] if t and t.strip()] if s else []
+    sent = not feedback.pending(ctx.sdir)  # every entry reported already: the panel says so instead of asking again
     rep = feedback.report(ctx.sdir, workspace=ctx.settings.get("workspace"),
                           scrub=feedback.settings_scrub(ctx.settings) + own, mark=False)  # fmt: skip
-    return {k: rep[k] for k in ("entries", "title", "body", "url", "shortened", "by_severity", "ids")}
+    return {"sent": sent, **{k: rep[k] for k in ("entries", "title", "body", "url", "shortened", "by_severity", "ids")}}
 
 
 def build(sdir: Path, *, settings: dict | None = None, now: float | None = None) -> dict:

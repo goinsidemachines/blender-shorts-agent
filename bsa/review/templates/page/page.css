@@ -287,7 +287,7 @@ fieldset.choices legend { font-weight: 800; margin-bottom: 8px; padding: 0; }
 .findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .finding { padding: 10px 14px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border);
   overflow-wrap: anywhere; }
-.finding.error { border-left-width: 8px; }
+.finding.error { border-width: 3px; box-shadow: var(--pop); }
 .finding p { margin: 0 0 6px; }
 .finding .sev { font-size: 12px; font-weight: 800; padding: 2px 10px; border-radius: var(--r-pill);
   background: var(--chip); }

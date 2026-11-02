@@ -449,6 +449,9 @@ def test_feedback_reported_marks_only_the_given_entries(srv, bsa_home):
     r = api(srv, "POST", path, body={"ids": ["f1"]})
     assert r.status == 409 and feedback.pending(srv.sdir)  # the user has not said yes to the panel yet
     feedback.allow_panel(srv.sdir)
+    assert api(srv, "POST", path, token="", body={"ids": ["f1"]}).status == 403
+    assert api(srv, "POST", path, body={"ids": ["f1"]}, origin="http://evil.example").status == 403
+    assert len(feedback.pending(srv.sdir)) == 2  # neither marked anything
     for bad in ({}, {"ids": "f1"}, {"ids": [1]}):
         assert api(srv, "POST", path, body=bad).status == 400, bad
     r = api(srv, "POST", path, body={"ids": ["f1"]})

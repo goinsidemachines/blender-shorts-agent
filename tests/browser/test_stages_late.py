@@ -115,6 +115,9 @@ def test_feedback_panel_copy_marks_reported(view, live_server):
     p.get_by_role("button", name="Copy the report").click()
     assert _until(lambda: feedback.pending(srv.sdir) == [])
     assert "### f1. x" in p.evaluate("navigator.clipboard.readText()")
+    expect(stage.get_by_text("Sent, thank you.")).to_be_visible(timeout=3000)  # not the same buttons again
+    expect(stage.get_by_role("button", name="Copy the report")).to_have_count(0)
+    expect(stage.get_by_role("link", name="Open on GitHub")).to_have_count(0)
     assert_healthy(p)
 
 
@@ -130,3 +133,4 @@ def test_feedback_panel_open_on_github_marks_reported(view, live_server):
     with view.context.expect_page():
         link.click()
     assert _until(lambda: feedback.pending(srv.sdir) == [])
+    assert_healthy(p)

@@ -125,12 +125,15 @@ def test_untimed_shot_is_still_shown(short, review):
 
 
 def test_no_side_tab_borders():
+    import re
     from pathlib import Path as P
 
     from bsa.review import pages
 
+    side = re.compile(r"border-(left|right|inline-start|inline-end)(-[a-z]+)?\s*:")  # any one-side border property
     for f in (P(pages.__file__).parent / "templates").rglob("*.*"):  # the page parts live in templates/page/
-        assert "border-left:" not in f.read_text(encoding="utf-8")
+        found = side.search(f.read_text(encoding="utf-8"))
+        assert found is None, f"{f.name}: {found.group(0)}"
 
 
 def test_offline(short, review):
