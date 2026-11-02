@@ -294,11 +294,14 @@ fieldset.choices legend { font-weight: 800; margin-bottom: 8px; padding: 0; }
   background: var(--accent); border: var(--ink-border); pointer-events: none; }
 .tl-row { margin-top: 4px; }
 .tl-name { margin: 0; font-size: 12px; font-weight: 800; color: var(--muted); }
-.tl-lane { position: relative; height: 24px; border-radius: 6px; background: var(--chip); }
+.tl-lane { position: relative; height: 24px; border-radius: 6px; background: var(--chip); overflow: clip;
+  overflow-clip-margin: 8px; } /* the hit areas below stay near the lane; a focus ring (7 px) still shows */
 .tl-none { position: absolute; left: 8px; top: 2px; font-size: 12px; color: var(--muted); }
 .tl-mark { position: absolute; top: 2px; bottom: 2px; min-width: 2px; padding: 0; border: 1.5px solid var(--ink);
-  border-radius: 4px; background: var(--card); cursor: pointer; }
+  border-radius: 4px; background: var(--card); cursor: pointer; overflow: visible; }
 .tl-mark:focus-visible { z-index: 2; }
+.tl-mark::before { content: ""; position: absolute; top: -4px; bottom: -4px; left: 50%; width: max(100%, 24px);
+  transform: translateX(-50%); } /* a 24 px hit area (WCAG 2.5.8) around a mark drawn 2 px wide */
 .tl-captions { background: var(--card2); }
 .tl-sounds { background: var(--ok); }
 .tl-findings.warning { background: var(--soft); }

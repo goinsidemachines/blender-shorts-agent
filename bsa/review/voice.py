@@ -8,7 +8,7 @@ from pathlib import Path
 
 from bsa.narrate.local import WER_LIMIT
 from bsa.narrate.run import HEARD_FILE
-from bsa.review import worddiff
+from bsa.review import store, worddiff
 from bsa.short import Line, Short, spoken_text
 
 NOT_NARRATED = "Not narrated yet."
@@ -21,7 +21,7 @@ def _read(vo: Path) -> dict | None:
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(store.read_bytes(path).decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(UNREADABLE) from exc
     if not isinstance(data, dict):
@@ -62,9 +62,9 @@ def _row(line: Line, entry: dict | None, vo: Path, heard_at: float | None) -> di
     return row
 
 
-def block(sdir: Path, short: Short, narration: dict) -> dict:
+def block(sdir: Path, short: Short, narration: dict, closing: Line | None = None) -> dict:
     """{"lines": [{"id", "text", "said", "wer", "ok", "diff", "stale", "waiting"}], "checked", "why_not"}: the short's
-    lines in order."""
+    lines in order, then the closing line (`closing`, the closing card's voice line) once heard.json has its entry."""
     vo = Path(sdir) / "audio" / "vo"
     try:
         data = _read(vo)
@@ -75,7 +75,10 @@ def block(sdir: Path, short: Short, narration: dict) -> dict:
     heard = data.get("lines") if isinstance(data.get("lines"), dict) else {}
     heard = {k: v for k, v in heard.items() if isinstance(v, dict)}
     heard_at = _mtime(vo / HEARD_FILE)
-    rows = [_row(ln, heard.get(ln.id), vo, heard_at) for ln in short.lines]
+    lines = list(short.lines)
+    if closing is not None and closing.id in heard and all(ln.id != closing.id for ln in lines):
+        lines.append(closing)
+    rows = [_row(ln, heard.get(ln.id), vo, heard_at) for ln in lines]
     why_not = data.get("why_not")
     return {
         "lines": rows,

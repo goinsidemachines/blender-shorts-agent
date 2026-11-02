@@ -124,3 +124,50 @@ def test_a_word_error_rate_at_the_limit_passes(tmp_path):
     data["lines"]["l01"]["wer"] = WER_LIMIT + 0.01
     path.write_text(json.dumps(data), encoding="utf-8")
     assert _block(sdir)["lines"][0]["ok"] is False
+
+
+def _heard_closing(sdir, said: str) -> None:
+    path = sdir / "audio" / "vo" / run.HEARD_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    want = "Visit example dot com."
+    data["lines"]["closing"] = {"text": want, "said": said, "wer": pagefix._wer(want, said)}
+    (sdir / "audio" / "vo" / "closing.wav").write_bytes(b"RIFF")
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+CLOSING_SETTINGS = {"website": "example.com", "closing": {"voice_line": "Visit example dot com."}}
+
+
+def test_the_closing_line_shows_once_heard_json_has_it(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork"})
+    narration = snapshot.build(sdir, settings=CLOSING_SETTINGS)["stages"][4]["content"]
+    assert [r["id"] for r in narration["voice"]["lines"]] == ["l01", "l02", "l03", "l04"]  # not narrated: no row
+    _heard_closing(sdir, "visit example dot calm")
+    rows = snapshot.build(sdir, settings=CLOSING_SETTINGS)["stages"][4]["content"]["voice"]["lines"]
+    assert [r["id"] for r in rows] == ["l01", "l02", "l03", "l04", "closing"]
+    assert rows[-1]["text"] == "Visit example dot com." and rows[-1]["ok"] is False and rows[-1]["diff"]
+    rows = snapshot.build(sdir, settings={})["stages"][4]["content"]["voice"]["lines"]
+    assert [r["id"] for r in rows] == ["l01", "l02", "l03", "l04"]  # no closing line set any more: no row
+
+
+def test_the_voice_check_retries_a_heard_file_being_replaced(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from bsa.review import store
+
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork"})
+    real, denied = Path.read_bytes, []
+
+    def flaky(self):
+        if self.name == run.HEARD_FILE and len(denied) < 2:
+            denied.append(self)
+            raise PermissionError(13, "Access is denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(store, "_RETRY_DENIED", True)
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: flaky(self).decode("utf-8"))
+    assert _block(sdir)["lines"][0]["ok"] is True and len(denied) == 2

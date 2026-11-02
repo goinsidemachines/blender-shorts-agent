@@ -25,20 +25,28 @@ class StoreDamaged(Exception):
     """A JSON store file can't be read; the message names the file and why (one plain line)."""
 
 
-def read_json(path: Path, default, expect: type | None = None):
-    """The file's JSON; `default` when it is missing. Raises StoreDamaged when it is empty or not valid JSON, or
-    (with `expect` list or dict) when it is valid JSON of another type, or a list holding anything but objects."""
+def read_bytes(path: Path) -> bytes:
+    """The file's bytes, retrying a moment on Windows while another writer replaces it (os.replace makes a reader
+    racing it get PermissionError there). Raises OSError as Path.read_bytes does otherwise."""
     path = Path(path)
     for i in range(READ_TRIES):
         try:
-            raw = path.read_bytes()
-            break
-        except FileNotFoundError:
-            return default
+            return path.read_bytes()
         except PermissionError:  # Windows: another writer is replacing the file this instant (write_atomic)
             if not _RETRY_DENIED or i == READ_TRIES - 1:
                 raise
             time.sleep(0.01 * (i + 1))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def read_json(path: Path, default, expect: type | None = None):
+    """The file's JSON; `default` when it is missing. Raises StoreDamaged when it is empty or not valid JSON, or
+    (with `expect` list or dict) when it is valid JSON of another type, or a list holding anything but objects."""
+    path = Path(path)
+    try:
+        raw = read_bytes(path)
+    except FileNotFoundError:
+        return default
     if not raw.strip(b"\0 \t\r\n"):
         raise StoreDamaged(f"{path} is damaged (empty): move it aside to start it over")
     try:

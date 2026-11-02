@@ -39,7 +39,7 @@ def test_track_rows_come_from_the_timeline_events_and_checks(sdir):
     tl = _build(sdir)
     assert [s["id"] for s in tl["tracks"]["shots"]] == ["s01", "s02", "s03"] and tl["fps"] == 30
     assert tl["tracks"]["findings"][0] == {**tl["tracks"]["findings"][0], "f": 12, "shot": "s02", "severity": "error"}
-    assert tl["video"] == {"file": "out/pendulum.mp4"} and tl["stale"] is False and tl["run"] == "final"
+    assert tl["video"]["file"] == "out/pendulum.mp4" and tl["stale"] is False and tl["run"] == "final"
     assert tl["frames"] == 90 and tl["duration_s"] == 3.0 and tl["problem"] is None 
     assert [u["why"] for u in tl["unplaced"]] == ["no frame"]  # the fixture's lit warning names no frame
     assert tl["tracks"]["captions"][0] == {"f0": 1, "f1": 10, "text": "caption 1", "line": "l01"}
@@ -136,3 +136,52 @@ def test_any_events_failure_keeps_the_rest_of_the_track(sdir):
     (sdir / "source" / "events.json").write_text(json.dumps([{"kind": "nope", "frame": 5}]), encoding="utf-8")
     tl = _build(sdir)
     assert [s["kind"] for s in tl["tracks"]["sounds"]] == ["whoosh"] and "events.json" in tl["problem"]
+
+
+def test_the_video_tag_changes_when_the_mp4_is_rewritten(sdir):
+    import os
+
+    mp4 = sdir / "out" / "pendulum.mp4"
+    first = _build(sdir)["video"]
+    st = mp4.stat()
+    assert first["tag"] == f"{st.st_mtime_ns}-{st.st_size}"
+    mp4.write_bytes(mp4.read_bytes())  # a re-edit with the same frames: same size, a new file
+    os.utime(mp4, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    again = _build(sdir)["video"]
+    assert again["file"] == first["file"] and again["tag"] != first["tag"]
+
+
+def test_an_edit_without_its_record_says_so(sdir):
+    import json as _json
+
+    from bsa import engine_runs
+
+    assert _build(sdir)["no_edit"] is False
+    path = engine_runs.runs_path(sdir)
+    runs = _json.loads(path.read_text(encoding="utf-8"))
+    del runs["final"]["edit"]
+    path.write_text(_json.dumps(runs), encoding="utf-8")
+    tl = _build(sdir)
+    assert tl["no_edit"] is True and tl["stale"] is True
+
+
+def test_the_track_reads_retry_a_file_being_replaced(sdir, monkeypatch):  # Windows: a reader racing os.replace
+    from pathlib import Path
+
+    from bsa.review import store
+
+    real, denied = Path.read_bytes, []
+
+    def flaky(self):
+        if self.name in ("timeline.json", "checks.json") and denied.count(self.name) < 2:
+            denied.append(self.name)
+            raise PermissionError(13, "Access is denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(store, "_RETRY_DENIED", True)
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: flaky(self).decode("utf-8"))
+    tl = _build(sdir)
+    assert denied.count("timeline.json") == 2 and denied.count("checks.json") == 2
+    assert tl["tracks"]["findings"] and tl["tracks"]["shots"]

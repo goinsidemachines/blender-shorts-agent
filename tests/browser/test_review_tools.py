@@ -511,3 +511,81 @@ def test_every_review_tool_on_one_short(view, live_server):
     expect(stage.get_by_role("button", name="Note at this moment")).to_be_visible()
     expect(stage.locator("details.facts-panel")).to_have_attribute("open", "")
     assert_healthy(p)
+
+
+def test_a_re_edit_of_a_run_gets_a_new_video_and_url(view, live_server):
+    """The run's MP4 is rewritten under the same name with the same frame count: its tag (mtime and size) gives the
+    page a new <video> with a new URL, never the browser's cached bytes of the old cut."""
+    import os
+
+    srv = live_server("render")
+    p = open_short(view, srv, stage="render")
+    video = p.get_by_role("tabpanel").locator("video")
+    expect(video).to_have_count(1)
+    before = video.get_attribute("src")
+    assert "&v=" in before
+    p.evaluate("document.querySelector('[role=tabpanel] video').dataset.mark = 'old'")
+    mp4 = srv.sdir / "out" / "pendulum-preview.mp4"
+    st = mp4.stat()
+    mp4.write_bytes(mp4.read_bytes())  # the edit again: same frames, same size
+    os.utime(mp4, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    expect(video).not_to_have_attribute("src", before, timeout=4000)
+    assert video.get_attribute("data-mark") is None  # a new element, not the old one re-pointed
+    assert video.get_attribute("src").split("&v=")[0] == before.split("&v=")[0]
+    assert_healthy(p)
+
+
+def test_a_marker_has_a_24px_hit_area(view, live_server):
+    """A mark is drawn as narrow as its frames (2 px at least) but takes a tap 12 px either side of its middle."""
+    srv = live_server("final")
+    _stand_in_video(srv)
+    p = open_short(view, srv, stage="final")
+    mark = p.get_by_role("button", name="Finding: frame 12 flickers, frame 12")
+    expect(mark).to_be_visible()
+    assert mark.evaluate("b => parseFloat(getComputedStyle(b, '::before').width)") >= 24
+    p.evaluate("""() => { window.__hits = 0; const b = [...document.querySelectorAll('.tl-mark')]
+        .find(m => m.getAttribute('aria-label') === 'Finding: frame 12 flickers, frame 12');
+        b.addEventListener('click', () => { window.__hits += 1; }); }""")
+    box = mark.bounding_box()
+    for dx in (-10, 10):  # outside a narrow mark's own box: Playwright refuses a point another element covers
+        mark.click(position={"x": box["width"] / 2 + dx, "y": box["height"] / 2}, timeout=3000)
+    assert p.evaluate("window.__hits") == 2
+    assert_healthy(p)
+
+
+def test_a_final_without_its_edit_record_says_run_the_edit_again(view, live_server):
+    from bsa import engine_runs
+
+    srv = live_server("final")
+    _stand_in_video(srv)
+    path = engine_runs.runs_path(srv.sdir)
+    runs = json.loads(path.read_text(encoding="utf-8"))
+    del runs["final"]["edit"]
+    path.write_text(json.dumps(runs), encoding="utf-8")
+    p = open_short(view, srv, stage="final")
+    stage = p.locator("#bsa-stage")
+    expect(stage.get_by_text("This video has no timing record; run the edit again to line up the markers.")).to_be_visible()
+    expect(stage.get_by_text(STALE)).to_have_count(0)
+    assert_healthy(p)
+
+
+def test_the_closing_line_is_in_the_voice_table_with_a_retake_note(view, live_server):
+    from bsa import settings as settings_mod
+
+    settings_mod.save_settings({"website": "example.com", "closing": {"voice_line": "Visit example dot com."}})
+    srv = live_server("render")
+    pagefix.write_heard(srv.sdir, {"l01": "a pendulum swings like clockwork"})
+    path = srv.sdir / "audio" / "vo" / "heard.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["lines"]["closing"] = {"text": "Visit example dot com.", "said": "visit example dot calm", "wer": 0.25}
+    (srv.sdir / "audio" / "vo" / "closing.wav").write_bytes(b"RIFF")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    p = open_short(view, srv, stage="narration")
+    row = p.locator("tr[data-line='closing']")
+    expect(row.locator("mark", has_text="calm")).to_be_visible()
+    p.get_by_role("button", name="Re-take: closing").click()
+    expect(p.get_by_role("textbox")).to_have_value("Re-take this line")
+    p.get_by_role("button", name="Save note").click()
+    assert _until(lambda: bool(notes.load(srv.sdir)))
+    assert notes.load(srv.sdir)[-1]["target"]["id"] == "closing"
+    assert_healthy(p)

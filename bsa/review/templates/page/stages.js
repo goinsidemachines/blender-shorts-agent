@@ -512,8 +512,9 @@
   var runPlayers = {}; // run key -> {key, node}: each run's own video element, kept across live updates
 
   function runVideo(ctx, r) {
-    var url = ctx.fileUrl(r.timeline.video);
-    var key = url + "#" + r.state + "#" + r.timeline.frames;
+    var v = r.timeline.video;
+    var url = ctx.fileUrl(v, v.tag); // a re-edit rewrites the MP4 under the same name: its tag gives it a new URL
+    var key = url + "#" + v.tag + "#" + r.state + "#" + r.timeline.frames;
     var p = runPlayers[r.key];
     if (p && p.key === key) return p.node;
     if (p) release(p.node);

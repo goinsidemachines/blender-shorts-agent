@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import json
 import math
+import stat
 from pathlib import Path
 
 from bsa import engine_runs
 from bsa.audio import events
-from bsa.review import pages
+from bsa.review import pages, store
 from bsa.short import Short
 from bsa.timeline import held_frames, timeline_from_json, timeline_hash
 
@@ -20,18 +21,21 @@ def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _video(sdir: Path, key: str) -> str | None:
-    """The run's MP4 as `out/<name>.mp4`, None unless it is an existing file under out/."""
+def _video(sdir: Path, key: str) -> dict | None:
+    """The run's MP4 as {"file": "out/<name>.mp4", "tag"}, None unless it is an existing file under out/. `tag`
+    changes whenever the file is rewritten (its mtime and size), so the page gives a re-edit a new URL."""
     row = engine_runs.load_runs(sdir).get(key)
     mp4 = row.get("mp4") if isinstance(row, dict) else None
     if not isinstance(mp4, str) or not mp4:
         return None
     try:
         rel = Path(mp4).resolve().relative_to((sdir / "out").resolve())
-        ok = (sdir / "out" / rel).is_file()
+        st = (sdir / "out" / rel).stat()
     except (OSError, ValueError):
         return None
-    return f"out/{rel.as_posix()}" if ok else None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return {"file": f"out/{rel.as_posix()}", "tag": f"{st.st_mtime_ns}-{st.st_size}"}
 
 
 def _ranges(frames: set[int]) -> list[tuple[int, int]]:
@@ -72,7 +76,7 @@ def _finding_rows(sdir: Path, run_key: str, frames: int) -> tuple[list[dict], li
     placed, unplaced, seen = [], [], set()
     for name in ("checks.json", f"frame-checks-{run_key}.json"):
         try:
-            data = json.loads((review / name).read_text(encoding="utf-8"))
+            data = json.loads(store.read_bytes(review / name).decode("utf-8"))
         except (OSError, ValueError):
             continue
         rows = data.get("findings") if isinstance(data, dict) else None
@@ -105,9 +109,10 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
     video = _video(sdir, run_key)
     if video is None:
         return None
-    data = json.loads((sdir / "source" / "timeline.json").read_text(encoding="utf-8"))
+    data = json.loads(store.read_bytes(sdir / "source" / "timeline.json").decode("utf-8"))
     tl = timeline_from_json(data)
-    edit = engine_runs.edit_info(sdir, run_key) or {}
+    recorded = engine_runs.edit_info(sdir, run_key)
+    edit = recorded or {}
     fps = edit.get("fps")
     if isinstance(fps, (int, float)) and not isinstance(fps, bool) and fps > 0:
         fps = int(fps) if fps == int(fps) else float(fps)
@@ -132,7 +137,7 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
     findings, unplaced = _finding_rows(sdir, run_key, frames)
     return {
         "run": run_key,
-        "video": {"file": video},
+        "video": video,
         "fps": fps,
         "frames": frames,
         "duration_s": round(frames / fps, 3),
@@ -147,4 +152,5 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
         "unplaced": unplaced,
         "stale": bool(reasons) or edit.get("timeline_hash") != timeline_hash(data),
         "problem": problem,
+        "no_edit": recorded is None,  # an edit from before edits were recorded: nothing says its timing
     }

@@ -11,6 +11,7 @@
   var NAMES = { shots: "Shots", captions: "Captions", sounds: "Sounds", findings: "Findings", holds: "Holds",
     closing: "Closing card" };
   var STALE = "This video was cut from an older timing; run the edit again to line up the markers.";
+  var NO_EDIT = "This video has no timing record; run the edit again to line up the markers.";
 
   var rowsOn = null; // row -> shown: the user's choice, kept across live updates and shared by every timeline
   var cache = {}; // timeline key -> {json, video, version, node, stop, applyRows}: the track is reused while unchanged
@@ -147,7 +148,7 @@
     var kids = [];
     var applyRows = function () {};
     if (tl.stale) {
-      kids.push(el("p", { class: "problem" }, STALE));
+      kids.push(el("p", { class: "problem" }, tl.no_edit ? NO_EDIT : STALE));
     } else {
       var on = startRows();
       var items = markerRows(tl, frames);

@@ -294,7 +294,8 @@ def _narration(ctx: Ctx) -> dict | None:
         "takes": len(list(vo.glob("*.wav"))) if vo.is_dir() else 0,
     }
     if ctx.short is not None and (vo / HEARD_FILE).is_file():  # only once narration has run
-        content["voice"] = voice.block(ctx.sdir, ctx.short, content)
+        line = closing_mod.voice_line(closing_mod.resolve(ctx.settings, ctx.short), ctx.short)
+        content["voice"] = voice.block(ctx.sdir, ctx.short, content, closing=line)
     return content
 
 
