@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -59,3 +60,26 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "blender" in item.keywords:
                 item.add_marker(skip_blender)
+    browser_items = [item for item in items if "browser" in item.keywords]
+    if browser_items:
+        missing = chromium_missing()
+        if missing and os.environ.get("BSA_REQUIRE_BROWSER"):  # CI's browser job must never pass by skipping
+            raise pytest.UsageError(missing)
+        if missing:
+            skip_browser = pytest.mark.skip(reason=missing)
+            for item in browser_items:
+                item.add_marker(skip_browser)
+
+
+def chromium_missing() -> str | None:
+    """Why the browser tests can't run (Playwright or its Chromium is not installed), or None when they can."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return "Playwright is not installed"
+    try:
+        with sync_playwright() as pw:
+            pw.chromium.launch().close()
+    except Exception as e:  # noqa: BLE001 - any launch failure means no usable Chromium
+        return f"Chromium can't start: run `uv run playwright install chromium` ({type(e).__name__})"
+    return None

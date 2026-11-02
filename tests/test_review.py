@@ -129,7 +129,7 @@ def test_no_side_tab_borders():
 
     from bsa.review import pages
 
-    for f in (P(pages.__file__).parent / "templates").iterdir():
+    for f in (P(pages.__file__).parent / "templates").rglob("*.*"):  # the page parts live in templates/page/
         assert "border-left:" not in f.read_text(encoding="utf-8")
 
 

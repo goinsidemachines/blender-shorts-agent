@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pagefix
 import pytest
@@ -75,13 +76,18 @@ def _kill(pid):
         time.sleep(0.1)
 
 
-def _no_browser() -> str:
-    """A BROWSER command that opens nothing: webbrowser runs it with the URL and gets a failure back."""
-    return "true" if sys.platform != "win32" else f"{sys.executable}"
+def _no_browser(home) -> str:
+    """A BROWSER command that opens nothing and succeeds, so webbrowser never falls back to the real default
+    browser (on Windows it would: a failing command is followed by os.startfile)."""
+    if sys.platform != "win32":
+        return "true"
+    cmd = Path(home) / "no-browser.cmd"
+    cmd.write_bytes(b"@exit /b 0\r\n")
+    return str(cmd)
 
 
 def run(home, *args, timeout=120):
-    env = {**os.environ, "BSA_HOME": str(home), "BROWSER": _no_browser()}
+    env = {**os.environ, "BSA_HOME": str(home), "BROWSER": _no_browser(home)}
     env.pop("ELEVENLABS_API_KEY", None)
     return subprocess.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
                           env=env, cwd=str(home), timeout=timeout)  # fmt: skip
