@@ -209,8 +209,8 @@ def test_script_mode_end_to_end(tmp_path):
     redo = p.blender_cmd("render", "pendulum", "--preset", "preview", "--redo-flagged", blend=blend)
     assert redo["redo"] == {"s02": f"{s02['f0'] + 4}-{s02['f0'] + 6}"}
     frame_check = p.blender_cmd("frame-check", "pendulum", "--preset", "preview")
-    for f in frame_check["findings"]:
-        assert f["shot"] and (f["frame"] is None or f["redo"].startswith("BLENDER render"))
+    for f in frame_check["findings"]:  # shading is the scene's light, not a bad render: no redo for it
+        assert f["shot"] and (f["frame"] is None or f["check"] == "shading" or f["redo"].startswith("BLENDER render"))
     cache.unlink()  # the edit fingerprints the .blend itself when no cache is current, then edits as before
     edit = p.blender_cmd("edit", "pendulum", "--preset", "preview")
     assert p.blender_cmd("probe", edit["mp4"])["frames"] == timeline["n_frames"]
