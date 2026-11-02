@@ -192,12 +192,18 @@
     return panel && BSA.review && BSA.review.facts ? BSA.review.facts(ctx, panel) : null;
   }
 
+  // Before and after (review.js): null when no earlier shown version is kept.
+  function compareBlock(ctx, stageId, content) {
+    return BSA.review && BSA.review.compare ? BSA.review.compare(ctx, stageId, content) : null;
+  }
+
   BSA.stages.story = function (content, ctx) {
     var beats = content.beats || [];
     var roles = hookLines(content, beats);
     var facts = content.facts || [];
     return ctx.el("div", { class: "st-story" },
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
+      compareBlock(ctx, "story", content),
       roles.hook ? null : quoteBlock(ctx, "Hook", content.hook),
       section(ctx, "The story", ctx.el("ol", { class: "beats" }, beats.map(function (b) {
         return ctx.el("li", { class: "beat" },
@@ -368,6 +374,7 @@
   BSA.stages.storyboard = function (content, ctx) {
     return ctx.el("div", { class: "st-board" },
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
+      compareBlock(ctx, "storyboard", content),
       section(ctx, "Timing", timing(ctx, content)),
       section(ctx, "Shots", [
         ctx.el("p", { class: "muted" }, "Open a picture to enlarge it and see its captions where they will appear."),
@@ -668,6 +675,7 @@
         ctx.el("p", { class: "muted" }, String(content.video.file).split("/").pop() + size))
         : ctx.el("p", { class: "muted" }, "The final video is not made yet."),
       track ? section(ctx, "Timeline", track) : null,
+      compareBlock(ctx, "final", content),
       ackBlock(ctx, content),
       section(ctx, "Checks", findingsBlock(ctx, content)),
       factsPanel(ctx, content.facts_panel),

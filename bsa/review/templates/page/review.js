@@ -351,5 +351,179 @@
     return card;
   };
 
+  // Before and after: Story, Storyboard and Final against a version the user saw (ctx.history, newest first).
+  var compareOpen = {}; // stage id -> the version whose view is open, kept across live updates while it is offered
+  var boardSide = "now"; // below 768 px each storyboard shot shows one still: "before" or "now"
+  var cmpVideos = null; // {key, now, before}: the final's two compare videos, kept across live updates
+
+  function playQuietly(v) {
+    var p = v.play();
+    if (p && typeof p.catch === "function") p.catch(function () { /* not loaded yet, or blocked: stays paused */ });
+  }
+
+  // Play, pause and seek on either video drive the other. The guard is the state itself: a video is only told to
+  // do what it isn't already doing, so the event the follower then fires finds the leader in step and stops there.
+  function syncVideos(a, b, fps) {
+    var tol = 0.5 / fps;
+    function align(src, dst) {
+      if (Math.abs(dst.currentTime - src.currentTime) > tol) {
+        try { dst.currentTime = src.currentTime; } catch (e) { /* not seekable yet */ }
+      }
+    }
+    function follow(src, dst) {
+      src.addEventListener("play", function () { align(src, dst); if (dst.paused) playQuietly(dst); });
+      src.addEventListener("pause", function () { if (!dst.paused) dst.pause(); align(src, dst); });
+      src.addEventListener("seeking", function () { align(src, dst); });
+    }
+    follow(a, b);
+    follow(b, a);
+  }
+
+  function compareVideos(ctx, content, ref, version) {
+    var nowUrl = content.video ? ctx.fileUrl(content.video) : "";
+    var beforeUrl = ctx.fileUrl(ref);
+    var key = nowUrl + "#" + ctx.version + "|" + beforeUrl;
+    if (cmpVideos && cmpVideos.key === key) return cmpVideos;
+    var now = nowUrl ? ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata",
+      src: nowUrl, "aria-label": "The final video now" }, "Your browser cannot play this video.") : null;
+    var before = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", muted: true,
+      src: beforeUrl, "aria-label": "The final video in version " + version + ", muted" },
+    "Your browser cannot play this video.");
+    before.muted = true;
+    if (now) {
+      var fps = content.timeline && Number(content.timeline.fps) > 0 ? Number(content.timeline.fps) : 30;
+      syncVideos(now, before, fps);
+    }
+    cmpVideos = { key: key, now: now, before: before };
+    return cmpVideos;
+  }
+
+  // One line's words: same as they are, <del> for a word only version N had, <ins> for a new one, <mark> for a word
+  // that took another's place. Each change also says so in words for a screen reader.
+  function diffWords(el, ops) {
+    var kids = [];
+    ops.forEach(function (op, i) {
+      var word = String(op[1]);
+      if (i) kids.push(" ");
+      if (op[0] === "missing") kids.push(el("del", null, el("span", { class: "sr-only" }, "removed: "), word));
+      else if (op[0] === "extra") kids.push(el("ins", null, el("span", { class: "sr-only" }, "added: "), word));
+      else if (op[0] === "changed") kids.push(el("mark", null, el("span", { class: "sr-only" }, "changed to: "), word));
+      else kids.push(word);
+    });
+    return kids;
+  }
+
+  function storyView(ctx, h) {
+    var el = ctx.el;
+    var lines = (h.compare && h.compare.lines) || [];
+    return [
+      el("p", { class: "muted" }, "Struck-through words were in version " + h.version + ", underlined words are new " +
+        "and highlighted words took another word's place."),
+      el("ul", { class: "cmp-lines" }, lines.map(function (ln) {
+        var ops = ln.diff || [];
+        return el("li", { class: "cmp-line", "data-line": String(ln.id) },
+          el("strong", null, String(ln.id)), " ",
+          ops.length ? diffWords(el, ops) : el("span", { class: "muted" }, "(no words)"));
+      })),
+    ];
+  }
+
+  function stillFig(ctx, side, label, ref, alt) {
+    var el = ctx.el;
+    var url = ref ? ctx.fileUrl(ref) : "";
+    var pic = url ? el("img", { class: "still", src: url, alt: alt, loading: "lazy" })
+      : el("div", { class: "ph" }, side === "before" ? "No picture then" : "No picture now");
+    return el("figure", { class: "cmp-fig cmp-" + side }, pic, el("figcaption", null, label));
+  }
+
+  function storyboardView(ctx, h, stageId) {
+    var el = ctx.el;
+    var shots = (h.compare && h.compare.shots) || [];
+    var beforeLabel = "Before (version " + h.version + ")";
+    var list = el("ul", { class: "cmp-shots cmp-show-" + boardSide }, shots.map(function (s) {
+      var name = "Shot " + s.id;
+      return el("li", { class: "cmp-shot", "data-shot": String(s.id) },
+        el("h4", null, name + (s.title ? ": " + s.title : "")),
+        el("div", { class: "cmp-pair" },
+          stillFig(ctx, "before", beforeLabel, s.before, name + " before (version " + h.version + ")"),
+          stillFig(ctx, "now", "Now", s.after, name + " now")));
+    }));
+    var sides = {};
+    function pick(side) {
+      boardSide = side;
+      list.className = "cmp-shots cmp-show-" + side;
+      Object.keys(sides).forEach(function (k) { sides[k].setAttribute("aria-pressed", String(k === side)); });
+    }
+    [["before", "Show before"], ["now", "Show now"]].forEach(function (pair) {
+      sides[pair[0]] = el("button", { type: "button", class: "btn small", "aria-pressed": String(boardSide === pair[0]),
+        "data-k": "compare:" + stageId + ":side:" + pair[0], onclick: function () { pick(pair[0]); } }, pair[1]);
+    });
+    return [el("div", { class: "cmp-side", role: "group", "aria-label": "Which picture each shot shows" },
+      sides.before, sides.now), list];
+  }
+
+  function finalView(ctx, h, content) {
+    var el = ctx.el;
+    var cmp = h.compare || {};
+    if (cmp.video && cmp.video.file) {
+      var v = compareVideos(ctx, content, cmp.video, h.version);
+      return [
+        el("p", { class: "muted" }, "Play, pause or move either video and the other follows. Version " + h.version +
+          " is muted."),
+        el("div", { class: "cmp-videos" },
+          el("figure", { class: "cmp-fig" }, v.now || el("p", { class: "muted" }, "The final video is not made yet."),
+            el("figcaption", null, "Now")),
+          el("figure", { class: "cmp-fig" }, v.before, el("figcaption", null, "Before (version " + h.version + ")"))),
+      ];
+    }
+    var findings = cmp.findings || [];
+    return [
+      el("p", null, "Version " + h.version + " had no video kept; its findings were:"),
+      findings.length ? el("ul", { class: "findings cmp-findings" }, findings.map(function (f) {
+        var check = String(f.check || "").replace(/_/g, " ");
+        return el("li", { class: "finding " + (f.severity === "error" ? "error" : "warning") },
+          el("p", { class: "finding-head" }, el("strong", null, check)),
+          el("p", null, String(f.message || "")),
+          f.where ? el("p", { class: "where" }, String(f.where)) : null);
+      })) : el("p", { class: "muted" }, "None: every check passed."),
+    ];
+  }
+
+  review.compare = function (ctx, stageId, content) {
+    var el = ctx.el;
+    var hist = (ctx.history || []).filter(function (h) { return h && typeof h.version === "number" && h.compare; });
+    if (!hist.length) return null;
+    var open = hist.find(function (h) { return h.version === compareOpen[stageId]; }) || null;
+    if (!open) delete compareOpen[stageId]; // that version is no longer offered
+    var viewId = "bsa-cmp-" + String(stageId).replace(/[^A-Za-z0-9_-]/g, "_");
+    var node;
+    var buttons = hist.map(function (h) {
+      var on = !!open && open.version === h.version;
+      var k = "compare:" + stageId + ":" + h.version;
+      return el("button", { type: "button", class: "btn small", "aria-expanded": String(on),
+        "aria-controls": on ? viewId : null, "data-k": k,
+        onclick: function () {
+          compareOpen[stageId] = on ? null : h.version;
+          var fresh = review.compare(ctx, stageId, content);
+          node.replaceWith(fresh);
+          var again = fresh.querySelector('[data-k="' + CSS.escape(k) + '"]');
+          if (again) again.focus();
+        } }, "Compare with version " + h.version);
+    });
+    var view = null;
+    if (open) {
+      var kids = stageId === "story" ? storyView(ctx, open)
+        : stageId === "storyboard" ? storyboardView(ctx, open, stageId)
+          : finalView(ctx, open, content || {});
+      view = el("div", { class: "cmp-view", id: viewId, role: "region",
+        "aria-label": "Version " + open.version + " against now" }, kids);
+    }
+    node = el("section", { class: "st-sec compare" },
+      el("h3", null, "Before and after"),
+      el("div", { class: "btns cmp-btns" }, buttons),
+      view);
+    return node;
+  };
+
   review.STALE = STALE;
 })();

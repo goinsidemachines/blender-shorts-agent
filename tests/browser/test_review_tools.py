@@ -304,3 +304,122 @@ def test_fact_panel_shows_on_final(view, live_server):
     p.wait_for_timeout(1500)
     assert not card.evaluate("c => c.open")
     assert_healthy(p)
+
+
+def _set_line(sdir, line_id: str, text: str) -> None:
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text("utf-8"))
+    for ln in data["lines"]:
+        if ln["id"] == line_id:
+            ln["text"] = text
+    path.write_text(json.dumps(data, indent=2), "utf-8")
+
+
+def test_story_compare_shows_a_word_diff(view, live_server):
+    srv = live_server("story")
+    p = open_short(view, srv, stage="story")  # version 1 is shown, so it is kept
+    _set_line(srv.sdir, "l02", "Length alone sets the.")  # "alone" is new, "beat" is gone
+    _set_line(srv.sdir, "l03", "Four times longer, half as fast.")  # "twice" became "half"
+    button = p.get_by_role("button", name="Compare with version 1")
+    expect(button).to_be_visible(timeout=4000)
+    expect(button).to_have_attribute("aria-expanded", "false")
+    button.click()
+    expect(button).to_have_attribute("aria-expanded", "true")
+    line = p.locator(".cmp-line[data-line='l02']")
+    expect(line.locator("del", has_text="beat")).to_be_visible()
+    expect(line.locator("ins", has_text="alone")).to_be_visible()
+    expect(p.locator(".cmp-line[data-line='l03'] mark", has_text="half")).to_be_visible()
+    notes.add(srv.sdir, "story", {"kind": "overall", "id": None, "version": 2}, "keep it", "chat")  # a live update
+    expect(p.get_by_text("keep it", exact=True)).to_be_visible(timeout=4000)
+    expect(button).to_have_attribute("aria-expanded", "true")  # still open
+    expect(line.locator("del", has_text="beat")).to_be_visible()
+    button.click()
+    expect(button).to_have_attribute("aria-expanded", "false")
+    expect(p.locator(".cmp-line")).to_have_count(0)
+    assert_healthy(p)
+
+
+def test_storyboard_compare_side_by_side_and_toggle_on_phone(view, live_server):
+    srv = live_server("storyboard")
+    p = open_short(view, srv, stage="storyboard")
+    pagefix.write_png(srv.sdir / "stills" / "s02.png", pagefix.np.full((8, 8, 3), 200, pagefix.np.uint8))
+    button = p.get_by_role("button", name="Compare with version 1")
+    expect(button).to_be_visible(timeout=4000)
+    button.click()
+    shot = p.locator(".cmp-shot[data-shot='s02']")
+    before = shot.locator("img[alt='Shot s02 before (version 1)']")  # by alt: the hidden one too
+    now = shot.locator("img[alt='Shot s02 now']")
+    expect(before).to_have_attribute("src", re.compile("review/history/storyboard/v1/stills/s02.png"))
+    phone = view.viewport_size["width"] < 768
+    if not phone:
+        expect(before).to_be_visible()
+        expect(now).to_be_visible()
+        assert before.bounding_box()["y"] == now.bounding_box()["y"]  # side by side
+        expect(p.get_by_role("button", name="Show before")).to_be_hidden()
+    else:
+        show_before = p.get_by_role("button", name="Show before")
+        show_now = p.get_by_role("button", name="Show now")
+        expect(show_now).to_have_attribute("aria-pressed", "true")
+        expect(now).to_be_visible()
+        expect(before).to_be_hidden()
+        show_before.click()
+        expect(show_before).to_have_attribute("aria-pressed", "true")
+        expect(show_now).to_have_attribute("aria-pressed", "false")
+        expect(before).to_be_visible()
+        expect(now).to_be_hidden()
+        notes.add(srv.sdir, "storyboard", {"kind": "overall", "id": None, "version": 2}, "kept", "chat")
+        expect(p.get_by_text("kept", exact=True)).to_be_visible(timeout=4000)
+        expect(before).to_be_visible()  # the choice survives a live update
+    assert_healthy(p)
+
+
+def test_final_compare_plays_both_videos(view, live_server):
+    from bsa.review import history
+
+    srv = live_server("final")
+    _real_video(srv)
+    p = open_short(view, srv, stage="final")  # version 1 is shown, with its MP4's digest
+    mp4 = srv.sdir / "out" / "pendulum.mp4"
+    assert history.keep_outgoing_final(srv.sdir, mp4) is not None
+    assert pagefix.make_mp4(mp4, seconds=1.0)  # the new final: another 30-frame video
+    button = p.get_by_role("button", name="Compare with version 1")
+    expect(button).to_be_visible(timeout=6000)
+    button.click()
+    videos = p.locator(".cmp-videos video")
+    expect(videos).to_have_count(2)
+    now, before = videos.nth(0), videos.nth(1)
+    assert before.evaluate("v => v.muted") and not now.evaluate("v => v.muted")
+    both = "[...document.querySelectorAll('.cmp-videos video')]"
+    assert _until(lambda: p.evaluate(both + ".every(v => v.readyState >= 1)"))
+    before.evaluate("v => v.play()")  # play on the muted one: the other plays too
+    assert _until(lambda: p.evaluate(both + ".every(v => !v.paused)"))
+    now.evaluate("v => v.pause()")
+    assert _until(lambda: p.evaluate(both + ".every(v => v.paused)"))
+    now.evaluate("v => { v.currentTime = 15.5 / 30; }")  # a seek on one moves the other
+    times = both + ".map(v => v.currentTime)"
+    assert _until(lambda: abs(p.evaluate(times)[1] - 15.5 / 30) <= 1 / 30)
+    a, b = p.evaluate(times)
+    assert abs(a - b) <= 1 / 30
+    assert_healthy(p)
+
+
+def test_final_compare_without_a_kept_video_lists_its_findings(view, live_server):
+    srv = live_server("final")
+    _stand_in_video(srv)
+    p = open_short(view, srv, stage="final")
+    (srv.sdir / "out" / "pendulum.mp4").write_bytes(bytes(3000))  # a new final; the old MP4 was not kept
+    button = p.get_by_role("button", name="Compare with version 1")
+    expect(button).to_be_visible(timeout=4000)
+    button.click()
+    expect(p.get_by_text("Version 1 had no video kept; its findings were:")).to_be_visible()
+    expect(p.locator(".cmp-findings").get_by_text("frame 12 flickers")).to_be_visible()
+    assert_healthy(p)
+
+
+def test_no_compare_without_history(view, live_server):
+    srv = live_server("story")
+    p = open_short(view, srv, stage="story")
+    notes.add(srv.sdir, "story", {"kind": "overall", "id": None, "version": 1}, "a poll", "chat")
+    expect(p.get_by_text("a poll", exact=True)).to_be_visible(timeout=4000)
+    expect(p.get_by_role("button", name=re.compile("^Compare with"))).to_have_count(0)
+    assert_healthy(p)

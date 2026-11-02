@@ -397,3 +397,31 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 a.chip { color: var(--fg); text-decoration: underline; }
 .facts-panel .voice-bad, .facts-panel tr.flagged { font-weight: 800; }
 .facts-panel tr.flagged td { background: var(--warn-soft); }
+
+/* before and after (review.js) */
+.compare .cmp-btns { margin-top: 0; }
+.compare .btn[aria-expanded="true"], .cmp-side .btn[aria-pressed="true"] { background: var(--soft); }
+.cmp-view { margin-top: 12px; min-width: 0; }
+.cmp-view > p { margin: 0 0 10px; }
+.cmp-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cmp-line { padding: 6px 12px; border-radius: var(--r-sm); background: var(--card2); border: var(--ink-border);
+  overflow-wrap: anywhere; }
+.cmp-line del, .cmp-line ins, .cmp-line mark { color: var(--fg); padding: 0 3px; border-radius: 4px; }
+.cmp-line del { background: var(--warn-soft); text-decoration: line-through; }
+.cmp-line ins { background: var(--ok-soft); text-decoration: underline; text-underline-offset: 3px; }
+.cmp-line mark { background: var(--soft); font-weight: 800; }
+.cmp-side { display: none; gap: 8px; margin: 0 0 10px; }
+.cmp-shots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.cmp-shot h4 { margin: 0 0 6px; overflow-wrap: anywhere; }
+.cmp-pair, .cmp-videos { display: grid; grid-template-columns: repeat(2, minmax(0, 220px)); gap: 12px; }
+.cmp-videos { grid-template-columns: repeat(2, minmax(0, 300px)); }
+.cmp-fig { margin: 0; min-width: 0; }
+.cmp-fig img.still { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover; background: var(--chip);
+  border-radius: 10px; border: var(--ink-border); }
+.cmp-fig figcaption { margin-top: 4px; font-size: 13px; font-weight: 700; }
+@media (max-width: 767.98px) {
+  .cmp-side { display: flex; }
+  .cmp-pair { grid-template-columns: minmax(0, 220px); }
+  .cmp-videos { grid-template-columns: minmax(0, 1fr); }
+  .cmp-show-now .cmp-before, .cmp-show-before .cmp-now { display: none; }
+}

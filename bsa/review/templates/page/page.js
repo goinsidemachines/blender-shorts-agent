@@ -548,6 +548,7 @@
   function makeCtx(s) {
     return {
       el, stage: s, version: s.version, offline: OFFLINE, fileUrl, copyButton,
+      history: Array.isArray(s.history) ? s.history : [], // earlier shown versions to compare with, newest first
       answerable: () => answerable(s), // the stage takes an answer now (none on its way, decisions readable)
       noteButton: (kind, id, label, prefill) => noteButton(s, kind, id, label, prefill),
       noteAt: (kind, id, label, prefill, shot) => noteAt(s, kind, id, label, prefill, shot),
