@@ -138,7 +138,22 @@ def test_concurrent_processes_lose_nothing(tmp_path):
     assert len(got) == 50 and len({n["id"] for n in got}) == 50
 
 
-def test_a_lock_whose_pid_was_reused_is_broken(tmp_path):  # a power-off, then a reboot gave its pid to another program
+def test_a_lock_whose_pid_was_reused_is_broken(tmp_path, monkeypatch):  # a reboot gave its pid to another program
+    import os
+    import time
+
+    from bsa import render_status
+
+    # Patched so the rule is exercised on every OS (macOS has no /proc, so the real token is "").
+    monkeypatch.setattr(render_status, "process_token", lambda pid: "this-process-now")
+    p = tmp_path / "v.json"
+    lock = Path(str(p) + ".lock")
+    lock.write_text(json.dumps({"pid": os.getpid(), "process_token": "another-process", "at": time.time()}))
+    assert store.update_json(p, [], lambda d: [*d, 1]) == [1]
+
+
+@pytest.mark.skipif(sys.platform not in ("win32", "linux"), reason="needs a real process token (Windows or /proc)")
+def test_a_lock_whose_pid_was_reused_is_broken_with_the_real_token(tmp_path):
     import os
     import time
 
@@ -146,6 +161,22 @@ def test_a_lock_whose_pid_was_reused_is_broken(tmp_path):  # a power-off, then a
     lock = Path(str(p) + ".lock")
     lock.write_text(json.dumps({"pid": os.getpid(), "process_token": "another-process", "at": time.time()}))
     assert store.update_json(p, [], lambda d: [*d, 1]) == [1]
+
+
+def test_release_leaves_a_lock_that_is_no_longer_its_own(tmp_path):
+    p = tmp_path / "v.json"
+    lock = Path(str(p) + ".lock")
+    with store.locked(p):  # A holds the lock ...
+        lock.write_text(json.dumps({"pid": 1, "process_token": "b", "at": 1}))  # ... and B's replaces it
+        b_body = lock.read_bytes()
+    assert lock.read_bytes() == b_body  # A's release left B's lock in place
+
+
+def test_release_removes_its_own_lock(tmp_path):
+    p = tmp_path / "v.json"
+    with store.locked(p):
+        assert Path(str(p) + ".lock").exists()
+    assert not Path(str(p) + ".lock").exists()
 
 
 def test_a_lock_older_than_a_minute_is_broken_even_with_a_live_pid(tmp_path):

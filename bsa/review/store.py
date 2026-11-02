@@ -68,10 +68,18 @@ def _holder(lock: Path) -> tuple[bytes | None, bool]:
     return raw, token is None
 
 
-def _release(lock: Path, tries: int = 200) -> None:
-    """Delete the lock. On Windows this fails while a waiting writer has the file open to look at it: retry."""
+def _release(lock: Path, tries: int = 200, mine: bytes | None = None) -> None:
+    """Delete the lock. On Windows this fails while a waiting writer has the file open to look at it: retry.
+    With `mine` (the bytes this holder wrote), a lock whose body is anything else is left alone: it was broken
+    and is now another writer's."""
     for i in range(tries):
         try:
+            if mine is not None:
+                try:
+                    if lock.read_bytes() != mine:
+                        return
+                except FileNotFoundError:
+                    return
             lock.unlink(missing_ok=True)
             return
         except PermissionError:
@@ -101,14 +109,16 @@ def locked(path: Path, timeout_s: float = 5.0) -> Iterator[None]:
             time.sleep(0.005)
             continue
         break
+    mine = b""
     try:
         with os.fdopen(fd, "wb") as f:
             pid = os.getpid()
             body = {"pid": pid, "process_token": render_status.process_token(pid) or "", "at": time.time()}
-            f.write(json.dumps(body).encode("utf-8"))
+            mine = json.dumps(body).encode("utf-8")
+            f.write(mine)
         yield
     finally:
-        _release(lock)
+        _release(lock, mine=mine)
 
 
 def update_json(path: Path, default, fn: Callable[[object], object], expect: type | None = None):
