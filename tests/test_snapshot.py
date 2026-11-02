@@ -103,3 +103,14 @@ def test_health_is_the_doctor_checks_that_are_not_ok(tmp_path):
     ]
     (sdir / "review" / "doctor.json").write_text("not json", "utf-8")
     assert snapshot.build(sdir)["health"] == [] and snapshot.build(sdir)["phone"] is None
+
+
+def test_an_unchanged_snapshot_never_rewrites_versions_json(tmp_path):
+    import os
+
+    sdir = pagefix.make_short(tmp_path, "final")
+    snapshot.build(sdir, settings={})
+    path = sdir / "review" / "versions.json"
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    snapshot.build(sdir, settings={})
+    assert path.stat().st_mtime_ns == 1_000_000_000

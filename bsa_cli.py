@@ -337,14 +337,39 @@ def _apply_decision(sdir: Path, entry: dict) -> dict:
         return decisions.get(sdir, entry["id"])
     try:
         if entry["decision"] == "approve" and entry["stage"] in jobstate.APPROVALS:
-            if entry["stage"] == "story":
-                _gate(sdir, "story")
-            jobstate.mark_done(sdir, entry["stage"], decision=entry["id"], version=entry["version"], by=entry["by"],
-                               **(entry["choice"] or {}))  # fmt: skip
+            _mark_approved(sdir, entry)
     except BaseException:
         decisions.unclaim(sdir, entry["id"])
         raise
     return decisions.get(sdir, entry["id"])
+
+
+def _mark_approved(sdir: Path, entry: dict) -> None:
+    """Mark an approval stage done from its approval (after the story's gate). Idempotent: the same fields again."""
+    if entry["stage"] == "story":
+        _gate(sdir, "story")
+    jobstate.mark_done(sdir, entry["stage"], decision=entry["id"], version=entry["version"], by=entry["by"],
+                       **(entry["choice"] or {}))  # fmt: skip
+
+
+def _repair_half_applied(sdir: Path, stage: str | None = None) -> list[dict]:
+    """Finish approvals that were claimed (applied) but whose stage never reached state.json: the power went off
+    between decisions.claim and jobstate.mark_done. Only an approval of the stage's current version counts. Returns
+    the approvals repaired."""
+    from bsa.review import decisions, snapshot
+
+    done = jobstate.load_state(sdir)["stages"]
+    found = {d["stage"] for d in decisions.load(sdir)
+             if d["decision"] == "approve" and d["applied"] and not d["superseded"]
+             and d["stage"] in jobstate.APPROVALS and d["stage"] not in done and stage in (None, d["stage"])}  # fmt: skip
+    repaired = []
+    for s in sorted(found, key=jobstate.STAGES.index):
+        version = snapshot.stage_version(sdir, s)
+        entry = decisions.approved(sdir, s, version) if version is not None else None
+        if entry is not None and entry["applied"]:
+            _mark_approved(sdir, entry)
+            repaired.append(entry)
+    return repaired
 
 
 def _page_stage(stage: str | None) -> str:
@@ -410,27 +435,70 @@ def _page_note(args, sdir: Path) -> dict:
         raise CliError(str(exc)) from exc
 
 
+NOTES_AFTER_CHANGES_S = 5.0  # how long `page wait` waits for the notes a "changes" answer sends (a second write)
+
+
 def _page_wait(args, sdir: Path) -> dict:
+    """Wait until the stage has something for Claude: an answer to apply (applied here), sent notes (this stage's,
+    or newly sent on any stage), or an answer applied elsewhere since the wait began (`page decide --by chat`), which
+    also ends it. A half-applied approval (power off between the claim and state.json) is repaired."""
     import time
 
-    from bsa.review import decisions, notes, snapshot
+    from bsa.review import decisions, notes, snapshot, stages
 
     if len(args.words) != 2 or args.stage is None:
         raise CliError("usage: page wait SHORT --stage STAGE [--timeout S] [--poll S]")
     stage = _page_stage(args.stage)
     deadline = time.monotonic() + (args.timeout if args.timeout is not None else 600.0)
     poll = max(args.poll, 0.05)
+
+    def sent_notes(of: str | None = None) -> list[dict]:
+        return [n for n in notes.load(sdir) if n["status"] == "sent" and of in (None, n["stage"])]
+
+    def applied_approvals() -> list[dict]:
+        return [d for d in decisions.load(sdir) if d["stage"] == stage and d["decision"] == "approve"
+                and d["applied"] and not d["superseded"]]  # fmt: skip
+
+    def stage_done() -> bool:
+        return stages.statuses(jobstate.load_state(sdir)["stages"])[stage] == "done"
+
+    old_sent = {n["id"] for n in sent_notes() if n["stage"] != stage}  # other stages' notes sent before: not news
+    old_applied = {d["id"] for d in applied_approvals()}
+    was_done = stage_done()
     superseded: list[str] = []
+
+    def news() -> list[dict]:
+        return [n for n in sent_notes() if n["stage"] == stage or n["id"] not in old_sent]
+
+    def result(version, entry, sent, *, applied=None, timed_out=False, repaired=()) -> dict:
+        return {"stage": stage, "version": version, "decision": entry, "notes": sent,
+                "note_stages": sorted({n["stage"] for n in sent}),
+                "applied": entry is not None if applied is None else applied,
+                "by": entry["by"] if entry else None, "timed_out": timed_out, "superseded": superseded,
+                "repaired": [d["id"] for d in repaired]}  # fmt: skip
+
     while True:
         version = snapshot.stage_version(sdir, stage)
         superseded += decisions.supersede_stale(sdir, stage, version)  # answers to content that has changed since
+        repaired = _repair_half_applied(sdir, stage)
+        if repaired:
+            return result(version, repaired[-1], news(), repaired=repaired)
         waiting = [d for d in decisions.unapplied(sdir) if d["stage"] == stage and d["version"] == version]
-        sent = [n for n in notes.load(sdir) if n["stage"] == stage and n["status"] == "sent"]
-        if waiting or sent or time.monotonic() >= deadline:
-            entry = _apply_decision(sdir, waiting[-1]) if waiting else None
-            return {"stage": stage, "version": version, "decision": entry, "notes": sent,
-                    "applied": entry is not None, "timed_out": not (waiting or sent),
-                    "superseded": superseded}  # fmt: skip
+        if waiting:
+            entry = _apply_decision(sdir, waiting[-1])
+            if entry["decision"] == "changes":  # the server records the answer, then sends the notes: wait for them
+                until = time.monotonic() + NOTES_AFTER_CHANGES_S
+                while not sent_notes(stage) and time.monotonic() < until:
+                    time.sleep(0.05)
+            return result(version, entry, news())
+        new = [d for d in applied_approvals() if d["id"] not in old_applied and d["version"] == version]
+        if new or (not was_done and stage_done()):  # answered elsewhere (page decide --by chat) since the wait began
+            return result(version, new[-1] if new else None, news(), applied=True)
+        sent = news()
+        if sent:
+            return result(version, None, sent)
+        if time.monotonic() >= deadline:
+            return result(version, None, sent, timed_out=True)
         time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
 
 
@@ -448,6 +516,7 @@ def _page_notes(args, sdir: Path) -> dict:
         superseded = []
         for s in sorted({d["stage"] for d in decisions.unapplied(sdir)}):
             superseded += decisions.supersede_stale(sdir, s, snapshot.stage_version(sdir, s))
+        repaired = _repair_half_applied(sdir)  # an approval the power cut off before state.json was written
         found = [n for n in notes.load(sdir) if n["status"] in ("open", "sent")]
         waiting = decisions.unapplied(sdir)
     except store.StoreDamaged as exc:
@@ -457,7 +526,7 @@ def _page_notes(args, sdir: Path) -> dict:
     return {"notes": [{k: n.get(k) for k in keys} for n in found if stage in (None, n["stage"])],
             "decisions": [{k: d.get(k) for k in ("id", "stage", "version", "decision")} for d in waiting
                           if stage in (None, d["stage"])],
-            "superseded": superseded,
+            "superseded": superseded, "repaired": [d["id"] for d in repaired],
             "waiting_for_yes": [s["id"] for s in snap["stages"] if s["needs_yes"]]}  # fmt: skip
 
 

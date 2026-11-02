@@ -98,12 +98,12 @@ def test_phone_link_only_with_lan(tmp_path, monkeypatch, lan):
 
 
 def test_phone_url_from_server_info(monkeypatch):
-    monkeypatch.setattr(launch, "lan_ip", lambda: LAN)
-    info = {"port": 8123, "token": "tok", "lan": True}
+    monkeypatch.setattr(launch, "lan_ip", lambda: "10.9.9.9")  # the address now: not the one the server answers on
+    info = {"port": 8123, "token": "tok", "lan": True, "lan_ip": LAN}  # as run_server records it
     assert launch.phone_url(info, "01 é") == f"http://{LAN}:8123/s/01%20%C3%A9?t=tok"
     assert launch.phone_url({**info, "lan": False}, "x") is None
-    monkeypatch.setattr(launch, "lan_ip", lambda: None)
-    assert launch.phone_url(info, "x") is None
+    assert launch.phone_url({**info, "lan_ip": None}, "x") is None  # the server found no LAN address
+    assert launch.phone_url({k: v for k, v in info.items() if k != "lan_ip"}, "x") is None
 
 
 def test_page_lan_setting_is_boolean(home):  # noqa: F811

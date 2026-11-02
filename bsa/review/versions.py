@@ -61,8 +61,16 @@ def fingerprint(content: dict, sdir: Path) -> str:
 
 
 def version_of(sdir: Path, stage: str, fp: str) -> int:
-    """The 1-based version of this fingerprint in the stage; a new fingerprint is appended as the next version."""
+    """The 1-based version of this fingerprint in the stage; a new fingerprint is appended as the next version. A
+    fingerprint already listed is read without the lock and without writing anything, so building a snapshot of an
+    unchanged short never takes the lock nor rewrites versions.json."""
     path = versions_path(sdir)
+    try:
+        seen = store.read_json(path, {}, dict).get(stage)
+    except OSError:  # Windows: the file is being replaced right now; the locked path below reads it again
+        seen = None
+    if isinstance(seen, list) and fp in seen:
+        return seen.index(fp) + 1
     path.parent.mkdir(parents=True, exist_ok=True)
     found: list[int] = []
 

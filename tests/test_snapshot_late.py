@@ -179,3 +179,41 @@ def test_allow_panel_mark_reported_and_panel_allowed(tmp_path):
     assert [e["id"] for e in feedback.pending(sdir)] == ["f2"]
     assert feedback.mark_reported(sdir, ["f1"]) == 0
     assert {e["id"]: e["status"] for e in feedback.entries(sdir)} == {"f1": "reported", "f2": "new"}
+
+
+# --------------------------------------------------------------------------- versions that must not move
+
+
+def test_side_runs_do_not_change_the_engine_version(tmp_path, monkeypatch):
+    from bsa import engine_runs
+
+    sdir = pagefix.make_short(tmp_path, "engine")
+    before = _stage(snapshot.build(sdir, settings={}), "engine")
+    run = {"preset": "preview", "engine": "cycles", "tag": "cycles", "s_per_frame": 4.2, "frames_measured": 30,
+           "approved": False, "mp4": None}  # fmt: skip
+    monkeypatch.setattr(engine_runs, "compare", lambda _sdir, preset=None: [run])
+    after = _stage(snapshot.build(sdir, settings={}), "engine")
+    assert after["content"]["runs"] == [run] and after["version"] == before["version"]
+    assert snapshot.stage_version(sdir, "engine", snapshot.load_ctx(sdir, {})) == before["version"]
+
+
+def test_final_is_not_versioned_while_its_mp4_is_being_written(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "final")
+    pagefix.write_render_status(sdir, "final", state="running")  # the final edit is encoding out/<slug>.mp4
+    (sdir / "out").mkdir(exist_ok=True)
+    (sdir / "out" / "pendulum.mp4").write_bytes(bytes(1000))  # half written
+    row = _stage(snapshot.build(sdir, settings={}), "final")
+    assert row["version"] is None and row["content"]["video"] is None and row["content"]["writing"] is True
+    assert snapshot.stage_version(sdir, "final") is None
+    assert "final" not in json.loads((sdir / "review" / "versions.json").read_text("utf-8"))
+    pagefix.write_render_status(sdir, "final", state="done")  # the encode finished
+    row = _stage(snapshot.build(sdir, settings={}), "final")
+    assert row["version"] == 1 and row["content"]["video"] == {"file": "out/pendulum.mp4"}
+    assert row["content"]["writing"] is False
+
+
+def test_final_is_versioned_once_the_final_step_is_done_in_state(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "final")
+    pagefix.write_render_status(sdir, "final", state="running")
+    jobstate.mark_done(sdir, "final")
+    assert _stage(snapshot.build(sdir, settings={}), "final")["version"] == 1

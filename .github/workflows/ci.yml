@@ -34,6 +34,21 @@ jobs:
       - run: uv run --locked pytest -q -m browser tests/browser
         env: { BSA_REQUIRE_BROWSER: "1" }
 
+  page-os:
+    name: Page tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { version: "0.13.0" }
+      - name: Page tests without a browser
+        shell: bash
+        run: uv run --locked pytest -q tests/test_page_*.py tests/test_cli_page.py tests/test_snapshot*.py tests/test_doctor.py
+
   plugin:
     name: Plugin manifest
     runs-on: ubuntu-latest

@@ -275,7 +275,26 @@ def test_run_server_writes_the_file_after_binding_and_removes_it(tmp_path, monke
     monkeypatch.setattr(launch.server, "serve", serve_then_stop)
     launch.run_server(ws, False)
     assert seen["info"]["pid"] == os.getpid() and seen["info"]["lan"] is False and seen["info"]["started"]
+    assert seen["info"]["lan_ip"] is None  # the address the server answers on, for the CLI's phone link
     assert not (ws / launch.SERVER_FILE).exists()
+
+
+def test_run_server_records_the_servers_own_lan_address(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    pagefix.make_short(ws, "story")
+    monkeypatch.setattr(launch, "lan_ip", lambda: "192.168.7.7")
+    seen = {}
+
+    def look(srv, tick_s=60):
+        seen["file"] = json.loads((ws / launch.SERVER_FILE).read_text("utf-8"))
+        seen["mode"] = (ws / launch.SERVER_FILE).stat().st_mode & 0o777
+        srv.server_close()
+
+    monkeypatch.setattr(launch.server, "serve", look)
+    launch.run_server(ws, True)
+    assert seen["file"]["lan_ip"] == "192.168.7.7" and seen["file"]["lan"] is True
+    if os.name == "posix":  # it holds the token: only this user may read it
+        assert seen["mode"] == 0o600
 
 
 def test_run_server_leaves_a_newer_servers_file(tmp_path, monkeypatch):

@@ -462,3 +462,48 @@ def test_feedback_reported_marks_only_the_given_entries(srv, bsa_home):
 
     settings_mod.save_settings({"feedback": "off"})
     assert api(srv, "POST", path, body={"ids": ["f2"]}).status == 409 and feedback.pending(srv.sdir)
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        "Content-Length: 2\r\nContent-Length: 2\r\n",  # two lengths: which one is the body?
+        "Content-Length: 2\r\nTransfer-Encoding: chunked\r\n",  # both framings at once
+    ],
+)
+def test_ambiguous_body_framing_is_a_400_and_closes(srv, framing):
+    head = (f"POST /api/01-pendulum/hello HTTP/1.1\r\nHost: 127.0.0.1:{srv.port}\r\n{server.TOKEN_HEADER}: "
+            f"{srv.token}\r\n{framing}\r\n{{}}")  # fmt: skip
+    out = _raw(srv, head.encode() + _smuggled(srv))
+    assert out.startswith(b"HTTP/1.1 400"), out
+    assert out.count(b"HTTP/1.1 ") == 1, out  # the connection is closed: nothing after it is read as a request
+
+
+def test_a_decision_on_a_stage_that_is_not_current_is_refused(srv):
+    for stage in ("storyboard", "engine", "final"):  # the story is current: these are locked
+        r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": stage, "version": 1, "decision": "approve",
+                                                               "choice": {"engine": "eevee"}})  # fmt: skip
+        assert r.status == 409 and "not the stage" in body(r)["error"], stage
+    assert decisions.load(srv.sdir) == []
+
+
+def test_final_can_be_answered_while_current_or_done(tmp_path):
+    ws = tmp_path / "ws"
+    for stage in ("final", "done"):
+        sdir = pagefix.make_short(ws, stage, number=1 if stage == "final" else 2)
+        s = server.make_server(ws)
+        t = threading.Thread(target=s.serve_forever, daemon=True)
+        t.start()
+        fix = types.SimpleNamespace(port=s.server_address[1], token=s.token, conns=[])
+        try:
+            from bsa.review import snapshot
+
+            v = snapshot.stage_version(sdir, "final")
+            r = api(fix, "POST", f"/api/{sdir.name}/decision", body={"stage": "final", "version": v,
+                                                                     "decision": "approve"})  # fmt: skip
+            assert r.status == 200, (stage, body(r))
+        finally:
+            for c in fix.conns:
+                c.close()
+            s.shutdown()
+            s.server_close()

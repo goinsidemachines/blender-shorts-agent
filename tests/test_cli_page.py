@@ -324,3 +324,91 @@ def test_notes_supersedes_stale_decisions_and_lists_stages_waiting_for_a_yes(hom
     assert out["superseded"] == [stale["id"]] and out["decisions"] == [] and out["waiting_for_yes"] == ["story"]
     ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
     assert "story" not in ok(run(home, "page", "notes", "pendulum"))["waiting_for_yes"]
+
+
+# --------------------------------------------------------------------------- page wait ends by itself, and repairs
+
+
+def _wait_in_thread(pendulum, stage="story", timeout=60.0):
+    """Run `page wait` in a thread (in this process); returns (thread, result list, start time)."""
+    import argparse
+    import threading
+    import time
+
+    import bsa_cli
+
+    args = argparse.Namespace(words=["wait", pendulum.name], stage=stage, timeout=timeout, poll=0.05)
+    got: list = []
+    t = threading.Thread(target=lambda: got.append(bsa_cli._page_wait(args, pendulum)), daemon=True)
+    t.start()
+    time.sleep(0.8)  # the wait has looked at the stage before anything happens
+    return t, got, time.monotonic()
+
+
+def test_wait_repairs_a_half_applied_approval(home, pendulum):
+    _to(home, pendulum, "story")
+    made = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+    decisions.mark_applied(pendulum, made["id"])  # claimed, then the power went off before state.json was written
+    assert "story" not in jobstate.load_state(pendulum)["stages"]
+    out = ok(run(home, "page", "wait", "pendulum", "--stage", "story", "--timeout", "5"))
+    assert out["applied"] is True and out["decision"]["id"] == made["id"] and out["timed_out"] is False
+    assert out["repaired"] == [made["id"]]
+    assert jobstate.load_state(pendulum)["stages"]["story"]["decision"] == made["id"]
+
+
+def test_page_notes_repairs_a_half_applied_approval(home, pendulum):
+    _to(home, pendulum, "story")
+    made = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+    decisions.mark_applied(pendulum, made["id"])
+    out = ok(run(home, "page", "notes", "pendulum"))
+    assert out["repaired"] == [made["id"]] and "story" not in out["waiting_for_yes"]
+    assert jobstate.load_state(pendulum)["stages"]["story"]["version"] == 1
+    assert ok(run(home, "page", "notes", "pendulum"))["repaired"] == []  # nothing left to repair
+
+
+def test_wait_ends_when_the_answer_is_recorded_from_chat(home, pendulum, monkeypatch):
+    import time
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _to(home, pendulum, "story")
+    t, got, t0 = _wait_in_thread(pendulum)
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
+    t.join(30)
+    assert got and time.monotonic() - t0 < 30  # well before its 60 s timeout
+    out = got[0]
+    assert out["applied"] is True and out["by"] == "chat" and out["timed_out"] is False
+    assert out["decision"]["by"] == "chat" and out["decision"]["applied"] is True
+
+
+def test_wait_on_changes_rereads_the_notes_the_server_sends_after(home, pendulum, monkeypatch):
+    import threading
+
+    import bsa_cli
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _to(home, pendulum, "story")
+    notes.add(pendulum, "story", {"kind": "overall", "id": None, "version": 1}, "slower", "page")
+    decisions.record(pendulum, "story", 1, "changes", "page", current=1)  # the server's first write
+    threading.Timer(0.5, lambda: notes.send_stage(pendulum, "story")).start()  # ... and its second, a moment later
+    import argparse
+
+    args = argparse.Namespace(words=["wait", pendulum.name], stage="story", timeout=10.0, poll=0.05)
+    out = bsa_cli._page_wait(args, pendulum)
+    assert out["decision"]["decision"] == "changes" and [n["text"] for n in out["notes"]] == ["slower"]
+
+
+def test_wait_wakes_on_notes_newly_sent_on_any_stage(home, pendulum, monkeypatch):
+    import time
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _to(home, pendulum, "story")
+    old = notes.add(pendulum, "interview", {"kind": "overall", "id": None, "version": 1}, "old one", "page")
+    notes.send(pendulum, [old["id"]])  # sent before the wait: not news
+    t, got, t0 = _wait_in_thread(pendulum)
+    new = notes.add(pendulum, "storyboard", {"kind": "overall", "id": None, "version": 1}, "bigger stills", "page")
+    notes.send(pendulum, [new["id"]])
+    t.join(30)
+    assert got and time.monotonic() - t0 < 30
+    out = got[0]
+    assert [n["id"] for n in out["notes"]] == [new["id"]] and out["note_stages"] == ["storyboard"]
+    assert out["timed_out"] is False and out["applied"] is False

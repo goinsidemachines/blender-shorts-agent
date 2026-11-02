@@ -130,11 +130,13 @@ def lan_ip() -> str | None:
 
 
 def phone_url(info: dict, short_key: str) -> str | None:
-    """The page's link for a phone on the same network, only when the server answers on the local network."""
-    if not info.get("lan"):
+    """The page's link for a phone on the same network, only when the server answers on the local network. The
+    address is the one the server recorded (`lan_ip` in SERVER_FILE), the only LAN Host it admits: detecting it again
+    here could give another address (a network change since it started) that the server would refuse."""
+    ip = info.get("lan_ip")
+    if not info.get("lan") or not isinstance(ip, str) or not ip:
         return None
-    ip = lan_ip()
-    return page_url(info, short_key, host=ip) if ip else None
+    return page_url(info, short_key, host=ip)
 
 
 def _stop(info: dict) -> None:
@@ -201,8 +203,14 @@ def _replace(workspace: Path, old: dict, stop, timeout_s: float) -> None:
 
 
 def _write_atomic(path: Path, data: dict) -> None:
+    """Write the file via a temp file and a rename. It holds the server's token, so on POSIX it is created 0600
+    (only this user can read it)."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, indent=2))
+    if os.name == "posix":
+        os.chmod(tmp, 0o600)  # an existing temp file keeps its old mode through O_CREAT
     os.replace(tmp, path)
 
 
@@ -213,7 +221,7 @@ def run_server(workspace: Path, lan: bool) -> None:
     srv = server.make_server(workspace, lan=lan)
     pid = os.getpid()
     info = {"pid": pid, "port": srv.port, "token": srv.token, "process_token": render_status.process_token(pid) or "",
-            "lan": lan, "bind": srv.server_address[0], "started": time.time()}  # fmt: skip
+            "lan": lan, "lan_ip": srv.lan_ip, "bind": srv.server_address[0], "started": time.time()}  # fmt: skip
     path = workspace / SERVER_FILE
     try:
         _write_atomic(path, info)

@@ -7,12 +7,13 @@ the user reviews it and clicks Submit on GitHub themselves, only if they choose 
 from __future__ import annotations
 
 import json
-import os
 import platform
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode
+
+from bsa.review import store
 
 SEVERITIES = ("blocking", "wrong-output", "rough-edge")
 FIELDS = ("happened", "expected", "command", "error", "workaround", "stage")
@@ -51,12 +52,19 @@ def _load(short_dir: Path) -> dict:
     return data
 
 
-def _save(short_dir: Path, data: dict) -> None:
+def _update(short_dir: Path, fn) -> dict:
+    """Change the file under the store's lock (bsa.review.store.update_json): `fn` edits the data in place. A damaged
+    file (empty, not JSON, not an object, entries not a list) raises StoreDamaged and is never written over."""
     path = feedback_path(short_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+
+    def apply(data: dict) -> dict:
+        if not isinstance(data.setdefault("entries", []), list):
+            raise store.StoreDamaged(f"{path} is damaged (entries is not a list): move it aside to start it over")
+        fn(data)
+        return data
+
+    return store.update_json(path, {}, apply, dict)
 
 
 def _now() -> str:
@@ -111,10 +119,7 @@ def add(short_dir: Path, severity: str, summary: str, *, happened=None, expected
     if not summary:
         raise ValueError("a feedback note needs a one-line summary")
     paths = {"short_dir": short_dir, **(short_paths or {})}
-    data = _load(short_dir)
-    ids = [int(e["id"][1:]) for e in data["entries"] if isinstance(e, dict) and re.fullmatch(r"f\d+", str(e.get("id")))]
-    entry = {"id": f"f{max(ids, default=0) + 1}", "time": _now(), "severity": severity,
-             "summary": redact(summary, **paths)}  # fmt: skip
+    entry = {"id": None, "time": _now(), "severity": severity, "summary": redact(summary, **paths)}
     values = {"happened": happened, "expected": expected, "command": command, "error": error,
               "workaround": workaround, "stage": stage}  # fmt: skip
     for key in FIELDS:
@@ -122,22 +127,30 @@ def add(short_dir: Path, severity: str, summary: str, *, happened=None, expected
         entry[key] = redact(text, **paths) if text else None
     entry["context"] = environment(blender, mode)
     entry["status"] = "new"
-    data["entries"].append(entry)
-    _save(short_dir, data)
+
+    def fn(data):
+        ids = [int(e["id"][1:]) for e in data["entries"]
+               if isinstance(e, dict) and re.fullmatch(r"f\d+", str(e.get("id")))]  # fmt: skip
+        entry["id"] = f"f{max(ids, default=0) + 1}"
+        data["entries"].append(entry)
+
+    _update(short_dir, fn)
     return entry
 
 
 def _mark(short_dir: Path, status: str) -> int:
-    data = _load(short_dir)
-    n = 0
-    for e in data["entries"]:
-        if isinstance(e, dict) and e.get("status", "new") == "new":
-            e["status"] = status
-            e[f"{status}_at"] = _now()
-            n += 1
-    data["asked"] = data.get("asked") or _now()
-    _save(short_dir, data)
-    return n
+    n = [0]
+
+    def fn(data):
+        for e in data["entries"]:
+            if isinstance(e, dict) and e.get("status", "new") == "new":
+                e["status"] = status
+                e[f"{status}_at"] = _now()
+                n[0] += 1
+        data["asked"] = data.get("asked") or _now()
+
+    _update(short_dir, fn)
+    return n[0]
 
 
 def decline(short_dir: Path) -> int:
@@ -148,10 +161,12 @@ def decline(short_dir: Path) -> int:
 def allow_panel(short_dir: Path) -> None:
     """The user said yes to seeing the notes: the review page's Post stage shows the feedback panel from now on
     (this short is not asked again). Nothing is marked reported here."""
-    data = _load(short_dir)
-    data["panel"] = _now()
-    data["asked"] = data.get("asked") or data["panel"]
-    _save(short_dir, data)
+
+    def fn(data):
+        data["panel"] = _now()
+        data["asked"] = data.get("asked") or data["panel"]
+
+    _update(short_dir, fn)
 
 
 def panel_allowed(short_dir: Path, setting: str | None) -> bool:
@@ -163,16 +178,18 @@ def panel_allowed(short_dir: Path, setting: str | None) -> bool:
 def mark_reported(short_dir: Path, ids: list[str]) -> int:
     """The user copied the report or opened it on GitHub: mark these pending entries reported. Returns how many."""
     wanted = {str(i) for i in ids}
-    data = _load(short_dir)
-    n = 0
-    for e in data["entries"]:
-        if isinstance(e, dict) and e.get("id") in wanted and e.get("status", "new") == "new":
-            e["status"], e["reported_at"] = "reported", _now()
-            n += 1
-    if n:
-        data["asked"] = data.get("asked") or _now()
-        _save(short_dir, data)
-    return n
+    n = [0]
+
+    def fn(data):
+        for e in data["entries"]:
+            if isinstance(e, dict) and e.get("id") in wanted and e.get("status", "new") == "new":
+                e["status"], e["reported_at"] = "reported", _now()
+                n[0] += 1
+        if n[0]:
+            data["asked"] = data.get("asked") or _now()
+
+    _update(short_dir, fn)
+    return n[0]
 
 
 # --------------------------------------------------------------------------- redaction

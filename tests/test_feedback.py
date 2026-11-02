@@ -255,3 +255,53 @@ def test_issue_form_matches_the_report():
         assert field in form, field
     for words in ("blocking", "wrong-output", "rough-edge", "Workaround", "Error line"):
         assert words in form, words
+
+
+# --------------------------------------------------------------------------- locked writes
+
+
+@pytest.mark.parametrize("damage", [b"", b"{not json", b"[1, 2]", b'{"entries": 3}'])
+def test_a_damaged_feedback_file_is_never_written_over(short, damage):
+    from bsa.review import store
+
+    path = feedback.feedback_path(short)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(damage)
+    for write in (lambda: feedback.add(short, "rough-edge", "x"), lambda: feedback.decline(short),
+                  lambda: feedback.allow_panel(short), lambda: feedback.mark_reported(short, ["f1"])):  # fmt: skip
+        with pytest.raises(store.StoreDamaged):
+            write()
+        assert path.read_bytes() == damage
+    feedback.report(short, mark=True)  # nothing readable to mark: nothing written
+    assert path.read_bytes() == damage
+
+
+def test_feedback_writes_take_the_store_lock(short, monkeypatch):
+    from bsa.review import store
+
+    taken = []
+    real = store.locked
+
+    def spy(path, *a, **k):
+        taken.append(Path(path).name)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(store, "locked", spy)
+    feedback.add(short, "rough-edge", "one")
+    feedback.allow_panel(short)
+    feedback.mark_reported(short, ["f1"])
+    feedback.add(short, "rough-edge", "two")
+    feedback.decline(short)
+    assert taken == ["plugin-feedback.json"] * 5
+    assert [e["status"] for e in feedback.entries(short)] == ["reported", "declined"]
+
+
+def test_concurrent_feedback_adds_lose_nothing(short):
+    import threading
+
+    threads = [threading.Thread(target=lambda k=k: [feedback.add(short, "rough-edge", f"{k}-{i}") for i in range(10)])
+               for k in range(4)]  # fmt: skip
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    got = feedback.entries(short)
+    assert len(got) == 40 and len({e["id"] for e in got}) == 40

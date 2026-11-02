@@ -16,6 +16,7 @@ from pathlib import Path
 from bsa import jobstate, render_status
 
 STALE_S = 10.0
+MAX_HOLD_S = 60.0  # no critical section holds a lock this long: an older lock is left over from a crash
 
 
 class StoreDamaged(Exception):
@@ -45,19 +46,26 @@ def read_json(path: Path, default, expect: type | None = None):
 
 
 def _holder(lock: Path) -> tuple[bytes | None, bool]:
-    """The lock file's raw body and whether it is stale: older than STALE_S and its owner is not running."""
+    """The lock file's raw body and whether it is stale: older than MAX_HOLD_S; or its pid is now another process
+    (the process token it wrote differs: a pid reused after a reboot); or older than STALE_S with its owner gone."""
     try:
         raw = lock.read_bytes()
         age = time.time() - lock.stat().st_mtime
     except OSError:
         return None, False
+    if age > MAX_HOLD_S:
+        return raw, True
+    try:
+        held = json.loads(raw.decode("utf-8"))
+        pid, want = held.get("pid"), held.get("process_token")
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        pid = want = None
+    token = render_status.process_token(pid) if pid is not None else None
+    if want and token and token != want:
+        return raw, True
     if age <= STALE_S:
         return raw, False
-    try:
-        pid = json.loads(raw.decode("utf-8")).get("pid")
-    except (UnicodeDecodeError, ValueError, AttributeError):
-        pid = None
-    return raw, render_status.process_token(pid) is None
+    return raw, token is None
 
 
 def _release(lock: Path, tries: int = 200) -> None:
@@ -74,8 +82,8 @@ def _release(lock: Path, tries: int = 200) -> None:
 
 @contextlib.contextmanager
 def locked(path: Path, timeout_s: float = 5.0) -> Iterator[None]:
-    """Hold an exclusive <path>.lock (created with O_CREAT|O_EXCL). A lock older than 10 s whose pid is dead is
-    broken. Raises TimeoutError when the lock stays held for timeout_s."""
+    """Hold an exclusive <path>.lock (created with O_CREAT|O_EXCL) naming this pid and its process token. A lock left
+    by a crash is broken (see _holder). Raises TimeoutError when the lock stays held for timeout_s."""
     lock = Path(str(path) + ".lock")
     deadline = time.monotonic() + timeout_s
     while True:
@@ -95,7 +103,9 @@ def locked(path: Path, timeout_s: float = 5.0) -> Iterator[None]:
         break
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(json.dumps({"pid": os.getpid(), "at": time.time()}).encode("utf-8"))
+            pid = os.getpid()
+            body = {"pid": pid, "process_token": render_status.process_token(pid) or "", "at": time.time()}
+            f.write(json.dumps(body).encode("utf-8"))
         yield
     finally:
         _release(lock)

@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from bsa import feedback, messages, render_status
+from bsa import feedback, jobstate, messages, render_status
 from bsa import settings as settings_mod
 from bsa.review import decisions, notes, page, snapshot, stages, store
 
@@ -148,6 +148,14 @@ def serve(server: PageServer, tick_s: float = 60) -> None:
         thread.join(5)
 
 
+def _done_stages(sdir: Path) -> set[str]:
+    """The jobstate stages done in state.json (a damaged state.json raises StoreDamaged: a 503, nothing recorded)."""
+    try:
+        return set(jobstate.load_state(sdir)["stages"])
+    except jobstate.StateDamaged as e:
+        raise store.StoreDamaged(str(e)) from None
+
+
 def _same(given: str | None, want: str) -> bool:
     return given is not None and hmac.compare_digest(given.encode("utf-8", "surrogatepass"), want.encode("utf-8"))
 
@@ -180,6 +188,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._started = False
         self._body_done = False
         try:
+            self._framing()
             self._route(method)
             if not self._body_done and self._sent_a_body():  # unread bytes must never be read as a request
                 self.close_connection = True
@@ -224,6 +233,15 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, obj, headers: dict[str, str] | None = None) -> None:
         data = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
         self._send(status, data, "application/json; charset=utf-8", headers)
+
+    def _framing(self) -> None:
+        """Refuse a request whose body length is ambiguous (two Content-Lengths, or a Content-Length and a
+        Transfer-Encoding): a proxy and this server could split it differently. Its body is never read; the error
+        reply closes the connection."""
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) > 1 or (lengths and self.headers.get("Transfer-Encoding")):
+            self._body_done = True  # never drained: there is no telling where the body ends
+            raise _Refuse(400, "the request's body length is ambiguous (send one Content-Length)")
 
     def _sent_a_body(self) -> bool:
         return bool(self.headers.get("Transfer-Encoding")) or (self.headers.get("Content-Length") or "0").strip() != "0"
@@ -475,6 +493,9 @@ class _Handler(BaseHTTPRequestHandler):
         label = stages.LABELS[stage]
         if stage not in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES):
             raise decisions.DecisionRefused(f"The {label} has nothing to approve.")
+        status = stages.statuses(_done_stages(sdir)).get(stage)
+        if not (status == "current" or (stage in stages.ACK_STAGES and status == "done")):
+            raise decisions.DecisionRefused(f"The {label} is not the stage being made now, so it can't be answered.")
         current = snapshot.stage_version(sdir, stage)
         if current is None:
             raise decisions.DecisionRefused(f"The {label} has nothing to answer yet.")

@@ -105,8 +105,13 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    - **Wait for a yes:** after showing a stage that needs one (story, storyboard, engine), run `CLI page wait SHORT
      --stage STAGE` with `run_in_background: true` and end your turn. It returns when the user approves on the page
      (`applied: true`: the stage is marked done), sends notes (`notes`, or a `changes` decision), or after 10
-     minutes (`timed_out: true`). After a timeout, run it again in the background only while that stage still
-     waits for a yes (`CLI state SHORT` still has it as `next`); otherwise drop it.
+     minutes (`timed_out: true`). It also ends by itself when you record the answer in chat (`page decide --by
+     chat`: `applied: true`, `by: "chat"`) and when notes are sent on any other stage (`note_stages` names them).
+     After a timeout, run it again in the background only while that stage still waits for a yes (`CLI state
+     SHORT` still has it as `next`); otherwise drop it.
+   - **A half-applied approval** (the power went off after the yes was taken but before the stage was marked done)
+     is repaired by `CLI page wait SHORT --stage STAGE` (and `CLI page notes SHORT`): it marks the stage done and
+     says so in `repaired`.
    - **A yes in chat** is recorded with `CLI page decide SHORT STAGE approve --by chat` (for the engine add
      `--choice cycles|eevee`); a change asked in chat with `CLI page decide SHORT STAGE changes --by chat --note
      "..."`. That is the only way to approve: `CLI state` refuses to mark story, storyboard or engine done.
@@ -122,7 +127,8 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
      asks, then `CLI page note SHORT ID done --reply "what you changed"`, or `CLI page note SHORT ID declined
      --reply "why not"`. A note on a stage that is already approved means going back: ask the user before you
      reset anything (`CLI state SHORT reset STAGE`).
-   - **Final is not a gate:** its "Looks good" is the user's acknowledgement; never wait for it.
+   - **Final is not a gate:** its "Looks good" is the user's acknowledgement; never wait for it. It shows up in
+     `CLI page notes SHORT` as an unapplied `final` decision: apply it with `CLI page wait SHORT --stage final`.
    - **The feedback panel** shows on the Post stage only after the user said yes to seeing the plugin's notes
      (`CLI feedback report SHORT`, `playbook/09-post.md`).
 5. **Narration never blocks** (`playbook/05-narration.md`). Any narrator problem means captions only, said once, and

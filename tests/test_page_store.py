@@ -136,3 +136,35 @@ def test_concurrent_processes_lose_nothing(tmp_path):
     assert [p.wait(timeout=60) for p in procs] == [0, 0]
     got = notes.load(tmp_path)
     assert len(got) == 50 and len({n["id"] for n in got}) == 50
+
+
+def test_a_lock_whose_pid_was_reused_is_broken(tmp_path):  # a power-off, then a reboot gave its pid to another program
+    import os
+    import time
+
+    p = tmp_path / "v.json"
+    lock = Path(str(p) + ".lock")
+    lock.write_text(json.dumps({"pid": os.getpid(), "process_token": "another-process", "at": time.time()}))
+    assert store.update_json(p, [], lambda d: [*d, 1]) == [1]
+
+
+def test_a_lock_older_than_a_minute_is_broken_even_with_a_live_pid(tmp_path):
+    import os
+
+    p = tmp_path / "v.json"
+    lock = Path(str(p) + ".lock")
+    lock.write_text(json.dumps({"pid": os.getpid(), "at": 0}))
+    old = lock.stat().st_mtime - 61
+    os.utime(lock, (old, old))
+    assert store.update_json(p, [], lambda d: [*d, 1]) == [1]
+
+
+def test_the_lock_names_its_process_token(tmp_path):
+    import os
+
+    from bsa import render_status
+
+    p = tmp_path / "v.json"
+    with store.locked(p):
+        held = json.loads(Path(str(p) + ".lock").read_text())
+    assert held["pid"] == os.getpid() and held["process_token"] == (render_status.process_token(os.getpid()) or "")

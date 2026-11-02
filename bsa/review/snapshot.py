@@ -386,11 +386,22 @@ def _where(f: pages.ReviewFinding) -> str:
     return " · ".join(x for x in parts if x)
 
 
+def _final_writing(ctx: Ctx) -> bool:
+    """The final MP4 is being written right now: the final step is not done in state.json and the final run (its
+    edit encodes out/<slug>.mp4 in place) is running."""
+    if ctx.state is not None and "final" in ctx.state["stages"]:
+        return False
+    status = render_status.read_status(render_status.status_path(ctx.sdir, "final"))
+    return bool(status) and status.get("state") == "running" and render_status.is_alive(status)
+
+
 def _final(ctx: Ctx) -> dict | None:
     """The final video, the checks' findings (each with a stable id for a note), the hard rules and the closing
-    card. Whether the user said it looks good (`acked`) is added after the version is taken (see _stage)."""
+    card. Whether the user said it looks good (`acked`) is added after the version is taken (see _stage). While the
+    MP4 is being written (`writing`) it is not shown and the stage has no version."""
     short = _short(ctx)
     mp4 = ctx.sdir / "out" / f"{short.slug}.mp4"
+    writing = _final_writing(ctx)
     found, redo_all = pages.load_findings(ctx.sdir)
     rows, seen = [], set()
     for f in found:
@@ -400,9 +411,10 @@ def _final(ctx: Ctx) -> dict | None:
         seen.add(fid)
         rows.append({"id": fid, "check": f.check, "severity": f.severity, "message": f.message, "where": _where(f),
                      "redo": f.redo})  # fmt: skip
-    size = mp4.stat().st_size if mp4.is_file() else None
+    size = mp4.stat().st_size if mp4.is_file() and not writing else None
     return {
         "video": {"file": f"out/{short.slug}.mp4"} if size is not None else None,
+        "writing": writing,
         "size_mb": round(size / 1_000_000, 1) if size is not None else None,
         "findings": rows,
         "redo_all": redo_all,
@@ -439,9 +451,18 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 }
 
 
-def _version_of(sdir: Path, stage: str, content: dict) -> int:
-    """The one place a stage's content is fingerprinted and looked up (or added) in versions.json."""
-    return versions.version_of(sdir, stage, versions.fingerprint(content, sdir))
+# Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
+# user approves, so it must not move the version they answered).
+_UNVERSIONED = {"engine": ("runs",)}
+
+
+def _version_of(sdir: Path, stage: str, content: dict) -> int | None:
+    """The one place a stage's content is fingerprinted and looked up (or added) in versions.json. None for the
+    final while its MP4 is still being written: a half-written file is never a version."""
+    if stage == "final" and content.get("writing"):
+        return None
+    seen = {k: v for k, v in content.items() if k not in _UNVERSIONED.get(stage, ())}
+    return versions.version_of(sdir, stage, versions.fingerprint(seen, sdir))
 
 
 def stage_version(sdir: Path, stage: str, ctx: Ctx | None = None) -> int | None:
