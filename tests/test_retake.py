@@ -213,3 +213,25 @@ def test_the_narrator_entry_points_refuse_a_bad_line_id(tmp_path):
     with pytest.raises(ValueError, match="rename it"):
         nrun.clear_stale_takes(tmp_path / "vo", short, {"provider": "kokoro"})
     assert not (tmp_path / "vo").exists()
+
+
+def test_retake_saves_the_next_seed_before_throwing_the_take_away(tmp_path, monkeypatch):
+    vo = tmp_path / "vo"
+    vo.mkdir()
+    (vo / nrun.RECORD_FILE).write_text(json.dumps({"lines": {"l01": {}}, "seeds": {"l01": 7}}), encoding="utf-8")
+    (vo / "l01.wav").write_bytes(b"RIFF")
+    seen = []
+    real = nrun._record_seeds
+
+    def record(out_dir, seeds):
+        seen.append((vo / "l01.wav").is_file())  # the take is still there when the seed is saved
+        return real(out_dir, seeds)
+
+    monkeypatch.setattr(nrun, "_record_seeds", record)
+    assert nrun.retake(vo, "l01") == 8 and seen == [True] and not (vo / "l01.wav").exists()
+    assert nrun.take_seeds(vo)["l01"] == 8
+    (vo / "l01.wav").write_bytes(b"RIFF")
+    monkeypatch.setattr(nrun, "_record_seeds", lambda out_dir, seeds: "can't save")
+    with pytest.raises(OSError, match="can't save"):
+        nrun.retake(vo, "l01")
+    assert (vo / "l01.wav").is_file() and nrun.take_seeds(vo)["l01"] == 8  # no new seed: the take is kept

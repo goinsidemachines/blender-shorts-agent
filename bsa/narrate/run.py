@@ -145,13 +145,18 @@ def retake_problem(out_dir: Path, line_id: str) -> str | None:
 
 
 def retake(out_dir: Path, line_id: str) -> int:
-    """Throw one line's take away so the next narration speaks it again with the next seed (a different reading).
-    Returns that seed. Refuses (ValueError, touching nothing) an id that isn't a plain line id, or isn't one of the
-    lines narrator.json records the takes are for."""
+    """Save the line's next seed in narrator.json, then throw its take (and its duration) away, so the next
+    narration speaks it again with that seed (a different reading). Returns the seed. Refuses (ValueError, touching
+    nothing) an id that isn't a plain line id, or isn't one of the lines narrator.json records the takes are for.
+    Raises OSError, keeping the take, when the seed can't be saved: a re-take is only worth its new seed."""
     out_dir = Path(out_dir)
     problem = retake_problem(out_dir, line_id)
     if problem:
         raise ValueError(problem)
+    seed = take_seeds(out_dir).get(line_id, FIRST_SEED) + 1
+    problem = _record_seeds(out_dir, {line_id: seed})
+    if problem:
+        raise OSError(problem)
     (out_dir / f"{line_id}.wav").unlink(missing_ok=True)
     dpath = out_dir / "durations.json"
     try:
@@ -161,10 +166,6 @@ def retake(out_dir: Path, line_id: str) -> int:
     if isinstance(durations, dict) and line_id in durations:
         del durations[line_id]
         _write_json(dpath, durations)
-    seed = take_seeds(out_dir).get(line_id, FIRST_SEED) + 1
-    problem = _record_seeds(out_dir, {line_id: seed})
-    if problem:
-        raise OSError(problem)  # a re-take is only worth its new seed
     return seed
 
 

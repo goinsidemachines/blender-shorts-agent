@@ -391,3 +391,20 @@ def test_cli_page_restarts_the_server_when_page_lan_changes(home, pendulum):
         for pid in pids:
             with contextlib.suppress(OSError):
                 _kill(pid)
+
+
+def test_server_info_waits_3_s_and_asks_once_more(live, monkeypatch):
+    real, seen = launch._request, []
+
+    def slow_once(info, method, path, *, timeout_s, **kw):
+        seen.append(timeout_s)
+        if len(seen) == 1:
+            raise TimeoutError("timed out")  # a server busy right after its spawn, under load
+        return real(info, method, path, timeout_s=timeout_s, **kw)
+
+    monkeypatch.setattr(launch, "_request", slow_once)
+    assert launch.server_info(live.ws)["port"] == live.port and seen == [3.0, 3.0]
+    seen.clear()
+    monkeypatch.setattr(launch, "_request", lambda *a, timeout_s, **k: seen.append(timeout_s) or (_ for _ in ()).throw(
+        TimeoutError("timed out")))
+    assert launch.server_info(live.ws) is None and seen == [3.0, 3.0]  # one retry, no more

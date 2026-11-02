@@ -72,18 +72,22 @@ def _request(info: dict, method: str, path: str, body: dict | None = None, timeo
     return reply if isinstance(reply, dict) else {}
 
 
-def server_info(workspace: Path, *, timeout_s: float = 1.0) -> dict | None:
+def server_info(workspace: Path, *, timeout_s: float = 3.0, tries: int = 2) -> dict | None:
     """The workspace's running server as SERVER_FILE names it, or None when that file is missing or damaged, its pid
-    is gone or now another process, or its port doesn't answer /api/health with its token in time."""
+    is gone or now another process, or its port doesn't answer /api/health with its token in time (`tries` asks,
+    `timeout_s` each: a server just spawned on a loaded machine can be slow to answer the first)."""
     info = _read_file(workspace)
     if info is None or render_status.process_token(info["pid"]) != info["process_token"]:
         return None
-    try:
-        if _request(info, "GET", "/api/health", timeout_s=timeout_s).get("ok") is not True:
-            return None
-    except OSError:
-        return None
-    return info
+    for i in range(tries):
+        try:
+            reply = _request(info, "GET", "/api/health", timeout_s=timeout_s)
+        except OSError:
+            if i == tries - 1:
+                return None
+            continue
+        return info if reply.get("ok") is True else None
+    return None
 
 
 def _spawn(workspace: Path, lan: bool):
