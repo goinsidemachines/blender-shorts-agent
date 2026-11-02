@@ -104,8 +104,8 @@ def chromium_missing() -> str | None:
 
 @pytest.fixture(autouse=True)
 def _no_page_server_left(request):
-    """Commands like `page`, `review` and `render-status` start the workspace's page server, detached so it outlives
-    the call: stop any a test left in its tmp_path workspaces."""
+    """`page SHORT` (and `review`/`render-status`/`feedback report` with --open) start the workspace's page server,
+    detached so it outlives the call: a safety net that stops any a test left in its tmp_path workspaces."""
     yield
     tmp = request.node.funcargs.get("tmp_path") if hasattr(request.node, "funcargs") else None
     if tmp is None:

@@ -228,20 +228,52 @@ def _no_browser_run(home, *args):
 
 
 def test_review_returns_the_one_page_url(home, pendulum):
+    from bsa.review import launch
+
+    out = ok(_no_browser_run(home, "review", "story", "pendulum"))  # no server yet: none is started
+    assert out["page"] is None and "CLI page SHORT --stage story" in out["page_hint"] and out["stage"] == "story"
+    assert out["deprecated"] == "use CLI page SHORT" and not (pendulum.parent / launch.SERVER_FILE).exists()
+    ok(_no_browser_run(home, "page", "pendulum"))  # the server the page runs on
     out = ok(_no_browser_run(home, "review", "story", "pendulum"))
-    assert "/s/" in out["page"] and out["page"].endswith("#story") and out["stage"] == "story"
-    assert out["deprecated"] == "use CLI page SHORT" and "opened" not in out
-    assert not (pendulum / "review" / "story.html").exists()
+    assert "/s/" in out["page"] and out["page"].endswith("#story") and "opened" not in out
     out = ok(_no_browser_run(home, "review", "storyboard", "pendulum", "--open"))
     assert out["page"].endswith("#storyboard") and out["opened"] is False  # the no-op browser never checks in
+    assert out["mode"] == "server" and out["already_open"] is False and "health" in out and out["phone"] is None
     assert not list((pendulum / "review").glob("*.html"))
 
 
-def test_render_status_writes_no_html(home, pendulum):
+def test_render_status_writes_no_html_and_starts_no_server(home, pendulum):
+    from bsa.review import launch
+
     out = ok(_no_browser_run(home, "render-status", "pendulum"))
-    assert out["page"].endswith("#render") and "/s/" in out["page"] and out["alive"] is False
+    assert out["page"] is None and "CLI page SHORT --stage render" in out["page_hint"] and out["alive"] is False
     assert out["status_file"].endswith("render-status-preview.json")
-    assert not list((pendulum / "review").glob("render-*.html"))
+    assert not (pendulum.parent / launch.SERVER_FILE).exists()
+    ok(_no_browser_run(home, "page", "pendulum"))
+    out = ok(_no_browser_run(home, "render-status", "pendulum"))
+    assert out["page"].endswith("#render") and "/s/" in out["page"] and "stage" not in out
+    assert not list((pendulum / "review").glob("*.html"))
+
+
+def test_page_notes_lists_what_page_notes_points_at(home, pendulum):
+    _to(home, pendulum, "story")
+    sent = notes.add(pendulum, "story", {"kind": "line", "id": "l02", "version": 1}, "shorter", "page")
+    notes.send_stage(pendulum, "story")
+    still_writing = notes.add(pendulum, "storyboard", {"kind": "overall", "id": None, "version": 1}, "hm", "page")
+    done = notes.add(pendulum, "story", {"kind": "overall", "id": None, "version": 1}, "fine", "page")
+    notes.answer(pendulum, done["id"], "done", "ok")
+    d = decisions.record(pendulum, "story", 1, "approve", "page", current=1)
+    out = ok(run(home, "page", "notes", "pendulum"))
+    assert [(n["id"], n["status"]) for n in out["notes"]] == [(sent["id"], "sent"), (still_writing["id"], "open")]
+    assert out["notes"][0] == {"id": sent["id"], "stage": "story", "target": {"kind": "line", "id": "l02",
+                               "version": 1}, "text": "shorter", "status": "sent", "by": "page"}  # fmt: skip
+    assert out["decisions"] == [{"id": d["id"], "stage": "story", "version": 1, "decision": "approve"}]
+    only = ok(run(home, "page", "notes", "pendulum", "--stage", "storyboard"))
+    assert [n["id"] for n in only["notes"]] == [still_writing["id"]] and only["decisions"] == []
+    applied = ok(run(home, "page", "wait", "pendulum", "--stage", "story", "--timeout", "5"))
+    assert applied["applied"] is True and ok(run(home, "page", "notes", "pendulum"))["decisions"] == []
+    proc = run(home, "page", "notes", "pendulum", "--stage", "nope")
+    assert proc.returncode == 1 and "Traceback" not in proc.stderr
 
 
 def test_feedback_report_allows_the_panel_without_marking(home, pendulum):
@@ -249,7 +281,8 @@ def test_feedback_report_allows_the_panel_without_marking(home, pendulum):
 
     ok(_no_browser_run(home, "feedback", "add", "pendulum", "--severity", "rough-edge", "--summary", "odd"))
     out = ok(_no_browser_run(home, "feedback", "report", "pendulum"))
-    assert out["page"].endswith("#post") and out["url"].startswith(feedback.REPO) and out["entries"] == 1
+    assert out["page"] is None and "--stage post" in out["page_hint"]  # no server running: none is started
+    assert out["url"].startswith(feedback.REPO) and out["entries"] == 1
     assert {"title", "shortened", "by_severity"} <= set(out)
     assert feedback.panel_allowed(pendulum, "ask") and len(feedback.pending(pendulum)) == 1  # nothing marked
     assert not (pendulum / "review" / "plugin-feedback.html").exists()

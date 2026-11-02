@@ -430,7 +430,8 @@ def test_cli_render_status_before_any_render(short):
     out = json.loads(proc.stdout)
     assert out["state"] == "none" and out["alive"] is False
     assert "no final render" in out["summary"]
-    assert out["page"].endswith("#render") and not list((sdir / "review").glob("*.html"))
+    assert out["page"] is None and "CLI page SHORT" in out["page_hint"]  # no page server runs: none is started
+    assert not list((sdir / "review").glob("*.html"))
 
 
 def test_cli_render_status_reports_a_dead_render(short):
@@ -448,7 +449,7 @@ def test_cli_render_status_reports_a_dead_render(short):
     assert out["preset"] == "preview" and out["state"] == "running"
     assert out["alive"] is False and out["stale"] is True
     assert out["frames"]["done"] == 6
-    assert out["page"].endswith("#render") and not (sdir / "review" / "render-preview.html").exists()
+    assert not (sdir / "review" / "render-preview.html").exists()
 
 
 # --------------------------------------------------------------------------- docs

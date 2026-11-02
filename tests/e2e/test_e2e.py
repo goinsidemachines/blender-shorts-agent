@@ -91,7 +91,7 @@ def test_script_mode_end_to_end(tmp_path):
     stills = p.blender_cmd("stills", "pendulum", blend=blend)["stills"]
     assert len(stills) == 3 and all(Path(s).stat().st_size > 0 for s in stills)
     board = p.cli("review", "storyboard", "pendulum")  # the old command now gives the one page's link
-    assert board["page"].endswith("#storyboard") and board["deprecated"] == "use CLI page SHORT"
+    assert board["page"] is None and board["deprecated"] == "use CLI page SHORT"  # no page server: none started
     assert _stage(short, "storyboard")["needs_yes"] is True
     p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
     p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
@@ -115,7 +115,7 @@ def test_script_mode_end_to_end(tmp_path):
     assert status["settings"]["engine"] == "eevee" and status["settings"]["percent"] == 50
     assert status["checks"]["frames_checked"] >= 1 and status["checks"]["errors"] == 0
     assert all((short / "review" / sh["thumb"]).is_file() for sh in status["shots"] if sh["thumb"])
-    assert status["page"].endswith("#render") and not list((short / "review").glob("*.html"))
+    assert status["page"] is None and not list((short / "review").glob("*.html"))
     assert status["kind"] == "render" and status["previous"]["kind"] == "check"  # the check's run, superseded
     assert status["previous"]["state"] == "done"
     again = p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)  # resumed: nothing to render

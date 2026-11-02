@@ -137,9 +137,15 @@ Then run `CLI page wait SHORT --stage story` with `run_in_background: true` and 
 
 - `applied: true` with an `approve` decision: the user approved on the page and the stage is marked done. Go on to
   `03-storyboard.md`.
-- `notes` (or a `changes` decision): revise the story, answer each note with `CLI page note SHORT ID done --reply
-  "..."` (or `declined` and why), then show it again and wait again.
-- `timed_out: true`: nothing yet; run the wait again in the background.
+- `notes` (the user sent them; or a `changes` decision): revise the story, answer each note with `CLI page note
+  SHORT ID done --reply "..."` (or `declined` and why), then show it again and wait again.
+- `timed_out: true`: nothing yet. Run the wait again in the background only while the story still waits for a
+  yes (`CLI state SHORT` still has `next` story); otherwise drop it.
 
 A yes in chat instead: `CLI page decide SHORT story approve --by chat`. Either way the approval refuses while `CLI
 validate SHORT` reports errors: fix them first.
+
+Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage story`
+lists them. Act only on `sent` notes (an `open` note is the user still writing: leave it); an unapplied decision is
+applied by `CLI page wait SHORT --stage story`, which returns at once. Coming back to a short whose `next` is the
+story you already showed: don't redo this chapter, just run that wait in the background again and end your turn.

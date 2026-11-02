@@ -28,7 +28,14 @@ sees how the scene progresses and where every line lands before anything long is
 8. **Wait:** `CLI page wait SHORT --stage storyboard` with `run_in_background: true`, and end your turn. `applied:
    true` with an `approve` decision means the user approved on the page and the stage is done; `notes` (or a
    `changes` decision) mean fix the shots, answer each note (`CLI page note SHORT ID done --reply "..."`, or
-   `declined` and why), re-run the stills, show it again and wait again; `timed_out: true` means run the wait again.
+   `declined` and why), re-run the stills, show it again and wait again. `timed_out: true` means nothing yet: run
+   the wait again in the background only while the storyboard still waits for a yes (`CLI state SHORT` still has
+   `next` storyboard); otherwise drop it.
 
 A yes in chat instead: `CLI page decide SHORT storyboard approve --by chat`. Story changes at this point mean `CLI
 state SHORT reset story` and back to `02-story.md` (ask the user first when the note is on the approved story).
+
+Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage storyboard`
+lists them. Act only on `sent` notes (an `open` note is the user still writing: leave it); an unapplied decision is
+applied by `CLI page wait SHORT --stage storyboard`, which returns at once. Coming back to a short whose `next` is the
+storyboard you already showed: don't redo this chapter, just run that wait in the background again and end your turn.

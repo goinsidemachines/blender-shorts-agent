@@ -5,12 +5,11 @@ the end on your own.
 
 1. `CLI engine SHORT` says which engine this short would use and where that comes from (`from`): `short.json` when
    the short sets its own (`"render": {"engine": "eevee"}`, for a short whose look calls for one engine; `CLI
-   validate` refuses any other value), else `settings`. A short's own engine wins over the setting: **propose it**
-   ("This short asks for EEVEE in short.json: go with EEVEE?"), with the estimate below if the user wants the
-   times. Otherwise, if `settings` has `render.engine` set to `cycles` or `eevee` (the user said "always"), use it.
-   Either way the page already shows that engine as chosen and asks nothing: say which in one line and record it
-   with `CLI page decide SHORT engine approve --by settings --choice ENGINE` (the engine `CLI engine` named; it
-   refuses any other). Otherwise:
+   validate` refuses any other value), else `settings`. A short's own engine wins over the setting. When `from` is
+   `short.json`, or `settings` has `render.engine` set to `cycles` or `eevee` (the user said "always"), that engine
+   is already chosen: never ask about it. The page shows it as chosen and asks nothing; say which in one line and
+   record it with `CLI page decide SHORT engine approve --by settings --choice ENGINE` (the engine `CLI engine`
+   named; it refuses any other). Then go on to `05-narration.md`. Otherwise:
 2. **Check the machine:** `CLI machine` (CPU, cores, RAM, each GPU with its video memory and how much is free).
 3. **Estimate:** `BLENDER estimate SHORT` renders one frame per scene at final quality in each engine and returns
    `eevee_s` and `cycles_s` for the whole short. It takes a few minutes; say so first, and run it with
@@ -29,9 +28,16 @@ the end on your own.
    times, your recommendation); say "the page has switched to the engine" (`opened` false: say so and give the
    `url` as a link). Then run `CLI page wait SHORT --stage engine` with `run_in_background: true` and end your turn.
    `applied: true` with an `approve` decision means the user picked an engine on the page and the stage is done
-   with it; `notes` mean answer them (`CLI page note SHORT ID done --reply "..."`) and wait again; `timed_out: true`
-   means run the wait again. A yes in chat: `CLI page decide SHORT engine approve --by chat --choice cycles` (or
-   `eevee`). If the user says "always" ("always use Cycles"), also `CLI settings set render.engine cycles`.
+   with it; `notes` (sent notes) mean answer them (`CLI page note SHORT ID done --reply "..."`) and wait again;
+   `timed_out: true` means nothing yet: run the wait again in the background only while the engine still waits
+   for a yes (`CLI state SHORT` still has `next` engine); otherwise drop it. A yes in chat: `CLI page decide SHORT
+   engine approve --by chat --choice cycles` (or `eevee`). If the user says "always" ("always use Cycles"), also
+   `CLI settings set render.engine cycles`.
+
+Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage engine`
+lists them. Act only on `sent` notes (an `open` note is the user still writing: leave it); an unapplied decision is
+applied by `CLI page wait SHORT --stage engine`, which returns at once. Coming back to a short whose `next` is the
+engine you already showed: don't redo this chapter, just run that wait in the background again and end your turn.
 
 From here on, do not ask the user anything unless a check fails that you can't fix after 3 attempts.
 

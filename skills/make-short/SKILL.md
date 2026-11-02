@@ -104,17 +104,20 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    - **Wait for a yes:** after showing a stage that needs one (story, storyboard, engine), run `CLI page wait SHORT
      --stage STAGE` with `run_in_background: true` and end your turn. It returns when the user approves on the page
      (`applied: true`: the stage is marked done), sends notes (`notes`, or a `changes` decision), or after 10
-     minutes (`timed_out: true`: run it again, in the background, while you wait).
+     minutes (`timed_out: true`). After a timeout, run it again in the background only while that stage still
+     waits for a yes (`CLI state SHORT` still has it as `next`); otherwise drop it.
    - **A yes in chat** is recorded with `CLI page decide SHORT STAGE approve --by chat` (for the engine add
      `--choice cycles|eevee`); a change asked in chat with `CLI page decide SHORT STAGE changes --by chat --note
      "..."`. That is the only way to approve: `CLI state` refuses to mark story, storyboard or engine done.
-   - **The engine from short.json or the `render.engine` setting** needs no question: record it with `CLI page
+   - **The engine from short.json or the `render.engine` setting** is never asked about: record it with `CLI page
      decide SHORT engine approve --by settings --choice ENGINE` (`playbook/04-engine.md`).
-   - **Notes from the page:** any command's result can carry `page_notes` (notes and decisions the user left on the
-     page, waiting for you). Read and answer every one before the next step, and again when resuming a short: do
-     what it asks, then `CLI page note SHORT ID done --reply "what you changed"`, or `CLI page note SHORT ID
-     declined --reply "why not"`. A note on a stage that is already approved means going back: ask the user before
-     you reset anything (`CLI state SHORT reset STAGE`).
+   - **Notes from the page:** any command's result can carry `page_notes` (ids of notes and decisions the user
+     left on the page). Handle them before the next step, and again when resuming a short: `CLI page notes SHORT
+     [--stage STAGE]` lists them in full. Act only on notes whose `status` is `sent`; an `open` note is the user
+     still writing, so leave it. For each sent note do what it asks, then `CLI page note SHORT ID done --reply
+     "what you changed"`, or `CLI page note SHORT ID declined --reply "why not"`. For each decision there, run
+     `CLI page wait SHORT --stage <its stage>`: it applies it and returns at once. A note on a stage that is already
+     approved means going back: ask the user before you reset anything (`CLI state SHORT reset STAGE`).
    - **Final is not a gate:** its "Looks good" is the user's acknowledgement; never wait for it.
    - **The feedback panel** shows on the Post stage only after the user said yes to seeing the plugin's notes
      (`CLI feedback report SHORT`, `playbook/09-post.md`).
@@ -132,9 +135,11 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    through `bsa_mcp_build.py`, which reloads the plugin's code first). If it isn't connected,
    use script mode without asking.
 9. **Resuming:** when the user comes back to a short ("carry on with the watch short"), find it
-   (`CLI state SHORT`), say in one line where it stands, answer any `page_notes` in its result, and continue
-   from `next`. Run `CLI page SHORT` again so the user has the page (the same `opened` rule). Renders resume from
-   the frames already on disk.
+   (`CLI state SHORT`), say in one line where it stands, handle any `page_notes` in its result (`CLI page notes
+   SHORT`, as in rule 4: sent notes and unapplied decisions only), and continue from `next`. Run `CLI page SHORT`
+   again so the user has the page (the same `opened` rule). When `next` is an approval stage (story, storyboard,
+   engine) you had already shown, don't redo its chapter: run `CLI page wait SHORT --stage <next>` in the
+   background again and end your turn. Renders resume from the frames already on disk.
 10. **Long commands run in the background.** The Bash tool stops a command after 2 minutes by default (10 at
    most), which kills a long render. Run these with `run_in_background: true` and carry on when you are notified
    that they finished, never with a timeout: `BLENDER render SHORT --preset preview|final`, `BLENDER estimate

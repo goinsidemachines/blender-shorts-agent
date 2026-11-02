@@ -1465,7 +1465,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--every", type=int, default=5, help="check every Nth frame (pops use every frame)")
     sp.add_argument("--full", action="store_true", help="check every shot, changed or not")
     sp.add_argument("--preset", choices=("preview", "final"), default="preview",
-                    help="the live status page that shows its progress (review/render-<preset>.html)")
+                    help="the live status it records its progress in (review/render-status-<preset>.json), which "
+                    "the review page's Render stage shows")
     sp.set_defaults(fn=cmd_check)
 
     sp = sub.add_parser("frame-check", help="checks on rendered frames")

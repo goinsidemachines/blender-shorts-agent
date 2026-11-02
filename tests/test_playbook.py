@@ -215,3 +215,40 @@ def test_scale_references_never_need_a_person():
     for name, flat in bullets:
         assert "no_humans" in flat, (name, flat)
         assert re.search(r"\b(door|car|bench|container)\b", flat), (name, flat)
+
+
+def test_engine_from_short_json_is_recorded_never_asked():
+    engine = _flat(_read("playbook/04-engine.md"))
+    assert "propose it" not in engine and "go with EEVEE?" not in engine
+    assert re.search(r"short\.json.{0,300}never ask about it.{0,300}--by settings --choice", engine), engine[:900]
+    skill = _flat(_read("SKILL.md"))
+    assert re.search(r"engine from short\.json or the `render\.engine` setting\*\* is never asked about", skill)
+
+
+def test_only_sent_notes_are_acted_on_and_decisions_are_applied_by_wait():
+    for name in ("SKILL.md", "playbook/02-story.md", "playbook/03-storyboard.md", "playbook/04-engine.md"):
+        t = _flat(_read(name))
+        assert "CLI page notes SHORT" in t, name
+        assert re.search(r"Act only on (notes whose `status` is )?`sent`", t), name
+        assert "`open` note is the user still writing" in t, name
+        assert re.search(r"page wait SHORT --stage <?[a-z ]+>?`?,? which (applies it and )?returns at once|applies it "
+                         r"and returns at once", t), name  # fmt: skip
+
+
+def test_resume_reruns_the_wait_for_an_approval_already_shown():
+    skill = _flat(_read("SKILL.md"))
+    assert re.search(r"Resuming.{0,900}approval stage.{0,200}run `CLI page wait SHORT --stage <next>` in the "
+                     r"background again", skill)  # fmt: skip
+    for ch, stage in (("02-story.md", "story"), ("03-storyboard.md", "storyboard"), ("04-engine.md", "engine")):
+        t = _flat(_read(f"playbook/{ch}"))
+        assert f"whose `next` is the {stage} you already showed: don't redo this chapter" in t, ch
+
+
+def test_a_timed_out_wait_is_rerun_only_while_its_stage_still_waits():
+    for name, stage in (("SKILL.md", None), ("playbook/02-story.md", "story"),
+                        ("playbook/03-storyboard.md", "storyboard"), ("playbook/04-engine.md", "engine")):  # fmt: skip
+        t = _flat(_read(name))
+        assert "otherwise drop it" in t, name
+        assert re.search(r"only while (that|the \w+) stage still waits for a yes|only while the \w+ still waits", t), name
+        if stage:
+            assert f"still has `next` {stage}" in t, name

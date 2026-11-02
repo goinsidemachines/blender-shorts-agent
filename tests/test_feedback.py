@@ -197,7 +197,7 @@ def test_cli_add_list_report_decline(cli_short):
     assert lst["pending"] == 1 and lst["ask"] and lst["setting"] == "ask"
     assert lst["by_severity"] == {"wrong-output": 1}
     rep = ok(run(home, "feedback", "report", sdir))
-    assert rep["page"].endswith("#post") and not (sdir / "review" / "plugin-feedback.html").exists()
+    assert rep["page"] is None and not (sdir / "review" / "plugin-feedback.html").exists()
     assert rep["url"].startswith(feedback.REPO) and feedback.panel_allowed(sdir, "ask")
     assert not ok(run(home, "feedback", "list", sdir))["ask"]
     ok(run(home, "feedback", "add", sdir, "--severity", "rough-edge", "--summary", "later"))

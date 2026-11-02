@@ -431,13 +431,33 @@ def _page_wait(args, sdir: Path) -> dict:
         time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
 
 
+def _page_notes(args, sdir: Path) -> dict:
+    """What `page_notes` points at, in full: the notes not answered yet (open: the user is still writing; sent: for
+    Claude to act on) and the decisions not applied yet (`page wait --stage STAGE` applies one)."""
+    from bsa.review import decisions, notes
+
+    if len(args.words) != 2:
+        raise CliError("usage: page notes SHORT [--stage STAGE]")
+    stage = _page_stage(args.stage) if args.stage is not None else None
+    try:
+        found = [n for n in notes.load(sdir) if n["status"] in ("open", "sent")]
+        waiting = decisions.unapplied(sdir)
+    except store.StoreDamaged as exc:
+        raise CliError(str(exc)) from exc
+    keys = ("id", "stage", "target", "text", "status", "by")
+    return {"notes": [{k: n.get(k) for k in keys} for n in found if stage in (None, n["stage"])],
+            "decisions": [{k: d.get(k) for k in ("id", "stage", "version", "decision")} for d in waiting
+                          if stage in (None, d["stage"])]}  # fmt: skip
+
+
 def cmd_page(args) -> dict:
-    if args.words[0] in ("decide", "note", "wait"):
+    if args.words[0] in ("decide", "note", "notes", "wait"):
         if len(args.words) < 2:
             raise CliError(f"usage: page {args.words[0]} SHORT ...")
         args.short = args.words[1]
         sdir = short_dir(args.short)
-        return {"decide": _page_decide, "note": _page_note, "wait": _page_wait}[args.words[0]](args, sdir)
+        handlers = {"decide": _page_decide, "note": _page_note, "notes": _page_notes, "wait": _page_wait}
+        return handlers[args.words[0]](args, sdir)
     if args.words[0] == "serve":
         return _page_serve(args)
     if len(args.words) != 1:
@@ -721,19 +741,20 @@ DEPRECATED_PAGE = "use CLI page SHORT"
 
 
 def _one_page(sdir: Path, stage: str, open_: bool) -> dict:
-    """The short's one review page at `stage`: {"page": its link} (the workspace's server is started or reused, as
-    `page SHORT` does). With `open_` it is opened, or a tab already open switches to the stage, and "opened" says
-    whether it really did (`page SHORT --stage STAGE`)."""
+    """The short's one review page at `stage`. With `open_` it is opened, or a tab already open switches to the
+    stage, exactly as `page SHORT --stage STAGE` (its url as "page", plus "opened", "already_open", "mode", "health"
+    and "phone"). Without, nothing is started: "page" is the link when the workspace's server already runs, else
+    None with "page_hint" saying how to open it."""
     from bsa.review import launch
 
     if open_:
         out = _page_open(argparse.Namespace(stage=stage, open=False, lan=False), sdir)
-        return {"page": out["url"], "stage": stage, "opened": out["opened"]}
-    lan = (settings.load_settings().get("page") or {}).get("lan") is True
-    try:
-        info = launch.ensure_server(sdir.parent, lan=lan)
-    except launch.ServerUnavailable:  # no server: the page as a file, review/short.html
-        return {"page": f"{launch.static_page(sdir).as_uri()}#{stage}", "stage": stage}
+        keep = ("opened", "already_open", "mode", "health", "phone")
+        return {"page": out["url"], "stage": stage, **{k: out[k] for k in keep if k in out}}
+    info = launch.server_info(sdir.parent)
+    if info is None:
+        return {"page": None, "stage": stage,
+                "page_hint": f"The review page isn't running: CLI page SHORT --stage {stage} opens it."}  # fmt: skip
     return {"page": launch.page_url(info, sdir.name, stage), "stage": stage}
 
 
@@ -772,9 +793,7 @@ def cmd_render_status(args) -> dict:
     else:
         out = rs.describe(status)
     page = _one_page(sdir, "render", args.open)
-    out["page"] = page["page"]
-    if "opened" in page:
-        out["opened"] = page["opened"]
+    out.update({k: v for k, v in page.items() if k != "stage"})
     out["status_file"] = str(rs.status_path(sdir, preset))
     return out
 
@@ -1030,8 +1049,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_state)
 
     sp = sub.add_parser("page", help="decide SHORT STAGE approve|changes --by page|chat|settings [--choice ENGINE] "
-                        "[--note TEXT] [--version N] | note SHORT ID done|declined --reply TEXT | wait SHORT --stage "
-                        "STAGE [--timeout S] | SHORT [--open] | serve")  # fmt: skip
+                        "[--note TEXT] [--version N] | note SHORT ID done|declined --reply TEXT | notes SHORT [--stage STAGE] "
+                        "| wait SHORT --stage STAGE [--timeout S] | SHORT [--open] [--stage STAGE] | serve")  # fmt: skip
     sp.add_argument("words", nargs="+")
     sp.add_argument("--open", action="store_true")
     sp.add_argument("--stage", default=None)
