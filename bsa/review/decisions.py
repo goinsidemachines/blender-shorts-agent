@@ -36,13 +36,13 @@ def decisions_path(sdir: Path) -> Path:
 
 
 def load(sdir: Path) -> list[dict]:
-    return store.read_json(decisions_path(sdir), [])
+    return store.read_json(decisions_path(sdir), [], list)
 
 
 def _update(sdir: Path, fn) -> list[dict]:
     path = decisions_path(sdir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    return store.update_json(path, [], fn)
+    return store.update_json(path, [], fn, list)
 
 
 def _iso(now: float | None) -> str:

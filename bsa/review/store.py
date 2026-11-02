@@ -22,8 +22,9 @@ class StoreDamaged(Exception):
     """A JSON store file can't be read; the message names the file and why (one plain line)."""
 
 
-def read_json(path: Path, default):
-    """The file's JSON; `default` when it is missing. Raises StoreDamaged when it is empty or not valid JSON."""
+def read_json(path: Path, default, expect: type | None = None):
+    """The file's JSON; `default` when it is missing. Raises StoreDamaged when it is empty or not valid JSON, or
+    (with `expect` list or dict) when it is valid JSON of another type, or a list holding anything but objects."""
     path = Path(path)
     try:
         raw = path.read_bytes()
@@ -32,9 +33,15 @@ def read_json(path: Path, default):
     if not raw.strip(b"\0 \t\r\n"):
         raise StoreDamaged(f"{path} is damaged (empty): move it aside to start it over")
     try:
-        return json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         raise StoreDamaged(f"{path} is damaged (not valid JSON): move it aside to start it over") from None
+    if expect is not None and (
+        not isinstance(data, expect) or (expect is list and not all(isinstance(x, dict) for x in data))
+    ):
+        what = "a list of objects" if expect is list else "an object"
+        raise StoreDamaged(f"{path} is damaged (not {what}): move it aside to start it over")
+    return data
 
 
 def _holder(lock: Path) -> tuple[bytes | None, bool]:
@@ -94,10 +101,11 @@ def locked(path: Path, timeout_s: float = 5.0) -> Iterator[None]:
         _release(lock)
 
 
-def update_json(path: Path, default, fn: Callable[[object], object]):
-    """Lock, read (default when missing), apply fn, write atomically, and return the new value."""
+def update_json(path: Path, default, fn: Callable[[object], object], expect: type | None = None):
+    """Lock, read (default when missing; `expect` as for read_json), apply fn, write atomically, and return the new
+    value."""
     path = Path(path)
     with locked(path):
-        new = fn(read_json(path, default))
+        new = fn(read_json(path, default, expect))
         jobstate.write_atomic(path, json.dumps(new, indent=2, ensure_ascii=False).encode("utf-8"))
         return new

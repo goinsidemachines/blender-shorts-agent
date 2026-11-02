@@ -21,13 +21,13 @@ def notes_path(sdir: Path) -> Path:
 
 
 def load(sdir: Path) -> list[dict]:
-    return store.read_json(notes_path(sdir), [])
+    return store.read_json(notes_path(sdir), [], list)
 
 
 def _update(sdir: Path, fn) -> list[dict]:
     path = notes_path(sdir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    return store.update_json(path, [], fn)
+    return store.update_json(path, [], fn, list)
 
 
 def _find(items: list[dict], note_id: str) -> dict:

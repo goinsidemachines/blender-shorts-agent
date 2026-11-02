@@ -68,10 +68,14 @@ def version_of(sdir: Path, stage: str, fp: str) -> int:
 
     def fn(data):
         seen = data.setdefault(stage, [])
+        if not isinstance(seen, list):
+            raise store.StoreDamaged(
+                f"{path} is damaged (stage {stage!r} is not a list): move it aside to start it over"
+            )
         if fp not in seen:
             seen.append(fp)
         found.append(seen.index(fp) + 1)
         return data
 
-    store.update_json(path, {}, fn)
+    store.update_json(path, {}, fn, dict)
     return found[0]
