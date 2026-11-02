@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import struct
 import subprocess
@@ -58,6 +59,12 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1) -> Path:
         raise ValueError(f"unknown stage {stage!r}")
     sdir = workspace.new_short(Path(workspace_dir), "Pendulum", number)
     shutil.copyfile(SOURCE, sdir / "source" / "short.json")
+    for i in (1, 2, 3):  # a still per shot, each its own colour, and a render-time estimate
+        write_png(sdir / "stills" / f"s0{i}.png", np.full((8, 8, 3), 40 * i, np.uint8))
+    (sdir / "review").mkdir(exist_ok=True)
+    (sdir / "review" / "estimate.json").write_text(
+        json.dumps({"frames": 450, "eevee_s": 300.0, "cycles_s": 1200.0, "per_scene": []}), encoding="utf-8"
+    )
     upto = len(stages.PAGE_STAGES) if stage == "done" else stages.PAGE_STAGES.index(stage)
     ctx = snapshot.load_ctx(sdir, {})
     for page_stage in stages.PAGE_STAGES[:upto]:
