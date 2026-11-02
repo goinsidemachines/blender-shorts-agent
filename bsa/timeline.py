@@ -285,6 +285,23 @@ def to_json(tl: Timeline) -> dict:
     return asdict(tl)
 
 
+def timeline_from_json(data: dict) -> Timeline:
+    """The inverse of to_json. ValueError when `data` is not a timeline's JSON."""
+    try:
+        def spans(rows):
+            return [Span(str(r["id"]), int(r["f0"]), int(r["f1"])) for r in rows]
+
+        return Timeline(
+            fps=int(data["fps"]),
+            n_frames=int(data["n_frames"]),
+            shots=spans(data["shots"]),
+            lines=spans(data["lines"]),
+            cards=[Card(str(c["text"]), str(c["line_id"]), int(c["f0"]), int(c["f1"])) for c in data["cards"]],
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"not a timeline: {exc!r}") from exc
+
+
 def timeline_hash(data: dict) -> str:
     """A short fingerprint of a timeline's JSON (as in source/timeline.json). build.py stamps it on every scene it
     builds (scene["bsa_timeline"]) so the Blender commands can tell a .blend built for another timing."""

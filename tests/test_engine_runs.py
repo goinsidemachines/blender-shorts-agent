@@ -344,3 +344,18 @@ def test_a_side_render_uses_its_own_folder_and_records_what_it_measured(home, pe
     side_frames = list((pendulum / "frames" / "preview-eevee").rglob("*.png"))
     assert row["engine"] == "eevee" and row["s_per_frame"] > 0 and row["frames_measured"] == len(side_frames)
     assert ok(run(home, "state", pendulum.name))["stages"]["engine"]["engine"] == "cycles"
+
+
+def test_edit_info_is_recorded_per_run(tmp_path):
+    rec = {"timeline_hash": "abc", "fps": 30.0, "frames": 495, "closing": {"f0": 451, "f1": 495}}
+    er.record_mp4(tmp_path, "preview", er.EngineRun("eevee", "eevee"), tmp_path / "a.mp4", edit=rec)
+    assert er.edit_info(tmp_path, "preview-eevee") == rec
+    assert er.edit_info(tmp_path, "final") is None
+
+
+def test_edit_record_counts_the_closing_frames():
+    import bsa_blender
+
+    r = bsa_blender._edit_record("h", 30.0, 495, {"f0": 451, "f1": 495, "n_frames": 45, "line_f0": None})
+    assert r == {"timeline_hash": "h", "fps": 30.0, "frames": 495, "closing": {"f0": 451, "f1": 495}}
+    assert bsa_blender._edit_record("h", 30.0, 450, None)["closing"] is None

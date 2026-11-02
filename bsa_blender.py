@@ -968,7 +968,7 @@ def cmd_edit(args) -> dict:
     short = _load(sdir)
     with _recording(sdir, short, args.preset, "edit", _status_key(sdir, args, args.preset)) as run:
         out = _cmd_edit(args, sdir, short, run, edit)
-        run.summarize("edit", {"mp4": out.get("mp4")})
+        run.summarize("edit", {"mp4": out.get("mp4"), "timeline_hash": out.get("timeline_hash")})
     return out
 
 
@@ -1021,16 +1021,23 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         raise CliError(f"the encoded video is off: {wrong} (got, wanted)", {"mp4": str(path), **info})
     if not side.tag:  # a side run is a comparison: the preview / final stage stays the approved run's
         jobstate.mark_done(sdir, args.preset, mp4=str(path), **info)
-    engine_runs.record_mp4(sdir, args.preset, side, path)
+    engine_runs.record_mp4(sdir, args.preset, side, path, edit=_edit_record(tl_hash, float(info["fps"]), n_frames, end))
     if edit.end_card_note(scene):
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
-    out = {"mp4": str(path), **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    out = {"mp4": str(path), "timeline_hash": tl_hash, **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
     if side.tag:
         out.update(engine=side.engine, tag=side.tag)
     if end:
         out["closing"] = end["hold"]  # its "note" says when the voice line held the card past closing.seconds
     return {**out, "warnings": warnings} if warnings else out
+
+
+def _edit_record(tl_hash: str, fps: float, n_frames: int, end: dict | None) -> dict:
+    """What an edit was cut from, for the review page's markers: the timeline's hash, the video's fps and frames,
+    and where the closing card sits (1-based, inclusive), or None when there is none."""
+    closing = {"f0": end["f0"], "f1": end["f1"]} if end else None
+    return {"timeline_hash": tl_hash, "fps": fps, "frames": n_frames, "closing": closing}
 
 
 def _closing_plan(sdir: Path, short, tl, mix: Path) -> tuple[dict | None, list[str]]:

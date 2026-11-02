@@ -1,4 +1,5 @@
 import itertools
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from bsa.timeline import (
     chunk_caption,
     length_drift,
     reading_time,
+    timeline_from_json,
     to_json,
 )
 
@@ -230,3 +232,11 @@ def test_pacing_warnings_name_the_shot_and_a_length():
     assert len(warns) == 2
     assert "s02" in warns[0] and "75% silent" in warns[0] and "min_s" in warns[0] and "3.8" in warns[0]
     assert "s03" in warns[1] and "no narration" in warns[1]
+
+
+def test_timeline_round_trips_through_json():
+    short = _short([Line("l01", "One two three four five six seven eight.", "s01")])
+    tl = build_timeline(short, None, end_card=True)
+    assert timeline_from_json(json.loads(json.dumps(to_json(tl)))) == tl
+    with pytest.raises(ValueError):
+        timeline_from_json({"fps": 30})

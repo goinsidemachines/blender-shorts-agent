@@ -160,10 +160,22 @@ def record_render(short_dir: Path, preset: str, run: EngineRun, *, frames: int, 
     return row
 
 
-def record_mp4(short_dir: Path, preset: str, run: EngineRun, mp4: Path) -> None:
+def record_mp4(short_dir: Path, preset: str, run: EngineRun, mp4: Path, edit: dict | None = None) -> None:
+    """Note the run's MP4 and, when given, what that edit was cut from (see bsa_blender._edit_record)."""
     data = load_runs(short_dir)
-    _entry(data, short_dir, preset, run)["mp4"] = str(mp4)
+    row = _entry(data, short_dir, preset, run)
+    row["mp4"] = str(mp4)
+    if edit is not None:
+        row["edit"] = edit
     _save(short_dir, data)
+
+
+def edit_info(short_dir: Path, key: str) -> dict | None:
+    """The edit record of run `key` ("final", "preview", "preview-eevee", ...); None when never recorded or of the
+    wrong shape."""
+    row = load_runs(short_dir).get(key)
+    rec = row.get("edit") if isinstance(row, dict) else None
+    return rec if isinstance(rec, dict) else None
 
 
 def compare(short_dir: Path, preset: str | None = None) -> list[dict]:
