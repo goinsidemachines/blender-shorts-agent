@@ -352,6 +352,7 @@ def test_cli_page_restarts_the_server_when_page_lan_changes(home, pendulum):
         second = launch.server_info(pendulum.parent)
         pids.append(second["pid"])
         assert second["lan"] is True and second["pid"] != first["pid"]
+        assert first["bind"] == second["bind"] == "127.0.0.1"  # BSA_PAGE_BIND (tests/conftest.py): never 0.0.0.0
         assert render_status.process_token(first["pid"]) != first["process_token"]  # the old one is gone
         ip = launch.lan_ip()
         assert out["phone"] == (f"http://{ip}:{second['port']}/s/{pendulum.name}?t={second['token']}" if ip else None)

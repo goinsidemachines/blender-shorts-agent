@@ -94,11 +94,7 @@
     put(bytes.length, countBits(version));
     for (const b of bytes) put(b, 8);
     put(0, Math.min(4, capacity - bits.length));
-    // Pad to a whole codeword. Like segno (the reference the tests compare with), a stream that already ends on a
-    // codeword boundary gets a whole zero codeword before the pad codewords; readers stop at the terminator, so it
-    // reads the same either way.
-    put(0, 8 - (bits.length % 8));
-    bits.length = Math.min(bits.length, capacity);
+    if (bits.length % 8) put(0, 8 - (bits.length % 8)); // to a whole codeword, only when not already on one
     const data = [];
     for (let i = 0; i < bits.length; i += 8) {
       let b = 0;

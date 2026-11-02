@@ -213,7 +213,7 @@ def run_server(workspace: Path, lan: bool) -> None:
     srv = server.make_server(workspace, lan=lan)
     pid = os.getpid()
     info = {"pid": pid, "port": srv.port, "token": srv.token, "process_token": render_status.process_token(pid) or "",
-            "lan": lan, "started": time.time()}  # fmt: skip
+            "lan": lan, "bind": srv.server_address[0], "started": time.time()}  # fmt: skip
     path = workspace / SERVER_FILE
     try:
         _write_atomic(path, info)

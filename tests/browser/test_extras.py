@@ -10,7 +10,7 @@ import segno
 from playwright.sync_api import expect
 
 from browser.conftest import assert_healthy, open_short
-from bsa import feedback, jobstate
+from bsa import feedback, jobstate, render_status
 from bsa.review import launch
 
 pytestmark = pytest.mark.browser
@@ -29,20 +29,61 @@ window.Notification = class {
 """
 
 
-@pytest.mark.parametrize("text", ["http://192.168.1.20:51234/s/03-watch?t=abc", "HELLO", "é" * 40,
-                                  "€ and a longer UTF-8 link " * 4])  # fmt: skip
-@pytest.mark.parametrize("mask", [0, 3, 7])
-def test_qr_matches_reference(view, live_server, text, mask):
-    p = open_short(view, live_server("story"))
-    got = p.evaluate("([t, m]) => BSA.qr(t, {mask: m}).modules", [text, mask])
-    ref = segno.make(text, error="m", mask=mask, boost_error=False, mode="byte", micro=False)
-    assert got == [[bool(v) for v in row] for row in ref.matrix]
+V9 = "http://192.168.1.20:51234/s/09-long?t=" + "a1B2c3D4e5" * 13  # 169 bytes: version 9, two block groups
+V10 = "http://192.168.1.20:51234/s/10-long?t=" + "Z9y8X7w6v5" * 16  # 199 bytes: version 10, 16-bit count
+QR_TEXTS = {
+    "url": ("http://192.168.1.20:51234/s/03-watch?t=abc", None),
+    "hello": ("HELLO", None),  # ends on a codeword boundary: no padding bits
+    "latin1": ("é" * 40, None),  # ISO-8859-1, also on a boundary
+    "utf8": ("€ and a longer UTF-8 link " * 4, None),
+    "v9": (V9, 9),
+    "v10": (V10, 10),
+}
 
 
-def test_qr_picks_a_mask_and_refuses_too_long(view, live_server):
+@pytest.fixture
+def iso_segno(monkeypatch):
+    """segno, with its padding bits as ISO/IEC 18004 7.4.10 says: only to reach a codeword boundary. segno pads
+    `8 - len % 8`, a whole 0x00 codeword when the stream is already on one, where the standard puts the 0xEC pad."""
+    from segno import consts, encoder
+
+    def iso_padding_bits(buff, version, length):
+        if version not in (consts.VERSION_M1, consts.VERSION_M3) and length % 8:
+            buff.extend([0] * (8 - length % 8))
+
+    monkeypatch.setattr(encoder, "write_padding_bits", iso_padding_bits)
+    return segno
+
+
+@pytest.mark.parametrize("name", list(QR_TEXTS))
+def test_qr_matches_reference_for_every_mask(view, live_server, iso_segno, name):
+    text, version = QR_TEXTS[name]
     p = open_short(view, live_server("story"))
-    got = p.evaluate("(t) => BSA.qr(t)", "http://192.168.1.20:51234/s/03-watch?t=abc")
-    assert got["size"] == len(got["modules"]) and got["size"] in range(21, 58, 4)
+    got = p.evaluate("(t) => [0, 1, 2, 3, 4, 5, 6, 7].map((m) => BSA.qr(t, {mask: m}).modules)", text)
+    for mask in range(8):
+        ref = iso_segno.make(text, error="m", mask=mask, boost_error=False, mode="byte", micro=False)
+        if version is not None:
+            assert ref.version == version
+        assert got[mask] == [[bool(v) for v in row] for row in ref.matrix], (name, mask)
+
+
+def test_qr_padding_is_iso_not_segnos_extra_codeword(view, live_server):
+    p = open_short(view, live_server("story"))
+    got = p.evaluate("() => BSA.qr('HELLO', {mask: 0}).modules")
+    plain = segno.make("HELLO", error="m", mask=0, boost_error=False, mode="byte", micro=False)
+    assert got != [[bool(v) for v in row] for row in plain.matrix]  # unpatched segno adds a 0x00 codeword
+
+
+def test_qr_picks_one_of_its_masks_and_refuses_too_long(view, live_server):
+    p = open_short(view, live_server("story"))
+    for text, _v in QR_TEXTS.values():
+        got = p.evaluate("""(t) => {
+          const auto = BSA.qr(t);
+          const same = [0, 1, 2, 3, 4, 5, 6, 7].filter((m) =>
+            JSON.stringify(BSA.qr(t, {mask: m}).modules) === JSON.stringify(auto.modules));
+          return {size: auto.size, rows: auto.modules.length, same};
+        }""", text)  # fmt: skip
+        assert got["size"] == got["rows"] and got["size"] in range(21, 58, 4) and len(got["same"]) == 1
     err = p.evaluate("() => { try { BSA.qr('x'.repeat(300)); return null; } catch (e) { return e.message; } }")
     assert err and "too long" in err
 
@@ -117,6 +158,20 @@ def test_notification_when_a_render_ends(view, live_server):
     _shown_soon(p)
     shown = p.evaluate("window.__shown")
     assert len(shown) == 1 and "failed" in (shown[0]["title"] + shown[0]["body"]).lower()
+
+
+def test_notification_when_a_render_goes_stale(view, live_server):
+    view.add_init_script(NOTIFY_STUB)
+    srv = live_server("render")  # the preview is running, written by this (living) process
+    p = open_short(view, srv, stage="render")
+    p.wait_for_timeout(300)
+    path = render_status.status_path(srv.sdir, "preview")
+    status = json.loads(path.read_text("utf-8"))
+    status["pid_token"] = status["render"]["pid_token"] = "a-process-that-is-gone"
+    path.write_text(json.dumps(status), "utf-8")
+    _shown_soon(p)
+    shown = p.evaluate("window.__shown")
+    assert len(shown) == 1 and "stopped answering" in shown[0]["title"]
 
 
 def test_no_notification_on_first_load(view, live_server):

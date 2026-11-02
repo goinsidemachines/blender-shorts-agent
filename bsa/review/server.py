@@ -6,8 +6,9 @@ the page and its files, the X-BSA-Token header for the API, compared in constant
 Origin when one is sent. Only a short's stills/, review/ and out/ are served, never anything outside them (symlinks
 included). It never runs commands; its only writes are notes, decisions, the versions a snapshot records and the
 plugin feedback's "reported" mark.
-A page Approve only records the decision; `page wait` applies it. With lan=True it binds every interface (0.0.0.0)
-but still answers only a Host of 127.0.0.1, localhost or this machine's one LAN address, with the same token.
+A page Approve only records the decision; `page wait` applies it. With lan=True it binds every interface (_LAN_BIND,
+or the BSA_PAGE_BIND variable, which the tests set to 127.0.0.1) but still answers only a Host of 127.0.0.1,
+localhost or this machine's one LAN address, with the same token.
 A connection whose request got an error reply, or whose body was not read in full, is closed, so leftover bytes are
 never read as another request. Files are served sandboxed (their own CSP), and HTML or SVG only as downloads."""
 
@@ -17,6 +18,7 @@ import contextlib
 import hmac
 import json
 import mimetypes
+import os
 import re
 import secrets
 import threading
@@ -24,13 +26,15 @@ import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from bsa import feedback, messages, render_status
 from bsa import settings as settings_mod
 from bsa.review import decisions, notes, page, snapshot, stages, store
 
 IDLE_S = 7200
+_LAN_BIND = "0.0.0.0"  # phone access: every interface (the Host check still admits only this machine's addresses)
+BIND_ENV = "BSA_PAGE_BIND"  # overrides _LAN_BIND (tests bind 127.0.0.1 so nothing opens the developer's network)
 MAX_BODY = 16_384
 SEEN_WINDOW_S = 30
 SERVED_DIRS = ("stills", "review", "out")
@@ -76,15 +80,26 @@ class PageServer(ThreadingHTTPServer):
     def port(self) -> int:
         return self.server_address[1]
 
+    def phone_url(self, short_key: str) -> str | None:
+        """The page's link on this machine's LAN address, only with lan on (and an address found)."""
+        if not (self.lan and self.lan_ip):
+            return None
+        return f"http://{self.lan_ip}:{self.port}/s/{quote(short_key, safe='')}?t={quote(self.token, safe='')}"
+
     def last_seen(self) -> float:
         with self.lock:
             return max([self.last_activity, *self.seen.values()])
 
 
+def bind_address(lan: bool) -> str:
+    """Where the server listens: loopback only, or with lan every interface (BSA_PAGE_BIND overrides that)."""
+    return (os.environ.get(BIND_ENV) or _LAN_BIND) if lan else "127.0.0.1"
+
+
 def make_server(
     workspace: Path, *, port: int = 0, lan: bool = False, token: str | None = None, clock=time.time
 ) -> PageServer:
-    srv = PageServer(("0.0.0.0" if lan else "127.0.0.1", port), _Handler)
+    srv = PageServer((bind_address(lan), port), _Handler)
     srv.workspace = Path(workspace).resolve()
     srv.token = token or secrets.token_urlsafe(24)
     srv.lan = lan
@@ -386,10 +401,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _state(self, name: str, sdir: Path, _body) -> None:
         snap = snapshot.build(sdir)
         srv = self.server
-        if srv.lan and srv.lan_ip:  # the snapshot can't know the port: the phone link is added here
-            from bsa.review import launch
-
-            snap["phone"] = {"url": launch.page_url({"port": srv.port, "token": srv.token}, name, host=srv.lan_ip)}
+        phone = srv.phone_url(name)  # the snapshot can't know the port: the phone link is added here
+        if phone:
+            snap["phone"] = {"url": phone}
         tag = snapshot.etag(snap)
         with srv.lock:
             srv.seen[name] = srv.clock()

@@ -41,6 +41,14 @@ def test_lan_off_binds_loopback_only(tmp_path):
         s.server_close()
 
 
+def test_lan_picks_every_interface_without_binding_here(monkeypatch):
+    assert server._LAN_BIND == "0.0.0.0"
+    monkeypatch.delenv(server.BIND_ENV, raising=False)
+    assert server.bind_address(True) == "0.0.0.0" and server.bind_address(False) == "127.0.0.1"
+    monkeypatch.setenv(server.BIND_ENV, "127.0.0.1")  # what every test (and the servers they spawn) uses
+    assert server.bind_address(True) == "127.0.0.1" and server.bind_address(False) == "127.0.0.1"
+
+
 def test_lan_ip_sends_nothing_and_is_an_address_or_none():
     ip = launch.lan_ip()
     assert ip is None or (isinstance(ip, str) and ip.count(".") == 3)
@@ -51,7 +59,7 @@ def test_lan_on_accepts_lan_host(tmp_path, monkeypatch):
     s = server.make_server(tmp_path, lan=True)
     _serving(s)
     try:
-        assert s.server_address[0] == "0.0.0.0" and s.lan_ip == LAN
+        assert s.server_address[0] == "127.0.0.1" and s.lan is True and s.lan_ip == LAN  # BSA_PAGE_BIND
         assert _get(s, "/api/health", f"{LAN}:{s.port}")[0] == 200
         assert _get(s, "/api/health", f"192.168.1.21:{s.port}")[0] == 403
     finally:

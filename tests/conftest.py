@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,21 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# Phone access binds every interface; tests never do (no firewall prompt, nothing on the developer's network). The
+# variable reaches the page servers the CLI spawns too, and the guard fails any in-process bind to a wildcard address.
+os.environ["BSA_PAGE_BIND"] = "127.0.0.1"
+_WILDCARD = ("0.0.0.0", "", "::")
+_real_bind = socket.socket.bind
+
+
+def _guarded_bind(self, address):
+    if isinstance(address, tuple) and address and address[0] in _WILDCARD:
+        raise AssertionError(f"a test tried to listen on every interface: {address!r}")
+    return _real_bind(self, address)
+
+
+socket.socket.bind = _guarded_bind
 
 # Modules under tests/blender import bpy and only run inside Blender (via runner.py).
 collect_ignore_glob = ["blender/test_*.py"]
