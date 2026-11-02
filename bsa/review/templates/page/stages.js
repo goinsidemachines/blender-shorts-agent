@@ -445,7 +445,8 @@
     });
     return ctx.el("div", null,
       ctx.el("p", { class: "muted" }, "Claude records the voice for every line. Add a note beside this stage if it needs a change."),
-      dl);
+      dl,
+      content.voice && BSA.review && BSA.review.voice ? BSA.review.voice(ctx, content.voice) : null);
   };
 
   // ------------------------------------------------------------------ Render

@@ -9,6 +9,7 @@ import pytest
 from playwright.sync_api import expect
 
 from browser.conftest import assert_healthy, open_short
+from bsa.narrate.run import WHISPER_MISSING
 from bsa.review import notes, snapshot
 
 pytestmark = pytest.mark.browser
@@ -225,4 +226,42 @@ def test_long_timeline_renders_under_50ms_per_poll(view, live_server):
         expect(p.get_by_text(f"poll {i}", exact=True)).to_be_visible(timeout=4000)
     assert p.evaluate("document.querySelector('.tl-track').dataset.mark") == "kept"  # the track was reused, not rebuilt
     assert p.evaluate("BSA.renderMs") < 50
+    assert_healthy(p)
+
+
+def test_voice_table_shows_the_diff_and_retake_note(view, live_server):
+    srv = live_server("render")
+    pagefix.write_heard(srv.sdir, {"l02": "length set the beat"})
+    p = open_short(view, srv, stage="narration")
+    row = p.locator("tr[data-line='l02']")
+    expect(row.locator("mark", has_text="set")).to_be_visible()
+    expect(row.get_by_text("Didn't pass the check")).to_be_visible()
+    p.get_by_role("button", name="Re-take: l02").click()
+    box = p.get_by_role("textbox")
+    expect(box).to_have_value("Re-take this line")
+    p.get_by_role("button", name="Save note").click()
+    assert _until(lambda: bool(notes.load(srv.sdir)))
+    n = notes.load(srv.sdir)[-1]
+    assert n["target"]["id"] == "l02" and n["text"] == "Re-take this line"
+    assert_healthy(p)
+
+
+def test_voice_table_says_why_it_was_not_checked(view, live_server):
+    srv = live_server("render")
+    pagefix.write_heard(srv.sdir, {}, checked=False, why_not=WHISPER_MISSING)
+    p = open_short(view, srv, stage="narration")
+    expect(p.get_by_text(WHISPER_MISSING)).to_be_visible()
+    expect(p.locator("tr[data-line='l01']").get_by_text("Not checked")).to_be_visible()
+    assert_healthy(p)
+
+
+def test_voice_table_shows_a_deleted_take_as_waiting(view, live_server):
+    srv = live_server("render")
+    pagefix.write_heard(srv.sdir, {"l02": "length set the beat"})
+    (srv.sdir / "audio" / "vo" / "l02.wav").unlink()  # what a re-take does
+    p = open_short(view, srv, stage="narration")
+    row = p.locator("tr[data-line='l02']")
+    expect(row.get_by_text("Waiting for a new take")).to_be_visible()
+    expect(row.locator("mark")).to_have_count(0)
+    expect(row.get_by_text("length set the beat")).to_have_count(0)
     assert_healthy(p)

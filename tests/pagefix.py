@@ -13,8 +13,9 @@ from pathlib import Path
 import numpy as np
 
 from bsa import engine_runs, jobstate, render_status, workspace
-from bsa.review import decisions, snapshot, stages
-from bsa.short import load_short
+from bsa.narrate.run import HEARD_FILE
+from bsa.review import decisions, snapshot, stages, worddiff
+from bsa.short import load_short, spoken_text
 from bsa.timeline import Card, Span, Timeline, build_timeline, timeline_hash, to_json
 
 SOURCE = Path(__file__).resolve().parent / "e2e" / "pendulum" / "source" / "short.json"
@@ -224,3 +225,19 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
         make_counter_mp4(sdir / "out" / "pendulum.mp4")
         record_edit(sdir, "final")
     return sdir
+
+
+def write_heard(sdir: Path, lines: dict[str, str], *, checked: bool = True, why_not: str | None = None) -> None:
+    """audio/vo/heard.json for the short, with `lines` heard as given ({line id: what Whisper heard}), their word
+    error rates from worddiff, and a take file for each line heard."""
+    short = load_short(sdir / "source" / "short.json")
+    vo = sdir / "audio" / "vo"
+    vo.mkdir(parents=True, exist_ok=True)
+    entries = {}
+    for ln in short.lines:
+        if ln.id in lines:
+            want, said = spoken_text(ln), lines[ln.id]
+            entries[ln.id] = {"text": want, "said": said, "wer": worddiff.wer(want, said)}
+            (vo / f"{ln.id}.wav").write_bytes(b"RIFF")
+    data = {"checked": checked, "why_not": why_not, "lines": entries}
+    (vo / HEARD_FILE).write_text(json.dumps(data, indent=2), encoding="utf-8")

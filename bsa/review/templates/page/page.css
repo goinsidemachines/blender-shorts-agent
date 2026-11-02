@@ -379,3 +379,9 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   .btn.primary:active, .stage-btn:active { transform: translateY(2px); box-shadow: none; }
   .live i { transition: background .3s ease; }
 }
+
+.voice mark { background: var(--soft); color: var(--fg); font-weight: 800; padding: 0 3px; border-radius: 4px; }
+.voice del { background: var(--warn-soft); color: var(--fg); text-decoration: line-through; padding: 0 3px;
+  border-radius: 4px; }
+.voice .voice-bad { margin: 6px 0 0; font-weight: 800; }
+.voice .note { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--r-sm); background: var(--soft); }

@@ -20,7 +20,8 @@ from bsa import closing as closing_mod
 from bsa import engine_runs, feedback, jobstate, messages, render_status, rules
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
-from bsa.review import decisions, notes, pages, stages, store, track, versions
+from bsa.narrate.run import HEARD_FILE
+from bsa.review import decisions, notes, pages, stages, store, track, versions, voice
 from bsa.short import Short, label_text, load_short
 from bsa.timeline import build_timeline, pacing
 
@@ -290,12 +291,15 @@ def _narration(ctx: Ctx) -> dict | None:
         raise RuntimeError(ctx.state_problem)
     info = ctx.state["stages"].get("narration") or {}
     vo = ctx.sdir / "audio" / "vo"
-    return {
+    content = {
         "status": info.get("status"),
         "provider": info.get("provider"),
         "message": info.get("message"),
         "takes": len(list(vo.glob("*.wav"))) if vo.is_dir() else 0,
     }
+    if ctx.short is not None and (vo / HEARD_FILE).is_file():  # only once narration has run
+        content["voice"] = voice.block(ctx.sdir, ctx.short, content)
+    return content
 
 
 APPROVED_RUNS = ("preview", "final")  # the approved engine's runs; any other status key is a side run
@@ -465,7 +469,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"engine": ("runs",), "final": ("timeline", "timeline_problem")}
+_UNVERSIONED = {"engine": ("runs",), "narration": ("voice",), "final": ("timeline", "timeline_problem")}
 
 
 def _version_of(sdir: Path, stage: str, content: dict) -> int | None:

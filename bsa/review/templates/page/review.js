@@ -250,5 +250,45 @@
     return t.node;
   };
 
+  // The voice check: per line what was said against what should have been, words that differ marked.
+  function diffCell(ctx, row) {
+    var ops = row.diff || [];
+    var kids = [];
+    ops.forEach(function (op, i) {
+      var word = String(op[1]);
+      if (i) kids.push(" ");
+      kids.push(op[0] === "same" ? word : ctx.el(op[0] === "missing" ? "del" : "mark", null, word));
+    });
+    return kids;
+  }
+
+  review.voice = function (ctx, v) {
+    var el = ctx.el;
+    var lines = (v && v.lines) || [];
+    var out = [];
+    if (v && v.why_not) out.push(el("p", { class: "note" }, String(v.why_not)));
+    if (!lines.length) return el("div", { class: "voice" }, out);
+    var rows = lines.map(function (row) {
+      var verdict = [];
+      if (row.stale) verdict.push(el("p", { class: "muted" }, "Not checked since the line changed"));
+      else if (row.waiting) verdict.push(el("p", { class: "muted" }, "Waiting for a new take"));
+      else if (row.ok === false) verdict.push(el("p", { class: "voice-bad" }, "Didn't pass the check"));
+      var heard = row.said === null || row.said === undefined || row.stale || row.waiting ? null : String(row.said);
+      var diff = row.diff ? diffCell(ctx, row) : [];
+      return el("tr", { "data-line": String(row.id) },
+        el("td", null, el("strong", null, String(row.id)), el("br"), String(row.text)),
+        el("td", null, heard === null ? el("span", { class: "muted" }, row.ok === null && !row.stale && !row.waiting ? "Not checked" : "") : heard),
+        el("td", null, diff, verdict,
+          ctx.noteButton("line", row.id, "Re-take: " + row.id, "Re-take this line")));
+    });
+    out.push(el("div", { class: "tablewrap", role: "region", "aria-label": "Voice check", tabindex: "0" },
+      el("table", null,
+        el("thead", null, el("tr", null, ["Line", "What was said", "Difference"].map(function (h) {
+          return el("th", { scope: "col" }, h);
+        }))),
+        el("tbody", null, rows))));
+    return el("div", { class: "voice" }, out);
+  };
+
   review.STALE = STALE;
 })();
