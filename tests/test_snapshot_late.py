@@ -253,3 +253,15 @@ def test_render_runs_have_their_own_timelines(tmp_path):
     (sdir / "source" / "timeline.json").write_text("{", encoding="utf-8")
     runs = {r["key"]: r for r in _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"]}
     assert runs["preview"]["timeline"] is None and runs["preview"]["timeline_problem"]
+
+
+def test_final_says_when_its_timeline_cannot_be_read_without_moving_the_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "final")
+    pagefix.write_timeline(sdir, frames=90)
+    (sdir / "out").mkdir(exist_ok=True)
+    (sdir / "out" / "pendulum.mp4").write_bytes(bytes(2000))  # a stand-in when ffmpeg is missing, never played
+    pagefix.record_edit(sdir, "final")
+    v = _stage(snapshot.build(sdir, settings={}), "final")["version"]
+    (sdir / "source" / "timeline.json").write_text("{", encoding="utf-8")
+    row = _stage(snapshot.build(sdir, settings={}), "final")
+    assert row["content"]["timeline"] is None and row["content"]["timeline_problem"] and row["version"] == v

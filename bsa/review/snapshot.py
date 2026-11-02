@@ -416,12 +416,12 @@ def _final(ctx: Ctx) -> dict | None:
         rows.append({"id": fid, "check": f.check, "severity": f.severity, "message": f.message, "where": _where(f),
                      "redo": f.redo})  # fmt: skip
     size = mp4.stat().st_size if mp4.is_file() and not writing else None
-    timeline = None
+    timeline, timeline_problem = None, None
     if size is not None:
         try:
             timeline = track.build(ctx.sdir, short, "final")
-        except Exception:  # noqa: BLE001 - a bad timeline.json hides the timeline, not the video
-            timeline = None
+        except Exception as e:  # noqa: BLE001 - a bad timeline.json hides the timeline, not the video
+            timeline_problem = _plain(ctx.sdir, e)
     return {
         "video": {"file": f"out/{short.slug}.mp4"} if size is not None else None,
         "writing": writing,
@@ -432,6 +432,7 @@ def _final(ctx: Ctx) -> dict | None:
         "rules": _rule_rows(ctx, short),
         "closing": _closing_card(ctx, short),
         "timeline": timeline,
+        **({"timeline_problem": timeline_problem} if timeline_problem else {}),
     }
 
 
@@ -464,7 +465,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"engine": ("runs",), "final": ("timeline",)}
+_UNVERSIONED = {"engine": ("runs",), "final": ("timeline", "timeline_problem")}
 
 
 def _version_of(sdir: Path, stage: str, content: dict) -> int | None:

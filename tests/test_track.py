@@ -107,3 +107,32 @@ def test_stale_when_the_timeline_changed_since_the_edit(sdir):
     del runs["final"]["edit"]
     (sdir / "review" / "engine-runs.json").write_text(json.dumps(runs), encoding="utf-8")
     assert _build(sdir)["stale"] is True
+
+
+def test_a_different_fps_makes_the_edit_stale(sdir):
+    runs = json.loads((sdir / "review" / "engine-runs.json").read_text(encoding="utf-8"))
+    runs["final"]["edit"]["fps"] = 24.0
+    (sdir / "review" / "engine-runs.json").write_text(json.dumps(runs), encoding="utf-8")
+    tl = _build(sdir)
+    assert tl["stale"] is True and tl["fps"] == 24 and "24 fps" in tl["problem"]
+
+
+def test_a_finding_range_is_checked_and_clamped(sdir):
+    base = {"check": "c", "severity": "warning", "frame": 40}
+    (sdir / "review" / "checks.json").write_text('{"findings": []}', encoding="utf-8")
+    _frame_checks(sdir, "final", [{**base, "message": "a", "f1": 30}, {**base, "message": "b", "f1": 500},
+                                  {**base, "message": "c", "f1": 45}])  # fmt: skip
+    got = {f["text"]: f.get("f1") for f in _build(sdir)["tracks"]["findings"]}
+    assert got == {"a": None, "b": 90, "c": 45}
+
+
+def test_a_sound_of_a_missing_shot_is_a_problem_line(sdir):
+    _short_json(sdir, lambda d: d["sfx"][0].update(shot="s09"))
+    tl = _build(sdir)
+    assert tl["tracks"]["sounds"] == [] and "whoosh (shot s09)" in tl["problem"]
+
+
+def test_any_events_failure_keeps_the_rest_of_the_track(sdir):
+    (sdir / "source" / "events.json").write_text(json.dumps([{"kind": "nope", "frame": 5}]), encoding="utf-8")
+    tl = _build(sdir)
+    assert [s["kind"] for s in tl["tracks"]["sounds"]] == ["whoosh"] and "events.json" in tl["problem"]

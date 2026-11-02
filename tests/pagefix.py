@@ -146,7 +146,7 @@ def record_edit(sdir: Path, key: str, *, stale: bool = False, closing: int = 0) 
     source/timeline.json, or, with `stale`, another timing. `closing` frames of closing card follow the story."""
     data = json.loads((sdir / "source" / "timeline.json").read_text(encoding="utf-8"))
     n = data["n_frames"]
-    slug = "pendulum"
+    slug = load_short(sdir / "source" / "short.json").slug
     mp4 = sdir / "out" / (f"{slug}.mp4" if key == "final" else f"{slug}-{key}.mp4")
     if not mp4.is_file() and not make_mp4(mp4) and key != "final":  # the final's file is make_short's to make
         mp4.parent.mkdir(parents=True, exist_ok=True)

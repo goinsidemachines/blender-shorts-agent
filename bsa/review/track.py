@@ -47,18 +47,23 @@ def _ranges(frames: set[int]) -> list[tuple[int, int]]:
 def _sounds(sdir: Path, short: Short, tl) -> tuple[list[dict], str | None]:
     spans = {s.id: s for s in tl.shots}
     problem = None
+    lost = []
     sfx = list(short.sfx)
     try:
         sfx = events.to_sfx(events.load(events.path(sdir)), tl) + sfx
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+    except Exception as e:  # noqa: BLE001 - one bad events file must not hide the other sounds
         problem = f"source/events.json can't be used: {e}".splitlines()[0][:200]
     rows = []
     for fx in sfx:
         span = spans.get(fx.shot)
         if span is None:
+            lost.append(f"{fx.kind} (shot {fx.shot})")
             continue
         f = span.f0 + math.floor(round(fx.at_s * tl.fps, 6))
         rows.append({"f": f, "kind": fx.kind, "label": fx.kind.replace("_", " ")})
+    if lost:
+        line = f"sounds left out, their shot is not in the timeline: {', '.join(lost)}"
+        problem = f"{problem}; {line}" if problem else line
     return sorted(rows, key=lambda r: r["f"]), problem
 
 
@@ -81,8 +86,8 @@ def _finding_rows(sdir: Path, run_key: str, frames: int) -> tuple[list[dict], li
             seen.add(fid)
             row = {"id": fid, "f": f.frame, "severity": f.severity, "check": f.check, "text": f.message,
                    "shot": f.shots[0] if f.shots else None}  # fmt: skip
-            if f.frame is not None and _is_int(raw.get("f1")):
-                row["f1"] = raw["f1"]
+            if f.frame is not None and _is_int(raw.get("f1")) and raw["f1"] >= f.frame:
+                row["f1"] = min(raw["f1"], frames)
             if f.frame is None:
                 unplaced.append({**row, "why": "no frame"})
             elif not 1 <= f.frame <= frames:
@@ -108,6 +113,9 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
         fps = int(fps) if fps == int(fps) else float(fps)
     else:
         fps = tl.fps
+    reasons = []
+    if fps != tl.fps:
+        reasons.append(f"this video runs at {fps:g} fps but the timeline at {tl.fps}")
     frames = edit.get("frames") if _is_int(edit.get("frames")) and edit["frames"] > 0 else tl.n_frames
     closing = edit.get("closing")
     closing = ({"f0": closing["f0"], "f1": closing["f1"]}
@@ -119,6 +127,8 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
         if span is not None:
             holds += [{"f0": a, "f1": b, "shot": shot.id} for a, b in _ranges(held_frames(shot, span, tl.fps))]
     sounds, problem = _sounds(sdir, short, tl)
+    if reasons:
+        problem = "; ".join([*reasons, *([problem] if problem else [])])
     findings, unplaced = _finding_rows(sdir, run_key, frames)
     return {
         "run": run_key,
@@ -135,6 +145,6 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
             "closing": closing,
         },
         "unplaced": unplaced,
-        "stale": edit.get("timeline_hash") != timeline_hash(data),
+        "stale": bool(reasons) or edit.get("timeline_hash") != timeline_hash(data),
         "problem": problem,
     }
