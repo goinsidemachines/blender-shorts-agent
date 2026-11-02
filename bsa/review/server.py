@@ -466,7 +466,7 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError(f"unknown stage {stage!r}")
             target = body.get("target")
             if isinstance(target, dict) and not all(isinstance(target.get(k), (str, int, type(None)))
-                                                    for k in ("id", "version")):  # fmt: skip
+                                                    for k in ("id", "version", "shot")):  # fmt: skip
                 raise ValueError("a note's target id and version must be plain values")
             return self._json(200, {"note": notes.add(sdir, stage, target, body.get("text"), "page")})
         if op == "send":

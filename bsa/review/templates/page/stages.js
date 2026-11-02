@@ -477,6 +477,38 @@
     return img;
   }
 
+  // ------------------------------------------------------------------ timelines
+
+  // The timeline under a video (review.js), or why there is none; null when the snapshot has neither.
+  function timelineBlock(ctx, tl, problem, videoNode, key, noteId) {
+    if (tl && videoNode && BSA.review && BSA.review.timeline) {
+      return BSA.review.timeline(ctx, tl, { videoNode: videoNode, key: key, noteId: noteId });
+    }
+    return problem ? ctx.el("p", { class: "muted" }, "The timeline can't be shown: " + String(problem)) : null;
+  }
+
+  var runPlayers = {}; // run key -> {key, node}: each run's own video element, kept across live updates
+
+  function runVideo(ctx, r) {
+    var url = ctx.fileUrl(r.timeline.video);
+    var key = url + "#" + r.state + "#" + r.timeline.frames;
+    var p = runPlayers[r.key];
+    if (p && p.key === key) return p.node;
+    var node = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", src: url,
+      "aria-label": "The " + r.label + " video" }, "Your browser cannot play this video.");
+    runPlayers[r.key] = { key: key, node: node };
+    return node;
+  }
+
+  function runTimeline(ctx, r) {
+    if (!r.timeline || !r.timeline.video) {
+      return r.timeline_problem ? section(ctx, "Video", timelineBlock(ctx, null, r.timeline_problem)) : null;
+    }
+    var node = runVideo(ctx, r);
+    return section(ctx, "Video", [ctx.el("div", { class: "video-wrap" }, node),
+      timelineBlock(ctx, r.timeline, null, node, "run:" + r.key, function (f) { return r.key + ":" + f; })]);
+  }
+
   function runPanel(ctx, r, shown) {
     var f = r.frames || {};
     var total = Number(f.total) || 0;
@@ -492,6 +524,7 @@
     ctx.el("span", { style: "width:" + percent + "%" })),
     total ? ctx.el("p", { class: "frames" }, ctx.el("strong", null, done + " of " + total + " frames"),
       eta ? ctx.el("span", { class: "muted" }, " · about " + eta + " left") : null) : null,
+    runTimeline(ctx, r),
     (r.steps || []).length ? section(ctx, "Steps", ctx.el("ol", { class: "steps" }, r.steps.map(function (s) {
       return ctx.el("li", { class: "step" }, ctx.el("span", { class: "step-name" }, String(s.name)), stateChip(ctx, s.state));
     }))) : null,
@@ -622,10 +655,13 @@
 
   BSA.stages.final = function (content, ctx) {
     var size = typeof content.size_mb === "number" ? " · " + content.size_mb.toFixed(1) + " MB" : "";
+    var node = content.video ? video(ctx, content.video) : null;
+    var track = node ? timelineBlock(ctx, content.timeline, content.timeline_problem, node, "final", String) : null;
     return ctx.el("div", { class: "st-final" },
-      content.video ? ctx.el("div", { class: "video-wrap" }, video(ctx, content.video),
+      node ? ctx.el("div", { class: "video-wrap" }, node,
         ctx.el("p", { class: "muted" }, String(content.video.file).split("/").pop() + size))
         : ctx.el("p", { class: "muted" }, "The final video is not made yet."),
+      track ? section(ctx, "Timeline", track) : null,
       ackBlock(ctx, content),
       section(ctx, "Checks", findingsBlock(ctx, content)),
       rulesPanel(ctx, content.rules, "How this short keeps each of your rules."),

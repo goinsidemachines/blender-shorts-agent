@@ -45,6 +45,7 @@ def render(mode: str, snapshot: dict | None = None) -> str:
         "SNAPSHOT": embedded,
         "CSS": _part("page.css").replace("</", "<\\/"),
         "QR": _script_safe(_part("qr.js")),
+        "REVIEW": _script_safe(_part("review.js")),
         "STAGES": _script_safe(_part("stages.js")),
         "PAGE": _script_safe(_part("page.js")),
     }

@@ -33,6 +33,16 @@ def test_note_round_trip(tmp_path):
     assert done["status"] == "done" and notes.load(tmp_path)[0]["reply"] == "Changed it to 'beat'."
 
 
+def test_frame_note_keeps_its_shot(tmp_path):
+    n = notes.add(tmp_path, "final", {"kind": "frame", "id": "12", "shot": "s02", "version": 1}, "Dot here", "page")
+    assert n["target"] == {"kind": "frame", "id": "12", "shot": "s02", "version": 1}
+    n = notes.add(tmp_path, "final", {"kind": "frame", "id": "95", "shot": None, "version": 1}, "Card", "page")
+    assert n["target"] == {"kind": "frame", "id": "95", "shot": None, "version": 1}
+    assert "shot" not in notes.add(tmp_path, "final", {"kind": "line", "id": "l01", "shot": "s01"}, "x", "page")["target"]
+    with pytest.raises(ValueError, match="shot"):
+        notes.add(tmp_path, "final", {"kind": "frame", "id": "3", "shot": ["s01"], "version": 1}, "x", "page")
+
+
 def test_note_validation(tmp_path):
     with pytest.raises(ValueError, match="4000"):
         notes.add(tmp_path, "story", OVERALL, "x" * 4001, "page")

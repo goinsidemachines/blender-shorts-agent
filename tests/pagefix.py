@@ -53,6 +53,28 @@ def make_mp4(path: Path, seconds: float = 1.0) -> bool:
     return subprocess.run(cmd, check=False, capture_output=True).returncode == 0 and path.exists()
 
 
+COUNTER_STEP = 7 * 255 / 219  # the full-range grey between two frames of a counter video
+
+
+def make_counter_mp4(path: Path, frames: int = 30) -> bool:
+    """A 270x480 30 fps H.264 MP4 whose frame n (1-based) is a flat grey, (n-1)*7*255/219 in full range, so the
+    frame on screen can be read back from one pixel (counter_frame). False when ffmpeg is missing."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return False
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=gray:s=270x480:r=30",
+           "-vf", "format=yuv420p,geq=lum='16+N*7':cb=128:cr=128", "-frames:v", str(frames),
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "10", str(path)]  # fmt: skip
+    return subprocess.run(cmd, check=False, capture_output=True).returncode == 0 and path.exists()
+
+
+def counter_frame(grey: float) -> int:
+    """The frame (1-based) of a counter video (make_counter_mp4) whose pixel reads `grey` (0-255)."""
+    return round(grey / COUNTER_STEP) + 1
+
+
 SHOTS = ("s01", "s02", "s03")
 FRAMES = 90  # a render-status fixture's frames, 30 a shot
 REDO_ALL = "BLENDER render SHORT --preset preview --redo-flagged"
@@ -167,8 +189,9 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
 
     Every page stage before it is marked done in state.json, with an applied approve decision for each approval
     stage. From Render on it has the preview's render status (running while Render is current, else done) and,
-    with `side_run`, a finished side run's (`preview-<side_run>`); after Render, the checks, the frame checks and
-    the final MP4 (when ffmpeg is there). The post text comes with the short.json."""
+    with `side_run`, a finished side run's (`preview-<side_run>`), on a 30-frame timeline; after Render, the checks,
+    the frame checks and the final MP4 (a 30-frame counter video, when ffmpeg is there). The post text comes with
+    the short.json."""
     if stage != "done" and stage not in stages.PAGE_STAGES:
         raise ValueError(f"unknown stage {stage!r}")
     sdir = workspace.new_short(Path(workspace_dir), "Pendulum", number)
@@ -194,10 +217,10 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
                             done=10 if stage == "render" else FRAMES)  # fmt: skip
         if side_run:
             write_render_status(sdir, f"preview-{side_run}", state="done")
-        write_timeline(sdir)
+        write_timeline(sdir, frames=30)  # the final's counter video is 30 frames: the flicker at 12 sits on it
         record_edit(sdir, "preview")
     if upto > stages.PAGE_STAGES.index("render"):
         _write_checks(sdir)
-        make_mp4(sdir / "out" / "pendulum.mp4")
+        make_counter_mp4(sdir / "out" / "pendulum.mp4")
         record_edit(sdir, "final")
     return sdir

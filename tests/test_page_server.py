@@ -180,6 +180,15 @@ def test_note_text_limit_message(srv):  # Review Focus 5 (server side)
     assert notes.load(srv.sdir)[-1]["by"] == "page"
 
 
+def test_frame_note_shot_must_be_plain(srv):
+    target = {"kind": "frame", "id": "12", "shot": {"x": 1}, "version": 1}
+    r = api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "final", "target": target, "text": "x"})
+    assert r.status == 400 and "plain values" in body(r)["error"]
+    target["shot"] = "s02"
+    r = api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "final", "target": target, "text": "x"})
+    assert r.status == 200 and notes.load(srv.sdir)[-1]["target"]["shot"] == "s02"
+
+
 def test_notes_send_and_withdraw(srv):
     target = {"kind": "overall", "id": None, "version": 1}
     a = body(api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story", "target": target,

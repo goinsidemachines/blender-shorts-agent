@@ -53,6 +53,12 @@ def add(sdir: Path, stage: str, target: dict, text: str, by: str, now: float | N
         raise ValueError("a note needs some text")
     if len(text) > MAX_TEXT:
         raise ValueError(f"a note can be at most {MAX_TEXT} characters; this one is {len(text)}")
+    keep = {"kind": kind, "id": target.get("id"), "version": target.get("version")}
+    if kind == "frame":  # a moment of the video also names the shot on screen (None on the closing card)
+        shot = target.get("shot")
+        if shot is not None and not isinstance(shot, str):
+            raise ValueError(f"a frame note's shot must be a shot id or null, not {shot!r}")
+        keep["shot"] = shot
     made: dict = {}
 
     def fn(items):
@@ -61,7 +67,7 @@ def add(sdir: Path, stage: str, target: dict, text: str, by: str, now: float | N
             {
                 "id": f"n{top + 1}",
                 "stage": stage,
-                "target": {"kind": kind, "id": target.get("id"), "version": target.get("version")},
+                "target": keep,
                 "text": text,
                 "created": _now_iso(now),
                 "by": by,

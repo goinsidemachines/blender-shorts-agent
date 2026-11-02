@@ -39,7 +39,7 @@
   let timer = null;
   let polling = false;
   let pollAgain = false;
-  let editor = null; // {stage, kind, id, version, label, text}
+  let editor = null; // {stage, kind, id, version, label, text, shot?, back}
   let actionError = null;
   let notice = null;
   let busy = false;
@@ -456,8 +456,18 @@
     return decide(s.id, "approve", got.choice);
   }
 
-  function openEditor(s, kind, id, label) {
-    editor = { stage: s.id, kind, id: id === undefined ? null : id, version: s.version, label: label || null, text: "" };
+  // The note editor on a target. `label` (optional) names it above the text box, `prefill` starts its text, `shot`
+  // goes with a frame note's target, and focus goes back to `back` (a data-k) when it closes.
+  function noteOrigin(s, kind, id) {
+    return kind === "overall" ? overallKey(s.id) : `note:${s.id}:${kind}:${id}`;
+  }
+
+  function openEditor(s, kind, id, opts) {
+    const o = opts || {};
+    id = id === undefined ? null : id;
+    editor = { stage: s.id, kind, id, version: s.version, label: o.label || null,
+      text: typeof o.prefill === "string" ? o.prefill : "", back: o.back || noteOrigin(s, kind, id) };
+    if (o.shot !== undefined) editor.shot = o.shot;
     actionError = null;
     notice = null;
     render();
@@ -466,7 +476,7 @@
   }
 
   function closeEditor() {
-    const back = editor ? `${editor.kind === "overall" ? "note-overall" : "note"}:${editor.stage}:${editor.kind}:${editor.id}` : null;
+    const back = editor ? editor.back : null;
     editor = null;
     render();
     const btn = back && document.querySelector(`[data-k="${CSS.escape(back)}"]`);
@@ -490,6 +500,7 @@
       return;
     }
     const target = { kind: editor.kind, id: editor.id, version: editor.version };
+    if (editor.shot !== undefined) target.shot = editor.shot;
     if (OFFLINE) {
       const note = { id: `local${offlineNotes.length + 1}`, stage: editor.stage, target, text: editor.text,
         by: "page", status: "open", reply: null };
@@ -499,7 +510,7 @@
       return;
     }
     const ed = editor;
-    const origin = ed.kind === "overall" ? overallKey(ed.stage) : `note:${ed.stage}:${ed.kind}:${ed.id}`;
+    const origin = ed.back;
     await act(() => post("notes", { op: "add", stage: ed.stage, target, text: ed.text }), {
       after: (ok) => { if (ok && editor === ed) editor = null; },
       fallback: [origin, overallKey(ed.stage)],
@@ -520,18 +531,26 @@
     return el("button", { type: "button", class: "btn small", onclick: () => copyAnswer(text) }, label || "Copy");
   }
 
-  function noteButton(s, kind, id, label) {
+  function noteButton(s, kind, id, label, prefill) {
     return el("button", {
       type: "button", class: "note-btn", "data-act": "1", "data-k": `note:${s.id}:${kind}:${id}`,
-      onclick: () => openEditor(s, kind, id),
+      onclick: () => openEditor(s, kind, id, { prefill }),
     }, label || `Note on ${kind} ${id}`);
+  }
+
+  // The editor on a target with no button of its own (a moment of a video): focus comes back to the control that
+  // opened it.
+  function noteAt(s, kind, id, label, prefill, shot) {
+    if (paused || busy) return;
+    openEditor(s, kind, id, { label, prefill, shot, back: activeKey() || overallKey(s.id) });
   }
 
   function makeCtx(s) {
     return {
       el, stage: s, version: s.version, offline: OFFLINE, fileUrl, copyButton,
       answerable: () => answerable(s), // the stage takes an answer now (none on its way, decisions readable)
-      noteButton: (kind, id, label) => noteButton(s, kind, id, label),
+      noteButton: (kind, id, label, prefill) => noteButton(s, kind, id, label, prefill),
+      noteAt: (kind, id, label, prefill, shot) => noteAt(s, kind, id, label, prefill, shot),
       decide: (stage, decision, choice) => decide(stage, decision, choice),
       copy: (text, what) => copyPlain(text, what),
       feedback: (snap && snap.feedback) || null, // the plugin feedback panel's report, only once the user said yes
@@ -655,7 +674,8 @@
 
   function editorBlock(s) {
     if (!editor || editor.stage !== s.id) return null;
-    const what = editor.kind === "overall" ? `Note on ${s.label} (overall)` : `Note on ${s.label}: ${targetWords(editor)}`;
+    const what = editor.label ? String(editor.label)
+      : editor.kind === "overall" ? `Note on ${s.label} (overall)` : `Note on ${s.label}: ${targetWords(editor)}`;
     const ta = el("textarea", { id: "bsa-note-text", rows: "4", "data-k": "editor" });
     ta.value = editor.text;
     ta.addEventListener("input", () => { if (editor) editor.text = ta.value; });
@@ -759,6 +779,15 @@
   }
 
   function render() {
+    const t0 = performance.now();
+    try {
+      draw();
+    } finally {
+      BSA.renderMs = performance.now() - t0;
+    }
+  }
+
+  function draw() {
     if (!hasStages()) { // nothing to draw yet (or a bad saved page): the offline and unreachable banners still show
       renderBanners();
       renderLive();
