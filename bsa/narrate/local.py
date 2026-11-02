@@ -12,7 +12,7 @@ from bsa.narrate.contract import NarrationError
 from bsa.settings import bsa_home
 
 WER_LIMIT = 0.15
-RETRY_SEEDS = (8, 9)
+RETRIES = 2  # an unclear take is spoken again with its seed + 1, then + 2
 _GPU_DEFAULT = "the GPU is busy or out of memory"
 
 
@@ -68,8 +68,9 @@ def generate(
     return contract.read_durations(out_dir, [ln.id for ln in lines])
 
 
-def verify(lines, out_dir: Path, run=subprocess.run) -> dict[str, float] | None:
-    """Word error rate per line, or None when Whisper isn't installed."""
+def hear(lines, out_dir: Path, run=subprocess.run) -> dict[str, dict] | None:
+    """What Whisper heard in each take and its word error rate, {id: {"said", "wer"}}; None when Whisper isn't
+    installed."""
     out_dir = Path(out_dir)
     lines_file = out_dir / "lines.json"
     contract.write_lines(lines_file, lines)
@@ -80,4 +81,14 @@ def verify(lines, out_dir: Path, run=subprocess.run) -> dict[str, float] | None:
     if proc.returncode != 0:
         raise NarrationError(f"verification failed (exit {proc.returncode}): {_tail(proc)}")
     data = _last_json(proc.stdout)
-    return {i: float(v["wer"]) for i, v in data.items() if isinstance(v, dict) and "wer" in v}
+    return {
+        i: {"said": str(v.get("text") or ""), "wer": float(v["wer"])}
+        for i, v in data.items()
+        if isinstance(v, dict) and "wer" in v
+    }
+
+
+def verify(lines, out_dir: Path, run=subprocess.run) -> dict[str, float] | None:
+    """Word error rate per line, or None when Whisper isn't installed."""
+    heard = hear(lines, out_dir, run=run)
+    return None if heard is None else {i: v["wer"] for i, v in heard.items()}

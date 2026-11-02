@@ -62,6 +62,12 @@ def make_short(*ids):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_whisper(monkeypatch):
+    """A narration that falls back on the default checker (ElevenLabs, a custom tool) never starts the real Whisper."""
+    monkeypatch.setattr(nrun, "_local", SimpleNamespace(hear=lambda lns, out: None))
+
+
+@pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     monkeypatch.setattr(elevenlabs, "_sleep", lambda s: None)
 
@@ -457,3 +463,166 @@ def test_local_engine_resumes_only_missing_or_bad_takes(tmp_path):
     res = nrun.narrate(tmp_path, short, settings, local=SimpleNamespace(generate=gen, verify=lambda *a: None))
     assert gens == [["l02", "l03"]]
     assert res.status == "ok" and res.durations == {"l01": 1.25, "l02": 2.0, "l03": 2.0}
+
+
+# --- what Whisper heard, and each take's seed ---------------------------------------------------------------------
+
+KOKORO = {"narrator": {"provider": "kokoro", "voice": "v", "speed": 1.0}}
+
+
+def takes_gen(log=None):
+    """A fake local engine that writes real takes (so a second narration keeps them) and logs (model, ids, seed)."""
+
+    def gen(model, lns, voice, speed, out, seed=7):
+        if log is not None:
+            log.append((model, [x.id for x in lns], seed))
+        for x in lns:
+            write_wav(Path(out) / f"{x.id}.wav", 1.0)
+        return {x.id: 1.0 for x in lns}
+
+    return gen
+
+
+gen = takes_gen()
+
+
+def heard_json(short_dir: Path) -> dict:
+    return json.loads((short_dir / "audio" / "vo" / "heard.json").read_text("utf-8"))
+
+
+def test_heard_json_keeps_what_whisper_heard(tmp_path):
+    hear = lambda lns, out: {x.id: {"said": "text for " + x.id, "wer": 0.0} for x in lns}
+    nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=SimpleNamespace(generate=gen, hear=hear))
+    h = heard_json(tmp_path)
+    assert h == {"checked": True, "why_not": None,
+                 "lines": {"l01": {"text": "Text for l01.", "said": "text for l01", "wer": 0.0}}}  # fmt: skip
+
+
+def test_heard_json_from_a_verify_only_checker(tmp_path):
+    """An injected checker with only verify (word error rates) still fills heard.json, without the words."""
+    nrun.narrate(tmp_path, make_short("l01"), KOKORO,
+                 local=SimpleNamespace(generate=gen, verify=lambda lns, out: {x.id: 0.1 for x in lns}))  # fmt: skip
+    assert heard_json(tmp_path)["lines"] == {"l01": {"text": "Text for l01.", "said": None, "wer": 0.1}}
+
+
+def test_whisper_missing_says_how_to_install(tmp_path):
+    res = nrun.narrate(tmp_path, make_short("l01"), KOKORO,
+                       local=SimpleNamespace(generate=gen, verify=lambda lns, out: None))  # fmt: skip
+    h = heard_json(tmp_path)
+    assert res.status == "ok"
+    assert h["checked"] is False and h["why_not"] == nrun.WHISPER_MISSING
+    assert nrun.WHISPER_MISSING == ("Whisper isn't installed, so the takes weren't checked. CLI voice plan "
+                                    "whisper-small.en shows what it downloads.")  # fmt: skip
+    assert h["lines"] == {"l01": {"text": "Text for l01.", "said": None, "wer": None}}
+
+
+def test_heard_json_says_why_the_check_was_off_or_failed(tmp_path):
+    off = {"narrator": {**KOKORO["narrator"], "verify": False}}
+    nrun.narrate(tmp_path, make_short("l01"), off, local=SimpleNamespace(generate=gen))
+    assert heard_json(tmp_path)["why_not"] == "The voice check is turned off (narrator.verify false)."
+
+    def broken(lns, out):
+        raise contract.NarrationError("verification failed (exit 2): boom")
+
+    res = nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=SimpleNamespace(generate=gen, hear=broken))
+    h = heard_json(tmp_path)
+    assert res.status == "ok" and h["checked"] is False
+    assert h["why_not"] == "The check couldn't run: verification failed (exit 2): boom."
+
+
+def test_captions_only_heard_json(tmp_path):
+    nrun.narrate(tmp_path, make_short("l01"), {"narrator": {"provider": "none"}})
+    assert heard_json(tmp_path) == {"checked": False, "lines": {},
+                                    "why_not": "This short uses captions only, so there is no voice to check."}  # fmt: skip
+
+
+def test_elevenlabs_takes_are_checked_without_retries(tmp_path):
+    calls, heard = [], []
+
+    def el(lns, voice, speed, out):
+        calls.append([x.id for x in lns])
+        for x in lns:
+            write_wav(out / f"{x.id}.wav")
+        return {x.id: 1.0 for x in lns}
+
+    def hear(lns, out):
+        heard.append([x.id for x in lns])
+        return {x.id: {"said": "mumble" if x.id == "l02" else x.text.lower(), "wer": 0.5 if x.id == "l02" else 0.0}
+                for x in lns}  # fmt: skip
+
+    settings = {"narrator": {"provider": "elevenlabs", "voice": "v", "speed": 1.0}}
+    res = nrun.narrate(tmp_path, make_short("l01", "l02"), settings, elevenlabs=el, local=SimpleNamespace(hear=hear))
+    assert calls == [["l01", "l02"]] and heard == [["l01", "l02"]]
+    assert res.status == "ok" and "l02" in res.message
+    h = heard_json(tmp_path)
+    assert h["checked"] is True and h["lines"]["l02"] == {"text": "Text for l02.", "said": "mumble", "wer": 0.5}
+
+
+def test_retake_deletes_the_take_and_moves_to_the_next_seed(tmp_path):
+    vo = tmp_path / "audio" / "vo"
+    gens = []
+    fake = SimpleNamespace(generate=takes_gen(gens), verify=lambda lns, out: {x.id: 0.0 for x in lns})
+    nrun.narrate(tmp_path, make_short("l01", "l02"), KOKORO, local=fake)
+    assert nrun.take_seeds(vo) == {"l01": 7, "l02": 7}
+    (vo / "durations.json").write_text(json.dumps({"l01": 1.0, "l02": 1.0}), encoding="utf-8")
+    s = nrun.retake(vo, "l02")
+    assert s == 8 and not (vo / "l02.wav").exists() and nrun.take_seeds(vo)["l02"] == 8
+    assert json.loads((vo / "durations.json").read_text(encoding="utf-8")) == {"l01": 1.0}
+    assert nrun.retake(vo, "l02") == 9  # a second re-take moves on again
+    nrun.narrate(tmp_path, make_short("l01", "l02"), KOKORO, local=fake)
+    assert gens == [("kokoro", ["l01", "l02"], 7), ("kokoro", ["l02"], 9)]
+    assert nrun.take_seeds(vo) == {"l01": 7, "l02": 9}
+
+
+def test_missing_takes_are_spoken_once_per_seed(tmp_path):
+    vo = tmp_path / "audio" / "vo"
+    gens = []
+    fake = SimpleNamespace(generate=takes_gen(gens), verify=lambda lns, out: None)
+    nrun.narrate(tmp_path, make_short("l01", "l02", "l03"), KOKORO, local=fake)
+    nrun.retake(vo, "l01")
+    nrun.retake(vo, "l03")
+    (vo / "l02.wav").unlink()
+    nrun.narrate(tmp_path, make_short("l01", "l02", "l03"), KOKORO, local=fake)
+    assert gens[1:] == [("kokoro", ["l01", "l03"], 8), ("kokoro", ["l02"], 7)]
+
+
+def test_retry_seeds_follow_the_takes_own_seed(tmp_path):
+    vo = tmp_path / "audio" / "vo"
+    gens = []
+    clear = SimpleNamespace(generate=takes_gen(gens), verify=lambda lns, out: {x.id: 0.0 for x in lns})
+    nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=clear)
+    nrun.retake(vo, "l01")
+    unclear = SimpleNamespace(generate=takes_gen(gens), verify=lambda lns, out: {x.id: 0.5 for x in lns})
+    res = nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=unclear)
+    assert [g[2] for g in gens] == [7, 8, 9, 10]
+    assert nrun.take_seeds(vo) == {"l01": 10} and "l01" in res.message
+    assert heard_json(tmp_path)["lines"]["l01"]["wer"] == 0.5
+
+
+def test_clear_stale_takes_keeps_seeds_of_kept_takes(tmp_path):
+    vo = tmp_path / "audio" / "vo"
+    narrator = KOKORO["narrator"]
+    nrun.clear_stale_takes(vo, _take_short(), narrator)
+    fake = SimpleNamespace(generate=gen, verify=lambda lns, out: None)
+    nrun.narrate(tmp_path, _take_short(), KOKORO, local=fake)
+    nrun.retake(vo, "l02")
+    assert nrun.clear_stale_takes(vo, _take_short(), narrator) == []
+    assert nrun.take_seeds(vo) == {"l01": 7, "l02": 8}  # a re-take's seed waits for its take
+    assert nrun.clear_stale_takes(vo, _take_short("Changed line."), narrator) == ["l01"]
+    assert nrun.take_seeds(vo) == {"l02": 8}
+    assert nrun.clear_stale_takes(vo, _take_short("Changed line."), {**narrator, "voice": "af_heart"}) == []
+    assert nrun.take_seeds(vo) == {}
+
+
+def test_take_seeds_empty_without_a_record(tmp_path):
+    assert nrun.take_seeds(tmp_path) == {}
+    (tmp_path / "narrator.json").write_text("not json", encoding="utf-8")
+    assert nrun.take_seeds(tmp_path) == {}
+
+
+def test_hear_returns_what_was_said(tmp_path):
+    out = json.dumps({"l01": {"text": "text for l one", "wer": 0.25}}) + "\n"
+    assert local.hear(lines("l01"), tmp_path, run=lambda c, **k: completed(0, out)) == {
+        "l01": {"said": "text for l one", "wer": 0.25}
+    }
+    assert local.hear(lines("l01"), tmp_path, run=lambda c, **k: completed(5)) is None
