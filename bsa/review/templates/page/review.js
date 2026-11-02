@@ -355,6 +355,7 @@
   var compareOpen = {}; // stage id -> the version whose view is open, kept across live updates while it is offered
   var boardSide = "now"; // below 768 px each storyboard shot shows one still: "before" or "now"
   var cmpVideos = null; // {key, now, before}: the final's two compare videos, kept across live updates
+  var showUnchanged = false; // the Story compare's unchanged lines, collapsed until the user opens them
 
   function playQuietly(v) {
     var p = v.play();
@@ -363,8 +364,15 @@
 
   // Play, pause and seek on either video drive the other. The guard is the state itself: a video is only told to
   // do what it isn't already doing, so the event the follower then fires finds the leader in step and stops there.
+  // While both play, the before video is put back in step with now's when it drifts more than 2 frames.
   function syncVideos(a, b, fps) {
     var tol = 0.5 / fps;
+    a.addEventListener("timeupdate", function () {
+      if (a.paused || b.paused || a.seeking || b.seeking) return;
+      if (Math.abs(b.currentTime - a.currentTime) > 2 / fps) {
+        try { b.currentTime = a.currentTime; } catch (e) { /* not seekable yet */ }
+      }
+    });
     function align(src, dst) {
       if (Math.abs(dst.currentTime - src.currentTime) > tol) {
         try { dst.currentTime = src.currentTime; } catch (e) { /* not seekable yet */ }
@@ -380,10 +388,15 @@
   }
 
   function compareVideos(ctx, content, ref, version) {
-    var nowUrl = content.video ? ctx.fileUrl(content.video) : "";
+    var nowUrl = content.video ? ctx.fileUrl(content.video, ctx.version) : "";
     var beforeUrl = ctx.fileUrl(ref);
     var key = nowUrl + "#" + ctx.version + "|" + beforeUrl;
     if (cmpVideos && cmpVideos.key === key) return cmpVideos;
+    if (cmpVideos) { // stop the old pair's downloads (see stages.js release)
+      [cmpVideos.now, cmpVideos.before].forEach(function (v) {
+        if (v) { v.pause(); v.removeAttribute("src"); v.load(); }
+      });
+    }
     var now = nowUrl ? ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata",
       src: nowUrl, "aria-label": "The final video now" }, "Your browser cannot play this video.") : null;
     var before = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", muted: true,
@@ -395,36 +408,91 @@
       syncVideos(now, before, fps);
     }
     cmpVideos = { key: key, now: now, before: before };
+    [now, before].forEach(function (v) { if (v) v.addEventListener("play", pauseOthers); });
     return cmpVideos;
   }
 
-  // One line's words: same as they are, <del> for a word only version N had, <ins> for a new one, <mark> for a word
-  // that took another's place. Each change also says so in words for a screen reader.
+  function inPair(v) {
+    return !!cmpVideos && (v === cmpVideos.now || v === cmpVideos.before);
+  }
+
+  // One sound at a time: the compare pair playing pauses every other video on the page (the main player), and any
+  // other video starting pauses the pair.
+  function pauseOthers() {
+    document.querySelectorAll("video").forEach(function (v) { if (!inPair(v) && !v.paused) v.pause(); });
+  }
+  document.addEventListener("play", function (e) {
+    var v = e.target;
+    if (!cmpVideos || !(v instanceof HTMLVideoElement) || inPair(v)) return;
+    [cmpVideos.now, cmpVideos.before].forEach(function (w) { if (w && w.isConnected && !w.paused) w.pause(); });
+  }, true); // media events don't bubble: caught on the way down
+
+  // One line's words: same as they are, <del> for a word only version N had, <ins> for a new one, and a <mark>
+  // holding both for a word that took another's place (worddiff's ["changed", new, old]). Each change also says so in
+  // words for a screen reader.
   function diffWords(el, ops) {
     var kids = [];
+    function sr(text) { return el("span", { class: "sr-only" }, text); }
     ops.forEach(function (op, i) {
       var word = String(op[1]);
       if (i) kids.push(" ");
-      if (op[0] === "missing") kids.push(el("del", null, el("span", { class: "sr-only" }, "removed: "), word));
-      else if (op[0] === "extra") kids.push(el("ins", null, el("span", { class: "sr-only" }, "added: "), word));
-      else if (op[0] === "changed") kids.push(el("mark", null, el("span", { class: "sr-only" }, "changed to: "), word));
+      if (op[0] === "missing") kids.push(el("del", null, sr("removed: "), word));
+      else if (op[0] === "extra") kids.push(el("ins", null, sr("added: "), word));
+      else if (op[0] === "changed" && op.length > 2) {
+        kids.push(el("mark", null, sr("changed from: "), el("del", null, String(op[2])), " ", sr("to: "),
+          el("ins", null, word)));
+      } else if (op[0] === "changed") kids.push(el("mark", null, sr("changed to: "), word));
       else kids.push(word);
     });
     return kids;
   }
 
+  // How a line differs from version N: null when it doesn't.
+  function lineChange(ops) {
+    var kinds = {};
+    ops.forEach(function (op) { kinds[op[0]] = true; });
+    if (!kinds.missing && !kinds.extra && !kinds.changed) return null;
+    if (!kinds.same && !kinds.changed && !kinds.extra) return "Removed line";
+    if (!kinds.same && !kinds.changed && !kinds.missing) return "New line";
+    return "Changed";
+  }
+
   function storyView(ctx, h) {
     var el = ctx.el;
     var lines = (h.compare && h.compare.lines) || [];
+    var rows = [];
+    var quiet = [];
+    lines.forEach(function (ln) {
+      var ops = ln.diff || [];
+      var change = lineChange(ops);
+      var row = el("li", { class: "cmp-line" + (change ? " changed" : ""), "data-line": String(ln.id) },
+        el("p", { class: "cmp-line-head" }, el("strong", null, String(ln.id)),
+          change ? el("span", { class: "tag" }, change) : null),
+        el("p", null, ops.length ? diffWords(el, ops) : el("span", { class: "muted" }, "(no words)")));
+      if (!change) {
+        row.hidden = !showUnchanged;
+        quiet.push(row);
+      }
+      rows.push(row);
+    });
+    var toggle = null;
+    if (quiet.length) {
+      toggle = el("button", { type: "button", class: "btn small", "aria-expanded": String(showUnchanged),
+        "data-k": "compare:story:unchanged",
+        onclick: function () {
+          showUnchanged = !showUnchanged;
+          toggle.setAttribute("aria-expanded", String(showUnchanged));
+          quiet.forEach(function (r) { r.hidden = !showUnchanged; });
+        } }, "Show unchanged lines");
+    }
+    var changed = rows.length - quiet.length;
     return [
-      el("p", { class: "muted" }, "Struck-through words were in version " + h.version + ", underlined words are new " +
-        "and highlighted words took another word's place."),
-      el("ul", { class: "cmp-lines" }, lines.map(function (ln) {
-        var ops = ln.diff || [];
-        return el("li", { class: "cmp-line", "data-line": String(ln.id) },
-          el("strong", null, String(ln.id)), " ",
-          ops.length ? diffWords(el, ops) : el("span", { class: "muted" }, "(no words)"));
-      })),
+      el("p", { class: "muted" }, "Struck-through words were in version " + h.version + " and underlined words are new. " +
+        "A highlighted pair is a word that took another's place: the old word struck through, then the new one."),
+      el("p", null, (changed === 1 ? "1 line" : changed + " lines") + " changed" +
+        (quiet.length ? ", " + quiet.length + " unchanged." : ".")),
+      toggle ? el("div", { class: "btns cmp-btns" }, toggle) : null,
+      el("ul", { class: "cmp-lines" }, rows),
     ];
   }
 

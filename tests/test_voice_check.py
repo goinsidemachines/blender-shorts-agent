@@ -14,7 +14,7 @@ from bsa.short import load_short
 
 def test_word_diff_marks_changed_missing_and_extra():
     assert worddiff.diff("Length sets the beat.", "length set the the beat") == [
-        ["same", "length"], ["changed", "set"], ["same", "the"], ["extra", "the"], ["same", "beat"]]  # fmt: skip
+        ["same", "length"], ["changed", "set", "sets"], ["same", "the"], ["extra", "the"], ["same", "beat"]]  # fmt: skip
     assert worddiff.diff("Four times longer", "four longer") == [
         ["same", "four"], ["missing", "times"], ["same", "longer"]]  # fmt: skip
 

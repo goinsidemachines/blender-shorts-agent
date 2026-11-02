@@ -16,7 +16,8 @@ def words(text: str) -> list[str]:
 
 def diff(want: str, got: str) -> list[list[str]]:
     """`[op, word]` over words(): `same`; `missing` (the word is in `want` only); `extra` (in `got` only); `changed`
-    (a word of `want` heard as another: the word heard). An extra or missing word is shown after an equal word it
+    (a word of `want` heard as another: `["changed", heard, wanted]`, the word heard, then the word it replaced, a
+    third element that readers of `[op, word]` can ignore). An extra or missing word is shown after an equal word it
     could just as well come before, as diff tools do."""
     a, b = words(want), words(got)
     ops: list[list[str]] = []
@@ -29,7 +30,7 @@ def diff(want: str, got: str) -> list[list[str]]:
             ops += [["extra", w] for w in b[j0:j1]]
         else:
             paired = min(i1 - i0, j1 - j0)
-            ops += [["changed", w] for w in b[j0 : j0 + paired]]
+            ops += [["changed", b[j0 + k], a[i0 + k]] for k in range(paired)]
             ops += [["missing", w] for w in a[i0 + paired : i1]]
             ops += [["extra", w] for w in b[j0 + paired : j1]]
     for i in range(len(ops) - 1, -1, -1):  # slide an extra/missing word right over equal words

@@ -500,6 +500,15 @@
     return problem ? ctx.el("p", { class: "muted" }, "The timeline can't be shown: " + String(problem)) : null;
   }
 
+  // A video element being replaced stops its download: a paused, half-read one would otherwise hold one of the
+  // browser's few connections to the page server until it is garbage collected, and new videos would stall.
+  function release(node) {
+    if (!node) return;
+    node.pause();
+    node.removeAttribute("src");
+    node.load();
+  }
+
   var runPlayers = {}; // run key -> {key, node}: each run's own video element, kept across live updates
 
   function runVideo(ctx, r) {
@@ -507,6 +516,7 @@
     var key = url + "#" + r.state + "#" + r.timeline.frames;
     var p = runPlayers[r.key];
     if (p && p.key === key) return p.node;
+    if (p) release(p.node);
     var node = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", src: url,
       "aria-label": "The " + r.label + " video" }, "Your browser cannot play this video.");
     runPlayers[r.key] = { key: key, node: node };
@@ -598,9 +608,10 @@
   var player = null; // {key, node}: the same video element across live updates, so playback is not reset
 
   function video(ctx, ref) {
-    var url = ctx.fileUrl(ref);
+    var url = ctx.fileUrl(ref, ctx.version); // the MP4 is rewritten under the same name for each version
     var key = url + "#" + ctx.version;
     if (player && player.key === key) return player.node;
+    if (player) release(player.node);
     var node = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", src: url,
       "aria-label": "The final video" }, "Your browser cannot play this video.");
     player = { key: key, node: node };

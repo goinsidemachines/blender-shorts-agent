@@ -519,12 +519,15 @@
 
   // ------------------------------------------------------------------ helpers handed to stage renderers
 
-  function fileUrl(ref) {
+  // `tag` (optional) names what the file holds, e.g. the stage version: a file rewritten under the same name then gets
+  // a new URL, so the browser's media cache never mixes the old bytes with the new (the server ignores it).
+  function fileUrl(ref, tag) {
     const rel = typeof ref === "string" ? ref : ref && ref.file;
     if (!rel) return "";
     const path = String(rel).split("/").map(encodeURIComponent).join("/");
     if (OFFLINE) return `../${path}`;
-    return `/files/${encodeURIComponent(KEY)}/${path}?t=${encodeURIComponent(TOKEN)}`;
+    const v = tag === undefined || tag === null ? "" : `&v=${encodeURIComponent(String(tag))}`;
+    return `/files/${encodeURIComponent(KEY)}/${path}?t=${encodeURIComponent(TOKEN)}${v}`;
   }
 
   function copyButton(text, label) {

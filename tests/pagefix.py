@@ -228,7 +228,7 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
 
 
 def _wer(want: str, said: str) -> float:
-    return sum(1 for op, _ in worddiff.diff(want, said) if op != "same") / max(len(worddiff.words(want)), 1)
+    return sum(1 for op, *_ in worddiff.diff(want, said) if op != "same") / max(len(worddiff.words(want)), 1)
 
 
 def write_heard(sdir: Path, lines: dict[str, str], *, checked: bool = True, why_not: str | None = None) -> None:

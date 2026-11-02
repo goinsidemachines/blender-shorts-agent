@@ -318,21 +318,38 @@ def _set_line(sdir, line_id: str, text: str) -> None:
 def test_story_compare_shows_a_word_diff(view, live_server):
     srv = live_server("story")
     p = open_short(view, srv, stage="story")  # version 1 is shown, so it is kept
-    _set_line(srv.sdir, "l02", "Length alone sets the.")  # "alone" is new, "beat" is gone
+    _set_line(srv.sdir, "l01", "Now a pendulum swings like.")  # "now" is new, "clockwork" is gone
+    _set_line(srv.sdir, "l02", "Length sets the swing.")  # a plain one-word swap: "beat" became "swing"
     _set_line(srv.sdir, "l03", "Four times longer, half as fast.")  # "twice" became "half"
     button = p.get_by_role("button", name="Compare with version 1")
     expect(button).to_be_visible(timeout=4000)
     expect(button).to_have_attribute("aria-expanded", "false")
     button.click()
     expect(button).to_have_attribute("aria-expanded", "true")
-    line = p.locator(".cmp-line[data-line='l02']")
-    expect(line.locator("del", has_text="beat")).to_be_visible()
-    expect(line.locator("ins", has_text="alone")).to_be_visible()
-    expect(p.locator(".cmp-line[data-line='l03'] mark", has_text="half")).to_be_visible()
+    l01 = p.locator(".cmp-line[data-line='l01']")
+    expect(l01.locator("del", has_text="clockwork")).to_be_visible()
+    expect(l01.locator("ins", has_text="now")).to_be_visible()
+    swap = p.locator(".cmp-line[data-line='l02'] mark")
+    expect(swap.locator("del", has_text="beat")).to_be_visible()  # the old word and the new one, both shown
+    expect(swap.locator("ins", has_text="swing")).to_be_visible()
+    expect(swap).to_contain_text("changed from: beat to: swing")
+    l03 = p.locator(".cmp-line[data-line='l03'] mark")
+    expect(l03.first.locator("del", has_text="twice")).to_be_visible()
+    expect(l03.first.locator("ins", has_text="half")).to_be_visible()
+    for changed in ("l01", "l02", "l03"):
+        expect(p.locator(f".cmp-line[data-line='{changed}']").get_by_text("Changed", exact=True)).to_be_visible()
+    unchanged = p.locator(".cmp-line[data-line='l04']")
+    expect(unchanged).to_be_hidden()  # unchanged lines start collapsed
+    show = p.get_by_role("button", name="Show unchanged lines")
+    expect(show).to_have_attribute("aria-expanded", "false")
+    show.click()
+    expect(show).to_have_attribute("aria-expanded", "true")
+    expect(unchanged).to_be_visible()
     notes.add(srv.sdir, "story", {"kind": "overall", "id": None, "version": 2}, "keep it", "chat")  # a live update
     expect(p.get_by_text("keep it", exact=True)).to_be_visible(timeout=4000)
     expect(button).to_have_attribute("aria-expanded", "true")  # still open
-    expect(line.locator("del", has_text="beat")).to_be_visible()
+    expect(swap.locator("del", has_text="beat")).to_be_visible()
+    expect(unchanged).to_be_visible()  # and the unchanged lines still shown
     button.click()
     expect(button).to_have_attribute("aria-expanded", "false")
     expect(p.locator(".cmp-line")).to_have_count(0)
@@ -367,8 +384,8 @@ def test_storyboard_compare_side_by_side_and_toggle_on_phone(view, live_server):
         expect(show_now).to_have_attribute("aria-pressed", "false")
         expect(before).to_be_visible()
         expect(now).to_be_hidden()
-        notes.add(srv.sdir, "storyboard", {"kind": "overall", "id": None, "version": 2}, "kept", "chat")
-        expect(p.get_by_text("kept", exact=True)).to_be_visible(timeout=4000)
+        notes.add(srv.sdir, "storyboard", {"kind": "overall", "id": None, "version": 2}, "a board note", "chat")
+        expect(p.get_by_text("a board note", exact=True)).to_be_visible(timeout=4000)
         expect(before).to_be_visible()  # the choice survives a live update
     assert_healthy(p)
 
@@ -379,6 +396,8 @@ def test_final_compare_plays_both_videos(view, live_server):
     srv = live_server("final")
     _real_video(srv)
     p = open_short(view, srv, stage="final")  # version 1 is shown, with its MP4's digest
+    first = p.locator(".st-final > .video-wrap video")
+    assert _until(lambda: first.evaluate("v => v.readyState >= 1"))  # not moved while the page is still reading it
     mp4 = srv.sdir / "out" / "pendulum.mp4"
     assert history.keep_outgoing_final(srv.sdir, mp4) is not None
     assert pagefix.make_mp4(mp4, seconds=1.0)  # the new final: another 30-frame video
@@ -390,14 +409,21 @@ def test_final_compare_plays_both_videos(view, live_server):
     now, before = videos.nth(0), videos.nth(1)
     assert before.evaluate("v => v.muted") and not now.evaluate("v => v.muted")
     both = "[...document.querySelectorAll('.cmp-videos video')]"
-    assert _until(lambda: p.evaluate(both + ".every(v => v.readyState >= 1)"))
-    before.evaluate("v => v.play()")  # play on the muted one: the other plays too
+    # Chromium may hold off preloading the compare's "now" video while the main player has the same file; a play
+    # starts it, so only the before video's metadata is waited for
+    assert _until(lambda: before.evaluate("v => v.readyState >= 1"))
+    main = p.locator(".st-final > .video-wrap video")
+    main.evaluate("v => { v.muted = true; v.loop = true; v.play().catch(() => {}); }")  # not awaited: may never settle
+    assert _until(lambda: not main.evaluate("v => v.paused"))
+    before.evaluate("v => { v.play().catch(() => {}); }")  # play on the muted one: the other plays too
     assert _until(lambda: p.evaluate(both + ".every(v => !v.paused)"))
+    assert _until(lambda: main.evaluate("v => v.paused"))  # and the main player stops: one sound at a time
     now.evaluate("v => v.pause()")
     assert _until(lambda: p.evaluate(both + ".every(v => v.paused)"))
     now.evaluate("v => { v.currentTime = 15.5 / 30; }")  # a seek on one moves the other
     times = both + ".map(v => v.currentTime)"
-    assert _until(lambda: abs(p.evaluate(times)[1] - 15.5 / 30) <= 1 / 30)
+    ok = _until(lambda: abs(p.evaluate(times)[1] - 15.5 / 30) <= 1 / 30)
+    assert ok, p.evaluate(both + '.map(v => [v.readyState, v.networkState, v.currentTime, v.paused, v.seeking])')
     a, b = p.evaluate(times)
     assert abs(a - b) <= 1 / 30
     assert_healthy(p)
@@ -422,4 +448,27 @@ def test_no_compare_without_history(view, live_server):
     notes.add(srv.sdir, "story", {"kind": "overall", "id": None, "version": 1}, "a poll", "chat")
     expect(p.get_by_text("a poll", exact=True)).to_be_visible(timeout=4000)
     expect(p.get_by_role("button", name=re.compile("^Compare with"))).to_have_count(0)
+    assert_healthy(p)
+
+
+def test_final_compare_video_and_focus_survive_a_live_update(view, live_server):
+    from bsa.review import history
+
+    srv = live_server("final")
+    _stand_in_video(srv)
+    p = open_short(view, srv, stage="final")
+    mp4 = srv.sdir / "out" / "pendulum.mp4"
+    assert history.keep_outgoing_final(srv.sdir, mp4) is not None
+    mp4.write_bytes(bytes(3000))  # a new final
+    button = p.get_by_role("button", name="Compare with version 1")
+    expect(button).to_be_visible(timeout=4000)
+    button.click()
+    expect(button).to_be_focused()
+    expect(p.locator(".cmp-videos video")).to_have_count(2)
+    p.evaluate("document.querySelectorAll('.cmp-videos video').forEach(v => { v.dataset.mark = 'kept'; })")
+    notes.add(srv.sdir, "final", {"kind": "overall", "id": None, "version": 2}, "an update", "chat")
+    expect(p.get_by_text("an update", exact=True)).to_be_visible(timeout=4000)
+    assert p.evaluate("[...document.querySelectorAll('.cmp-videos video')].map(v => v.dataset.mark)") == ["kept"] * 2
+    expect(button).to_have_attribute("aria-expanded", "true")
+    expect(button).to_be_focused()
     assert_healthy(p)

@@ -98,7 +98,7 @@ def test_story_compare_is_a_word_diff(tmp_path):
     assert entry["version"] == 1 and entry["at"] == 1000.0
     assert entry["files"] == ["review/history/story/v1/lines.json"]
     lines = {ln["id"]: ln["diff"] for ln in entry["compare"]["lines"]}
-    assert lines["l02"] == [["same", "length"], ["same", "sets"], ["same", "the"], ["changed", "swing"]]
+    assert lines["l02"] == [["same", "length"], ["same", "sets"], ["same", "the"], ["changed", "swing", "beat"]]  # the old word kept
     assert all(op == "same" for op, _ in lines["l01"])
 
 
