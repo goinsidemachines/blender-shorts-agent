@@ -12,7 +12,7 @@
   --bg: #1E1A15; --bar: #241F19; --fg: #F3ECDF; --muted: #BDB2A0; --card: #2A241D; --card2: #312A22;
   --chip: #3A3229; --soft: #5A4730; --accent: #FF8A5C; --on-accent: #1E1A15; --ok: #5FD39A;
   --ok-soft: #22473A; --warn-soft: #5A3326; --done: #F3ECDF; --on-done: #1E1A15; --input: #1E1A15;
-  --ink: #0F0D0A;
+  --ink: #8A7A66; /* warm outline and shadow: 4.2:1 on --bg, 3.7:1 on --card */
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -20,7 +20,7 @@
     --bg: #1E1A15; --bar: #241F19; --fg: #F3ECDF; --muted: #BDB2A0; --card: #2A241D; --card2: #312A22;
     --chip: #3A3229; --soft: #5A4730; --accent: #FF8A5C; --on-accent: #1E1A15; --ok: #5FD39A;
     --ok-soft: #22473A; --warn-soft: #5A3326; --done: #F3ECDF; --on-done: #1E1A15; --input: #1E1A15;
-    --ink: #0F0D0A;
+    --ink: #8A7A66; /* warm outline and shadow: 4.2:1 on --bg, 3.7:1 on --card */
     color-scheme: dark;
   }
 }
@@ -31,7 +31,9 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--
 h1, h2, h3 { font-weight: 800; line-height: 1.2; }
 a { color: inherit; text-underline-offset: 3px; }
 button { font: inherit; color: inherit; }
-:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* The accent ring sits between two ink bands (the 2px offset gap and a halo outside it), so the focus indicator
+   keeps at least 3:1 against the page in both themes even where the accent alone is too light. */
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; box-shadow: 0 0 0 7px var(--ink) !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 

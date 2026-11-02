@@ -167,17 +167,24 @@
     polling = true;
     clearTimeout(timer);
     let ok = false;
+    let data = null;
     try {
       const res = await api("GET", "state", undefined, etag ? { "If-None-Match": etag } : {});
       if (res.status === 304) ok = true;
       else if (res.ok) {
-        const data = await res.json();
+        data = await res.json();
         etag = res.headers.get("ETag");
         ok = true;
-        receive(data);
       }
     } catch (e) { ok = false; }
     polling = false;
+    if (data) {
+      try {
+        receive(data);
+      } catch (e) { // a page bug, not a network failure: report it without pausing the buttons
+        setTimeout(() => { throw e; });
+      }
+    }
     if (ok) {
       failures = 0;
       if (paused) { paused = false; render(); }
@@ -220,8 +227,16 @@
     return snap && Array.isArray(snap.stages) ? snap.stages.find((s) => s.id === id) || null : null;
   }
 
+  function hashStage() {
+    try {
+      return decodeURIComponent(location.hash.slice(1));
+    } catch (e) { // a malformed #%zz: show the current stage
+      return "";
+    }
+  }
+
   function shownStage() {
-    const wanted = stageById(decodeURIComponent(location.hash.slice(1)));
+    const wanted = stageById(hashStage());
     if (wanted && wanted.status !== "locked") return wanted;
     return stageById(snap.current) || snap.stages[0];
   }
@@ -256,23 +271,52 @@
 
   // ------------------------------------------------------------------ actions
 
-  async function act(fn) {
+  function activeKey() {
+    const a = document.activeElement;
+    return a && a.dataset ? a.dataset.k || null : null;
+  }
+
+  // Focus the first of these data-k targets that is on the page and usable; false when none is.
+  function focusFirst(keys) {
+    for (const k of keys) {
+      if (!k) continue;
+      const node = document.querySelector(`[data-k="${CSS.escape(k)}"]`);
+      if (node && !node.disabled) {
+        node.focus();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function overallKey(stage) {
+    return `note-overall:${stage}:overall:null`;
+  }
+
+  // Run one action. The buttons are disabled while it runs, which drops keyboard focus, so the focused control is
+  // remembered and focused again afterwards; when the action removed it, focus goes to the first of `fallback`.
+  // `after(ok)` runs before the final render.
+  async function act(fn, opts) {
     if (busy || paused) return false;
+    const o = opts || {};
+    const key = activeKey();
     busy = true;
     actionError = null;
     notice = null;
     render();
+    let ok = false;
     try {
       await fn();
-      return true;
+      ok = true;
     } catch (e) {
       actionError = e.message || String(e);
-      return false;
-    } finally {
-      busy = false;
-      render();
-      if (!OFFLINE) schedule(0);
     }
+    busy = false;
+    if (o.after) o.after(ok);
+    render();
+    if (key) focusFirst([key, ...(o.fallback || [])]);
+    if (!OFFLINE) schedule(0);
+    return ok;
   }
 
   function decide(stage, decision, choice) {
@@ -290,7 +334,7 @@
       if (choice) body.choice = choice;
       await post("decision", body);
       if (decision === "approve") pendingApprove[stage] = s.version;
-    });
+    }, { fallback: [`answer-h:${stage}`, overallKey(stage)] });
   }
 
   function openEditor(s, kind, id, label) {
@@ -336,9 +380,11 @@
       return;
     }
     const ed = editor;
-    const ok = await act(() => post("notes", { op: "add", stage: ed.stage, target, text: ed.text }));
-    if (ok && editor === ed) editor = null;
-    render();
+    const origin = ed.kind === "overall" ? overallKey(ed.stage) : `note:${ed.stage}:${ed.kind}:${ed.id}`;
+    await act(() => post("notes", { op: "add", stage: ed.stage, target, text: ed.text }), {
+      after: (ok) => { if (ok && editor === ed) editor = null; },
+      fallback: [origin, overallKey(ed.stage)],
+    });
   }
 
   // ------------------------------------------------------------------ helpers handed to stage renderers
@@ -380,6 +426,10 @@
     const yes = snap.stages.filter((s) => s.needs_yes).length;
     const current = stageById(snap.current);
     document.title = yes ? `(${yes}) Needs your yes · ${title}` : `${current ? current.label : "Review"} · ${title}`;
+    renderLive();
+  }
+
+  function renderLive() {
     nodes.live.classList.toggle("off", OFFLINE || paused);
     nodes.live.lastElementChild.textContent = OFFLINE ? "Offline view" : paused ? "Not connected" : "Live";
   }
@@ -406,7 +456,8 @@
     const rows = [];
     if (OFFLINE) rows.push(["banner", null, TEXT.offline]);
     if (paused) rows.push(["banner alert", "alert", TEXT.unreachable]);
-    for (const p of snap.problems || []) rows.push(["banner", null, String(p)]);
+    if (OFFLINE && !hasStages()) rows.push(["banner", null, "This saved page has nothing to show."]);
+    for (const p of (snap && snap.problems) || []) rows.push(["banner", null, String(p)]);
     const key = JSON.stringify(rows);
     if (key === bannerKey) return; // unchanged: an alert is not announced again on every update
     bannerKey = key;
@@ -468,7 +519,8 @@
     }
     if (!kids.length) return null;
     return el("div", { class: "card" },
-      el("div", { class: "head" }, el("h3", null, s.needs_yes ? "Needs your yes" : "Your answer")), kids);
+      el("div", { class: "head" }, el("h3", { tabindex: "-1", "data-k": `answer-h:${s.id}` },
+        s.needs_yes ? "Needs your yes" : "Your answer")), kids);
   }
 
   function editorBlock(s) {
@@ -499,10 +551,12 @@
       const btns = [];
       if (!answerable(s)) {
         btns.push(el("button", { type: "button", class: "btn small", "data-act": "1", "data-k": `send:${n.id}`,
-          onclick: () => act(() => post("notes", { op: "send", ids: [n.id] })) }, "Send"));
+          onclick: () => act(() => post("notes", { op: "send", ids: [n.id] }), { fallback: [overallKey(s.id)] }) },
+          "Send"));
       }
       btns.push(el("button", { type: "button", class: "btn ghost small", "data-act": "1", "data-k": `withdraw:${n.id}`,
-        onclick: () => act(() => post("notes", { op: "withdraw", id: n.id })) }, "Remove"));
+        onclick: () => act(() => post("notes", { op: "withdraw", id: n.id }), { fallback: [overallKey(s.id)] }) },
+        "Remove"));
       kids.push(el("div", { class: "btns" }, btns));
     }
     return el("li", null, kids);
@@ -512,7 +566,7 @@
     const list = stageNotes(s);
     return el("div", { class: "card" },
       el("div", { class: "head" }, el("h3", null, "Notes"), el("span", { class: "meta" }, String(list.length))),
-      el("button", { type: "button", class: "note-btn", "data-act": "1", "data-k": `note-overall:${s.id}:overall:null`,
+      el("button", { type: "button", class: "note-btn", "data-act": "1", "data-k": overallKey(s.id),
         onclick: () => openEditor(s, "overall", null) }, `Add a note on ${s.label}`),
       editorBlock(s),
       list.length ? el("ul", { class: "notes" }, list.map((n) => noteItem(s, n)))
@@ -527,12 +581,14 @@
     nodes.side.replaceChildren(...kids.filter(Boolean));
   }
 
+  function hasStages() {
+    return !!snap && Array.isArray(snap.stages) && snap.stages.length > 0;
+  }
+
   function render() {
-    if (!snap || !Array.isArray(snap.stages) || !snap.stages.length) {
-      if (OFFLINE) {
-        nodes.banners.replaceChildren(el("p", { class: "banner" }, TEXT.offline),
-          el("p", { class: "banner" }, "This saved page has nothing to show."));
-      }
+    if (!hasStages()) { // nothing to draw yet (or a bad saved page): the offline and unreachable banners still show
+      renderBanners();
+      renderLive();
       return;
     }
     const active = document.activeElement;

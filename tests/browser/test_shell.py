@@ -165,9 +165,32 @@ def test_send_changes_posts_the_decision_with_open_notes(view, live_server):
 def test_stale_decision_shows_the_409(view, live_server):
     srv = live_server("story")
     p = open_short(view, srv)
+    p.route("**/api/*/state", lambda route: route.fulfill(status=304))  # the page keeps showing Approve
     decisions.record(srv.sdir, "story", 1, "approve", "chat", current=1)
     p.get_by_role("button", name="Approve", exact=True).click()
-    expect(p.get_by_role("alert")).to_be_visible()
+    expect(p.get_by_role("alert")).to_contain_text("The Story (version 1) was already approved in the chat")
+
+
+def test_first_state_failure_shows_the_banner(view, live_server):
+    srv = live_server("story")
+    view.route("**/api/*/state", lambda route: route.fulfill(status=404, body='{"error": "no such short"}'))
+    view.goto(srv.url)
+    expect(view.get_by_role("alert")).to_contain_text("Can't reach the page server", timeout=8000)
+
+
+def test_focus_stays_put_after_save_note_and_approve(view, live_server):
+    srv = live_server("story")
+    p = open_short(view, srv)
+    p.get_by_role("button", name="Add a note on Story").press("Enter")
+    p.get_by_role("textbox").fill("Shorter hook")
+    p.get_by_role("button", name="Save note").press("Enter")
+    expect(p.get_by_text("Not sent", exact=True)).to_be_visible()
+    assert p.evaluate("document.activeElement.textContent") == "Add a note on Story"
+    p.get_by_role("button", name="Approve", exact=True).press("Enter")
+    expect(p.get_by_text("Sent · waiting for Claude")).to_be_visible()
+    p.wait_for_timeout(2500)  # a live update re-renders the card: focus must survive it too
+    assert p.evaluate("document.activeElement.dataset.k") == "answer-h:story"
+    assert_healthy(p)
 
 
 def test_damaged_decisions_offer_no_approve(view, live_server):
