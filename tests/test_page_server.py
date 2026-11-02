@@ -3,6 +3,7 @@
 import http.client
 import json
 import os
+import socket
 import threading
 import types
 
@@ -356,3 +357,82 @@ def test_lan_adds_only_this_machines_address(tmp_path):
         assert s.allowed_hosts - {f"127.0.0.1:{p}", f"localhost:{p}"} == ({f"{s.lan_ip}:{p}"} if s.lan_ip else set())
     finally:
         s.server_close()
+
+
+def _raw(srv, data: bytes, wait_s: float = 3.0) -> bytes:
+    """Send raw bytes on one connection and read everything until the server closes it (or wait_s passes)."""
+    c = socket.create_connection(("127.0.0.1", srv.port))
+    c.settimeout(wait_s)
+    out = b""
+    try:
+        c.sendall(data)
+        while chunk := c.recv(65536):
+            out += chunk
+    except (TimeoutError, ConnectionError):
+        pass
+    finally:
+        c.close()
+    return out
+
+
+def _smuggled(srv) -> bytes:
+    good = f"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{srv.port}\r\n{server.TOKEN_HEADER}: {srv.token}\r\n\r\n"
+    return good.encode()
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "POST /api/01-pendulum/hello HTTP/1.1\r\nHost: evil.test:{port}\r\n",  # bad Host
+        "POST /api/01-pendulum/hello HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-BSA-Token: nope\r\n",  # bad token
+        (
+            "POST /api/01-pendulum/hello HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-BSA-Token: {token}\r\n"
+            "Origin: http://evil.test\r\n"
+        ),  # bad Origin
+        "POST /nope HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n",  # unknown route
+        "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-BSA-Token: {token}\r\n",  # a GET's body: unread
+    ],
+)
+def test_an_unread_body_is_never_read_as_the_next_request(srv, head):
+    inner = _smuggled(srv)
+    head = head.format(port=srv.port, token=srv.token)
+    out = _raw(srv, f"{head}Content-Length: {len(inner)}\r\n\r\n".encode() + inner)
+    assert out.count(b"HTTP/1.1 ") == 1, out  # one reply, then the connection is closed
+
+
+def test_keep_alive_still_works_for_good_requests(srv):
+    out = _raw(srv, _smuggled(srv) * 2, wait_s=1.0)
+    assert out.count(b"HTTP/1.1 200") == 2
+
+
+def test_a_stalled_body_is_a_408_not_a_store_problem(srv, monkeypatch):
+    monkeypatch.setattr(server._Handler, "timeout", 0.3)
+    head = (f"POST /api/01-pendulum/hello HTTP/1.1\r\nHost: 127.0.0.1:{srv.port}\r\n{server.TOKEN_HEADER}: "
+            f"{srv.token}\r\nContent-Length: 50\r\n\r\n{{}}")  # fmt: skip
+    out = _raw(srv, head.encode())
+    assert out.startswith(b"HTTP/1.1 408"), out
+
+
+def test_origin_is_compared_with_the_normalised_host(srv):
+    r = api(srv, "POST", "/api/01-pendulum/hello", body={}, host=f"LocalHost:{srv.port}",
+            origin=f"http://localhost:{srv.port}")  # fmt: skip
+    assert r.status == 200
+
+
+def test_files_are_sandboxed_and_html_or_svg_only_downloads(srv):
+    (srv.sdir / "review" / "old.html").write_text("<script>alert(1)</script>", "utf-8")
+    (srv.sdir / "stills" / "pic.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", "utf-8")
+    for rel, attach in (("review/old.html", True), ("stills/pic.svg", True), ("stills/s01.png", False)):
+        r = get(srv, f"/files/01-pendulum/{rel}?t={srv.token}")
+        r.read()
+        assert r.status == 200, rel
+        assert (
+            r.getheader("Content-Security-Policy")
+            == server.FILES_CSP
+            == ("sandbox; default-src 'none'; img-src 'self'; media-src 'self'")
+        )
+        assert r.getheader("Referrer-Policy") == "no-referrer" and r.getheader("X-Content-Type-Options") == "nosniff"
+        assert (r.getheader("Content-Disposition") == "attachment") is attach, rel
+    r = get(srv, f"/files/01-pendulum/review/old.html?t={srv.token}", headers={"Range": "bytes=0-3"})
+    assert r.status == 206 and r.getheader("Content-Disposition") == "attachment"
+    assert r.getheader("Content-Security-Policy") == server.FILES_CSP

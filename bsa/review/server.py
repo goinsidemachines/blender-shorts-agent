@@ -5,10 +5,14 @@ the Host header (127.0.0.1:<port> or localhost:<port>, plus the LAN address with
 the page and its files, the X-BSA-Token header for the API, compared in constant time), and on POST a same-origin
 Origin when one is sent. Only a short's stills/, review/ and out/ are served, never anything outside them (symlinks
 included). It never runs commands; its only writes are notes and decisions (and the versions a snapshot records).
-A page Approve only records the decision; `page wait` applies it."""
+A page Approve only records the decision; `page wait` applies it. With lan=True it binds every interface (0.0.0.0)
+but still answers only a Host of 127.0.0.1, localhost or this machine's one LAN address, with the same token.
+A connection whose request got an error reply, or whose body was not read in full, is closed, so leftover bytes are
+never read as another request. Files are served sandboxed (their own CSP), and HTML or SVG only as downloads."""
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import mimetypes
@@ -38,6 +42,8 @@ _DRAIN_MAX = 1 << 20  # an oversized body up to this size is read and dropped, s
 _CHUNK = 64 * 1024
 _BAD_IN_NAME = ("/", "\\", ":", "\0")
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)")
+FILES_CSP = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'"
+_ACTIVE_TYPES = ("text/html", "image/svg+xml")  # served only as downloads, never rendered as documents
 
 
 class _Refuse(Exception):
@@ -160,8 +166,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         self._started = False
+        self._body_done = False
         try:
             self._route(method)
+            if not self._body_done and self._sent_a_body():  # unread bytes must never be read as a request
+                self.close_connection = True
+                self._drain()
             return
         except ConnectionError:  # the client went away
             self.close_connection = True
@@ -178,8 +188,9 @@ class _Handler(BaseHTTPRequestHandler):
             status, line = 503, str(e)
         except Exception as e:  # noqa: BLE001 - one plain line, never a traceback
             status, line = 500, f"{type(e).__name__}: {e}"
+        self.close_connection = True  # an error reply always ends the connection: the body may be unread
+        self._drain()
         if self._started:  # the reply is already under way: all that can be done is to drop the connection
-            self.close_connection = True
             return
         try:
             self._json(status, {"error": messages.one_line(line)})
@@ -202,23 +213,44 @@ class _Handler(BaseHTTPRequestHandler):
         data = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
         self._send(status, data, "application/json; charset=utf-8", headers)
 
+    def _sent_a_body(self) -> bool:
+        return bool(self.headers.get("Transfer-Encoding")) or (self.headers.get("Content-Length") or "0").strip() != "0"
+
+    def _drain(self) -> None:
+        """Read and drop a body nobody read (up to _DRAIN_MAX), so the reply reaches the client before the close
+        instead of a connection reset. The connection is closed after this either way."""
+        if self._body_done or self.headers.get("Transfer-Encoding"):
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if 0 < length <= _DRAIN_MAX:
+            with contextlib.suppress(OSError, _Refuse):
+                self._read(length)
+
+    def _read(self, length: int) -> bytes:
+        self._body_done = True  # read (or tried): never read again on this connection
+        try:
+            raw = self.rfile.read(length)
+        except TimeoutError:  # the client stalled mid-body: not a store problem
+            raise _Refuse(408, "the request body did not arrive in time") from None
+        if len(raw) != length:
+            raise _Refuse(400, "the request body was cut short")
+        return raw
+
     def _body(self) -> dict:
-        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
-            self.close_connection = True
+        if self.headers.get("Transfer-Encoding"):
             raise _Refuse(411, "send the body with a Content-Length")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = -1
         if length < 0:
-            self.close_connection = True
             raise _Refuse(400, "the Content-Length is not a number")
         if length > MAX_BODY:
-            self.close_connection = True
-            if length <= _DRAIN_MAX:
-                self.rfile.read(length)
             raise _Refuse(413, f"the request is too big: at most {MAX_BODY} bytes")
-        raw = self.rfile.read(length) if length else b"{}"
+        raw = self._read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8"))
         except ValueError:
@@ -231,14 +263,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _check(self, method: str, kind: str, query: dict) -> None:
         srv = self.server
-        if (self.headers.get("Host") or "").strip().lower() not in srv.allowed_hosts:
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in srv.allowed_hosts:
             raise _Refuse(403, "not allowed: this server only answers on this computer's own address")
         given = query.get("t", [None])[0] if kind in ("s", "files") else self.headers.get(TOKEN_HEADER)
         if not _same(given, srv.token):
             raise _Refuse(403, "not allowed: the link's token is missing or wrong; open the page again")
         if method == "POST":
             origin = self.headers.get("Origin")
-            if origin is not None and origin != f"http://{self.headers.get('Host', '').strip()}":
+            if origin is not None and origin.strip().lower() != f"http://{host}":
                 raise _Refuse(403, "not allowed: the request came from another site")
         with srv.lock:
             srv.last_activity = srv.clock()
@@ -312,6 +345,9 @@ class _Handler(BaseHTTPRequestHandler):
             raise _Refuse(404, "no such file")
         size = target.stat().st_size
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        guard = {"Content-Security-Policy": FILES_CSP, "Referrer-Policy": "no-referrer"}
+        if ctype in _ACTIVE_TYPES:
+            guard["Content-Disposition"] = "attachment"
         start, end, status = 0, size - 1, 200
         m = _RANGE.fullmatch((self.headers.get("Range") or "").strip())
         if m and (m[1] or m[2]):
@@ -323,7 +359,7 @@ class _Handler(BaseHTTPRequestHandler):
                 n = int(m[2])
                 start, bad = max(size - n, 0), n == 0 or size == 0
             if bad:
-                return self._send(416, b"", ctype, {"Content-Range": f"bytes */{size}"})
+                return self._send(416, b"", ctype, {**guard, "Content-Range": f"bytes */{size}"})
             status = 206
         length = max(end - start + 1, 0)
         self._started = True
@@ -333,6 +369,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cache-Control", "no-cache")
+        for k, v in guard.items():
+            self.send_header(k, v)
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
