@@ -84,7 +84,10 @@
   }
 
   function answerText(kind, a) {
-    if (kind === "approve") return `Approve ${a.label} (version ${a.version})`;
+    if (kind === "approve") {
+      const engine = a.choice && a.choice.engine ? ` with ${String(a.choice.engine).toUpperCase()}` : "";
+      return `Approve ${a.label} (version ${a.version})${engine}`;
+    }
     if (kind === "changes") {
       const lines = (a.notes || []).map((n) => `- ${targetWords(n.target || {})}: ${n.text}`);
       return [`Changes to ${a.label} (version ${a.version}):`, ...lines].join("\n");
@@ -259,9 +262,28 @@
     return !!s.waiting_for_claude || (pendingApprove[s.id] !== undefined && pendingApprove[s.id] === s.version);
   }
 
+  // A hook a stage renderer may carry (see stages.js), or null.
+  function hook(s, name) {
+    const draw = BSA.stages[s.id];
+    return draw && typeof draw[name] === "function" ? draw[name] : null;
+  }
+
+  // The stage needs a yes and asks the user for it: a stage whose answer comes from elsewhere (the engine from the
+  // user's settings) needs Claude to record it, not a question on the page.
+  function asksYes(s) {
+    if (!s.needs_yes) return false;
+    const asks = hook(s, "asks");
+    if (!asks || s.content === null || s.content === undefined) return true;
+    try {
+      return asks(s.content, s) !== false;
+    } catch (e) {
+      return true;
+    }
+  }
+
   // The Approve / Send changes bar is on: a stage that needs a yes, answerable, with no answer on its way.
   function answerable(s) {
-    return !!s.needs_yes && !decisionsProblem() && !isWaiting(s);
+    return asksYes(s) && !decisionsProblem() && !isWaiting(s);
   }
 
   function stageNotes(s) {
@@ -335,6 +357,20 @@
       await post("decision", body);
       if (decision === "approve") pendingApprove[stage] = s.version;
     }, { fallback: [`answer-h:${stage}`, overallKey(stage)] });
+  }
+
+  // Approve, with the choice the stage asks for (the engine) when it has one; nothing is sent until it is picked.
+  function approve(s) {
+    const pick = hook(s, "choice");
+    if (!pick) return decide(s.id, "approve");
+    const got = pick(s.content, s) || {};
+    if (got.error) {
+      actionError = got.error;
+      notice = null;
+      render();
+      return Promise.resolve(false);
+    }
+    return decide(s.id, "approve", got.choice);
   }
 
   function openEditor(s, kind, id, label) {
@@ -423,7 +459,7 @@
     const title = String(short.title || KEY || "Review");
     nodes.title.textContent = title;
     nodes.sub.textContent = short.key ? `Short ${short.key}` : "";
-    const yes = snap.stages.filter((s) => s.needs_yes).length;
+    const yes = snap.stages.filter(asksYes).length;
     const current = stageById(snap.current);
     document.title = yes ? `(${yes}) Needs your yes · ${title}` : `${current ? current.label : "Review"} · ${title}`;
     renderLive();
@@ -441,12 +477,12 @@
       const btn = el("button", {
         type: "button", class: `stage-btn${s.id === shown.id ? " shown" : ""}`, "data-k": `stage:${s.id}`,
         disabled: locked, "aria-current": s.status === "current" ? "step" : null,
-        title: s.needs_yes ? "Needs your yes" : null,
+        title: asksYes(s) ? "Needs your yes" : null,
         onclick: () => showStage(s.id, true),
       },
       el("span", { class: "n", "aria-hidden": "true" }, s.status === "done" ? "✓" : String(i + 1)),
       s.label,
-      s.needs_yes ? el("span", { class: "dot", "aria-hidden": "true" }) : null);
+      asksYes(s) ? el("span", { class: "dot", "aria-hidden": "true" }) : null);
       ol.append(el("li", null, btn));
     });
     nodes.nav.replaceChildren(ol);
@@ -467,7 +503,7 @@
   function stageMeta(s) {
     const bits = [];
     if (s.version !== null && s.version !== undefined) bits.push(`version ${s.version}`);
-    bits.push(s.needs_yes ? "needs your yes" : s.status === "done" ? "done" : s.status === "current" ? "in progress" : "not started");
+    bits.push(asksYes(s) ? "needs your yes" : s.status === "done" ? "done" : s.status === "current" ? "in progress" : "not started");
     return bits.join(" · ");
   }
 
@@ -498,7 +534,7 @@
     const kids = [];
     if (isWaiting(s)) {
       kids.push(el("p", { class: "state" }, TEXT.waiting));
-    } else if (s.needs_yes) {
+    } else if (asksYes(s)) {
       const problem = decisionsProblem();
       if (problem) {
         kids.push(el("p", { class: "problem" }, `Answer in the chat for now: ${problem}`));
@@ -509,7 +545,7 @@
         kids.push(el("p", { class: "muted" }, "Approve it, or add notes and send the changes."));
         kids.push(el("div", { class: "btns" },
           el("button", { type: "button", class: "btn primary", "data-act": "1", "data-k": `approve:${s.id}`,
-            onclick: () => decide(s.id, "approve") }, OFFLINE ? "Copy: Approve" : "Approve"),
+            onclick: () => approve(s) }, OFFLINE ? "Copy: Approve" : "Approve"),
           el("button", { type: "button", class: "btn", "data-act": "1", "data-k": `changes:${s.id}`,
             onclick: () => decide(s.id, "changes") }, OFFLINE ? "Copy: Send changes" : "Send changes")));
       }
@@ -520,7 +556,7 @@
     if (!kids.length) return null;
     return el("div", { class: "card" },
       el("div", { class: "head" }, el("h3", { tabindex: "-1", "data-k": `answer-h:${s.id}` },
-        s.needs_yes ? "Needs your yes" : "Your answer")), kids);
+        asksYes(s) ? "Needs your yes" : "Your answer")), kids);
   }
 
   function editorBlock(s) {
