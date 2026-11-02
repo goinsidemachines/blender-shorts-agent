@@ -4,6 +4,7 @@ The separate HTML review pages that lived here are retired: `CLI page SHORT` sho
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 from dataclasses import dataclass
@@ -66,6 +67,13 @@ class ReviewFinding:
                    message=str(row.get("message") or ""), obj=row.get("obj") or None,
                    frame=frame if isinstance(frame, int) else None, shots=tuple(str(s) for s in shots),
                    scene=row.get("scene") or None, redo=row.get("redo") or None)  # fmt: skip
+
+
+def finding_id(f: ReviewFinding) -> str:
+    """A finding's id, stable across rebuilds: the first 10 hex characters of sha1(check|message|frame|shots)."""
+    frame = "" if f.frame is None else str(f.frame)
+    raw = f"{f.check}|{f.message}|{frame}|{','.join(f.shots)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
 FINDINGS_FILES = ("checks.json", "frame-checks-final.json", "frame-checks-preview.json")

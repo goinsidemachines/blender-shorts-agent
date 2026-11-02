@@ -12,8 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
-from bsa import jobstate, render_status, workspace
+from bsa import engine_runs, jobstate, render_status, workspace
 from bsa.review import decisions, snapshot, stages
+from bsa.short import load_short
+from bsa.timeline import Card, Span, Timeline, build_timeline, timeline_hash, to_json
 
 SOURCE = Path(__file__).resolve().parent / "e2e" / "pendulum" / "source" / "short.json"
 
@@ -113,7 +115,51 @@ def _write_checks(sdir: Path) -> None:
                             "shots": ["s02"], "redo": "BLENDER render SHORT --preset preview --frames 12"}],
               "redo_all": REDO_ALL}  # fmt: skip
     (review / "checks.json").write_text(json.dumps(checks), encoding="utf-8")
-    (review / "frame-checks-preview.json").write_text(json.dumps(frames), encoding="utf-8")
+    for key in ("preview", "final"):  # the final's own file too: a run's timeline reads only its own
+        (review / f"frame-checks-{key}.json").write_text(json.dumps(frames), encoding="utf-8")
+
+
+def write_timeline(sdir: Path, frames: int | None = None) -> dict:
+    """source/timeline.json: the short at reading pace or, with `frames`, a synthetic timeline of that length (the
+    short's shots in equal parts, a caption card every 10 frames). Returns the JSON."""
+    short = load_short(sdir / "source" / "short.json")
+    if frames is None:
+        data = to_json(build_timeline(short, None))
+    else:
+        n = len(short.shots)
+        bounds = [round(frames * i / n) for i in range(n + 1)]
+        shots, lines, cards = [], [], []
+        for i, shot in enumerate(short.shots):
+            f0, f1 = bounds[i] + 1, bounds[i + 1]
+            shots.append(Span(shot.id, f0, f1))
+            lines.append(Span(f"l{i + 1:02d}", f0, f1))
+            cards += [Card(f"caption {c}", f"l{i + 1:02d}", c, min(c + 9, f1)) for c in range(f0, f1 + 1, 10)]
+        data = to_json(Timeline(short.fps, frames, shots, lines, cards))
+    path = sdir / "source" / "timeline.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return data
+
+
+def record_edit(sdir: Path, key: str, *, stale: bool = False, closing: int = 0) -> None:
+    """An engine-runs.json row for run `key` with its MP4 (made when missing) and an `edit` matching the current
+    source/timeline.json, or, with `stale`, another timing. `closing` frames of closing card follow the story."""
+    data = json.loads((sdir / "source" / "timeline.json").read_text(encoding="utf-8"))
+    n = data["n_frames"]
+    slug = "pendulum"
+    mp4 = sdir / "out" / (f"{slug}.mp4" if key == "final" else f"{slug}-{key}.mp4")
+    if not mp4.is_file() and not make_mp4(mp4) and key != "final":  # the final's file is make_short's to make
+        mp4.parent.mkdir(parents=True, exist_ok=True)
+        mp4.write_bytes(bytes(2000))  # no ffmpeg: a stand-in file, enough for the snapshot (never played)
+    edit = {"timeline_hash": "0" * 16 if stale else timeline_hash(data), "fps": float(data["fps"]),
+            "frames": n + closing, "closing": {"f0": n + 1, "f1": n + closing} if closing else None}  # fmt: skip
+    runs = engine_runs.load_runs(sdir)
+    row = runs.get(key) if isinstance(runs.get(key), dict) else {}
+    row.update(preset=key.split("-")[0], mp4=str(mp4), edit=edit)
+    runs[key] = row
+    path = engine_runs.runs_path(sdir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(runs, indent=2), encoding="utf-8")
 
 
 def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: str | None = None) -> Path:
@@ -148,7 +194,10 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
                             done=10 if stage == "render" else FRAMES)  # fmt: skip
         if side_run:
             write_render_status(sdir, f"preview-{side_run}", state="done")
+        write_timeline(sdir)
+        record_edit(sdir, "preview")
     if upto > stages.PAGE_STAGES.index("render"):
         _write_checks(sdir)
         make_mp4(sdir / "out" / "pendulum.mp4")
+        record_edit(sdir, "final")
     return sdir

@@ -217,3 +217,39 @@ def test_final_is_versioned_once_the_final_step_is_done_in_state(tmp_path):
     pagefix.write_render_status(sdir, "final", state="running")
     jobstate.mark_done(sdir, "final")
     assert _stage(snapshot.build(sdir, settings={}), "final")["version"] == 1
+
+
+# --------------------------------------------------------------------------- timeline
+
+
+def test_final_has_a_timeline_that_never_moves_its_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "final")
+    pagefix.write_timeline(sdir, frames=90)
+    (sdir / "out" / "pendulum.mp4").write_bytes(bytes(2000))  # a stand-in when ffmpeg is missing, never played
+    pagefix.record_edit(sdir, "final")
+    row = _stage(snapshot.build(sdir, settings={}), "final")
+    v = row["version"]
+    assert row["content"]["timeline"]["video"] == {"file": "out/pendulum.mp4"}
+    path = sdir / "review" / "frame-checks-final.json"
+    path.write_text(json.dumps({"findings": [{"check": "blur", "severity": "warning", "message": "soft",
+                                              "frame": 20, "shots": ["s01"]}]}), encoding="utf-8")  # fmt: skip
+    s2 = _stage(snapshot.build(sdir, settings={}), "final")
+    assert any(f["f"] == 20 for f in s2["content"]["timeline"]["tracks"]["findings"]) and s2["version"] == v + 1
+    pagefix.write_timeline(sdir, frames=91)  # only the timeline moved: not a new version
+    assert _stage(snapshot.build(sdir, settings={}), "final")["version"] == v + 1
+
+
+def test_final_has_no_timeline_without_a_video(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "story")
+    assert _stage(snapshot.build(sdir, settings={}), "final")["content"]["timeline"] is None
+
+
+def test_render_runs_have_their_own_timelines(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "render", side_run="eevee")
+    pagefix.record_edit(sdir, "preview-eevee")
+    runs = {r["key"]: r for r in _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"]}
+    assert runs["preview-eevee"]["timeline"]["run"] == "preview-eevee"
+    assert runs["preview"]["timeline"]["video"] == {"file": "out/pendulum-preview.mp4"}
+    (sdir / "source" / "timeline.json").write_text("{", encoding="utf-8")
+    runs = {r["key"]: r for r in _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"]}
+    assert runs["preview"]["timeline"] is None and runs["preview"]["timeline_problem"]

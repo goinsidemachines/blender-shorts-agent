@@ -20,7 +20,7 @@ from bsa import closing as closing_mod
 from bsa import engine_runs, feedback, jobstate, messages, render_status, rules
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
-from bsa.review import decisions, notes, pages, stages, store, versions
+from bsa.review import decisions, notes, pages, stages, store, track, versions
 from bsa.short import Short, label_text, load_short
 from bsa.timeline import build_timeline, pacing
 
@@ -315,7 +315,7 @@ def _run_label(key: str, preset: str) -> str:
     return preset.capitalize() + (f" · {tag}" if tag else "")
 
 
-def _run(sdir: Path, key: str, status: dict, now: float) -> dict:
+def _run(sdir: Path, key: str, status: dict, now: float, short: Short | None) -> dict:
     d = render_status.describe(status, now, ago=False)
     preset = str(status.get("preset") or key.split("-")[0])
     state = "stopped" if d.get("stale") else str(status.get("state") or "none")
@@ -329,6 +329,12 @@ def _run(sdir: Path, key: str, status: dict, now: float) -> dict:
     if latest is None:
         latest = next((s["thumb"] for s in reversed(shots) if s["thumb"]), None)
     run = status.get("run") if isinstance(status.get("run"), dict) else {}
+    timeline, timeline_problem = None, None
+    try:
+        if short is not None:
+            timeline = track.build(sdir, short, key)
+    except Exception as e:  # noqa: BLE001 - a bad timeline.json hides this run's timeline, not the run
+        timeline_problem = _plain(sdir, e)
     steps = [{"name": str(s.get("name")), "state": s.get("state")} for s in run.get("steps") or [] if isinstance(s, dict)]
     return {
         "key": key,
@@ -341,6 +347,8 @@ def _run(sdir: Path, key: str, status: dict, now: float) -> dict:
         "steps": steps,
         "shots": shots,
         "latest": latest,
+        "timeline": timeline,
+        **({"timeline_problem": timeline_problem} if timeline_problem else {}),
     }
 
 
@@ -359,20 +367,16 @@ def _render(ctx: Ctx) -> dict | None:
     runs = []
     for k in keys:
         try:
-            runs.append(_run(ctx.sdir, k, found[k], now))
+            runs.append(_run(ctx.sdir, k, found[k], now, ctx.short))
         except Exception as e:  # noqa: BLE001 - one odd status file must not hide the other runs
             runs.append({"key": k, "label": _run_label(k, k.split("-")[0]), "side": k not in APPROVED_RUNS,
                          "state": "none", "summary": _plain(ctx.sdir, f"render-status-{k}.json can't be read: "
                                                                      f"{type(e).__name__}: {e}"),
-                         "frames": {}, "eta_s": None, "steps": [], "shots": [], "latest": None})  # fmt: skip
+                         "frames": {}, "eta_s": None, "steps": [], "shots": [], "latest": None, "timeline": None})  # fmt: skip
     return {"runs": runs}
 
 
-def finding_id(f: pages.ReviewFinding) -> str:
-    """A finding's id, stable across rebuilds: the first 10 hex characters of sha1(check|message|frame|shots)."""
-    frame = "" if f.frame is None else str(f.frame)
-    raw = f"{f.check}|{f.message}|{frame}|{','.join(f.shots)}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+finding_id = pages.finding_id  # moved to pages (track.py needs it); kept here for older callers
 
 
 def _where(f: pages.ReviewFinding) -> str:
@@ -412,6 +416,12 @@ def _final(ctx: Ctx) -> dict | None:
         rows.append({"id": fid, "check": f.check, "severity": f.severity, "message": f.message, "where": _where(f),
                      "redo": f.redo})  # fmt: skip
     size = mp4.stat().st_size if mp4.is_file() and not writing else None
+    timeline = None
+    if size is not None:
+        try:
+            timeline = track.build(ctx.sdir, short, "final")
+        except Exception:  # noqa: BLE001 - a bad timeline.json hides the timeline, not the video
+            timeline = None
     return {
         "video": {"file": f"out/{short.slug}.mp4"} if size is not None else None,
         "writing": writing,
@@ -421,6 +431,7 @@ def _final(ctx: Ctx) -> dict | None:
         "checks_run": (ctx.sdir / "review" / "checks.json").is_file(),
         "rules": _rule_rows(ctx, short),
         "closing": _closing_card(ctx, short),
+        "timeline": timeline,
     }
 
 
@@ -453,7 +464,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"engine": ("runs",)}
+_UNVERSIONED = {"engine": ("runs",), "final": ("timeline",)}
 
 
 def _version_of(sdir: Path, stage: str, content: dict) -> int | None:
