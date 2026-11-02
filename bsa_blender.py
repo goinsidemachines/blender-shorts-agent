@@ -1033,13 +1033,13 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     end, card_warnings = _closing_plan(sdir, short, tl, mix)
     warnings += card_warnings
     n_frames = tl.n_frames + (end["n_frames"] if end else 0)
+    # every refusal is behind us: only now does the outgoing video go (a refused edit leaves the postable final in
+    # out/), and before the edit is built and encoded, so a stale video never passes for this one if that fails
+    _drop_outgoing(sdir, out_mp4, args.preset, side)
     scene = edit.build_edit(short, tl, engine_runs.frames_root(sdir, args.preset, side), mix if mix.is_file() else None,
                             out_mp4,
                             settings.load_settings(), preset=args.preset, anchors=anchors, hero_boxes=heroes,
                             label_heroes=label_heroes, closing=end)  # fmt: skip
-    # every refusal is behind us: only now does the outgoing video go (a refused edit leaves the postable final in
-    # out/), and before the encode, so a stale video never passes for this one if the encode fails
-    _drop_outgoing(sdir, out_mp4, args.preset, side)
     run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
     info = edit.probe(path)

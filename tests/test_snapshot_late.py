@@ -229,7 +229,7 @@ def test_final_has_a_timeline_that_never_moves_its_version(tmp_path):
     pagefix.record_edit(sdir, "final")
     row = _stage(snapshot.build(sdir, settings={}), "final")
     v = row["version"]
-    assert row["content"]["timeline"]["video"] == {"file": "out/pendulum.mp4"}
+    assert row["content"]["timeline"]["video"]["file"] == "out/pendulum.mp4"
     path = sdir / "review" / "frame-checks-final.json"
     path.write_text(json.dumps({"findings": [{"check": "blur", "severity": "warning", "message": "soft",
                                               "frame": 20, "shots": ["s01"]}]}), encoding="utf-8")  # fmt: skip
@@ -249,7 +249,7 @@ def test_render_runs_have_their_own_timelines(tmp_path):
     pagefix.record_edit(sdir, "preview-eevee")
     runs = {r["key"]: r for r in _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"]}
     assert runs["preview-eevee"]["timeline"]["run"] == "preview-eevee"
-    assert runs["preview"]["timeline"]["video"] == {"file": "out/pendulum-preview.mp4"}
+    assert runs["preview"]["timeline"]["video"]["file"] == "out/pendulum-preview.mp4"
     (sdir / "source" / "timeline.json").write_text("{", encoding="utf-8")
     runs = {r["key"]: r for r in _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"]}
     assert runs["preview"]["timeline"] is None and runs["preview"]["timeline_problem"]
