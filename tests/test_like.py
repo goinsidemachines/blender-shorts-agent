@@ -140,7 +140,7 @@ def test_like_copies_look_pace_closing_and_voice_only(tmp_path, monkeypatch, cap
     assert data["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2}
     assert data["like"]["short"] == other.name and data["like"]["at"].endswith("Z")
     assert data["like"]["copied"] == list(like.COPY_KEYS) == out["copied"]
-    assert out["like"] == other.name and out["notes"] == []
+    assert out["like"] == other.name and out["notes"] == ["this short keeps Big Ben's look as its own"]
     assert out["skipped"] == ["look", "length", "pace", "closing", "voice"]
     assert out["said"].startswith("Started from Big Ben: I copied the look, length, pace, closing and voice")
     assert not list((Path(out["short"]) / "out").glob("*"))  # no thumbnail
@@ -164,23 +164,27 @@ def test_like_never_copies_the_render_engine(tmp_path, monkeypatch, capsys):
     assert '"render"' not in source and "'render'" not in source
 
 
+def _voice_notes(notes):
+    return [n for n in notes if "voice" in n]
+
+
 def test_like_copies_the_voice_only_for_the_same_provider(tmp_path):
     other = _rich(tmp_path, record=_KOKORO)
     values, copied, notes = like.copy_from(other, {"narrator": {"provider": "elevenlabs", "voice": "x"}})
     assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4} and "narrator" in copied
-    assert notes == ["the voice wasn't copied: Big Ben used Kokoro, you now use ElevenLabs"]
+    assert _voice_notes(notes) == ["the voice wasn't copied: Big Ben used Kokoro, you now use ElevenLabs"]
     values, _, notes = like.copy_from(other, _SAME)
     assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2}
-    assert notes == []
+    assert _voice_notes(notes) == []
     # narrated with the defaults: narrator.json has no take_mode / lead_in, so line and no lead-in
+    # values equal to what the settings give a new short (line, no lead-in, speed 1.0) are not pinned
     plain = _rich(tmp_path / "b", record={"provider": "kokoro", "voice": "af_test", "speed": 1.0})
-    assert like.copy_from(plain, _SAME)[0]["narrator"] == {"take_mode": "line", "lead_in": 0.0, "voice": "af_test",
-                                                            "speed": 1.0}  # fmt: skip
+    assert like.copy_from(plain, _SAME)[0]["narrator"] == {"voice": "af_test"}
     # never narrated: take mode and lead-in from its own choices over the settings; no voice
     silent = _rich(tmp_path / "c")
     values, _, notes = like.copy_from(silent, _SAME)
     assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.3}
-    assert notes == ["the voice wasn't copied: Big Ben hasn't been narrated yet"]
+    assert _voice_notes(notes) == ["the voice wasn't copied: Big Ben hasn't been narrated yet"]
 
 
 def test_like_refuses_a_broken_or_self_source(tmp_path, monkeypatch, capsys):
@@ -196,8 +200,8 @@ def test_like_refuses_a_broken_or_self_source(tmp_path, monkeypatch, capsys):
     assert f"{broken.name}'s short.json can't be read" in err.out + err.err
     assert [p.name for p in ws.iterdir() if p.is_dir() and p.name[:1].isdigit()] == [broken.name]  # nothing made
     other = _rich(ws, "Other", record=_KOKORO)
-    monkeypatch.setattr(bsa_cli.workspace, "new_short", lambda root, title, number=None: other)
-    assert bsa_cli.main(["new-short", "Other", "--like", other.name]) != 0
+    number = int(other.name.split("-")[0])
+    assert bsa_cli.main(["new-short", "Other", "--number", str(number), "--like", other.name]) != 0
     err = capsys.readouterr()
     assert "itself" in err.out + err.err
     assert json.loads((other / "source" / "short.json").read_text("utf-8"))["like"] is None
@@ -226,3 +230,45 @@ def test_skipped_questions_and_the_one_line_said():
     assert like.provenance(Path("x/03-big-ben"), ["pace"], now=0) == {"short": "03-big-ben", "copied": ["pace"],
                                                                       "at": "1970-01-01T00:00:00Z"}  # fmt: skip
     assert set(like.SKIP) == set(like.COPY_KEYS) == set(like.LABELS)
+
+
+def test_like_never_pins_what_equals_the_current_settings(tmp_path):
+    from bsa.short import load_short
+
+    settings_ = {"narrator": {"provider": "kokoro", "voice": "af_test", "speed": 1.2, "take_mode": "paragraph",
+                              "lead_in": 0.4},
+                 "brand": {"mode": "brand", "style": "toon", "set": "workbench", "palette": {"accent": "#E8B33A"},
+                           "caption": {"size": 60}}}  # fmt: skip
+    other = _rich(tmp_path, record=_KOKORO)
+    p = other / "source" / "short.json"
+    short = load_short(p)
+    short.look = "brand"
+    short.style = {"style": "toon", "set": "graph", "palette": {"accent": "#e8b33a", "text": "#101010"},
+                   "caption": {"size": 60, "box": "#000000"}, "material": "felt"}  # fmt: skip
+    save_short(short, p)
+    values, copied, notes = like.copy_from(other, settings_)
+    assert "narrator" not in values and "narrator" not in copied  # voice, speed, take mode, lead-in all equal
+    assert "look" not in values  # the brand look is what the settings give anyway
+    assert values["style"] == {"set": "graph", "palette": {"text": "#101010"}, "caption": {"box": "#000000"},
+                               "material": "felt"}  # fmt: skip
+    assert notes == []
+    skipped = like.skipped_questions(copied, values.get("narrator") or {})
+    assert "voice" not in skipped and "voice" not in like.said("Big Ben", skipped)
+    # everything equal: no style at all
+    short.style = {"style": "toon", "palette": {"accent": "#E8B33A"}}
+    save_short(short, p)
+    assert "style" not in like.copy_from(other, settings_)[0]
+
+
+def test_voice_is_skipped_only_when_the_voice_was_copied(tmp_path):
+    other = _rich(tmp_path, record=_KOKORO)
+    values, copied, _ = like.copy_from(other, {"narrator": {"provider": "elevenlabs"}})
+    assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4} and "narrator" in copied
+    skipped = like.skipped_questions(copied, values["narrator"])
+    assert "voice" not in skipped and skipped == ["look", "length", "pace", "closing"]
+
+
+def test_captions_only_source_says_so(tmp_path):
+    other = _rich(tmp_path, record={"provider": "none"})
+    assert like.copy_from(other, _SAME)[2] == ["this short keeps Big Ben's look as its own",
+                                               "the voice wasn't copied: Big Ben was captions only"]  # fmt: skip

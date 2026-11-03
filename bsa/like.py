@@ -10,7 +10,7 @@ from pathlib import Path
 
 from bsa import engine_runs, jobstate, kit, settings, workspace
 from bsa.narrate import run as narrate_run
-from bsa.short import load_short
+from bsa.short import Short, load_short
 
 
 def _label(record: dict) -> str:
@@ -102,42 +102,99 @@ def _provider_name(provider) -> str:
     return settings._PROVIDER_NAMES.get(provider, provider) if provider else "no narrator"
 
 
+def _blank(look=None) -> Short:
+    """A short with no choices of its own: what a new short gets from the user's settings alone."""
+    return Short(slug="new", title="New", length_s=45, look=look)
+
+
 def _narrator_from(other_dir: Path, other, settings_: dict) -> tuple[dict, list[str]]:
-    """take_mode and lead_in the other short was (or would be) narrated with, plus its voice and speed when it was
-    narrated by the provider the user has now."""
+    """The other short's take_mode, lead_in and (narrated by the provider the user has now) voice and speed, each
+    only where it differs from what the user's settings give a new short now: a value equal to the settings is left
+    out, so later settings changes keep reaching the new short."""
     record = narrate_run._read_record(other_dir / "audio" / "vo")
     used = record.get("provider")
-    if used and used != "none":
-        out = {"take_mode": record.get("take_mode") or "line", "lead_in": float(record.get("lead_in") or 0.0)}
+    narrated = bool(used) and used != "none"
+    if narrated:  # narrator.json leaves out take_mode and lead_in at their defaults
+        theirs = {"take_mode": record.get("take_mode") or "line", "lead_in": float(record.get("lead_in") or 0.0)}
     else:
         eff = narrate_run.narrator_for(settings_, other)
-        out = {"take_mode": eff["take_mode"], "lead_in": eff["lead_in"]}
+        theirs = {"take_mode": eff["take_mode"], "lead_in": eff["lead_in"]}
+    notes: list[str] = []
     now = (settings_.get("narrator") or {}).get("provider")
-    if not used or used == "none":
-        return out, [f"the voice wasn't copied: {other.title} hasn't been narrated yet"]
-    if used != now:
-        note = f"the voice wasn't copied: {other.title} used {_provider_name(used)}, you now use {_provider_name(now)}"
-        return out, [note]
-    if record.get("voice"):
-        out["voice"] = record["voice"]
-    if record.get("speed") is not None:
-        out["speed"] = float(record["speed"])
-    return out, []
+    if used == "none":
+        notes.append(f"the voice wasn't copied: {other.title} was captions only")
+    elif not used:
+        notes.append(f"the voice wasn't copied: {other.title} hasn't been narrated yet")
+    elif used != now:
+        notes.append(f"the voice wasn't copied: {other.title} used {_provider_name(used)}, you now use "
+                     + _provider_name(now))  # fmt: skip
+    else:
+        if record.get("voice"):
+            theirs["voice"] = record["voice"]
+        if record.get("speed") is not None:
+            theirs["speed"] = float(record["speed"])
+    mine = narrate_run.narrator_for(settings_, _blank())
+    mine["speed"] = float(mine.get("speed") or 1.0)
+    mine["lead_in"] = float(mine["lead_in"])
+    return {k: v for k, v in theirs.items() if v != mine.get(k)}, notes
+
+
+def _norm(path: str, value):
+    """A style value as the kit stores it (so "#e8b33a" equals "#E8B33A"); the value itself when the kit refuses it."""
+    try:
+        return kit.check(path, value, _must_exist=False)
+    except (ValueError, TypeError):
+        return value
+
+
+_SUB_KEYS = ("palette", "categories", "caption", "logo")
+
+
+def _style_from(style: dict, settings_: dict, look) -> dict:
+    """The other short's style keys (per sub-key for palette, categories, caption and logo) whose values differ from
+    what the user's brand gives a new short now. Equal ones are left out so the new short keeps following the brand."""
+    base, _ = kit._merged(settings_, _blank(look))
+    brand = settings.brand_for(settings_, _blank(look))
+    out: dict = {}
+    for key, value in style.items():
+        if key not in kit._KIT_KEYS:  # prose and other keys: compared with the brand as written
+            if brand.get(key) != value:
+                out[key] = copy.deepcopy(value)
+        elif key in _SUB_KEYS and isinstance(value, dict):
+            cur = base.get(key) or {}
+            if key == "logo" and isinstance(brand.get("logo"), str):
+                cur = {"file": brand["logo"]}
+            sub = {}
+            for k, v in value.items():
+                name = str(k).strip().lower() if key in ("palette", "categories") else k
+                if _norm(f"{key}.{k}", v) != cur.get(name):
+                    sub[k] = copy.deepcopy(v)
+            if sub:
+                out[key] = sub
+        elif _norm(key, value) != base.get(key):
+            out[key] = copy.deepcopy(value)
+    return out
 
 
 def copy_from(other: Path, settings_: dict) -> tuple[dict, list[str], list[str]]:
     """(values for the new short.json, the keys copied in COPY_KEYS order, notes) from the earlier short `other`.
-    ValueError when its short.json can't be read."""
+    Only what made it different is copied: a value equal to what the user's settings give a new short now is left
+    out. ValueError when its short.json can't be read."""
     other = Path(other)
     try:
         short = load_short(other / "source" / "short.json")
     except Exception as exc:
         raise ValueError(f"{other.name}'s short.json can't be read: {exc}") from exc
     values: dict = {}
-    if isinstance(short.style, dict) and short.style:
-        values["style"] = copy.deepcopy(short.style)
-    if short.look is not None:
+    notes: list[str] = []
+    if short.look is not None and short.look != settings.look_mode(settings_, None):
         values["look"] = short.look
+    if isinstance(short.style, dict) and short.style:
+        style = _style_from(short.style, settings_, values.get("look"))
+        if style:
+            values["style"] = style
+            if kit.kit_for(settings_, _blank(values.get("look"))) is None and kit.kit_for(settings_, short) is not None:
+                notes.append(f"this short keeps {short.title}'s look as its own")
     values["length_s"] = short.length_s
     pace = pace_of(short)
     if pace:
@@ -145,7 +202,10 @@ def copy_from(other: Path, settings_: dict) -> tuple[dict, list[str], list[str]]
     for key in ("end_card", "closing"):
         if getattr(short, key) is not None:
             values[key] = copy.deepcopy(getattr(short, key))
-    values["narrator"], notes = _narrator_from(other, short, settings_)
+    narrator, voice_notes = _narrator_from(other, short, settings_)
+    if narrator:
+        values["narrator"] = narrator
+    notes += voice_notes
     return values, [k for k in COPY_KEYS if k in values], notes
 
 
@@ -155,10 +215,14 @@ def provenance(other: Path, copied: list[str], now: float | None = None) -> dict
     return {"short": Path(other).name, "copied": list(copied), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
-def skipped_questions(copied: list[str]) -> list[str]:
-    """The interview questions the copied keys answer, each once, in order."""
+def skipped_questions(copied: list[str], narrator: dict | None = None) -> list[str]:
+    """The interview questions the copied keys answer, each once, in order. The voice question is skipped only when
+    the voice itself was copied (`narrator`, the copied narrator values, has a voice); without `narrator` a copied
+    narrator counts as the voice."""
     out: list[str] = []
     for key in copied:
+        if key == "narrator" and narrator is not None and "voice" not in narrator:
+            continue
         q = SKIP.get(key)
         if q and q not in out:
             out.append(q)

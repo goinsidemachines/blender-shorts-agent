@@ -245,3 +245,18 @@ def test_new_short_fields_move_no_stage_version(tmp_path):
     data = json.loads(path.read_text("utf-8"))
     assert data["pace"] == {} and data["like"] is None
     assert {s: snapshot.stage_version(sdir, s, snapshot.load_ctx(sdir, {})) for s in stages.PAGE_STAGES} == before
+
+
+def test_set_narrator_pace_and_like_move_no_stage_version(tmp_path):
+    from bsa.review import stages
+    from bsa.short import save_short
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    before = {s: snapshot.stage_version(sdir, s, snapshot.load_ctx(sdir, {})) for s in stages.PAGE_STAGES}
+    path = sdir / "source" / "short.json"
+    short = load_short(path)
+    short.narrator = {"voice": "v1", "take_mode": "paragraph", "lead_in": 0.3}
+    short.pace = {"shots": 3, "min_s": 4.0, "holds": 1}
+    short.like = {"short": "01-other", "copied": ["pace", "narrator"], "at": "2026-11-04T10:00:00Z"}
+    save_short(short, path)
+    assert {s: snapshot.stage_version(sdir, s, snapshot.load_ctx(sdir, {})) for s in stages.PAGE_STAGES} == before

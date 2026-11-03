@@ -276,12 +276,14 @@ def cmd_new_short(args) -> dict:
             else:
                 length = int(copied_len) if copied_len.is_integer() else copied_len
         copied = [k for k in copied if k in values]
+        taken = workspace._NUM.match(other.name)
+        if args.number is not None and taken and int(taken.group(1)) == args.number:  # --number 3 --like 3
+            raise CliError(f"--like {args.like}: {other.name} is the short being made itself (number {args.number}): "
+                           "name an earlier short")  # fmt: skip
     try:
         sdir = workspace.new_short(Path(root), args.title, number=args.number)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
-    if other is not None and sdir.resolve() == other.resolve():
-        raise CliError(f"--like {args.like}: {other.name} is the short being made itself: name an earlier short")
     path = short_json(sdir)
     if not path.exists():
         short = Short(slug=workspace.slugify(args.title), title=args.title, length_s=length,
@@ -294,7 +296,7 @@ def cmd_new_short(args) -> dict:
         save_short(short, path)
     out = {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
     if other is not None:
-        skipped = like.skipped_questions(copied)
+        skipped = like.skipped_questions(copied, values.get("narrator") or {})
         out.update({"like": other.name, "copied": copied, "skipped": skipped,
                     "said": like.said(load(other).title, skipped),
                     "notes": notes})  # fmt: skip
