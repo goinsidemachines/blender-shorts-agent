@@ -16,13 +16,16 @@ from pathlib import Path
 from bsa import cards, overlays
 from bsa.cards import CardSpec
 from bsa.kit import logo_missing
-from bsa.layout import CAPTION_LIFT_PX, SAFE, H, Rect, W, safe_rect
+from bsa.layout import CAPTION_LIFT_PX, SAFE, H, Rect, W, overlap_area, safe_rect
 from bsa.overlays import SMALL_MARGIN, STACK_GAP_PX
 
 # Sequencer channels. "stacked", "pointer", "near" and "dot" add the label's index in shot.labels; the progress bar
 # takes 3 (track), 4 and 5 (fill). The end card keeps 30 and up (today's text strips).
 CH = {"progress": 3, "title": 6, "bars": 7, "caption": 10, "logo": 20, "category": 21, "badge": 22, "step": 23,
       "stacked": 24, "pointer": 40, "near": 50, "dot": 60}  # fmt: skip
+# Labels per shot: stacked ones take 24 + index, which must stay under the end card's 30; pointers 40-45, near cards
+# 50-55 and dots 60-65 then never meet either.
+MAX_LABELS = 6
 TITLE_GAP_PX = 24  # between the top cards and the title card, and between the title card and the bars
 PROGRESS_DROP_PX = 36  # the progress bar's top under today's caption bottom
 
@@ -124,6 +127,11 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
         title_lines,
     )
 
+    labels = getattr(shot, "labels", None) or []
+    if len(labels) > MAX_LABELS:
+        raise ValueError(f"shot {shot.id} has {len(labels)} labels: a brand kit draws at most {MAX_LABELS} per shot "
+                         "(more would share sequencer channels with the pointers and the end card): move some to "
+                         "another shot")  # fmt: skip
     s = safe_rect()
     left, right, y0 = s.x + _edge(), s.right - _edge(), s.y + _edge()
     out = []
@@ -143,14 +151,6 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
             col_y = r.bottom + STACK_GAP_PX
         else:
             stack_y = r.bottom + STACK_GAP_PX
-    cat = getattr(shot, "category", None)
-    if isinstance(cat, str) and cat.strip():
-        text = category_text(cat)
-        spec = cards.pill(kit, "category", text, font)
-        if col_y == y0 and logo is not None and left + logo.w + STACK_GAP_PX > right - spec.w:
-            col_y = stack_y  # no room beside a wide top-left logo: under it
-        put("category", text, spec, right - spec.w, col_y, CH["category"])
-
     def stacked(kind, text, channel) -> None:
         nonlocal stack_y
         stack_y = put(kind, text, cards.pill(kit, kind, text, font), left, stack_y, channel).bottom + STACK_GAP_PX
@@ -162,6 +162,15 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
     for i, label in enumerate(getattr(shot, "labels", None) or []):
         if not label_near(label):
             stacked(label_kind(label), label_text(label), CH["stacked"] + i)
+
+    cat = getattr(shot, "category", None)
+    if isinstance(cat, str) and cat.strip():  # right-aligned, moved under any card it would sit on
+        text = category_text(cat)
+        spec = cards.pill(kit, "category", text, font)
+        x = _x_in_safe(right - spec.w, spec.w)
+        while hit := [r for *_, r, _ in out if overlap_area(Rect(x, col_y, spec.w, spec.h), r) > 0]:
+            col_y = max(r.bottom for r in hit) + STACK_GAP_PX
+        put("category", text, spec, x, col_y, CH["category"])
 
     y = max(r.bottom for *_, r, _ in out) + TITLE_GAP_PX if out else y0
     lines, highlight = title_lines(shot)
@@ -357,7 +366,9 @@ SAMPLE_BARS = {"items": [{"label": "Short arm", "value": 1}, {"label": "Long arm
 def sample(kit, font) -> KitOverlay:
     """One frame (frame 1) of a fixed made-up arrangement, to preview a kit: the logo (if set), a category tag (the
     kit's first category, else "Force"), a badge, a step tag, a title card, a part label pointing at (520, 1000), a
-    stacked measure, value bars, a caption and the progress bar at 40 %."""
+    stacked measure, value bars, a caption and the progress bar at 40 %: its Progress runs f0 = 0 to f1 = 4, so at
+    frame 1 the fill shows (1 - 0 + 1) / (4 - 0 + 1) = 2 / 5 of its width (no f0 >= 1 gives exactly 40 % at frame 1);
+    every other card shows at frame 1."""
     from bsa.short import Short, Shot
     from bsa.timeline import Card, Span, Timeline
 

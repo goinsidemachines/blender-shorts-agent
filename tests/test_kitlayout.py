@@ -295,3 +295,25 @@ def test_a_card_in_a_cover_font_is_noted_once(monkeypatch, short, tl, anchors, f
     ov = kitlayout.build(short, tl, K, font, anchors)
     assert near(ov).spec.font == str(alt)
     assert ov.notes.count("'Pivot': no Pivot glyphs") == 1
+
+
+def test_a_long_badge_pushes_a_long_category_below_it(font):
+    short = _short(badge="Simplified: sizes and speeds are not to scale here", category="a very long category name")
+    ov = kitlayout.build(short, _tl(), K, font)
+    badge, cat = one(ov, kitlayout.CH["badge"]), one(ov, kitlayout.CH["category"])
+    assert overlap_area(badge.at, cat.at) == 0 and cat.at.y == pytest.approx(badge.at.bottom + overlays.STACK_GAP_PX)
+    assert inside_safe(cat.at) and cat.at.right == pytest.approx(safe_rect().right - overlays.SMALL_MARGIN * H - 1)
+    title = kitlayout.build(_short(badge="b", category="spark", title_card="T"), _tl(), K, font)
+    assert one(title, kitlayout.CH["category"]).at.y == one(title, kitlayout.CH["badge"]).at.y  # short ones share
+
+
+def test_labels_per_shot_are_capped_so_channels_never_meet(font):
+    six = [f"L{i}" for i in range(kitlayout.MAX_LABELS)]
+    ov = kitlayout.build(_short(labels=six), _tl(), K, font)
+    chans = [p.channel for p in ov.cards if p.spec.kind == "label"]
+    assert max(chans) < 30 and kitlayout.CH["near"] + kitlayout.MAX_LABELS <= kitlayout.CH["dot"]
+    assert kitlayout.CH["pointer"] + kitlayout.MAX_LABELS <= kitlayout.CH["near"]
+    with pytest.raises(ValueError, match="shot a has 7 labels: a brand kit draws at most 6 per shot"):
+        kitlayout.build(_short(labels=[*six, "one more"]), _tl(), K, font)
+    with pytest.raises(ValueError, match="at most 6"):
+        kitlayout.top_band(None, _short(labels=[*six, "x"]).shots[0], K, font)
