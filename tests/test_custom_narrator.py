@@ -287,3 +287,30 @@ def test_float_wav_with_nan_and_inf_is_cleaned(tmp_path):
     with wave.open(str(p), "rb") as w:
         out = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
     assert (out[10], out[11], out[12]) == (0, 32767, -32767)
+
+
+def test_resampling_keeps_the_head_and_adds_no_pre_echo(tmp_path):
+    """FFT resampling is circular: a take loud up to its last sample must not wrap into its silent head, and the
+    first 50 ms of the voice must keep their energy."""
+    rate, n = 24000, 24000
+    t = np.arange(n) / rate
+    on, ramp = round(0.2 * rate), round(0.03 * rate)
+    x = 0.5 * np.sin(2 * np.pi * 300 * (t - t[-1]) + np.pi / 2)  # loud (+0.5) on the very last sample
+    x[:on] = 0.0
+    x[on : on + ramp] *= 0.5 - 0.5 * np.cos(np.pi * np.arange(ramp) / ramp)  # a soft onset
+    p = tmp_path / "a.wav"
+    write_pcm(p, x, rate, bits=32)
+    normalise_take(p)
+    with wave.open(str(p), "rb") as w:
+        assert w.getframerate() == 48000
+        y = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float64) / 32768.0
+    head = np.abs(y[: round(0.15 * 48000)]).max()
+    assert 20 * np.log10(max(head, 1e-9)) < -60, f"head peaks at {20 * np.log10(head):.1f} dBFS"
+
+    def rms_db(v):
+        return 10 * np.log10(np.mean(v**2))
+
+    before = rms_db(x[on : on + round(0.05 * rate)])
+    after = rms_db(y[round(0.2 * 48000) : round(0.25 * 48000)])
+    assert abs(after - before) <= 1.0, (before, after)
+    assert contract.leading_silence(p) == pytest.approx(0.2, abs=0.011)  # the wrap read as the voice starting at 0

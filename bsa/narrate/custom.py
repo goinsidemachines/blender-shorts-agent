@@ -177,14 +177,17 @@ def _read_wav(path: Path) -> tuple[np.ndarray, int]:
 
 
 def _resample(x: np.ndarray, rate: int) -> np.ndarray:
-    """FFT resampling (numpy only): keeps the spectrum below the lower Nyquist, so downsampling is band-limited."""
+    """FFT resampling (numpy only): keeps the spectrum below the lower Nyquist, so downsampling is band-limited. The
+    take is padded with as many zeros as it has samples first and cut back after: the FFT is circular, and without
+    the pad a take loud up to its last sample rings into its own silent head (a click before the first word)."""
     n = len(x)
     m = round(n * SR / rate)
-    spec = np.fft.rfft(x)
-    out = np.zeros(m // 2 + 1, dtype=complex)
+    spec = np.fft.rfft(np.concatenate([x, np.zeros(n)]))
+    m2 = round(2 * n * SR / rate)
+    out = np.zeros(m2 // 2 + 1, dtype=complex)
     k = min(len(spec), len(out))
     out[:k] = spec[:k]
-    return np.fft.irfft(out, m) * (m / n)
+    return np.fft.irfft(out, m2)[:m] * (m2 / (2 * n))
 
 
 def normalise_take(path: Path) -> None:
