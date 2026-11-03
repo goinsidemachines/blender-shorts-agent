@@ -238,3 +238,9 @@ def test_look_note_kind_is_accepted(tmp_path):
     assert n["target"] == {"kind": "look", "id": "style", "version": 2} and n["text"] == "Use the pencil style"
     n = notes.add(tmp_path, "storyboard", {"kind": "look", "id": "set", "version": 2}, "Use the graph set", "page")
     assert n["target"]["id"] == "set"
+
+
+def test_copied_is_a_note_kind(tmp_path):
+    assert "copied" in notes.KINDS
+    n = notes.add(tmp_path, "interview", {"kind": "copied", "id": "style", "version": 1}, "Use another set", "page")
+    assert n["target"] == {"kind": "copied", "id": "style", "version": 1}

@@ -72,7 +72,30 @@ def _interview(ctx: Ctx) -> dict | None:
     if ctx.short is None:
         raise RuntimeError(ctx.short_problem)
     s = ctx.short
-    return {"title": s.title, "topic": s.topic, "audience": s.audience, "length_s": s.length_s, "field": s.field}
+    out = {"title": s.title, "topic": s.topic, "audience": s.audience, "length_s": s.length_s, "field": s.field}
+    if s.like:
+        out["started_from"] = _started_from(ctx.sdir, s)
+    return out
+
+
+def _started_from(sdir: Path, s: Short) -> dict:
+    """What this short started from (`new-short --like`): the other short's title (its folder name when its short.json
+    is gone or unreadable) and each copied value as one plain line. Review information, left out of the version."""
+    from bsa import like
+
+    name = str(s.like.get("short") or "")
+    title = name
+    try:
+        if Path(name).name != name:
+            raise ValueError(name)
+        if Path(name).name != name:
+            raise ValueError(name)
+        title = load_short(Path(sdir).parent / name / "source" / "short.json").title or name
+    except Exception:  # noqa: BLE001, S110 - the other short may be gone: the page still names it
+        pass
+    copied = [{"key": k, "label": like.LABELS.get(k, k), "value": like.describe(k, getattr(s, k, None))}
+              for k in s.like.get("copied") or [] if k in like.COPY_KEYS]  # fmt: skip
+    return {"title": title, "short": name, "copied": copied}
 
 
 def _short(ctx: Ctx) -> Short:
@@ -666,7 +689,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
+_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
                          "checklist_problem", "thumbnail_problems")}

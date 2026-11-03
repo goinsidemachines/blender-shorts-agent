@@ -94,6 +94,17 @@
 
   // ------------------------------------------------------------------ Interview
 
+  // "Started from": what `new-short --like` copied from an earlier short, a note button on each item.
+  function startedFrom(ctx, from) {
+    var ul = ctx.el("ul", { class: "copied" });
+    (from.copied || []).forEach(function (c) {
+      ul.append(ctx.el("li", null, ctx.el("strong", null, c.label), ": " + c.value + " ",
+        ctx.noteButton("copied", c.key, "Change " + c.label)));
+    });
+    return ctx.el("section", { class: "st-sec started-from" }, ctx.el("h3", null, "Started from: " + from.title),
+      ctx.el("p", { class: "muted" }, "These came from that short. Change any with a note."), ul);
+  }
+
   // Interview: the answers collected so far, read-only (an overall note is offered beside every stage).
   BSA.stages.interview = function (content, ctx) {
     var rows = [
@@ -108,7 +119,9 @@
       if (r[1] === null || r[1] === undefined || r[1] === "") return;
       dl.append(ctx.el("dt", null, r[0]), ctx.el("dd", null, String(r[1])));
     });
-    return ctx.el("div", null, ctx.el("p", { class: "muted" }, "What you told Claude at the start."), dl);
+    var from = content.started_from;
+    return ctx.el("div", null, ctx.el("p", { class: "muted" }, "What you told Claude at the start."), dl,
+      from ? startedFrom(ctx, from) : null);
   };
 
   // ------------------------------------------------------------------ Story

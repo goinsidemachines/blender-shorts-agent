@@ -312,3 +312,24 @@ def write_thumbs(sdir: Path, n: int = 2, findings: list[dict] | None = None) -> 
                      "source": "final", "files": files, "layouts": layouts, "findings": list(findings or []),
                      "warnings": []})  # fmt: skip
     thumbs.put_candidates(sdir, rows)
+
+
+def write_like(sdir: Path, other_title: str = "Eiffel Tower", copied: tuple[str, ...] | None = None) -> Path:
+    """Make the short at `sdir` start from another short (`new-short --like`): an earlier short titled `other_title`
+    in the same workspace, and a short.json `like` plus the copied values. Returns the other short's folder."""
+    sdir = Path(sdir)
+    other = workspace.new_short(sdir.parent, other_title, 2)
+    data = json.loads(SOURCE.read_text(encoding="utf-8"))
+    data["title"] = other_title
+    (other / "source" / "short.json").write_text(json.dumps(data), encoding="utf-8")
+    path = sdir / "source" / "short.json"
+    mine = json.loads(path.read_text(encoding="utf-8"))
+    mine["style"] = {"style": "toy", "set": "workbench", "palette": {"accent": "#E8B33A"}, "font": "Segoe UI"}
+    mine["look"] = "fresh"
+    mine["pace"] = {"shots": 8, "min_s": 4.0, "holds": 2}
+    mine["closing"] = False
+    mine["narrator"] = {"voice": "af_heart", "speed": 1.0, "take_mode": "paragraph", "lead_in": 0.3}
+    keys = copied or ("style", "look", "length_s", "pace", "closing", "narrator")
+    mine["like"] = {"short": other.name, "copied": list(keys), "at": "2026-11-04T10:00:00Z"}
+    path.write_text(json.dumps(mine), encoding="utf-8")
+    return other

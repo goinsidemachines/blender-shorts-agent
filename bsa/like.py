@@ -236,3 +236,65 @@ def said(title: str, skipped: list[str]) -> str:
         return f"Started from {title}: nothing could be copied, so I'll ask about everything."
     words = skipped[0] if len(skipped) == 1 else f"{', '.join(skipped[:-1])} and {skipped[-1]}"
     return f"Started from {title}: I copied the {words}, so I won't ask about {'it' if len(skipped) == 1 else 'those'}."
+
+
+def _n(value) -> str:
+    return f"{float(value):g}"
+
+
+def describe(key: str, value) -> str:
+    """One plain line for a copied value, as the page's "Started from" block shows it."""
+    try:
+        return _describe(key, value)
+    except (TypeError, ValueError, AttributeError):
+        return "copied"
+
+
+def _describe(key: str, value) -> str:
+    if key == "style":
+        v = value if isinstance(value, dict) else {}
+        parts = []
+        if v.get("style"):
+            parts.append(f"{v['style']} style")
+        if v.get("set"):
+            parts.append(f"{v['set']} set")
+        if v.get("palette"):
+            parts.append("own palette")
+        if v.get("font"):
+            parts.append(f"font {v['font']}")
+        return ", ".join(parts) or "its own style choices"
+    if key == "look":
+        return "brand" if value == "brand" else "its own look"
+    if key == "length_s":
+        return f"{_n(value)} s"
+    if key == "pace":
+        shots = int(value.get("shots") or 0)
+        parts = [f"{shots} shot{'s' if shots != 1 else ''}"]
+        if value.get("min_s") is not None:
+            parts.append(f"about {_n(value['min_s'])} s each")
+        holds = int(value.get("holds") or 0)
+        if holds:
+            parts.append(f"{holds} hold{'s' if holds != 1 else ''}")
+        return ", ".join(parts)
+    if key in ("end_card", "closing"):
+        if isinstance(value, dict):
+            text = value.get("text") or value.get("voice_line") or value.get("website")
+            return str(text) if text else "its own settings"
+        if value is True:
+            return "on"
+        return str(value) if value else "none"
+    if key == "narrator":
+        parts = []
+        if value.get("voice"):
+            said_ = f"voice {value['voice']}"
+            if value.get("speed") is not None:
+                said_ += f" at {float(value['speed']):.1f}×"
+            parts.append(said_)
+        elif value.get("speed") is not None:
+            parts.append(f"speed {float(value['speed']):.1f}×")
+        if value.get("take_mode"):
+            parts.append(f"{value['take_mode']} takes")
+        if value.get("lead_in") is not None:
+            parts.append(f"{_n(value['lead_in'])} s lead-in")
+        return ", ".join(parts) or "its own voice settings"
+    return str(value)

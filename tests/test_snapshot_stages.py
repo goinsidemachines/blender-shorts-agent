@@ -260,3 +260,54 @@ def test_set_narrator_pace_and_like_move_no_stage_version(tmp_path):
     short.like = {"short": "01-other", "copied": ["pace", "narrator"], "at": "2026-11-04T10:00:00Z"}
     save_short(short, path)
     assert {s: snapshot.stage_version(sdir, s, snapshot.load_ctx(sdir, {})) for s in stages.PAGE_STAGES} == before
+
+
+def _interview(sdir):
+    return _stage(snapshot.build(sdir, settings={}), "interview")
+
+
+def test_interview_started_from_lists_what_was_copied(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "story")
+    before = _interview(sdir)["version"]
+    other = pagefix.write_like(sdir, "Eiffel Tower")
+    st = _interview(sdir)
+    assert st["version"] == before  # review information: it never moves the stage's version
+    sf = st["content"]["started_from"]
+    assert sf["title"] == "Eiffel Tower" and sf["short"] == other.name
+    assert [c["key"] for c in sf["copied"]] == ["style", "look", "length_s", "pace", "closing", "narrator"]
+    got = {c["key"]: c for c in sf["copied"]}
+    assert got["style"]["label"] == "the look" and got["style"]["value"].startswith("toy style, workbench set")
+    assert got["pace"]["value"] == "8 shots, about 4 s each, 2 holds"
+    assert got["closing"]["value"] == "none" and got["length_s"]["value"] == "15 s"
+    assert got["narrator"]["value"] == "voice af_heart at 1.0×, paragraph takes, 0.3 s lead-in"
+    json.dumps(st)
+
+
+def test_interview_started_from_names_a_short_whose_folder_is_gone(tmp_path):
+    import shutil
+
+    sdir = pagefix.make_short(tmp_path, "story")
+    other = pagefix.write_like(sdir, "Eiffel Tower")
+    shutil.rmtree(other)
+    sf = _interview(sdir)["content"]["started_from"]
+    assert sf["title"] == other.name and sf["short"] == other.name and sf["copied"]
+
+
+def test_interview_without_like_has_no_started_from(tmp_path):
+    c = _interview(pagefix.make_short(tmp_path, "story"))["content"]
+    assert "started_from" not in c
+
+
+def test_describe_one_plain_line_per_copied_value():
+    from bsa import like
+
+    assert like.describe("style", {"style": "toy", "set": "workbench", "palette": {"a": "#fff"}, "font": "Lato"}) == (
+        "toy style, workbench set, own palette, font Lato")
+    assert like.describe("look", "brand") == "brand" and like.describe("look", "fresh") == "its own look"
+    assert like.describe("length_s", 45) == "45 s"
+    assert like.describe("pace", {"shots": 1, "min_s": 3.5, "holds": 0}) == "1 shot, about 3.5 s each"
+    assert like.describe("end_card", "Follow @me") == "Follow @me"
+    assert like.describe("end_card", {"text": "Hi", "second": "site"}) == "Hi"
+    assert like.describe("closing", False) == "none"
+    assert like.describe("closing", {"voice_line": "Bye"}) == "Bye"
+    assert like.describe("narrator", {"take_mode": "line"}) == "line takes"

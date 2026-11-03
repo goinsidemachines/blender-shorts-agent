@@ -94,6 +94,8 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; pa
 dl.answers { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 0; }
 dl.answers dt { font-weight: 700; color: var(--muted); }
 dl.answers dd { margin: 0; overflow-wrap: anywhere; }
+ul.copied { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+ul.copied li { overflow-wrap: anywhere; }
 
 /* buttons */
 .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
