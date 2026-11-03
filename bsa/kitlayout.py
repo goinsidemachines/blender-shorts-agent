@@ -133,9 +133,11 @@ def _logo(kit, font) -> tuple[CardSpec | None, str | None]:
 def caption_lines(short, tl, kit, font) -> int:
     """The most lines any caption of the short wraps to in the kit's caption size and `font`: 1 or 2 (a longer one
     still takes the two-line band, as today); 0 when no caption is drawn (the kit or the short's own
-    style.caption.draw turns them off); 2 when unknown (no short, or one without caption text). The texts are the
-    short's narration lines cut into cards (bsa.timeline.chunk_caption), which is what the edit shows, so validate
-    (no timeline) and the edit measure the same; a short without lines (a bare layout) reads them from `tl`."""
+    style.caption.draw turns them off); 2 when unknown (no short, or one without caption text). It is the max across
+    the whole short (conservative: one two-line caption gives every shot the two-line band). The texts are the
+    short's narration lines cut into cards (bsa.timeline.chunk_caption) plus, with a timeline `tl`, the cards the
+    edit really draws (build_timeline merges the pieces of a near-silent take into one card that can wrap longer).
+    Validate has no timeline, so it measures the chunked texts only and can miss such a merged card."""
     if not kit.caption.get("draw", True):
         return 0
     if short is None:
@@ -145,8 +147,8 @@ def caption_lines(short, tl, kit, font) -> int:
     from bsa.timeline import chunk_caption
 
     texts = [t for ln in getattr(short, "lines", None) or [] for t in chunk_caption(ln.text)]
-    if not texts and tl is not None:
-        texts = [c.text for c in tl.cards]
+    if tl is not None:
+        texts += [c.text for c in tl.cards]
     if not texts:
         return 2
     width = safe_rect().w

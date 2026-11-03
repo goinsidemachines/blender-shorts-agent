@@ -425,6 +425,19 @@ def test_one_line_captions_give_the_top_cards_more_room(font, monkeypatch):
     assert kitlayout.top_band(one_line, shot, K, font).bottom <= kitlayout.bottom_limit(K, 1)
 
 
+def test_a_merged_caption_card_in_the_timeline_is_measured(font):
+    from bsa.short import Line
+
+    shot = _tall(n_labels=3, bars=BARS3)
+    a, b = "Short one here", "Short two here"
+    assert kitlayout.caption_lines(_captioned(shot, a)[0], None, K, font) == 1
+    short = Short(slug="x", title="X", length_s=2, shots=[shot], lines=[Line("l1", a, "a"), Line("l2", b, "a")])
+    merged = Timeline(30, 60, [Span("a", 1, 60)], [], [Card(f"{a} {b} {a} {b}", "l1", 1, 60)])
+    assert kitlayout.caption_lines(short, merged, K, font) == 2
+    with pytest.raises(kitlayout.CardsTooTall):  # laid out for the two-line band, which they don't fit
+        kitlayout.build(short, merged, K, font)
+
+
 def test_caption_lines_is_two_when_unknown_and_a_short_without_captions_measures_none(font, monkeypatch):
     shot = _tall(n_labels=3)
     assert kitlayout.caption_lines(None, None, K, font) == 2
@@ -455,7 +468,7 @@ def test_title_shrinks_then_bars_tighten_before_refusing(font):
 
 def test_tight_bars_are_shorter_and_only_used_when_the_title_shrink_is_not_enough(font):
     full, tight = cards.bars(K, BARS3, font, 900), cards.bars(K, BARS3, font, 900, tight=True)
-    assert tight.h < full.h and all(b[3] == cards.BAR_H * 0.75 for b in tight.bars)
+    assert tight.h < full.h and all(b[3] == cards.BAR_H * cards.TIGHT_BAR_SCALE for b in tight.bars)
     assert all(b[3] == cards.BAR_H for b in full.bars)
     # a shot the title shrink alone doesn't save is drawn with the tight bars (and the small title)
     shot = _tall(n_labels=3, bars=BARS3)
