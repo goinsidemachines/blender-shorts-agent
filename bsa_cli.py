@@ -78,7 +78,8 @@ def built_timeline(sdir: Path, short):
 
 
 _STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command",
-                "narrator.label", "render.engine",
+                "narrator.label", "render.engine", "post_format.title_suffix", "post_format.link_line",
+                "post_format.pinned_comment", "post_format.title_style",
                 "brand.mode", "sound_policy", "freesound.api_key", "feedback"}  # fmt: skip
 
 
@@ -164,6 +165,12 @@ def cmd_settings(args) -> dict:
         return {"settings": settings.redacted(s), "rules": s.get("rules") or [], "path": str(settings.settings_path())}
     if args.action == "rules":
         return _rules_out()
+    if args.action == "post-format":
+        from bsa import post
+
+        s = settings.load_settings()
+        return {"post_format": s.get("post_format") or {}, "asked": bool(s.get("post_format_asked")),
+                "keys": list(post.FORMAT_KEYS)}  # fmt: skip
     if args.action == "rule":
         return cmd_rule(args)
     if args.key in ("rules", "rules_next"):
@@ -202,6 +209,8 @@ def cmd_settings(args) -> dict:
     if args.key == "handle":
         value = value.strip().lstrip("@")  # "" = asked, and the user wants no handle
     s = settings.set_value(args.key, value)
+    if args.key == "post_format" or args.key.startswith("post_format."):
+        s = settings.set_value("post_format_asked", True)
     out = {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
     font = value if args.key == "brand.font" else (value.get("font") if args.key == "brand" and isinstance(
         value, dict) else None)  # fmt: skip
@@ -689,8 +698,12 @@ def cmd_validate(args) -> dict:
     short = load(sdir)
     rule_errors, rule_warnings = _rule_problems(short)
     errors = validate(short) + rule_errors
+    from bsa import post
+
+    post_errors, post_warnings = post.problems(short, settings.load_settings())
+    errors += post_errors
     warnings = spoken_warnings(short) if not errors else []
-    warnings += rule_warnings
+    warnings += rule_warnings + post_warnings
     rows, source = [], None
     if not errors:
         if short.length_s > 0:
@@ -1205,7 +1218,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("settings", help='show | set KEY VALUE | missing | summary | rules | rule add "TEXT" '
                         "[--kind K] [--part-of ID] | rule remove ID | rule none")  # fmt: skip
-    sp.add_argument("action", choices=["show", "set", "missing", "summary", "rules", "rule"])
+    sp.add_argument("action", choices=["show", "set", "missing", "summary", "rules", "rule", "post-format"])
     sp.add_argument("key", nargs="?")
     sp.add_argument("value", nargs="?")
     sp.add_argument("--kind", default=None, help="a rule kind the plugin checks itself (settings rules lists them)")

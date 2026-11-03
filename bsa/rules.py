@@ -262,7 +262,9 @@ def _places(short) -> list[tuple[str, str]]:
         out.append((f"sfx {fx.kind!r} in shot {fx.shot}", fx.kind))
     for a in short.assets:
         out.append((f"asset {a.id}", f"{a.name} {a.id}"))
-    return out
+    from bsa import post
+
+    return out + post.rule_places(short)
 
 
 def _shape_errors(short, global_ids: set[str]) -> list[str]:

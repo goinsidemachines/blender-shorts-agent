@@ -28,6 +28,8 @@ DEFAULTS = {
     "rules": [],  # the user's hard rules for every video, in their own words (bsa.rules; CLI settings rule add)
     "rules_asked": False,  # the hard-rules question was answered (asked once, existing users too)
     "feedback": "ask",  # problems in the plugin itself (bsa.feedback): "ask" at the end, "never" ask, or "off"
+    "post_format": {},  # the user's own post format (bsa.post.FORMAT_KEYS)
+    "post_format_asked": False,  # the post-format question was answered
     "page": {"lan": False},  # phone access: the review page server also answers on the local network (token-protected)
 }
 SECRET_KEYS = ("freesound.api_key",)
@@ -44,7 +46,7 @@ ENUMS = {
 }
 
 # Settings that are true or false (JSON booleans on the command line).
-BOOLEANS = ("page.lan",)
+BOOLEANS = ("page.lan", "post_format_asked")
 
 _PROVIDER_NAMES = {
     "elevenlabs": "ElevenLabs",
@@ -143,6 +145,13 @@ def check_value(path: str, value):
             return float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{value!r} is not a valid brand.exposure: use a number of stops, e.g. 0.3") from None
+    if path == "post_format" or path.startswith("post_format."):
+        from bsa import post
+
+        if path == "post_format":
+            return post.format_value(value)
+        key = path.split(".", 1)[1]
+        return post.format_value({key: value})[key]
     if path in BOOLEANS:
         if not isinstance(value, bool):
             raise ValueError(f"{value!r} is not a valid {path}: use true or false")

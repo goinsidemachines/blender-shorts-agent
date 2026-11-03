@@ -313,3 +313,10 @@ def test_phrases_in_scene_names():
     found = [(h["rule"]["id"], h["obj"]) for h in rules.name_hits(eff, short, names)]
     assert found == [("r1", "BodyPanel"), ("r1", "Badge")], found
     assert rules.hits("no_humans", "rigid bodies and a body") == ["body"]
+
+
+def test_hard_rules_read_the_post_and_thumbnail_text(short):
+    short.post = {**short.post, "thumbnail": {"title": ["Two rows,", "one pull"], "kicker": "K", "heroes": []}}
+    places = rules._places(short)
+    assert ("post thumbnail title", "Two rows, one pull") in places
+    assert ("post title", short.post["title"]) in places

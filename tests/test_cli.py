@@ -1696,3 +1696,24 @@ def test_check_lists_a_static_overlap_once_and_caps_over_pairs_in_every_shot():
     assert listed[-1]["capped"] == 2 and "2 more overlapping pairs" in listed[-1]["message"]
     assert listed[-1]["shots"] == ["s02"]
     assert bsa_blender._cap_overlap_rows(merged, 4) == (merged, [])
+
+
+def test_settings_post_format_shows_it_and_whether_it_was_asked(home):
+    from bsa import post
+
+    first = ok(run(home, "settings", "post-format"))
+    assert first == {"post_format": {}, "asked": False, "keys": list(post.FORMAT_KEYS)}
+    ok(run(home, "settings", "set", "post_format", '{"title_suffix": " #shorts"}'))
+    out = ok(run(home, "settings", "post-format"))
+    assert out["asked"] is True and out["post_format"] == {"title_suffix": " #shorts"}
+    ok(run(home, "settings", "set", "post_format.link_line", "Watch more: {link}"))
+    assert ok(run(home, "settings", "post-format"))["post_format"]["link_line"] == "Watch more: {link}"
+    assert run(home, "settings", "set", "post_format.title_style", "shout").returncode != 0
+
+
+def test_validate_reports_post_problems(home, pendulum):
+    spec = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    spec["post"]["title"] = "x" * 101
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and "YouTube allows 100" in proc.stderr

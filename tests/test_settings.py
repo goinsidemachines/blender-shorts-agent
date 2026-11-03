@@ -217,3 +217,18 @@ def test_a_short_end_card_overrides_the_setting():
     assert settings.end_card(nobody, plain) == {"handle": None, "text": None, "second": None}  # no handle: no card
     assert settings.has_end_card(nobody, own)  # the short's own card shows without a handle
     assert settings.end_card(nobody, own) == {"handle": None, "text": "Play with it", "second": "example.com"}
+
+
+def test_post_format_is_validated_when_set():
+    import pytest
+
+    with pytest.raises(ValueError):
+        settings.check_value("post_format", {"title_style": "shout"})
+    with pytest.raises(ValueError):
+        settings.check_value("post_format", {"bogus": 1})
+    with pytest.raises(ValueError):
+        settings.check_value("post_format.title_style", "shout")
+    link = {"link_line": "Watch more: {link}"}
+    assert settings.check_value("post_format", link) == link
+    assert settings.check_value("post_format.title_suffix", " #shorts") == " #shorts"
+    assert settings.DEFAULTS["post_format"] == {} and settings.DEFAULTS["post_format_asked"] is False
