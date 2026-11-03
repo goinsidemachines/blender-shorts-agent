@@ -1,8 +1,12 @@
+import colorsys
+import re
+
 import numpy as np
 import pytest
 
-from bsa import colour
+from bsa import colour, kit
 from bsa.short import Short
+from tests.kitfix import DARK, KIT
 
 
 def test_hex_and_lab():
@@ -61,3 +65,40 @@ def test_only_a_flat_backdrop_gets_the_background_check():
     assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexEnvironment", "ShaderNodeMapping")) is False
     assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexGradient", "ShaderNodeValToRGB")) is False
     assert colour.flat_backdrop(_world(*flat), transparent=True) is False
+
+
+def test_set_colours_has_every_key_as_hex():
+    c = colour.set_colours(kit.kit_from(KIT))
+    assert set(c) == {"wall", "floor", "pattern", "wood", "wood_dark", "ground", "hills_near", "hills_far",
+                      "sky_top", "sky_horizon"}  # fmt: skip
+    assert all(re.fullmatch(r"#[0-9A-F]{6}", v) for v in c.values())
+
+
+@pytest.mark.parametrize("brand", [KIT, DARK])
+def test_pattern_reads_on_its_wall_in_light_and_dark_kits(brand):
+    c = colour.set_colours(kit.kit_from(brand))
+    assert 6 <= colour.delta_e(c["pattern"], c["wall"]) <= 25
+    assert colour.delta_e(c["floor"], c["wall"]) < colour.delta_e(c["pattern"], c["wall"])
+
+
+def test_wood_stays_warm_with_a_blue_accent():
+    k = kit.kit_from({**KIT, "palette": {**KIT["palette"], "accent": "#2255FF"}})
+    h, s, _ = colorsys.rgb_to_hsv(*colour.hex_to_srgb(colour.set_colours(k)["wood"]))
+    assert 20 / 360 <= h <= 45 / 360 and s >= 0.35
+
+
+def test_ground_and_sky_follow_motion_and_heat_or_the_default_code():
+    c = colour.set_colours(kit.kit_from(KIT))  # KIT has no motion/heat -> DEFAULT_CODE based
+    assert c["sky_top"] == kit.DEFAULT_CODE["heat"]
+    assert c["ground"] == colour.mix(kit.DEFAULT_CODE["motion"], "#EAF2F8", 0.55)
+    own = kit.kit_from({**KIT, "categories": {"motion": "#AA3300", "heat": "#0099CC"}})
+    c = colour.set_colours(own)
+    assert c["sky_top"] == "#0099CC" and c["ground"] == colour.mix("#AA3300", "#EAF2F8", 0.55)
+    assert c["sky_horizon"] == colour.mix("#0099CC", "#EAF2F8", 0.65)
+    dark = colour.set_colours(kit.kit_from({**DARK, "categories": {"heat": "#0099CC"}}))
+    assert dark["sky_horizon"] == colour.mix("#0099CC", "#FFFFFF", 0.65)
+
+
+def test_mix_ends():
+    assert colour.mix("#000000", "#FFFFFF", 0) == "#000000" and colour.mix("#000000", "#FFFFFF", 1) == "#FFFFFF"
+    assert colour.mix("#000000", "#FFFFFF", 0.5) == "#808080"

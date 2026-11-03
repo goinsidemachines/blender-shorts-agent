@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import re
 
 import numpy as np
@@ -22,6 +23,49 @@ def hex_to_srgb(value: str) -> tuple[float, float, float]:
 
 def srgb_to_hex(rgb) -> str:
     return "#" + "".join(f"{round(min(max(float(c), 0.0), 1.0) * 255):02X}" for c in rgb[:3])
+
+
+def mix(a: str, b: str, t: float) -> str:
+    """a + (b - a) * t on the sRGB values (0..1, not linear light) of two hex colours, as upper-case hex."""
+    ca, cb = hex_to_srgb(a), hex_to_srgb(b)
+    return srgb_to_hex([x + (y - x) * t for x, y in zip(ca, cb)])
+
+
+def _warm(value: str) -> str:
+    """The colour with its hue moved into 20-45 degrees (the nearer end) and its saturation at least 0.35."""
+    h, s, v = colorsys.rgb_to_hsv(*hex_to_srgb(value))
+    deg = h * 360
+    if not 20 <= deg <= 45:
+        # distance round the hue circle to each end
+        d20, d45 = abs((deg - 20 + 180) % 360 - 180), abs((deg - 45 + 180) % 360 - 180)
+        deg = 20 if d20 <= d45 else 45
+    return srgb_to_hex(colorsys.hsv_to_rgb(deg / 360, max(s, 0.35), v))
+
+
+def set_colours(kit) -> dict[str, str]:
+    """The scene set's colours derived from a kit: walls and floor off the background, wood off the accent (kept
+    warm), ground and hills off the motion colour, sky off the heat colour (the default code where the kit has none)."""
+    from bsa.kit import DEFAULT_CODE
+
+    pal = kit.palette
+    bg, ink, accent = pal["background"], pal["ink"], pal["accent"]
+    light = srgb_to_lab(hex_to_srgb(bg))[0] > 50
+    side = "#000000" if light else "#FFFFFF"
+    motion = kit.categories.get("motion") or DEFAULT_CODE["motion"]
+    heat = kit.categories.get("heat") or DEFAULT_CODE["heat"]
+    wood = _warm(mix(mix(accent, bg, 0.35), ink, 0.12))
+    return {
+        "wall": srgb_to_hex(hex_to_srgb(bg)),
+        "floor": mix(bg, side, 0.06),
+        "pattern": mix(bg, side, 0.16),
+        "wood": wood,
+        "wood_dark": mix(wood, ink, 0.30),
+        "ground": mix(motion, bg, 0.55),
+        "hills_near": mix(motion, ink, 0.20),
+        "hills_far": mix(motion, bg, 0.70),
+        "sky_top": srgb_to_hex(hex_to_srgb(heat)),
+        "sky_horizon": mix(heat, bg if light else "#FFFFFF", 0.65),
+    }
 
 
 def srgb_to_linear(rgb) -> np.ndarray:
