@@ -1165,7 +1165,9 @@ def _picked_heroes(sdir: Path, short, tl, tl_hash: str, flagged: set[int], api) 
 
 
 def _only_hero(sdir: Path, n: int, named: list, p: dict):
-    """The hero `--only N` remakes candidate N from: --hero, else short.json's Nth hero, else candidate N's own."""
+    """The hero `--only N` remakes candidate N from: --hero, else short.json's Nth hero when candidate N was made from
+    short.json's heroes (or there is no candidate N), else candidate N's own (picked by the plugin or named with
+    --hero: short.json's list is not the one it came from)."""
     from bsa import thumbs
     from bsa.review.store import StoreDamaged
 
@@ -1174,12 +1176,16 @@ def _only_hero(sdir: Path, n: int, named: list, p: dict):
     if named:
         return named[0]
     listed = thumbs.heroes_from_post(p)
-    if len(listed) >= n:
-        return listed[n - 1]
     try:
         row = next((c for c in thumbs.load(sdir)["candidates"] if isinstance(c, dict) and c.get("n") == n), None)
     except StoreDamaged as exc:
+        if len(listed) >= n:
+            return listed[n - 1]
         raise CliError(str(exc)) from exc
+    own = row.get("hero") if isinstance(row, dict) else None
+    from_post = not isinstance(own, dict) or own.get("why") in (None, thumbs.WHY_POST)
+    if len(listed) >= n and from_post:
+        return listed[n - 1]
     if row is None:
         raise CliError(f"There is no candidate {n} yet: run BLENDER thumbs SHORT first")
     h = row.get("hero")

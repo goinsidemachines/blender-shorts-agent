@@ -316,16 +316,10 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
 
 POSTED_PLATFORMS = ("youtube", "instagram", "tiktok", "other")
 TOPIC_WORDS_MAX = 8
-_STOP = frozenset(
-    {
-        w
-        for w in (  # noqa: SIM905 - a word list
-            "a an and are as at be but by can do does for from has have how i if in into is it its of on or so than "
-            "that the their then there these they this to was we what when where which who why will with without "
-            "you your"
-        ).split()
-    }
-)
+_STOP_WORDS = ("a an and are as at be but by can do does for from has have how i if in into is it its of on or so "
+               "than that the their then there these they this to was we what when where which who why will with "
+               "without you your")
+_STOP = frozenset(_STOP_WORDS.split())
 
 
 def add_posted(sdir: Path, platform: str, url: str, now: float | None = None) -> list[dict]:

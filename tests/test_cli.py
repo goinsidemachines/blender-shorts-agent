@@ -1744,3 +1744,22 @@ def test_cli_post_posted_and_related(home, workspace, pendulum):
     assert [r["url"] for r in rel] == ["https://youtu.be/abc"]
     assert run(home, "post", str(pendulum), "--posted", "ftp://x").returncode != 0
     assert run(home, "post", str(pendulum), "--platform", "tiktok").returncode != 0
+
+
+def test_cli_post_refuses_cleanly(home, pendulum, monkeypatch, capsys):
+    import bsa_cli
+    from bsa import post
+
+    for extra in (["--posted", "https://youtu.be/abc"], ["--platform", "tiktok"]):
+        proc = run(home, "post", "related", str(pendulum), *extra)
+        assert proc.returncode != 0 and "post related" in proc.stderr, proc.stderr
+    assert not post.fields(bsa_cli.load(pendulum))["posted"]
+
+    def busy(*a, **k):
+        raise TimeoutError("short.json is locked by another run")
+
+    monkeypatch.setattr(post, "add_posted", busy)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_cli.main(["post", str(pendulum), "--posted", "https://youtu.be/abc"]) != 0
+    err = capsys.readouterr().err
+    assert "locked by another run" in err and "Traceback" not in err

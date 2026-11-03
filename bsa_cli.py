@@ -983,6 +983,8 @@ def cmd_post(args) -> dict:
 
     words = args.words
     if words[0] == "related" and len(words) == 2:
+        if args.posted or args.platform is not None:
+            raise CliError("post related SHORT only lists posted shorts: record a post with post SHORT --posted URL")
         sdir = short_dir(words[1])
         load(sdir)
         return {"related": post.related(sdir.parent, sdir)}
@@ -993,7 +995,7 @@ def cmd_post(args) -> dict:
     if args.posted:
         try:
             return {"posted": post.add_posted(sdir, args.platform or "youtube", args.posted)}
-        except ValueError as exc:
+        except (ValueError, TimeoutError) as exc:
             raise CliError(str(exc)) from exc
     if args.platform is not None:
         raise CliError("--platform goes with --posted URL")

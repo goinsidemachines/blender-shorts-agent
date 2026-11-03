@@ -314,9 +314,11 @@ def test_post_chapter_asks_for_the_users_format_once():
 def test_post_chapter_makes_thumbnails_and_caption_files():
     t = _flat(_read("playbook/09-post.md"))
     for s in ("BLENDER thumbs SHORT", "--only N", "CLI captions SHORT", "run_in_background: true",
-              "CLI page decide SHORT thumbnail --choice N", "Use this frame for the thumbnail", "CLI post SHORT"):  # fmt: skip
+              "CLI page decide SHORT thumbnail --choice N", "Use this frame for the thumbnail", "CLI post SHORT",
+              "BLENDER thumbs SHORT --only N --hero <shot>@<frame>"):  # fmt: skip
         assert s in t, s
-    assert ".srt" in _flat(_read("playbook/08-render.md")) and "-transcript.txt" in _flat(_read("playbook/08-render.md"))
+    render = _flat(_read("playbook/08-render.md"))
+    assert ".srt" in render and "-transcript.txt" in render
 
 
 def test_post_chapter_records_where_it_went():

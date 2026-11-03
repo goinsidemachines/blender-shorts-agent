@@ -613,6 +613,28 @@ def test_thumbs_only_remakes_one_and_clears_its_choice(tmp_path, monkeypatch):
         go()
 
 
+def test_thumbs_only_uses_short_json_heroes_only_when_the_candidates_came_from_them(tmp_path, monkeypatch):
+    import pagefix
+
+    sdir = _thumb_short(tmp_path, {**TH, "heroes": [{"shot": "s03", "frame": 75}]})
+    pagefix.write_thumbs(sdir, 1)  # candidate 1: s01@15, made from short.json's heroes
+    _frame(sdir, "final", "s01", 15)
+    _frame(sdir, "final", "s03", 75)
+    go, _ = _go(monkeypatch, sdir, "--only", "1")
+    assert go()["candidates"][0]["hero"]["frame"] == 75  # short.json's hero changed since: it is the one remade
+    path = sdir / thumbs.THUMBS_JSON
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["candidates"][0]["hero"] = {"shot": "s01", "frame": 15, "crop": None, "why": "the hook shot's fullest frame"}
+    path.write_text(json.dumps(data), encoding="utf-8")  # picked by the plugin, not from short.json
+    go, _ = _go(monkeypatch, sdir, "--only", "1")
+    (c,) = go()["candidates"]
+    assert (c["hero"]["shot"], c["hero"]["frame"]) == ("s01", 15)  # its own hero, not short.json's first
+    data["candidates"][0]["hero"]["why"] = thumbs.WHY_FLAG  # named with --hero: also its own
+    path.write_text(json.dumps(data), encoding="utf-8")
+    go, _ = _go(monkeypatch, sdir, "--only", "1")
+    assert go()["candidates"][0]["hero"]["frame"] == 15
+
+
 def test_thumbs_all_again_drops_old_candidate_files(tmp_path, monkeypatch):
     import pagefix
 

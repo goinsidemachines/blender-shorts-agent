@@ -36,10 +36,13 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
    above, optional) and `fact` (one line, optional). A number in any of them needs a fact in `facts` that states
    it, or validate refuses it. Then run `BLENDER thumbs SHORT` with `run_in_background: true`; the candidates show
    on the Post stage in both sizes, with how each looks in the feed and any warnings. The user may leave a note on
-   a candidate: change the text, or `heroes[N-1]` (`{"shot", "frame"}`), then `BLENDER thumbs SHORT --only N`. A
-   frame note "Use this frame for the thumbnail" (from the Final timeline): set a candidate's hero to
-   `<shot>@<frame>` from the note, run `BLENDER thumbs SHORT --only N`, and answer the note. The user's pick is
-   recorded by the page; when they say it in chat, run `CLI page decide SHORT thumbnail --choice N`.
+   a candidate: change the text, or `heroes[N-1]` (`{"shot", "frame"}`), then `BLENDER thumbs SHORT --only N`.
+   `--only N` remakes candidate N from short.json's Nth hero only when the candidates were made from
+   `post.thumbnail.heroes`; otherwise from the candidate's own hero. To give a candidate a new frame directly, run
+   `BLENDER thumbs SHORT --only N --hero <shot>@<frame>`. A frame note "Use this frame for the thumbnail" (from the
+   Final timeline): pick the candidate N it replaces, run `BLENDER thumbs SHORT --only N --hero <shot>@<frame>` with
+   the note's shot and frame, and answer the note. The user's pick is recorded by the page; when they say it in
+   chat, run `CLI page decide SHORT thumbnail --choice N`.
 
    **Caption files.** The final edit writes `out/<slug>.srt`, `.vtt` and `-transcript.txt` (`08-render.md`). A
    post-only change never makes them stale, so `CLI captions SHORT` is not needed again. If the page says they are
@@ -56,9 +59,9 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
    over. Say "the page has switched to the final video"
    (`opened` false: say so and give the `url` as a link). Final is not a gate: its "Looks good" is the user's
    acknowledgement, so never wait for it. The Post stage next to it has the post text with copy buttons and the
-   asset credits, the thumbnail candidates, the files to upload and a "Before you post" checklist. When the user wants the post text changed (in chat, or a note on the page), edit `post`,
-   validate, and answer the note (`CLI page note SHORT ID done --reply "..."`): the page shows the new text by
-   itself, and nothing else needs to run.
+   asset credits, the thumbnail candidates, the files to upload and a "Before you post" checklist. When the user
+   wants the post text changed (in chat, or a note on the page), edit `post`, validate, and answer the note (`CLI
+   page note SHORT ID done --reply "..."`): the page shows the new text by itself, and nothing else needs to run.
 4. `CLI state SHORT done post`.
    After the user has posted, they tell you the link. Record it with `CLI post SHORT --posted URL --platform
    youtube` (`instagram`, `tiktok` or `other` for the others). It is only stored, so later shorts can link to this

@@ -4,6 +4,7 @@ import itertools
 import json
 import math
 import wave
+from pathlib import Path
 
 import numpy as np
 import pagefix
@@ -142,6 +143,19 @@ def test_files_are_utf8_without_bom_and_lf(tmp_path):
         raw = (sdir / "out" / name).read_bytes()
         assert not raw.startswith(b"\xef\xbb\xbf") and b"\r" not in raw and raw.endswith(b"\n")
     assert not list((sdir / "out").glob("*.tmp"))
+
+
+def test_each_writer_uses_its_own_temp_file(tmp_path, monkeypatch):
+    import os
+    import threading
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    seen = []
+    real = os.replace
+    monkeypatch.setattr(captions.os, "replace", lambda a, b: (seen.append(Path(a).name), real(a, b)))
+    captions.write_files(sdir, _short(sdir), {})
+    tag = f".{os.getpid()}.{threading.get_ident()}.tmp"
+    assert len(seen) == 3 and all(n.endswith(tag) for n in seen), seen
 
 
 def test_cli_captions_writes_three_files(home, pendulum):  # noqa: F811

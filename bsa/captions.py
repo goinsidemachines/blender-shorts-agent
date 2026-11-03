@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -200,7 +201,7 @@ def _closing_cue(sdir: Path, short, s: dict, rec: dict, fps: int) -> tuple[Cue |
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")  # one per writer
     tmp.write_bytes(text.encode("utf-8"))
     os.replace(tmp, path)
 
