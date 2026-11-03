@@ -51,7 +51,7 @@ def test_numbers_are_compared_by_value():
     assert _one("1,500 units", "1,5 Einheiten")[0] == ["1,500"]  # 1,5 is a decimal there
     assert _one("1.5 long", "1,5 lang") == ([], [])  # decimal comma
     assert _one("3.5 metres", "٣٫٥ متر") == ([], [])  # Arabic-Indic with U+066B
-    for t in ("50%", "%50", "50 %", "٥٠٪", "٥٠٪‏"):
+    for t in ("50%", "%50", "50 %", "٥٠٪", "٥٠٪\u200f"):
         assert _one("50% more", t) == ([], []), t
     assert _one("50% more", "٥٠٪")[1] == []
     assert _one("2 and 2", "2")[0] == ["2"]  # each English number needs its own
@@ -111,10 +111,10 @@ def test_rtl_text_is_accepted():
 
 def test_bidi_overrides_are_refused_but_isolates_are_fine():
     bad = _es()
-    bad["lines"]["l01"] = "Un ‮pendulo‬ oscila"
+    bad["lines"]["l01"] = "Un \u202ependulo\u202c oscila"
     assert any("l01" in e and "override" in e for e in _errors(_short(captions_translations={"es": bad})))
     ok_ = _es()
-    ok_["lines"]["l01"] = "Un ⁧pendulo⁩ oscila"
+    ok_["lines"]["l01"] = "Un \u2067pendulo\u2069 oscila"
     assert _errors(_short(captions_translations={"es": ok_})) == []
 
 

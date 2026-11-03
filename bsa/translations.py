@@ -16,7 +16,7 @@ from fractions import Fraction
 
 LANG = re.compile(r"^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$")  # BCP-47 shape: es, pt-BR, zh-Hans
 RTL = ("ar", "fa", "he", "ur", "ps", "yi", "dv", "ckb", "sd", "ug")  # right-to-left: accepted, noted on the page
-BIDI_OVERRIDES = "‪‫‬‭‮"  # reorder text invisibly; the isolates (2066-2069) are fine
+BIDI_OVERRIDES = "\u202a\u202b\u202c\u202d\u202e"  # reorder text invisibly; the isolates (2066-2069) are fine
 CLOSING = "closing"  # the key of the closing line in "from"
 
 _THOUSANDS = "   "  # no-break, narrow no-break and thin space (a plain space is not one)
