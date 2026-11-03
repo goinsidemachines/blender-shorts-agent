@@ -241,9 +241,11 @@ def cmd_machine(args) -> dict:
 
 
 def cmd_new_short(args) -> dict:
+    from bsa import like
     from bsa.short import Short, save_short
 
-    root = settings.load_settings().get("workspace")
+    settings_ = settings.load_settings()
+    root = settings_.get("workspace")
     if not root:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
     length = 45 if args.length is None else args.length  # the interview's default
@@ -251,15 +253,52 @@ def cmd_new_short(args) -> dict:
         length = int(length)  # "--length 40" is stored as 40, not 40.0
     if not LENGTH_RANGE_S[0] <= length <= LENGTH_RANGE_S[1]:
         raise CliError(f"--length must be {LENGTH_RANGE_S[0]} to {LENGTH_RANGE_S[1]} seconds, got {length:g}")
+    other = values = None
+    copied: list[str] = []
+    notes: list[str] = []
+    if args.like:  # read the earlier short before making anything, so a refusal leaves no folder behind
+        try:
+            other = workspace.find_short(Path(root), args.like)
+            values, copied, notes = like.copy_from(other, settings_)
+        except (ValueError, FileNotFoundError) as exc:
+            raise CliError(f"--like {args.like}: {exc}") from exc
+        if args.length is not None:  # the length the user gave wins over the copied one
+            values.pop("length_s", None)
+        elif "length_s" in values:
+            try:
+                copied_len = float(values["length_s"])
+            except (TypeError, ValueError):
+                copied_len = None
+            if copied_len is None or not LENGTH_RANGE_S[0] <= copied_len <= LENGTH_RANGE_S[1]:
+                values.pop("length_s")
+                notes.append(f"the length wasn't copied: {other.name}'s length is outside {LENGTH_RANGE_S[0]} to "
+                             f"{LENGTH_RANGE_S[1]} seconds")  # fmt: skip
+            else:
+                length = int(copied_len) if copied_len.is_integer() else copied_len
+        copied = [k for k in copied if k in values]
     try:
         sdir = workspace.new_short(Path(root), args.title, number=args.number)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    if other is not None and sdir.resolve() == other.resolve():
+        raise CliError(f"--like {args.like}: {other.name} is the short being made itself: name an earlier short")
     path = short_json(sdir)
     if not path.exists():
-        save_short(Short(slug=workspace.slugify(args.title), title=args.title, length_s=length,
-                         topic=(args.topic or "").strip()), path)
-    return {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
+        short = Short(slug=workspace.slugify(args.title), title=args.title, length_s=length,
+                      topic=(args.topic or "").strip())  # fmt: skip
+        if other is not None:
+            for key in copied:
+                if key != "length_s":
+                    setattr(short, key, values[key])
+            short.like = like.provenance(other, copied)
+        save_short(short, path)
+    out = {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
+    if other is not None:
+        skipped = like.skipped_questions(copied)
+        out.update({"like": other.name, "copied": copied, "skipped": skipped,
+                    "said": like.said(load(other).title, skipped),
+                    "notes": notes})  # fmt: skip
+    return out
 
 
 LENGTH_RANGE_S = (15, 90)
@@ -1330,6 +1369,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--number", type=int, default=None, help="the folder number to use (refused if already used)")
     sp.add_argument("--topic", default=None, help="what a viewer should understand at the end (short.json topic)")
     sp.add_argument("--length", type=float, default=None, help="length in seconds, 15 to 90 (short.json length_s)")
+    sp.add_argument("--like", default=None, metavar="OTHER",
+                    help="start from an earlier short (folder name, number or slug): copies its look, length, pace, "
+                         "closing and voice, never its story or render engine")  # fmt: skip
     sp.set_defaults(fn=cmd_new_short)
 
     sp = sub.add_parser("shorts", help="list the workspace's shorts: title, style, set, length, narrator")

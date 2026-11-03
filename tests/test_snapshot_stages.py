@@ -230,3 +230,18 @@ def test_a_new_look_changes_the_storyboard_version(tmp_path):
     assert _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["version"] == 1
     pagefix.write_look(sdir, style="pencil")
     assert _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["version"] == 2
+
+
+def test_new_short_fields_move_no_stage_version(tmp_path):
+    from bsa.review import stages
+    from bsa.short import save_short
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    before = {s: snapshot.stage_version(sdir, s, snapshot.load_ctx(sdir, {})) for s in stages.PAGE_STAGES}
+    path = sdir / "source" / "short.json"
+    short = load_short(path)
+    assert short.pace == {} and short.like is None
+    save_short(short, path)
+    data = json.loads(path.read_text("utf-8"))
+    assert data["pace"] == {} and data["like"] is None
+    assert {s: snapshot.stage_version(sdir, s, snapshot.load_ctx(sdir, {})) for s in stages.PAGE_STAGES} == before

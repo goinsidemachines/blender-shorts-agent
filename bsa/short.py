@@ -115,6 +115,11 @@ class Short:
     # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in (never the
     # provider or command). Empty = the settings.
     narrator: dict = dc_field(default_factory=dict)
+    # Guidance for the storyboard copied from an earlier short (`new-short --like`): {"shots": count, "min_s": the
+    # median shot length, "holds": shots with a hold}. Empty = none.
+    pace: dict = dc_field(default_factory=dict)
+    # Where this short started from: {"short": folder name, "copied": [keys], "at": ISO-8601 UTC}. None = from scratch.
+    like: dict | None = None
 
 
 NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in")
@@ -402,6 +407,43 @@ def _narrator_problems(narrator) -> list[str]:
     return out
 
 
+def _pace_problems(pace) -> list[str]:
+    if not isinstance(pace, dict):
+        return [f"pace must be an object such as {{\"shots\": 6, \"min_s\": 4.0, \"holds\": 1}}, got {pace!r}"]
+    out = []
+    extra = sorted(set(pace) - {"shots", "min_s", "holds"})
+    if extra:
+        out.append(f"pace has unknown keys {extra}: use shots, min_s and holds")
+    for key, low in (("shots", 1), ("holds", 0)):
+        v = pace.get(key)
+        if key in pace and (not isinstance(v, int) or isinstance(v, bool) or v < low):
+            out.append(f"pace.{key} must be a whole number, {low} or more, got {v!r}")
+    if "min_s" in pace and not (_number(pace["min_s"]) and pace["min_s"] > 0):
+        out.append(f"pace.min_s must be seconds above 0, got {pace['min_s']!r}")
+    return out
+
+
+def _like_problems(like) -> list[str]:
+    from bsa.like import COPY_KEYS
+
+    if like is None:
+        return []
+    if not isinstance(like, dict):
+        return [f"like must be {{\"short\", \"copied\", \"at\"}} (where this short started from), got {like!r}"]
+    out = []
+    extra = sorted(set(like) - {"short", "copied", "at"})
+    if extra:
+        out.append(f"like has unknown keys {extra}: use short, copied and at")
+    if not isinstance(like.get("short"), str) or not like["short"].strip():
+        out.append(f"like.short must be the earlier short's folder name, got {like.get('short')!r}")
+    copied = like.get("copied")
+    if not isinstance(copied, list) or not all(isinstance(k, str) and k in COPY_KEYS for k in copied):
+        out.append(f"like.copied must be a list of {', '.join(COPY_KEYS)}, got {copied!r}")
+    if not isinstance(like.get("at"), str) or not like["at"].strip():
+        out.append(f"like.at must be the time it was copied (ISO-8601), got {like.get('at')!r}")
+    return out
+
+
 def _card_problems(s: Shot, cited: bool) -> list[str]:
     """Problems of a shot's title card, category, step and value bars (all optional)."""
     out = []
@@ -505,6 +547,8 @@ def validate(short: Short) -> list[str]:
         errors.append(f"look must be \"fresh\" (this short's own style, the brand off) or \"brand\", got {short.look!r}")
     errors += _render_problems(short.render)
     errors += _narrator_problems(short.narrator)
+    errors += _pace_problems(short.pace)
+    errors += _like_problems(short.like)
     if short.sound_policy not in SOUND_POLICIES:
         errors.append(f"sound_policy must be one of {', '.join(p for p in SOUND_POLICIES if p)} (or empty), got "
                       f"{short.sound_policy!r}")  # fmt: skip

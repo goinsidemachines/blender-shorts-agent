@@ -205,3 +205,19 @@ def test_short_narrator_override_is_validated():
     assert any("speed" in e for e in validate(_short(narrator={"speed": 3})))
     assert any("narrator" in e for e in validate(_short(narrator="paragraph")))
     assert _short().narrator == {}
+
+
+def test_pace_and_like_are_validated():
+    ok = {"short": "03-big-ben", "copied": ["style", "pace"], "at": "2026-11-04T10:00:00Z"}
+    assert validate(_short(pace={"shots": 5, "min_s": 3.5, "holds": 1}, like=ok)) == []
+    assert _short().pace == {} and _short().like is None
+    assert any("pace" in e for e in validate(_short(pace={"shots": 5, "speed": 1})))
+    assert any("pace" in e for e in validate(_short(pace={"shots": "5"})))
+    assert any("pace" in e for e in validate(_short(pace={"min_s": True})))
+    assert any("pace" in e for e in validate(_short(pace={"holds": -1})))
+    assert any("pace" in e for e in validate(_short(pace=[5])))
+    assert any("like" in e for e in validate(_short(like={**ok, "extra": 1})))
+    assert any("like" in e for e in validate(_short(like={**ok, "copied": ["render"]})))
+    assert any("like" in e for e in validate(_short(like={**ok, "short": ""})))
+    assert any("like" in e for e in validate(_short(like={**ok, "at": 5})))
+    assert any("like" in e for e in validate(_short(like="03-big-ben")))
