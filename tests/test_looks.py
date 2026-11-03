@@ -64,4 +64,4 @@ def test_part_colours_mix_in_linear_light_like_the_sampler():
     assert looks.part_colour("pencil", "#123456", k, key=True) == _lin_mix_to_white(k.palette["accent"], 0.25)
     assert looks.part_colour("pencil", "#123456", k, key=False) == _lin_mix_to_white("#F5F2EA", 0.5)
     assert looks.part_colour("blueprint", "#123456", k, key=False) == _lin_mix_to_white(looks.blueprint_paper(k), 0.75)
-    assert looks.part_colour("paper", "#000000", k, key=False) == "#636363"  # 0.12 linear is sRGB 99
+    assert looks.part_colour("paper", "#000000", k, key=False) == "#616161"  # 0.12 linear is sRGB 97
