@@ -131,9 +131,9 @@ def test_each_set_puts_its_floor_top_at_zero_and_tags_it():
                 sets.dress(sc, kit, short, tl, None)
 
 
-def _footprint(sc, frames, size, wall_y, front=None):
-    """The views' footprint on z = 0 over `frames` (far rays cut at 30 x size), cut at the wall (and, for a bench,
-    in front at `front`): computed here from the camera's own view frame, not from sets."""
+def _footprint(sc, frames, size, wall_y):
+    """The views' footprint on z = 0 over `frames` (far rays cut at 30 x size), cut at the wall: computed here from
+    the camera's own view frame, not from sets."""
     xs, ys = [], []
     reach = sets.FAR_CLAMP * size
     for f in frames:
@@ -145,10 +145,7 @@ def _footprint(sc, frames, size, wall_y, front=None):
         for corner in cam.data.view_frame(scene=sc):
             d = (mw @ corner - o).normalized()
             quad.append(sets._ground_point(o, d, reach))
-        cut = sets._clip_y(quad, wall_y)
-        if front is not None:
-            cut = [(x, -y) for x, y in sets._clip_y([(x, -y) for x, y in cut], -front)]
-        for x, y in cut:
+        for x, y in sets._clip_y(quad, wall_y):
             xs.append(x)
             ys.append(y)
     return min(xs), min(ys), max(xs), max(ys)
@@ -179,11 +176,7 @@ def test_floor_is_sized_to_the_camera_view_never_larger():
         if name != "studio":  # the studio's sweep is as wide as the view where it rises into its wall
             assert abs(lo[0] - x0) < 1e-4 and abs(hi[0] - x1) < 1e-4, (name, lo, hi, got)
         frames = _shot_frames(tl, "s1", sets.SAMPLE_EVERY)
-        front = None
-        if name == "workbench":  # the bench is a strip: from just in front of the subject (as it moves) to the wall
-            front = _subject_front(sc, frames) - sets.BENCH_FRONT * 3.6
-            assert abs(y0 - front) < 1e-4, (y0, front)
-        fx0, fy0, fx1, fy1 = _footprint(sc, frames, 3.6, y1, front)
+        fx0, fy0, fx1, fy1 = _footprint(sc, frames, 3.6, y1)
         print(f"FOOTPRINT {name} view {fx0:.2f} {fy0:.2f} {fx1:.2f} {fy1:.2f} floor {lo[0]:.2f} {lo[1]:.2f} "
               f"{hi[0]:.2f} {hi[1]:.2f}")  # fmt: skip
         assert abs(hi[1] - y1) < 1e-4, name  # the mesh is the floor dress reports (float32 vertices)
@@ -476,6 +469,79 @@ def test_a_sample_framing_gets_a_dressed_set():
         assert len(floor) >= floor_least and len(got["kept"]) >= least, (name, got)
         _props, hits = _clear_check(sc, kit, short, tl, _shot_frames(tl, "s1"))
         assert not hits, (name, hits)
+
+
+def _bottom_ground(sc, frames, size):
+    """Where the bottom corners of the camera's frame meet z = 0 over `frames`: computed here from the camera's own
+    view frame, not from sets."""
+    out = []
+    for f in frames:
+        sc.frame_set(f)
+        mw = sc.camera.matrix_world
+        o = mw.translation
+        for corner in sorted(sc.camera.data.view_frame(scene=sc), key=lambda c: c.y)[:2]:
+            d = (mw @ corner - o).normalized()
+            out.append(sets._ground_point(o, d, sets.FAR_CLAMP * size))
+    return out
+
+
+def test_the_bench_reaches_the_bottom_of_the_frame():
+    """At the approved samples' framing and the demo's own, the bench top runs from the bottom edge of the camera's
+    view to the wall (no plain background under it), while the floor stays sized to the view."""
+    for framing in ("sample", "demo"):
+        sc, kit, short, tl, *_ = _build("workbench")
+        if framing == "sample":
+            _sample_framing(sc)
+        got = sets.dress(sc, kit, short, tl, None)
+        x0, y0, x1, _y1 = got["floor"]
+        frames = _shot_frames(tl, "s1", sets.SAMPLE_EVERY)
+        for x, y in _bottom_ground(sc, frames, 3.6):
+            assert y0 <= y + 1e-4 and x0 <= x + 1e-4 and x <= x1 + 1e-4, (framing, (x, y), got["floor"])
+        floor = next(o for o in sc.objects if bake.set_role(o) == "floor")
+        assert abs(_top_at(floor, 0.0, 0.0)) < 1e-6  # the subject still stands on the bench top at z = 0
+
+
+def _bench_crop(sc, png, size):
+    """The luminance (0-1) of the bench just in front of the subject in `png`: the screen box of the world strip from
+    0.6 to 0.1 x size in front of the subject's near edge, 0.3 x size each side of its centre (no props there)."""
+    from bpy_extras.object_utils import world_to_camera_view
+
+    front = _subject_front(sc, [1])
+    img = read_png(png)[..., :3].astype(np.float64) / 255.0
+    h, w = img.shape[:2]
+    us, vs = [], []
+    for x in (-0.3 * size, 0.3 * size):
+        for y in (front - 0.6 * size, front - 0.1 * size):
+            uv = world_to_camera_view(sc, sc.camera, Vector((0.15 + x, y, 0.0)))
+            us.append(uv.x * w)
+            vs.append((1.0 - uv.y) * h)
+    cx0, cx1 = max(0, math.ceil(max(us[0], us[1]))), min(w, math.floor(min(us[2], us[3])))
+    cy0, cy1 = max(0, math.ceil(min(vs))), min(h, math.floor(max(vs)))
+    crop = img[cy0:cy1, cx0:cx1]
+    assert crop.shape[0] >= 8 and crop.shape[1] >= 8, (cx0, cx1, cy0, cy1)
+    return crop @ np.array([0.2126, 0.7152, 0.0722])
+
+
+def test_the_wood_is_calm():
+    """The bench's grain reads but never shimmers: in a full-size crop of the bench and at preview scale, its
+    contrast (spread over mean) is low and it has little pixel-to-pixel energy (the zig-zag a fine, distorted grain
+    aliased into), in both engines and in every style that keeps set patterns."""
+    for style in ("toy", "clay", "realistic", "paper", "toon"):
+        for engine in ("eevee", "cycles"):
+            sc, kit, short, tl, built, _ = _build("workbench", engine=engine, style=style)
+            _sample_framing(sc)
+            sets.dress(sc, kit, short, tl, None)
+            styles.apply(sc, kit, style=style, **{k: built[k] for k in ("target", "size", "key")})
+            for percent in (50, 25):
+                png = OUT / f"wood_{style}_{engine}_{percent}.png"
+                render_still(sc, 1, png, preset=PRESET, percent=percent, engine=engine, file_format="PNG")
+                lum = _bench_crop(sc, png, 3.6)
+                mean = float(lum.mean())
+                spread = float(lum.std()) / mean
+                hf = float((np.abs(np.diff(lum, axis=0)).mean() + np.abs(np.diff(lum, axis=1)).mean()) / 2) / mean
+                print(f"WOOD {style} {engine} {percent}% spread {spread:.3f} hf {hf:.3f}")
+                assert spread <= 0.08, (style, engine, percent, spread)
+                assert hf <= 0.03, (style, engine, percent, hf)
 
 
 def test_set_none_takes_a_set_away():

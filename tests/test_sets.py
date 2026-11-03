@@ -30,5 +30,7 @@ def test_sets_in_blender(blender_run, bsa_home):
         "test_taking_a_set_away_leaves_no_world_behind",
         "test_clear_puts_film_transparent_back",
         "test_look_restyle_applies_the_style_once_per_scene",
+        "test_the_bench_reaches_the_bottom_of_the_frame",
+        "test_the_wood_is_calm",
     ):
         assert f"PASS {name}" in result.stdout

@@ -5,8 +5,8 @@ motion is baked, so they keep clear of it and of the cards on every frame), `cle
 are bsa.setplace's (no Blender code there).
 
 The four sets, recoloured from the kit (bsa.colour.set_colours):
-- workbench: a wooden bench top and a pegboard wall behind the subject; tools on the board, small boxes and a jar on
-  the bench.
+- workbench: a wooden bench top (planks running away from the camera) from the bottom of the view to a pegboard wall
+  behind the subject; tools on the board, small boxes and a jar on the bench.
 - graph: graph-paper floor and wall; a ruler, a pencil and a set square.
 - outdoor: ground, two layers of hills (set:backdrop) and a sky for camera rays only; trees and clouds.
 - studio: a seamless cyclorama (the floor sweeping up into the back wall, one mesh) in the background colour, a
@@ -35,7 +35,7 @@ PROVISIONAL = 6.0  # `base` makes a floor this many subject sizes square, until 
 WALL_GAP = {"workbench": 0.25, "graph": 1.0, "studio": 0.6}  # the wall's distance behind the subject, x its size
 CYC_RADIUS = 0.8  # the studio's sweep radius, as a share of its wall gap
 BENCH_T = 0.035  # the bench top's thickness, x the subject's size
-BENCH_FRONT = 0.2  # the bench top's front edge stands this far in front of the subject, x its size (a strip)
+PLANK = 0.3  # the bench's planks are this wide, x the subject's size (its wood pattern is one plank per unit)
 HILLS = {"near": (1.0, 0.35), "far": (2.5, 0.6)}  # distance behind the subject and height, x its size
 SAMPLE_EVERY = 3  # dress looks at every 3rd frame of each shot, and its first and last
 WALL_EPS = 0.002  # a wall prop stands this far off the board (no faces on the board's plane)
@@ -162,8 +162,9 @@ def _pattern_scale(set_name: str, size: float) -> float:
 
 
 def _wood_scale(size: float) -> float:
-    """The bench top's object scale: a fine grain, a few planks across the subject whatever its size."""
-    return max(0.5, size / 8.0)
+    """The bench top's object scale: one wood-pattern unit is one plank, PLANK x the subject's size wide, so the grain
+    reads the same (a few planks across the subject, never finer than the frame can show) whatever its size."""
+    return max(size, 0.05) * PLANK
 
 
 def _catcher(scene, kit) -> bool:
@@ -532,20 +533,14 @@ def _sized(set_name: str, size: float, views: list, subject) -> dict:
         wall_y = gaps["far"]
     else:
         wall_y = min(sub_far + WALL_GAP[set_name] * size, far)
-    front = -math.inf
-    if set_name == "workbench" and subject:  # a bench is a strip from just in front of the subject to the wall
-        front = subject[1] - BENCH_FRONT * size
-    cut = [c for c in (_clip_y(poly, wall_y) for poly in polys) if c]
-    if front > -math.inf:  # and in front: the same cut, mirrored
-        cut = [[(x, -y) for x, y in _clip_y([(x, -y) for x, y in c], -front)] for c in cut]
-    pts = [p for c in cut for p in c]
+    pts = [p for poly in polys for p in _clip_y(poly, wall_y)]
     plane = [q for v in views for q in v.at_plane_y(wall_y, reach)]
     if not pts:  # a close-up: the views meet the wall before the floor, so the floor is a strip at the wall's foot
         xs = [q[0] for q in plane] or ([subject[0], subject[2]] if subject else [0.0])
         pts = [(min(xs), wall_y - 0.01 * size), (max(xs), wall_y)]
     x0, x1 = _grow(min(p[0] for p in pts), max(p[0] for p in pts))
     y0, y1 = _grow(min(p[1] for p in pts), max(p[1] for p in pts))
-    y0, y1 = max(y0, front), min(y1, wall_y)
+    y1 = min(y1, wall_y)
     wall_h = max([q[1] for q in plane] + [0.0])
     wall_h = max(wall_h * (1 + GROW / 2), 0.5 * size)
     wx = (min([q[0] for q in plane] + [x0]), max([q[0] for q in plane] + [x1]))

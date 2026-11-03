@@ -486,17 +486,68 @@ def _vmath(nt, operation: str):
     return node
 
 
+# The bench's wood, in the units of its object (one plank per unit across X, the planks running along Y): calm and
+# low in contrast, so it reads at 1080x1920 and at preview scale and never aliases into a shimmer.
+WOOD_GRAIN = 0.09  # the grain darkens the wood by up to this share
+WOOD_TONE = 0.05  # each plank is up to this share darker than the lightest (a fixed tone per plank)
+WOOD_SEAM = 0.16  # the seam between planks is this share darker, its soft edge WOOD_SEAM_W of a plank each side
+WOOD_SEAM_W = 0.018
+WOOD_STRETCH = (14.0, 0.45)  # the grain noise's frequency across and along a plank: long, soft streaks
+
+
 def _wood(nt, coords, lin):
-    """Wood grain: a distorted wave along the object's X between the colour x 0.72 and the colour, a little bump."""
-    mapping = nt.nodes.new("ShaderNodeMapping")
-    mapping.inputs["Scale"].default_value = (0.25, 2.5, 2.5)
-    wave = nt.nodes.new("ShaderNodeTexWave")
-    wave.inputs["Scale"].default_value = 2.0
-    wave.inputs["Distortion"].default_value = 6.0
-    wave.inputs["Detail"].default_value = 3.0
-    nt.links.new(coords.outputs["Object"], mapping.inputs["Vector"])
-    nt.links.new(mapping.outputs["Vector"], wave.inputs["Vector"])
-    return _mix_rgba(nt, wave.outputs["Fac"], [c * 0.72 for c in lin], lin), wave.outputs["Fac"]
+    """Wood planks: soft, low-frequency grain streaks along the object's Y (a noise stretched along it), a fixed tone
+    per plank and a soft darker seam between planks (one per unit of X), the colour darkened by at most
+    WOOD_GRAIN + WOOD_TONE + WOOD_SEAM; the same value drives a faint bump."""
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(coords.outputs["Object"], sep.inputs["Vector"])
+    plank = _math(nt, "FLOOR")
+    nt.links.new(sep.outputs["X"], plank.inputs[0])
+    tone = nt.nodes.new("ShaderNodeTexWhiteNoise")
+    tone.noise_dimensions = "1D"
+    nt.links.new(plank.outputs["Value"], tone.inputs["W"])
+    across = _math(nt, "MULTIPLY", WOOD_STRETCH[0])
+    nt.links.new(sep.outputs["X"], across.inputs[0])
+    shift = _math(nt, "MULTIPLY", 17.0)  # each plank's grain from another part of the noise
+    nt.links.new(tone.outputs["Value"], shift.inputs[0])
+    along = _math(nt, "MULTIPLY_ADD")
+    along.inputs[1].default_value = WOOD_STRETCH[1]
+    nt.links.new(sep.outputs["Y"], along.inputs[0])
+    nt.links.new(shift.outputs["Value"], along.inputs[2])
+    vec = nt.nodes.new("ShaderNodeCombineXYZ")
+    nt.links.new(across.outputs["Value"], vec.inputs["X"])
+    nt.links.new(along.outputs["Value"], vec.inputs["Y"])
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 1.0
+    noise.inputs["Detail"].default_value = 1.0
+    noise.inputs["Roughness"].default_value = 0.4
+    nt.links.new(vec.outputs["Vector"], noise.inputs["Vector"])
+    grain = nt.nodes.new("ShaderNodeMapRange")  # 0 light .. 1 dark streak
+    grain.inputs["From Min"].default_value, grain.inputs["From Max"].default_value = 0.65, 0.35
+    nt.links.new(noise.outputs["Fac"], grain.inputs["Value"])
+    frac = _math(nt, "FRACT")
+    nt.links.new(sep.outputs["X"], frac.inputs[0])
+    mid = _math(nt, "SUBTRACT", 0.5)
+    nt.links.new(frac.outputs["Value"], mid.inputs[0])
+    off = _math(nt, "ABSOLUTE")  # 0.5 on a seam, 0 mid-plank
+    nt.links.new(mid.outputs["Value"], off.inputs[0])
+    seam = nt.nodes.new("ShaderNodeMapRange")
+    seam.interpolation_type = "SMOOTHSTEP"
+    seam.inputs["From Min"].default_value, seam.inputs["From Max"].default_value = 0.5 - WOOD_SEAM_W, 0.5
+    nt.links.new(off.outputs["Value"], seam.inputs["Value"])
+    dark = _math(nt, "MULTIPLY", WOOD_GRAIN)
+    nt.links.new(grain.outputs["Result"], dark.inputs[0])
+    for amount, socket in ((WOOD_TONE, tone.outputs["Value"]), (WOOD_SEAM, seam.outputs["Result"])):
+        more = _math(nt, "MULTIPLY_ADD")
+        more.inputs[1].default_value = amount
+        nt.links.new(socket, more.inputs[0])
+        nt.links.new(dark.outputs["Value"], more.inputs[2])
+        dark = more
+    light = nt.nodes.new("ShaderNodeMath")  # 1 - darkening
+    light.operation = "SUBTRACT"
+    light.inputs[0].default_value = 1.0
+    nt.links.new(dark.outputs["Value"], light.inputs[1])
+    return _mix_rgba(nt, light.outputs["Value"], [0.0, 0.0, 0.0], lin), light.outputs["Value"]
 
 
 def _dots(nt, coords, lin):
