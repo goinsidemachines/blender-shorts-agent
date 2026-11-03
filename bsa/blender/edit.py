@@ -201,8 +201,8 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
     size = caption_size(short)
     cx = safe.x + safe.w / 2
     colour, box = caption_colours(short, settings)
-    cards = captions(short, tl)  # near labels keep off the caption bands
-    for card, (f0, f1, _, _, bottom) in zip(tl.cards, cards, strict=True):
+    cards = captions(short, tl)  # near labels keep off the caption bands; none with style.caption.draw false
+    for card, (f0, f1, _, _, bottom) in zip(tl.cards if cards else [], cards, strict=True):
         texts.add(card.text, f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
                   color=colour, box=box)  # fmt: skip
 

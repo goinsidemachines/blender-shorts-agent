@@ -74,9 +74,18 @@ def caption_size(short) -> int:
     return int(((getattr(short, "style", None) or {}).get("caption") or {}).get("size") or CAPTION_SIZE)
 
 
+def captions_drawn(short) -> bool:
+    """False when the short's own `style.caption.draw` is false: then no caption shows (the voice alone)."""
+    draw = ((getattr(short, "style", None) or {}).get("caption") or {}).get("draw", True)
+    return not (draw is False or (isinstance(draw, str) and draw.strip().lower() == "false"))
+
+
 def captions(short, tl) -> list[tuple[int, int, Rect, Rect, float]]:
     """(f0, f1, band, box, text bottom y) per caption card: `band` is the full safe width the card may take (near
-    labels keep off it), `box` the estimated box the text is drawn in (centred, as wide as its longest line)."""
+    labels keep off it), `box` the estimated box the text is drawn in (centred, as wide as its longest line).
+    Empty when the short's `style.caption.draw` is false."""
+    if not captions_drawn(short):
+        return []
     safe = safe_rect()
     size = caption_size(short)
     wrap_px = safe.w - 2 * CAPTION_MARGIN * H
@@ -139,15 +148,17 @@ def near_label_size(text: str) -> tuple[float, float]:
 
 
 def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), placed: dict | None = None,
-           heroes: dict | None = None, near: str | None = None, frames=None) -> dict[int, tuple[float, float, Rect]]:  # fmt: skip
+           heroes: dict | None = None, near: str | None = None, frames=None,
+           size: tuple[float, float] | None = None) -> dict[int, tuple[float, float, Rect]]:  # fmt: skip
     """{frame: (centre x, text bottom y, box)} of a near label at each frame of its shot (`frames`, default f0..f1):
     just above its object's top on screen (`points`: {"f0", "points": [[x, y] or None per frame]}), inside the safe
     area and never on a caption shown at that frame (`caption_bands`: (f0, f1, band) or captions() rows), the shot's
     badge and stacked labels (`fixed`) or the near labels already placed in that frame (`placed`: {frame: [Rect]},
     which this label's own box is added to). It keeps off the shot's heroes too where it can (`heroes`: the shot's
     {"f0", "boxes"}), except its own object `near` and a hero whose box holds the anchor (the assembly the part
-    belongs to). Frames where the object is behind the camera keep the last position."""
-    w, h = near_label_size(text)
+    belongs to). Frames where the object is behind the camera keep the last position. `size`: the label's (w, h) in
+    px instead of the estimate from its text (a kit card's size; its box is still SMALL_MARGIN * H around it)."""
+    w, h = near_label_size(text) if size is None else size
     m = SMALL_MARGIN * H
     pts = list(points.get("points") or [])
     p0 = int(points.get("f0", f0))
@@ -169,11 +180,16 @@ def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), p
 
 
 def shot_boxes(short, tl, shot, span, anchors: dict | None = None, heroes: dict | None = None,
-               frames=None) -> dict[int, list[tuple[str, str, str | None, Rect]]]:  # fmt: skip
+               frames=None, kit=None, font=None) -> dict[int, list[tuple[str, str, str | None, Rect]]]:  # fmt: skip
     """{frame: [(kind, text, near object or None, box)]}: every text box the edit puts on screen at each frame of
     `shot` (`frames`, default all of its span): "caption", "badge", "label" (stacked) and "near" labels.
     `anchors`: {object: {"f0", "points"}} for this shot's near labels (a near label without them is left out);
-    `heroes`: this shot's {"f0", "boxes"} (near labels keep off them, as in the edit)."""
+    `heroes`: this shot's {"f0", "boxes"} (near labels keep off them, as in the edit). With a brand `kit` (and its
+    card `font`) the kit's cards instead: bsa.kitlayout.shot_rects."""
+    if kit is not None:
+        from bsa import kitlayout
+
+        return kitlayout.shot_rects(short, tl, shot, span, kit, font, anchors, heroes, frames)
     from bsa.short import label_near, label_text
 
     frames = list(range(span.f0, span.f1 + 1) if frames is None else frames)

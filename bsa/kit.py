@@ -316,10 +316,15 @@ def problems(settings: dict, short=None) -> list[str]:
         if isinstance(cat, str) and cat.strip() and cat.strip().lower() not in merged["categories"]:
             out.append(f"shot {s.id} category {cat!r} is not in your kit's categories ({', '.join(names) or 'none'}): "
                        "it shows in the accent colour")  # fmt: skip
-    logo = merged.get("logo")
+    note = logo_missing(merged.get("logo"))
+    return out + [note] if note else out
+
+
+def logo_missing(logo: dict | None) -> str | None:
+    """The note for a kit logo whose file is gone (moved or deleted after setup), else None."""
     if logo and not Path(logo["file"]).is_file():
-        out.append(f"your logo file {logo['file']} is missing, so no logo badge is drawn: set brand.logo.file again")
-    return out
+        return f"your logo file {logo['file']} is missing, so no logo badge is drawn: set brand.logo.file again"
+    return None
 
 
 def _has_card_fields(shot) -> bool:
