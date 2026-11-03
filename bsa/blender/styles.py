@@ -36,7 +36,7 @@ BLUEPRINT_GRID_SHIFT = 0.0371  # the sampler's offset, so no grid line runs exac
 HIDDEN_LINESET = "bsa hidden"
 BLUEPRINT_HIDDEN_COLOUR, BLUEPRINT_HIDDEN_ALPHA, BLUEPRINT_DASH = (0.85, 0.9, 1.0), 0.45, (5, 4)
 PAPER_ROUGHNESS, PAPER_SPECULAR = 0.95, 0.15
-PAPER_CELLS, PAPER_TILT = 4.0, 0.35  # Voronoi cells across a part's longest side; how far a cell tilts the normal
+PAPER_CELLS, PAPER_TILT = 4.0, 0.35  # Voronoi cells across each part (its Generated box); how far a cell tilts the normal
 PAPER_GRAIN = (160.0, 8.0, 0.18, 0.004)  # noise scale, detail; bump strength, distance
 PAPER_FIBRE = (6.0, 2.0, 0.12)  # noise scale, detail; multiply factor
 PENCIL_RAMP = ((0.05, 0.45), (0.55, 1.0))  # (light value, grey): the sampler's soft grey shading
@@ -504,23 +504,12 @@ def _noise(nt, scale: float, detail: float):
     return node
 
 
-def _cell_side(scene, mat) -> float:
-    """The side the paper's facets divide, in object space: each part using `mat` has its longest side, and the
-    shortest of those is taken, so every part gets at least PAPER_CELLS cells across. 1 m when no part uses it."""
-    sides = []
-    for obj, slot in _slots(scene):
-        if slot.material == mat and obj.type == "MESH":
-            box = np.array([tuple(c) for c in obj.bound_box])
-            sides.append(float(max(box.max(axis=0) - box.min(axis=0))))
-    sides = [s for s in sides if s > 1e-6]
-    return min(sides) if sides else 1.0
-
-
-def _paper(mat, lin, pattern, cells: float | None) -> None:
+def _paper(mat, lin, pattern, crumple: bool) -> None:
     """The sampler's paper: a rough, low-specular Principled whose colour (or pattern) is multiplied 12% by a fibre
-    noise (scale 6) and bumped by a fine grain (scale 160, strength 0.18, distance 0.004); with `cells` (cells per
-    metre), crumpled in the shader: an object-space Voronoi's cell colour, centred and scaled by PAPER_TILT, tilts
-    the normal per cell, so each cell shades as a flat facet and no surface moves."""
+    noise (scale 6) and bumped by a fine grain (scale 160, strength 0.18, distance 0.004); with `crumple`, crumpled
+    in the shader: a Voronoi on the part's Generated coordinates (0..1 across its own box, so PAPER_CELLS cells across
+    every part whatever its size), its cell colour centred and scaled by PAPER_TILT, tilts the normal per cell, so
+    each cell shades as a flat facet and no surface moves."""
     nt, bsdf = _principled(mat)
     shade = _shade(nt, bsdf, lin, pattern, bump=False)
     _set(bsdf, "Roughness", PAPER_ROUGHNESS)
@@ -533,13 +522,13 @@ def _paper(mat, lin, pattern, cells: float | None) -> None:
     bump.inputs["Distance"].default_value = PAPER_GRAIN[3]
     nt.links.new(_noise(nt, *PAPER_GRAIN[:2]).outputs["Fac"], bump.inputs["Height"])
     nt.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
-    if cells is None:
+    if not crumple:
         return
     coords = nt.nodes.new("ShaderNodeTexCoord")
     cell = nt.nodes.new("ShaderNodeTexVoronoi")
-    cell.inputs["Scale"].default_value = cells
+    cell.inputs["Scale"].default_value = PAPER_CELLS
     cell.inputs["Randomness"].default_value = 1.0
-    nt.links.new(coords.outputs["Object"], cell.inputs["Vector"])
+    nt.links.new(coords.outputs["Generated"], cell.inputs["Vector"])
     centred = look._vmath(nt, "SUBTRACT")
     centred.inputs[1].default_value = (0.5, 0.5, 0.5)
     tilt = look._vmath(nt, "SCALE")
@@ -557,18 +546,18 @@ def _paper(mat, lin, pattern, cells: float | None) -> None:
 
 def paper(kit: Kit) -> Style:
     """Folded paper: parts in their colour 12% toward white (looks.part_colour), crumpled in the shader into flat
-    tilted facets (`_paper`: PAPER_CELLS cells across a part's longest side, `_cell_side`), rough with a fine grain
+    tilted facets (`_paper`: PAPER_CELLS cells across each part), rough with a fine grain
     and a fibre tint, one material for both engines; a 1-segment chamfer, a single sun. Set surfaces are uncrumpled
     paper in their own colour; glass, water and glowing parts as look makes them."""
 
     def material(mat, stamp, ctx, key):
         if ctx.scenery(mat):
-            _paper(mat, _lin(stamp["colour"]), stamp["pattern"], None)
+            _paper(mat, _lin(stamp["colour"]), stamp["pattern"], False)
             return
         hex_ = looks.part_colour("paper", stamp["colour"], ctx.kit, key)
         if _common(mat, stamp, hex_, ctx):
             return
-        _paper(mat, _lin(hex_), stamp["pattern"], PAPER_CELLS / _cell_side(ctx.scene, mat))
+        _paper(mat, _lin(hex_), stamp["pattern"], True)
 
     return Style("paper", looks.TABLE["paper"], material)
 

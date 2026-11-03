@@ -456,9 +456,9 @@ def test_paper_facets_and_pencil_hatching_read_object_space():
     sc, kit, built, _ = _build("eevee", "paper")
     crate = bpy.data.materials["Crate"]
     voronoi = next(n for n in crate.node_tree.nodes if n.type == "TEX_VORONOI")
-    assert voronoi.inputs["Vector"].links[0].from_socket.name == "Object"
+    assert voronoi.inputs["Vector"].links[0].from_socket.name == "Generated"  # each part its own 0..1 box
     assert abs(voronoi.inputs["Randomness"].default_value - 1.0) < 1e-6
-    assert abs(voronoi.inputs["Scale"].default_value - 4 / 0.62) < 1e-3  # 4 cells across the crate's 0.62 m
+    assert voronoi.inputs["Scale"].default_value == styles.PAPER_CELLS == 4.0  # 4 cells across every part
     assert _outputs(crate) == ["ALL"]
     styles.reapply(sc, kit, "pencil")
     assert _outputs(crate) == ["CYCLES", "EEVEE"]
