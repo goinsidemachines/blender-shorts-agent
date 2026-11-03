@@ -10,13 +10,13 @@ is the card PNG's full rect in pixels of the 1080x1920 frame, origin top-left.""
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 
 from bsa import cards, overlays
 from bsa.cards import CardSpec
 from bsa.kit import logo_missing
-from bsa.layout import CAPTION_LIFT_PX, SAFE, H, Rect, W, overlap_area, safe_rect
+from bsa.layout import CAPTION_LIFT_PX, SAFE, H, Rect, W, caption_band, overlap_area, safe_rect
 from bsa.overlays import SMALL_MARGIN, STACK_GAP_PX
 
 # Sequencer channels (a higher one draws over a lower one). "stacked", "pointer", "near" and "dot" add the label's
@@ -30,8 +30,19 @@ CH = {"pointer": 3, "progress": 9, "title": 12, "bars": 13, "caption": 14, "logo
 MAX_LABELS = 6
 
 
-class TooManyLabels(ValueError):
-    """A shot has more labels than a brand kit draws (MAX_LABELS); kit.errors names it before any edit runs."""
+class LayoutError(ValueError):
+    """A brand kit can't lay out a shot's cards; kit.errors names it before any edit runs."""
+
+
+class TooManyLabels(LayoutError):
+    """A shot has more labels than a brand kit draws (MAX_LABELS)."""
+
+
+class CardsTooTall(LayoutError):
+    """A shot's static top cards would reach the caption band (or the progress bar) even with its stacked labels moved
+    to the right column."""
+
+
 TITLE_GAP_PX = 24  # between the top cards and the title card, and between the title card and the bars
 PROGRESS_DROP_PX = 36  # the progress bar's top under today's caption bottom
 
@@ -119,9 +130,74 @@ def _logo(kit, font) -> tuple[CardSpec | None, str | None]:
                                             "logo badge is drawn: set brand.logo.file again")  # fmt: skip
 
 
-def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tuple[str, str, CardSpec, Rect, int]]:
+def bottom_limit(kit) -> float:
+    """The lowest row a static top card may reach: TITLE_GAP_PX above the caption band (a two-line caption in the
+    kit's size) and the progress bar, inside the safe area."""
+    s = safe_rect()
+    limits = [s.bottom]
+    if kit.caption.get("draw", True):
+        limits.append(caption_band(2, int(kit.caption["size"])).y - TITLE_GAP_PX)
+    if kit.progress:
+        limits.append(H - SAFE["bottom"] - CAPTION_LIFT_PX + PROGRESS_DROP_PX - TITLE_GAP_PX)
+    return min(limits)
+
+
+def _static(shot, kit, font, logo: CardSpec | None, notes: list[str], strict: bool = True,
+            ) -> list[tuple[str, str, CardSpec, Rect, int]]:  # fmt: skip
     """The shot's static top cards as (kind, text, spec, rect, channel): the logo badge, the category tag, the corner
-    stack (badge, step, stacked labels and measures), the title card and the value bars."""
+    stack (badge, step, stacked labels and measures), the title card and the value bars. When they would reach
+    bottom_limit, the stacked labels move to the right column (under the category tag); still over: CardsTooTall
+    naming what to drop (`strict`), else that layout as it is (top_band frames under it)."""
+    labels = getattr(shot, "labels", None) or []
+    if len(labels) > MAX_LABELS:
+        raise TooManyLabels(f"shot {shot.id} has {len(labels)} labels: a brand kit draws at most {MAX_LABELS} per shot "
+                            "(more would share sequencer channels with the pointers and the end card): move some to "
+                            "another shot")  # fmt: skip
+    limit = bottom_limit(kit)
+    out = _lay(shot, kit, font, logo, False)
+    if _bottom(out) > limit and _stacked_labels(shot):
+        out = _lay(shot, kit, font, logo, True)
+    if _bottom(out) > limit and strict and shot is not None:
+        raise CardsTooTall(_too_tall(shot, kit, font, logo, _bottom(out) - limit, limit))
+    for _, _, spec, _, _ in out:
+        _note(spec, font, notes)
+    return out
+
+
+def _bottom(out) -> float:
+    return max((r.bottom for *_, r, _ in out), default=0.0)
+
+
+def _stacked_labels(shot) -> list:
+    from bsa.short import label_near
+
+    return [lb for lb in getattr(shot, "labels", None) or [] if not label_near(lb)]
+
+
+def _fits(shot, kit, font, logo, limit: float) -> bool:
+    return any(_bottom(_lay(shot, kit, font, logo, right)) <= limit for right in (False, True))
+
+
+def _too_tall(shot, kit, font, logo, over: float, limit: float) -> str:
+    """The CardsTooTall message: how far the cards reach and the parts whose removal alone makes them fit."""
+    from bsa.short import label_near
+
+    near_only = [lb for lb in getattr(shot, "labels", None) or [] if label_near(lb)]
+    parts = [("the value bars", "bars", None), ("the title card", "title_card", None),
+             ("the stacked labels", "labels", near_only), ("the step tag", "step", None), ("the badge", "badge", None),
+             ("the category tag", "category", None)]  # fmt: skip
+    present = [(name, key, empty) for name, key, empty in parts
+               if (_stacked_labels(shot) if key == "labels" else getattr(shot, key, None))]  # fmt: skip
+    one = [name for name, key, empty in present
+           if is_dataclass(shot) and _fits(replace(shot, **{key: empty}), kit, font, logo, limit)]  # fmt: skip
+    fix = (f"drop {one[0]}" if len(one) == 1 else f"drop one of {', '.join(one)}" if one
+           else f"drop some of {', '.join(n for n, _, _ in present)}")  # fmt: skip
+    return (f"shot {shot.id}'s top cards reach {math.ceil(over)} px into the captions (they end at row "
+            f"{math.ceil(limit + over)}, the most is {math.floor(limit)}): {fix}, or move it to another shot")
+
+
+def _lay(shot, kit, font, logo: CardSpec | None, labels_right: bool) -> list[tuple[str, str, CardSpec, Rect, int]]:
+    """_static's layout: stacked labels in the left corner stack, or in the right column with `labels_right`."""
     from bsa.short import (
         bar_items,
         bar_verdict,
@@ -133,11 +209,6 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
         title_lines,
     )
 
-    labels = getattr(shot, "labels", None) or []
-    if len(labels) > MAX_LABELS:
-        raise TooManyLabels(f"shot {shot.id} has {len(labels)} labels: a brand kit draws at most {MAX_LABELS} per shot "
-                         "(more would share sequencer channels with the pointers and the end card): move some to "
-                         "another shot")  # fmt: skip
     s = safe_rect()
     left, right, y0 = s.x + _edge(), s.right - _edge(), s.y + _edge()
     out = []
@@ -145,7 +216,6 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
     def put(kind, text, spec, x, y, channel) -> Rect:
         rect = Rect(_x_in_safe(x, spec.w), y, spec.w, spec.h)
         out.append((kind, text, spec, rect, channel))
-        _note(spec, font, notes)
         return rect
 
     stack_y = col_y = y0  # the left stack and the right column
@@ -157,28 +227,38 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
             col_y = r.bottom + STACK_GAP_PX
         else:
             stack_y = r.bottom + STACK_GAP_PX
+
     def stacked(kind, text, channel) -> None:
         nonlocal stack_y
         stack_y = put(kind, text, cards.pill(kit, kind, text, font), left, stack_y, channel).bottom + STACK_GAP_PX
 
+    def column(kind, text, channel) -> None:  # right-aligned, moved under any card it would sit on
+        nonlocal col_y
+        spec = cards.pill(kit, kind, text, font)
+        x = _x_in_safe(right - spec.w, spec.w)
+        while hit := [r for *_, r, _ in out if overlap_area(Rect(x, col_y, spec.w, spec.h), r) > 0]:
+            col_y = max(r.bottom for r in hit) + STACK_GAP_PX
+        col_y = put(kind, text, spec, x, col_y, channel).bottom + STACK_GAP_PX
+
+    labels = getattr(shot, "labels", None) or []
     if getattr(shot, "badge", None):
         stacked("badge", shot.badge.upper(), CH["badge"])
     if step_text(shot):
         stacked("step", step_text(shot), CH["step"])
-    for i, label in enumerate(getattr(shot, "labels", None) or []):
-        if not label_near(label):
-            stacked(label_kind(label), label_text(label), CH["stacked"] + i)
+    if not labels_right:
+        for i, label in enumerate(labels):
+            if not label_near(label):
+                stacked(label_kind(label), label_text(label), CH["stacked"] + i)
 
     cat = getattr(shot, "category", None)
-    if isinstance(cat, str) and cat.strip():  # right-aligned, moved under any card it would sit on
-        text = category_text(cat)
-        spec = cards.pill(kit, "category", text, font)
-        x = _x_in_safe(right - spec.w, spec.w)
-        while hit := [r for *_, r, _ in out if overlap_area(Rect(x, col_y, spec.w, spec.h), r) > 0]:
-            col_y = max(r.bottom for r in hit) + STACK_GAP_PX
-        put("category", text, spec, x, col_y, CH["category"])
+    if isinstance(cat, str) and cat.strip():
+        column("category", category_text(cat), CH["category"])
+    if labels_right:
+        for i, label in enumerate(labels):
+            if not label_near(label):
+                column(label_kind(label), label_text(label), CH["stacked"] + i)
 
-    y = max(r.bottom for *_, r, _ in out) + TITLE_GAP_PX if out else y0
+    y = _bottom(out) + TITLE_GAP_PX if out else y0
     lines, highlight = title_lines(shot)
     if lines:
         spec = cards.title(kit, list(lines), highlight, font, s.w)
@@ -305,7 +385,7 @@ def build(short, tl, kit, font, anchors: dict | None = None, label_heroes: dict 
 def top_band(short, shot, kit, font) -> Rect | None:
     """The rows the shot's static top cards take (logo, category, corner stack, title card, bars), full safe width
     from the safe top: pass it as `top=` to camera.frame_objects. None when the shot has none."""
-    static = _static(shot, kit, font, _logo(kit, font)[0], [])
+    static = _static(shot, kit, font, _logo(kit, font)[0], [], strict=False)
     if not static:
         return None
     s = safe_rect()

@@ -45,7 +45,7 @@ of the shot in `short.json`:
 | Card | Field |
 |---|---|
 | caption bar | the narration line, as today |
-| title card | `title_card`: text, a list of 1 or 2 lines, or `{"lines": ["Line one", "Line two"], "highlight": 0}` (`highlight` is the index of the line drawn in the accent colour) |
+| title card | `title_card`: text, a list of 1 or 2 lines, or `{"lines": ["Line one", "Line two"], "highlight": 0}` (`highlight` is the index of the line drawn bigger, in the highlight colour `palette.highlight`) |
 | honesty pill | `badge` ("Simplified", "Motion exaggerated") |
 | category tag | `category`: a name from `brand.categories`, shown at the top right |
 | step tag | `step`: `[2, 4]` shows "Step 2 of 4" (whole numbers, 1 to 20) |
@@ -56,6 +56,10 @@ of the shot in `short.json`:
 The **progress bar** runs under the caption bar and fills over the short; `brand.progress false` turns it off.
 `brand.caption.draw false` (or `style.caption.draw false` for one short) draws no caption bar at all.
 A kit draws at most 6 labels per shot (`CLI validate` and the edit refuse more): move some to another shot.
+The static top cards (logo, badge, step, stacked labels, category tag, title card, value bars) must end above the
+captions and the progress bar: when the corner stack is too tall its stacked labels move to the right column under
+the category tag; still too tall, `CLI validate` and the edit refuse the shot and name what to drop (a badge, step,
+two labels, a two-line title and three bars with a verdict is already too much for one shot).
 
 **`badge` is not `category`.** `badge` is the honesty pill: it says the picture was simplified or exaggerated
 (`honesty.md`), so keep it truthful and short. `category` is the kind of thing the shot is about (force, heat...)

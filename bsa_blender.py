@@ -1015,7 +1015,7 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     from bsa import engine_runs, kit
 
     s = settings.load_settings()  # read once: the whole edit uses the same settings
-    kit_errors = kit.errors(s, short)  # before anything is touched: the kit can't lay it out
+    kit_errors = kit.errors(s, short, sdir)  # before anything is touched: the kit can't lay it out
     if kit_errors:
         raise CliError("; ".join(kit_errors))
     side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4

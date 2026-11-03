@@ -48,8 +48,8 @@ def _tl():
 
 @pytest.fixture
 def short():
-    return _short(badge="simplified", step=[1, 3], category="flow", title_card={"lines": ["How a", "lever"],
-                  "highlight": 1}, bars=BARS, labels=["Stacked", {"text": "Pivot", "near": "Pivot"},
+    return _short(badge="simplified", step=[1, 3], category="flow", title_card={"lines": ["How a lever"],
+                  "highlight": 0}, bars=BARS, labels=["Stacked", {"text": "Pivot", "near": "Pivot"},
                   {"text": "2 m", "kind": "measure"}, {"text": "1 m", "kind": "measure", "near": "Arm"}])  # fmt: skip
 
 
@@ -360,3 +360,73 @@ def test_pointer_lines_sit_under_every_static_card_and_dots_and_near_cards_over_
     assert min(kitlayout.CH["near"], kitlayout.CH["dot"]) > max(statics) + kitlayout.MAX_LABELS
     assert kitlayout.CH["pointer"] >= 3  # over the shot frames (1) and the sound (2)
     assert issubclass(kitlayout.TooManyLabels, ValueError)
+
+
+BARS3 = {"items": [{"label": "Short arm", "value": 1}, {"label": "Long arm", "value": 3}, {"label": "Mid", "value": 2}],
+         "verdict": "3x the lift"}  # fmt: skip
+
+
+def _tall(n_labels=2, lines=("How a", "lever"), bars=BARS):
+    return _short(badge="simplified", step=[1, 3], category="flow", title_card={"lines": list(lines), "highlight": 1},
+                  bars=bars, labels=[f"Part {i}" for i in range(n_labels)]).shots[0]  # fmt: skip
+
+
+def test_stacked_labels_move_to_the_right_column_when_the_left_stack_would_reach_the_captions(font):
+    shot = _tall()  # badge, step, 2 labels, a 2-line title and 2 bars: too tall with the labels on the left
+    assert kitlayout._bottom(kitlayout._lay(shot, K, font, None, False)) > kitlayout.bottom_limit(K)
+    static = kitlayout._static(shot, K, font, None, [])
+    rects = {k + str(i): r for i, (k, _, _, r, _) in enumerate(static)}
+    labels = [r for k, _, _, r, _ in static if k == "label"]
+    cat = next(r for k, _, _, r, _ in static if k == "category")
+    assert len(labels) == 2 and all(r.right == pytest.approx(cat.right) and r.y > cat.bottom for r in labels)
+    assert max(r.bottom for r in rects.values()) <= kitlayout.bottom_limit(K)
+    assert all(overlap_area(a, b) == 0 for i, a in enumerate(rects.values()) for b in list(rects.values())[i + 1:])
+
+
+def test_a_shot_whose_top_cards_still_reach_the_captions_is_an_error_naming_what_to_drop(font):
+    shot = _tall(bars=BARS3)  # badge, step, 2 labels, a 2-line title, 3 bars and a verdict
+    with pytest.raises(kitlayout.CardsTooTall, match=r"shot a's top cards reach \d+ px into the captions") as exc:
+        kitlayout._static(shot, K, font, None, [])
+    assert "drop" in str(exc.value) and "the value bars" in str(exc.value)
+    assert issubclass(kitlayout.CardsTooTall, kitlayout.LayoutError)
+    with pytest.raises(kitlayout.CardsTooTall):
+        kitlayout.build(_short(**{k: getattr(shot, k) for k in ("badge", "step", "category", "title_card", "bars",
+                                                                 "labels")}), _tl(), K, font)  # fmt: skip
+    band = kitlayout.top_band(None, shot, K, font)  # framing never fails: it frames under what is there
+    assert band is not None and band.bottom > kitlayout.bottom_limit(K)
+
+
+def test_static_cards_always_stay_above_the_caption_band_and_the_progress_bar(font, tmp_path):
+    """Every mix of top cards either fits above the caption band (a two-line caption in the kit's size) and the
+    progress bar, without overlapping, or is a CardsTooTall error: never cards over the captions."""
+    from bsa.layout import caption_band
+
+    top = min(caption_band(2, K.caption["size"]).y, H - SAFE["bottom"] - CAPTION_LIFT_PX + kitlayout.PROGRESS_DROP_PX)
+    fitted = refused = 0
+    png = _png(tmp_path / "logo.png", 8, 8)
+    for n in range(5):
+        for lines in ((), ("Lever",), ("How a", "lever")):
+            for bars in (None, BARS, BARS3):
+                for logo in (None, "top-left", "top-right"):
+                    k = K if logo is None else kit.kit_from({**KIT, "logo": {"file": str(png), "place": logo}})
+                    spec = cards.pill(k, "badge", "LOGO", font) if logo else None
+                    shot = _short(badge="simplified", step=[1, 3], category="flow", bars=bars,
+                                  title_card={"lines": list(lines)} if lines else None,
+                                  labels=[f"Part {i}" for i in range(n)]).shots[0]  # fmt: skip
+                    try:
+                        static = kitlayout._static(shot, k, font, spec, [])
+                    except kitlayout.CardsTooTall:
+                        refused += 1
+                        continue
+                    fitted += 1
+                    rs = [r for *_, r, _ in static]
+                    assert max(r.bottom for r in rs) <= top - kitlayout.TITLE_GAP_PX, (n, lines, bars, logo)
+                    assert all(overlap_area(a, b) == 0 for i, a in enumerate(rs) for b in rs[i + 1:])
+    assert fitted and refused
+
+
+def test_kit_errors_name_a_shot_too_tall_for_the_kit():
+    shot = _tall(n_labels=4, bars=BARS3)
+    errs = kit.errors({"brand": KIT}, Short(slug="x", title="X", length_s=2, shots=[shot]))
+    assert len(errs) == 1 and errs[0].startswith("shot a's top cards reach") and "drop" in errs[0], errs
+    assert kit.errors({}, Short(slug="x", title="X", length_s=2, shots=[shot])) == []  # no kit: today's labels

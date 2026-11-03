@@ -322,19 +322,32 @@ def problems(settings: dict, short=None) -> list[str]:
     return out + [note] if note else out
 
 
-def errors(settings: dict, short=None) -> list[str]:
+def errors(settings: dict, short=None, short_dir=None) -> list[str]:
     """What stops the edit drawing the short's kit cards (CLI validate and the edit refuse it): a shot with more
-    labels than a kit draws (bsa.kitlayout.MAX_LABELS). None without a kit: today's text labels have no such limit."""
-    if short is None or kit_for(settings, short) is None:
+    labels than a kit draws (bsa.kitlayout.MAX_LABELS), or whose static top cards would reach the captions
+    (kitlayout.CardsTooTall, measured in the edit's card font: `short_dir` for its font caches). None without a kit:
+    today's text labels have no such limits."""
+    k = kit_for(settings, short) if short is not None else None
+    if k is None:
         return []
-    from bsa.kitlayout import MAX_LABELS
+    from bsa import cards, fonts, kitlayout
 
-    out = []
+    out, ready, font, logo = [], False, None, None
     for s in getattr(short, "shots", None) or []:
         n = len(getattr(s, "labels", None) or [])
-        if n > MAX_LABELS:
-            out.append(f"shot {s.id} has {n} labels: a brand kit draws at most {MAX_LABELS} per shot: move some to "
-                       "another shot or say them in the narration")  # fmt: skip
+        if n > kitlayout.MAX_LABELS:
+            out.append(f"shot {s.id} has {n} labels: a brand kit draws at most {kitlayout.MAX_LABELS} per shot: move "
+                       "some to another shot or say them in the narration")  # fmt: skip
+            continue
+        if not (_has_card_fields(s) or getattr(s, "badge", None) or getattr(s, "labels", None)):
+            continue
+        if not ready:  # resolved once, and only for a short with top cards
+            ready, font = True, cards.card_font(k, fonts.font_caches(short_dir))
+            logo = kitlayout._logo(k, font)[0]
+        try:
+            kitlayout._static(s, k, font, logo, [])
+        except kitlayout.LayoutError as exc:
+            out.append(str(exc))
     return out
 
 

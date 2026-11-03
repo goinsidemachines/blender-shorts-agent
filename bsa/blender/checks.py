@@ -432,7 +432,7 @@ class _Run:
             texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
                                         {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame],
                                         kit=self.kit, font=self.kit_font)  # fmt: skip
-        except kitlayout.TooManyLabels as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
+        except kitlayout.LayoutError as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
             self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
             return
         seen["texts"][frame] = {"subjects": subjects, "texts": texts[frame]}

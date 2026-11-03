@@ -733,7 +733,7 @@ def cmd_validate(args) -> dict:
     rule_errors, rule_warnings = _rule_problems(short)
     errors = validate(short) + rule_errors
     post_errors, post_warnings = post.problems(short, settings.load_settings())
-    errors += post_errors + kit.errors(settings.load_settings(), short)  # cards the kit can't lay out
+    errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
     rows, source = [], None
