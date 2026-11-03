@@ -79,7 +79,8 @@ def _patch(scene, obj_name: str, engine: str, side: str = "lit", percent: int = 
 
 def _patch_at(scene, point, engine: str, tag: str, percent: int = 10, half: int = 2) -> np.ndarray:
     """The sRGB (0..1) pixels, (2 half + 1)^2 x 3, of a square patch round the world `point`, rendered at `percent`
-    (only a border round the patch is rendered, so a big percentage stays quick)."""
+    (only a border round the patch is rendered, so a big percentage stays quick). Freestyle is off for the probe: the
+    patch is a face's middle, away from its lines, and a border with no strokes in it makes Freestyle complain."""
     from bpy_extras.object_utils import world_to_camera_view
 
     uv = world_to_camera_view(scene, scene.camera, Vector(point))
@@ -87,13 +88,14 @@ def _patch_at(scene, point, engine: str, tag: str, percent: int = 10, half: int 
     w, h = r.resolution_x * percent // 100, r.resolution_y * percent // 100
     pad_x, pad_y = (half + 8) / w, (half + 8) / h
     r.use_border, r.use_crop_to_border = True, False
+    lines, r.use_freestyle = r.use_freestyle, False
     r.border_min_x, r.border_max_x = max(uv.x - pad_x, 0.0), min(uv.x + pad_x, 1.0)
     r.border_min_y, r.border_max_y = max(uv.y - pad_y, 0.0), min(uv.y + pad_y, 1.0)
     png = OUT / f"{scene.get('bsa_style')}_{engine}_{tag}.png"
     try:
         render_still(scene, scene.frame_current, png, preset=PRESET, percent=percent, engine=engine, file_format="PNG")
     finally:
-        r.use_border = False
+        r.use_border, r.use_freestyle = False, lines
     img = read_png(png)[..., :3].astype(np.float64) / 255.0
     h, w = img.shape[:2]
     x, y = round(uv.x * w - 0.5), round((1.0 - uv.y) * h - 0.5)

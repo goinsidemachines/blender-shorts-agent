@@ -35,6 +35,7 @@ def test_styles_in_blender(blender_run, bsa_home):
     result = blender_run(HERE / "blender" / "test_styles.py", timeout=1200)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "user decrement error" not in result.stdout + result.stderr  # a removed lineset left its collection alone
+    assert "strokes set empty" not in result.stdout + result.stderr  # the patch probes render no Freestyle
     for name in (
         "test_lit_colour_matches_the_kit_in_both_engines",
         "test_lit_colour_matches_without_a_floor_too",
