@@ -787,3 +787,21 @@ def test_kit_edit_without_a_short_folder_draws_its_cards_in_its_own_temp_folder(
     made = edit._TEMP_CARD_DIRS[n0:]
     assert len(made) == 2 and made[0].name != made[1].name
     assert all(list(Path(d.name).glob("*.png")) for d in made)
+
+
+def test_kit_progress_bar_is_half_full_at_the_middle_frame():
+    """A one-frame animation render (which evaluates the keyframes) at frame 15 of 30: the fill is half the track."""
+    from bsa import cards, kit, kitlayout
+
+    short, tl, frames, wav, out = _fixture(badge=None, labels=())
+    settings = {"handle": None, "brand": _kit()}
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    k = kit.kit_for(settings, short)
+    prog = kitlayout.build(short, tl, k, cards.card_font(k)).progress
+    a = (_render_frame(sc, 15) * 255).round()
+    y = round(prog.at.y + prog.track.h / 2)
+    row = np.all(np.abs(a[y, :, :3] - np.array([0x7A, 0x4C, 0xE0])) <= 3, axis=1)
+    xs = np.nonzero(row[int(prog.at.x):int(prog.at.right)])[0]
+    o = prog.track.outline_px
+    want = prog.at.x + o + round(prog.fill.w * 15 / 30)
+    assert len(xs) and abs(int(prog.at.x) + int(xs.max()) + 1 - want) <= 2, (xs.max() if len(xs) else None, want)

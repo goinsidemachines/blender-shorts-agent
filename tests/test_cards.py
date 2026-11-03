@@ -295,7 +295,7 @@ def test_cards_in_blender(blender_run):
                  "test_card_text_is_drawn_inside_the_box", "test_the_logo_shows_on_the_logo_badge",
                  "test_ensure_renders_once", "test_rendering_cards_leaves_every_engine_alone",
                  "test_overlay_strips_are_placed_where_the_layout_said", "test_pointer_strip_reaches_the_anchor",
-                 "test_kit_sample_says_a_missing_logo_once",
+                 "test_kit_sample_says_a_missing_logo_once", "test_kit_sample_progress_bar_is_40_percent_full",
                  "test_blenders_own_font_fits_its_padding_and_is_centred",
                  "test_a_tracked_card_without_a_track_is_left_out",
                  "test_a_scene_named_card_is_left_alone"):

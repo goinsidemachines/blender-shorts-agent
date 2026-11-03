@@ -8,6 +8,8 @@ the user set it. Where no strip draws, the PNG is transparent."""
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -244,10 +246,17 @@ def render_sample(kit, out_png: Path, cache_dir: Path) -> list[str]:
         r.image_settings.file_format = "PNG"
         r.image_settings.color_mode = "RGB"
         r.image_settings.color_depth = "8"
-        r.use_file_extension = False
-        r.filepath = str(out_png)
-        scene.frame_set(1)
-        bpy.ops.render.render(write_still=True, scene=scene.name)
+        # A one-frame animation render: a still render (or frame_set) of a scene that is not the context's does not
+        # evaluate its keyframes in Blender 5.x, so the progress fill would show its last key (full), not 40 %.
+        with tempfile.TemporaryDirectory(prefix="bsa-sample-", ignore_cleanup_errors=True) as tmp:
+            r.use_file_extension = True
+            r.filepath = str(Path(tmp) / "f_")
+            bpy.ops.render.render(animation=True, scene=scene.name)
+            frame = next(Path(tmp).glob("f_*.png"), None)
+            if frame is not None:  # copied, then swapped in: the temp folder may be on another drive
+                part = out_png.with_name(out_png.name + ".part")
+                shutil.copyfile(frame, part)
+                os.replace(part, out_png)
     finally:
         bpy.data.scenes.remove(scene)
         bg_png.unlink(missing_ok=True)

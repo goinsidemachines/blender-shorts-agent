@@ -297,3 +297,24 @@ def test_kit_sample_says_a_missing_logo_once():
     logo.unlink()
     warnings = bsa.blender.cards.render_sample(k, TMP / "sample-gone" / "sheet.png", TMP / "sample-cache")
     assert sum("logo file" in w for w in warnings) == 1, warnings
+
+
+def _fill_right(px, prog) -> int:
+    """The right edge (exclusive) of the accent-coloured fill along the progress bar's middle row, in px."""
+    y = round(prog.at.y + prog.track.h / 2)
+    row = np.all(np.abs(px[y, :, :3].astype(int) - np.array([0x7A, 0x4C, 0xE0])) <= 3, axis=1)
+    xs = np.nonzero(row[int(prog.at.x):int(prog.at.right)])[0]
+    assert len(xs), "no fill on the progress bar"
+    return int(prog.at.x) + int(xs.max()) + 1
+
+
+def test_kit_sample_progress_bar_is_40_percent_full():
+    out = TMP / "sample-progress" / "sheet.png"
+    bsa.blender.cards.render_sample(K, out, TMP / "sample-cache")
+    from bsa import fonts
+
+    prog = kitlayout.sample(K, cards.card_font_and_note(K, fonts.font_caches())[0]).progress
+    o = prog.track.outline_px
+    want = prog.at.x + o + round(prog.fill.w * 2 / 5)
+    got = _fill_right(read_png(out), prog)
+    assert abs(got - want) <= 2, (got, want, prog.at.x + o + prog.fill.w)
