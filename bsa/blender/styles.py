@@ -946,6 +946,9 @@ def paper_backdrop(scene, kit: Kit, name: str, sl: looks.StyleLook, warnings: li
     if scene.world is None or "bsa_paper" not in scene.world:
         own = f"{scene.name} paper"  # the user's own world is left as made, unassigned
         scene.world = bpy.data.worlds.get(own) or bpy.data.worlds.new(own)
+        from bsa.blender import sets
+
+        sets.drop_world(scene)  # a set's world it replaces, once unused
     vs = scene.view_settings
     made = look.paper_world(scene, looks.backdrop(name, kit), light=sl.world, exposure=vs.exposure, look=vs.look)
     if made.get("warning"):

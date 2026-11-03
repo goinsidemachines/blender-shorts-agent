@@ -27,5 +27,7 @@ def test_sets_in_blender(blender_run, bsa_home):
         "test_a_sample_framing_gets_a_dressed_set",
         "test_set_none_takes_a_set_away",
         "test_outdoor_ground_keeps_its_colour_in_the_lit_styles",
+        "test_taking_a_set_away_leaves_no_world_behind",
+        "test_clear_puts_film_transparent_back",
     ):
         assert f"PASS {name}" in result.stdout

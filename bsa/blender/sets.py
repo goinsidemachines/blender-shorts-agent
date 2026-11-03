@@ -46,6 +46,7 @@ SKY_LIGHT_WHITE = 0.6  # outdoor is lit by the sky's horizon colour this far tow
 SET_COLLECTION = "{} set"
 PROPS_COLLECTION = "{} set props"
 SIZE_KEY = "bsa_set_size"
+FILM_KEY = "bsa_set_film"  # the scene's film_transparent before its set made the film opaque; clear puts it back
 
 
 # --- small builders -----------------------------------------------------------------------------------------------
@@ -391,6 +392,7 @@ def base(scene, kit, set_name: str | None, size: float) -> dict:
         raise ValueError(f"unknown set {set_name!r}: use one of {', '.join(setplace.SETS)} or none")
     if "bsa_set" in scene:
         clear(scene)
+    scene[FILM_KEY] = bool(scene.render.film_transparent)
     size = float(size)
     lay = _provisional(set_name, size)
     if set_name == "outdoor":
@@ -406,7 +408,8 @@ def base(scene, kit, set_name: str | None, size: float) -> dict:
 
 def clear(scene) -> int:
     """Take the scene's set away: every set:* object in it, its "<scene> set" and "<scene> set props" collections,
-    their unused meshes and set materials, and scene["bsa_set"]. Returns how many objects went."""
+    their unused meshes and set materials, the set world once unused, and scene["bsa_set"]; the film's transparency
+    goes back to what it was before the set. Returns how many objects went."""
     gone = 0
     for obj in [o for o in scene.objects if bake.is_set(o)]:
         _remove_object(obj)
@@ -421,10 +424,20 @@ def clear(scene) -> int:
     prefix = f"{scene.name} set "
     for mat in [m for m in bpy.data.materials if m.name.startswith(prefix) and m.users == 0]:
         bpy.data.materials.remove(mat)
-    for key in ("bsa_set", SIZE_KEY):
+    if FILM_KEY in scene:
+        scene.render.film_transparent = bool(scene[FILM_KEY])
+    for key in ("bsa_set", SIZE_KEY, FILM_KEY):
         if key in scene:
             del scene[key]
+    drop_world(scene)
     return gone
+
+
+def drop_world(scene) -> None:
+    """Remove the scene's set world ("<scene> set world") once nothing uses it."""
+    world = bpy.data.worlds.get(f"{scene.name} set world")
+    if world is not None and world.users == 0:
+        bpy.data.worlds.remove(world)
 
 
 # --- the cameras' view --------------------------------------------------------------------------------------------

@@ -488,3 +488,33 @@ def test_set_none_takes_a_set_away():
         assert not [o for o in sc.objects if bake.is_set(o)] and "bsa_set" not in sc
         assert sc.world.get("bsa_backdrop") == "paper" and colour.flat_backdrop(sc.world) is True
         _no_dot_names()
+
+
+def test_taking_a_set_away_leaves_no_world_behind():
+    """A set's world ("<scene> set world") goes when nothing uses it any more: after base("none") (the style's paper
+    backdrop back, styled or not) and after another set's studio paper replaces it."""
+    for styled in (False, True):
+        sc, kit, _short, _tl, built, _ = _build("outdoor")
+        if styled:
+            styles.apply(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
+        assert bpy.data.worlds.get(f"{sc.name} set world") is not None
+        sets.base(sc, kit, "none", 3.6)
+        assert bpy.data.worlds.get(f"{sc.name} set world") is None, styled
+    sc, kit, *_ = _build("graph")
+    sets.base(sc, kit, "studio", 3.6)
+    assert bpy.data.worlds.get(f"{sc.name} set world") is None
+
+
+def test_clear_puts_film_transparent_back():
+    """A set makes the film opaque (its world is the background); clear puts back what the scene had."""
+    for was in (True, False):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        sc = bpy.context.scene
+        setup_scene(sc, two_shot(sc.name, "lever"), "eevee", "still")
+        sc.render.film_transparent = was
+        kit = _kit()
+        for name in ("outdoor", "workbench"):  # a second set over the first keeps the first one's stamp
+            sets.base(sc, kit, name, 3.6)
+            assert sc.render.film_transparent is False
+        sets.clear(sc)
+        assert sc.render.film_transparent is was, was
