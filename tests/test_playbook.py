@@ -351,3 +351,19 @@ def test_first_run_asks_for_the_brand_kit_and_previews_it():
     section = t.split("## 4.")[1].split("## 5.")[0]
     assert "goinsidemachines" not in section.lower() and "#FF6B00" not in section
     assert "render.engine" not in section and "engine" not in section.lower()
+
+
+def test_look_and_brand_documents_the_kit():
+    t = _flat(_read("playbook/look-and-brand.md"))
+    for s in ("brand.style", "title_card", '"kind": "measure"', "brand.progress", "caption.draw", "settings check",
+              "BLENDER kit-sample", "realistic, toy, toon, clay, blueprint, paper, pencil"):
+        assert s in t, s
+
+
+def test_build_doc_names_category_tags_and_the_kit_top_band():
+    t = _flat(_read("playbook/06-build.md"))
+    assert "category:<name>" in t and "kitlayout.top_band" in t
+
+
+def test_checks_doc_says_covered_sees_kit_cards():
+    assert "kit" in _flat(_read("playbook/07-checks.md")).split("`covered`")[1][:800]

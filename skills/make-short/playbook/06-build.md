@@ -32,8 +32,8 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   the frame on purpose (water falling out of shot down a pipe): an overlay that `frame_edge` does not warn about;
   `"surface"` for an open water surface that
   things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
-  `"category:<name>"` (a category of the brand kit, `brand.categories`) on a part a label points at: with a
-  brand kit the label's dot takes that category's colour;
+  `"category:<name>"` (a category of the brand kit, `brand.categories`; e.g. `bake.tag(obj, "category:spark")`)
+  on a part a label points at: with a brand kit the label's dot takes that category's colour;
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,
   so a rebuild in the same Blender keeps exact object names; see `mcp-mode.md`). It and `setup_scene` also remove
@@ -215,6 +215,19 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   box it reached; then look at the still. `key=FRAME` keys the framed position: it is safe on an already animated
   camera (it starts from the camera's pose now, measuring other frames does not snap it back, existing keys stay).
   Without `key` the new position is lost at the next frame change on a keyed camera.
+- **Shots with kit cards.** With a brand kit the top cards (logo, category tag, corner stack, title card, value
+  bars) take more rows than a badge. Measure them and frame under them:
+
+  ```python
+  kit = bsa.kit.kit_for(bsa.settings.load_settings(), short)   # None without a kit
+  font = bsa.cards.card_font(kit)
+  top = bsa.kitlayout.top_band(short, shot, kit, font)         # None when the shot has no top cards
+  camera.frame_objects(cam, [hero], top=top, shot=shot.id)
+  ```
+
+  Pass the same `top=` to `camera.move`. A shot with a `title_card` or `bars` takes rows under the other top
+  cards, so the subject starts lower: the band includes them. Without a kit, keep using
+  `top=layout.top_cards_band(labels=2)` as above.
 - **Camera moves: `camera.move`, never two keyed ends.** Framing only the two ends of an orbit or a swing and
   letting Blender interpolate goes wrong: location and rotation interpolate apart, and the framing also slides the
   camera sideways, so the in-between poses look past the subject (a shot can lose its subject halfway and still

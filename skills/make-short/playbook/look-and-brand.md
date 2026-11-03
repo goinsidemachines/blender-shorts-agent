@@ -4,11 +4,75 @@
 
 `settings` `brand.mode`:
 
-- **`brand`**: the user's look for every short, stored under `brand` (palette, font, caption style, material feel).
-  Copy it into each short's `short.json` `style` (`palette`, `font`, `caption.size`) and follow it in the build. Do
-  not offer style options.
+- **`brand`**: the user's look for every short, stored under `brand` (palette, font, caption style, material
+  feel). Copy only `font`, `palette.background` and `caption.size` into each short's `short.json` `style` and
+  follow the brand in the build (the kit is read from the settings, so nothing else is copied). Do not offer
+  style options.
 - **`fresh`**: suggest 2 to 3 looks that fit each topic on the story page, each with a rendered thumbnail of the
   hook shot (`02-story.md`); the user picks one.
+
+### Your brand kit
+
+The kit is the structured part of `brand`. It is set up once (`00-first-run.md` section 4) and every brand short
+uses it. Cards turn on only with **`brand.style`**: without it every short keeps today's text captions, badges and
+labels, and the kit-only fields below only warn. Check the stored kit any time with `CLI settings check`; it names
+any bad value and says how to fix it. A bad value is ignored (the plain value is used), never a crash.
+
+**Keys** (set with `settings set brand.KEY VALUE`; numbers and `true`/`false` are read as JSON):
+
+| Key | Values |
+|---|---|
+| `style` | `realistic`, `toy`, `toon`, `clay`, `blueprint`, `paper`, `pencil` (`3d` is read as realistic, `flat` as toon) |
+| `palette` | hex colours: `background`, `ink` (outlines and shadows), `card`, `text`, `accent`, `highlight` |
+| `categories` | a name and a hex for each kind of part, e.g. `{"spark": "#D9483B", "flow": "#3B8ED9"}` |
+| `outline_px`, `shadow_px`, `corner_px`, `pill_corner_px` | whole pixels: 0 to 12, 0 to 24, 0 to 80, 0 to 80 |
+| `font` | an installed font name, or `Name@600` for a static weight (see "Checking the font") |
+| `caption` | `color`, `box` (hex; 8 digits keep alpha), `size` 32 to 120, `opacity` 0 to 1, `corner_px` 0 to 80, `pad_px` 0 to 60, `draw` true or false |
+| `logo` | `{"file": "C:/path/logo.png", "place": "top-left" or "top-right", "name": "up to 36 characters"}` |
+| `progress` | true or false |
+| `set` | `auto`, `workbench`, `graph`, `outdoor`, `studio`, `none` |
+
+The style is saved now and checked as a name only. The seven names are realistic, toy, toon, clay, blueprint, paper,
+pencil. How a style draws the scene is added in a later version: do not promise a style's look unless your brief
+says it is built. `brand.material`, `brand.cards` and `brand.handle_place` are notes Claude reads; the cards use
+the kit's values, not those notes. Old flat keys still work: a hex under `brand.palette` that is not one of the six
+roles, and `brand.background`, are read as category colours and `palette.background` once `brand.style` is set
+(`settings check` says how to move them). The render engine is never part of the kit: it is always the user's choice.
+
+**The cards.** With a kit the edit draws eight kinds of card as pictures (no scene render). Each comes from a field
+of the shot in `short.json`:
+
+| Card | Field |
+|---|---|
+| caption bar | the narration line, as today |
+| title card | `title_card`: text, a list of 1 or 2 lines, or `{"lines": ["Line one", "Line two"], "highlight": 0}` (`highlight` is the index of the line drawn in the accent colour) |
+| honesty pill | `badge` ("Simplified", "Motion exaggerated") |
+| category tag | `category`: a name from `brand.categories`, shown at the top right |
+| step tag | `step`: `[2, 4]` shows "Step 2 of 4" (whole numbers, 1 to 20) |
+| stacked labels | each entry of `labels` without `near`; `{"text": "1.4 m", "kind": "measure"}` is a measure label |
+| near labels | each entry of `labels` with `near`: a card by the part, with a pointer line and a dot; the dot takes the colour of the part's `category:<name>` tag (`06-build.md`) |
+| value bars | `bars`: `{"items": [{"label": "Short arm", "value": 1, "text": "1x", "category": "spark"}, ...], "verdict": "3x the lift", "max": 3}` (2 to 4 items; `text`, `category`, `verdict` and `max` are optional) |
+
+The **progress bar** runs under the caption bar and fills over the short; `brand.progress false` turns it off.
+`brand.caption.draw false` (or `style.caption.draw false` for one short) draws no caption bar at all.
+A kit draws at most 6 labels per shot (`CLI validate` and the edit refuse more): move some to another shot.
+
+**`badge` is not `category`.** `badge` is the honesty pill: it says the picture was simplified or exaggerated
+(`honesty.md`), so keep it truthful and short. `category` is the kind of thing the shot is about (force, heat...)
+and only picks a colour from the kit. A `category` the kit does not define shows in the accent colour and
+`CLI validate` names the shot. A title card, category, step or bars on a short without a kit only warn.
+
+**The logo badge.** With `brand.logo.file` the edit, thumbnails and closing card draw a small badge with the
+user's logo (and `name`, if they gave one) in `place`. The file must be a PNG: an SVG is refused, so ask for a PNG
+export. Only the user's own logo ever shows. If the file is later moved or deleted, no badge is drawn and the
+result says so once: ask the user to set `brand.logo.file` again.
+
+**One short that differs.** Put kit keys in the short's own `style` (for example `"style": {"palette":
+{"accent": "#2E7D6B"}, "outline_px": 0}`): they win over the brand key by key, and the rest of the kit stays. A short
+with `"look": "fresh"` (below) drops the brand kit, so only its own `style` can give it one.
+
+**Preview.** `BLENDER kit-sample --kit '<json>' --out sample.png` draws a sample sheet of a kit before it is
+saved (without `--kit` it uses the saved brand). It writes nothing to the settings.
 
 ### One short with its own look
 
