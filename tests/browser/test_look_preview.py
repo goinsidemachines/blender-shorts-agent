@@ -10,7 +10,7 @@ from playwright.sync_api import expect
 
 from browser.conftest import assert_healthy, open_short
 from bsa import settings as settings_mod
-from bsa.review import notes
+from bsa.review import launch, notes, snapshot
 
 pytestmark = pytest.mark.browser
 
@@ -40,7 +40,7 @@ def test_look_section_renders_at_375_and_desktop_with_no_axe_violations(view, bo
     expect(look.get_by_text("About 2.5 s a frame in EEVEE at preview quality.")).to_be_visible()
     expect(look.get_by_text("The final render: about 5 min in EEVEE, about 20 min in Cycles.")).to_be_visible()
     expect(look.get_by_text("These are estimates only; the engine stays your choice.")).to_be_visible()
-    expect(look.get_by_text("These choices are saved for every short.")).to_be_visible()
+    expect(look.get_by_text("These choices were saved for every short.")).to_be_visible()
     expect(look.get_by_role("button", name=re.compile("^Try "))).to_have_count(6 + 4)  # other styles, other sets
     expect(look.get_by_role("button", name="Try no set")).to_be_visible()
     expect(look.get_by_role("button", name=re.compile("cycles|eevee|engine", re.IGNORECASE))).to_have_count(0)
@@ -53,7 +53,7 @@ def test_look_section_renders_at_375_and_desktop_with_no_axe_violations(view, bo
     expect(look.get_by_role("button", name="Enlarge the look in shot s02")).to_be_focused()
     assert_healthy(p)
     p.emulate_media(color_scheme="dark")
-    expect(look.get_by_text("These choices are saved for every short.")).to_be_visible()
+    expect(look.get_by_text("These choices were saved for every short.")).to_be_visible()
     assert_healthy(p)
 
 
@@ -83,7 +83,7 @@ def test_compare_view_shows_look_before_and_after(view, board):
     button = p.get_by_role("button", name="Compare with version 1")
     expect(button).to_be_visible(timeout=6000)
     expect(p.get_by_text("Style: pencil, set: graph")).to_be_visible()
-    expect(p.get_by_text("These choices are saved for every short.")).to_have_count(0)
+    expect(p.get_by_text("These choices were saved for every short.")).to_have_count(0)
     button.click()
     view_ = p.locator(".cmp-view")
     expect(view_.get_by_text("Style/set before → now: toy, set: workbench → pencil, set: graph")).to_be_visible()
@@ -101,4 +101,44 @@ def test_compare_view_shows_look_before_and_after(view, board):
         p.get_by_role("button", name="Show before").click()
         expect(before).to_be_visible()
         expect(now).to_be_hidden()
+    assert_healthy(p)
+
+
+def test_a_kit_changed_since_the_look_says_so(view, board):
+    pagefix.write_look(board.sdir, swatches=[{"name": "accent", "hex": "#ABCDEF"}])
+    p = open_short(view, board, stage="storyboard")
+    look = p.locator("section.st-sec").filter(has=p.get_by_role("heading", name="Look", exact=True))
+    expect(look.locator(".warns")).to_contain_text(snapshot.OLD_KIT)
+    expect(look.locator(".swatch")).to_have_count(1)  # the colours the look was rendered with
+    expect(look.locator(".swatch")).to_contain_text("#ABCDEF")
+    assert_healthy(p)
+
+
+def _loaded(img) -> bool:
+    return img.evaluate("i => i.complete && i.naturalWidth > 0")
+
+
+def test_the_offline_page_shows_the_look_and_its_before(view, tmp_path, bsa_home):
+    settings_mod.save_settings({"brand": kitfix.KIT})
+    sdir = pagefix.make_short(tmp_path / "ws", "storyboard")
+    pagefix.write_look(sdir)
+    launch.static_page(sdir)  # version 1 shown: its look frames are kept
+    pagefix.write_look(sdir, style="pencil", set_="graph")
+    p = view
+    p.goto(launch.static_page(sdir).as_uri() + "#storyboard")
+    p.locator("html[data-ready='1']").wait_for(state="attached")
+    look = p.locator("section.st-sec").filter(has=p.get_by_role("heading", name="Look", exact=True))
+    frame = look.locator("img.still").first
+    expect(frame).to_have_attribute("src", re.compile(r"^\.\./stills/look/s01\.jpg$"))
+    frame.scroll_into_view_if_needed()
+    p.wait_for_function("[...document.querySelectorAll('.look-frame img')].every(i => i.complete)")
+    assert _loaded(frame) and _loaded(look.get_by_role("img", name="Your kit: colours, font and card shapes"))
+    p.get_by_role("button", name="Compare with version 1").click()
+    before = p.locator(".cmp-look[data-look='s01'] img[alt='The look in shot s01 before (version 1)']")
+    expect(before).to_have_attribute("src", re.compile(r"^\.\./review/history/storyboard/v1/look/s01\.jpg$"))
+    if view.viewport_size["width"] < 768:
+        p.get_by_role("button", name="Show before").click()  # a hidden lazy picture is never loaded
+    before.scroll_into_view_if_needed()
+    p.wait_for_function("[...document.querySelectorAll('.cmp-look .cmp-before img')].every(i => i.complete)")
+    assert _loaded(before)
     assert_healthy(p)

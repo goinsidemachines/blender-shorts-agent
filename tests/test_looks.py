@@ -67,3 +67,11 @@ def test_part_colours_mix_in_linear_light_like_the_sampler():
     assert looks.part_colour("pencil", "#123456", k, key=False) == _lin_mix_to_white("#F5F2EA", 0.5)
     assert looks.part_colour("blueprint", "#123456", k, key=False) == _lin_mix_to_white(looks.blueprint_paper(k), 0.75)
     assert looks.part_colour("paper", "#000000", k, key=False) == "#616161"  # 0.12 linear is sRGB 97
+
+
+def test_swatches_are_the_palette_roles_then_the_categories():
+    import kitfix
+
+    got = looks.swatches(kit.kit_for({"brand": kitfix.KIT}))
+    assert [w["name"] for w in got] == [*kit.ROLES, "spark", "flow", "grip"]
+    assert got[4] == {"name": "accent", "hex": "#7A4CE0"} and got[-1] == {"name": "grip", "hex": "#4CAF50"}

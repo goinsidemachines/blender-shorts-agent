@@ -199,7 +199,11 @@ def _closing_card(ctx: Ctx, short: Short) -> dict | None:
 
 
 LOOK_JSON = "look.json"  # stills/look.json, written by `BLENDER look` (bsa.blender.lookframes)
-LOOK_INFO = ("engine", "seconds_per_frame", "estimates", "first")  # shown with the look, never part of what is approved
+# Shown with the look, never part of what is approved: the measured speed, whether it was the first, and the note
+# that the kit changed since (a kit edit alone must not ask for a new yes; rendering the look again does).
+LOOK_INFO = ("engine", "seconds_per_frame", "estimates", "first", "kit_warning")
+OLD_KIT = "the look was rendered with older kit colours: run BLENDER look again"
+_HEX6 = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
 def _look_file(sdir: Path, rel) -> dict | None:
@@ -213,33 +217,71 @@ def _look_file(sdir: Path, rel) -> dict | None:
     return {"file": f"stills/{rel}"} if (Path(sdir) / "stills" / rel).is_file() else None
 
 
+def _read_look(sdir: Path) -> tuple[dict, list[str]]:
+    """look.json's fields, each of the type the page needs (a wrong one left out), and a warning per field left
+    out. A file that can't be read at all is one warning."""
+    redo = "make the look preview again"
+    try:
+        data = json.loads((sdir / "stills" / LOOK_JSON).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {}, [_plain(sdir, f"stills/{LOOK_JSON} can't be read: {e}: {redo}")]
+    if not isinstance(data, dict):
+        return {}, [f"stills/{LOOK_JSON} is not a JSON object: {redo}"]
+    want = {"style": str, "set": str, "built": dict, "frames": list, "sheet": str, "engine": str,
+            "estimates": dict, "warnings": list, "swatches": list}  # fmt: skip
+    out: dict = {}
+    bad: list[str] = []
+    for key, kind in want.items():
+        value = data.get(key)
+        if value is None:
+            continue
+        if isinstance(value, kind):
+            out[key] = value
+        else:
+            bad.append(key)
+    secs = data.get("seconds_per_frame")
+    if isinstance(secs, (int, float)) and not isinstance(secs, bool):
+        out["seconds_per_frame"] = float(secs)
+    elif secs is not None:
+        bad.append("seconds_per_frame")
+    out["first"] = data.get("first") is True
+    frames = []
+    for f in out.get("frames", []):
+        if isinstance(f, dict) and isinstance(f.get("shot"), str):
+            frames.append(f)
+        elif "frames" not in bad:
+            bad.append("frames")
+    out["frames"] = frames
+    swatches = [w for w in out.get("swatches", []) if isinstance(w, dict) and isinstance(w.get("name"), str)
+                and isinstance(w.get("hex"), str) and _HEX6.fullmatch(w["hex"])]  # fmt: skip
+    if len(swatches) != len(out.get("swatches", [])):
+        bad.append("swatches")
+    if "swatches" in out:
+        out["swatches"] = [{"name": w["name"], "hex": w["hex"].upper()} for w in swatches]
+    warnings = [f"stills/{LOOK_JSON} has a wrong {k!r}, left out: {redo}" for k in bad]
+    return out, [str(w) for w in out.get("warnings", []) if w] + warnings
+
+
 def _look(ctx: Ctx, short: Short) -> dict | None:
     """The look preview (`BLENDER look`) for the Storyboard stage: None without a kit or without stills/look.json.
-    A damaged look.json is one warning, with no frames."""
+    Everything shown comes from look.json (what was rendered); a field of the wrong type, or a file that can't be
+    read, is a warning, never a problem for the stage. A kit whose colours changed since is a kit_warning."""
     from bsa import kit as kit_mod
-    from bsa import setplace
+    from bsa import looks, setplace
 
     kit = kit_mod.kit_for(ctx.settings, short)
-    path = ctx.sdir / "stills" / LOOK_JSON
-    if kit is None or not path.is_file():
+    if kit is None or not (ctx.sdir / "stills" / LOOK_JSON).is_file():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise TypeError("it is not a JSON object")
-    except (OSError, ValueError, TypeError) as e:
-        data = {"warnings": [_plain(ctx.sdir, f"stills/{LOOK_JSON} can't be read: {e}: make the look preview again")]}
-    style = data.get("style") if isinstance(data.get("style"), str) else None
-    set_name = str(data.get("set") or "none") if "style" in data else None
-    built = data.get("built") if isinstance(data.get("built"), dict) else {}
+    data, warnings = _read_look(ctx.sdir)
+    style = data.get("style")
+    set_name = data.get("set", "none") if style else None
+    built = data.get("built", {})
     titles = {s.id: s.title for s in short.shots}
-    frames = []
-    for f in data.get("frames") or []:
-        if isinstance(f, dict) and isinstance(f.get("shot"), str):
-            frames.append({"shot": f["shot"], "title": titles.get(f["shot"], f["shot"]),
-                           "file": _look_file(ctx.sdir, f.get("file"))})  # fmt: skip
+    frames = [{"shot": f["shot"], "title": titles.get(f["shot"], f["shot"]), "file": _look_file(ctx.sdir, f.get("file"))}
+              for f in data.get("frames", [])]  # fmt: skip
+    now = [{"name": w["name"], "hex": w["hex"].upper()} for w in looks.swatches(kit)]
+    rendered = data.get("swatches")
     est = data.get("estimates")
-    secs = data.get("seconds_per_frame")
     return {
         "style": style,
         "set": set_name,
@@ -248,13 +290,13 @@ def _look(ctx: Ctx, short: Short) -> dict | None:
         "sets": [s for s in setplace.SETS if s != set_name] + (["none"] if set_name != "none" else []),
         "frames": frames,
         "sheet": _look_file(ctx.sdir, data.get("sheet")),
-        "swatches": [{"name": r, "hex": kit.palette[r]} for r in kit_mod.ROLES if r in kit.palette]
-        + [{"name": str(k), "hex": v} for k, v in kit.categories.items()],
-        "engine": data.get("engine") if isinstance(data.get("engine"), str) else None,
-        "seconds_per_frame": float(secs) if isinstance(secs, (int, float)) and not isinstance(secs, bool) else None,
-        "estimates": {k: est.get(k) for k in ("eevee_s", "cycles_s")} if isinstance(est, dict) else None,
-        "first": data.get("first") is True,
-        "warnings": [str(w) for w in data.get("warnings") or [] if w],
+        "swatches": now if rendered is None else rendered,  # an older look.json without them: the kit now
+        "engine": data.get("engine"),
+        "seconds_per_frame": data.get("seconds_per_frame"),
+        "estimates": {k: est.get(k) for k in ("eevee_s", "cycles_s")} if est is not None else None,
+        "first": data.get("first", False),
+        "warnings": warnings,
+        "kit_warning": OLD_KIT if rendered is not None and rendered != now else None,
     }
 
 

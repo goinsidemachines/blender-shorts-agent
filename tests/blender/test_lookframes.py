@@ -161,6 +161,7 @@ def test_look_writes_three_frames_with_cards():
     assert [f["shot"] for f in data["frames"]] == ["s1", "s2", "s3"], data
     assert data["style"] == "toon" and data["set"] == "workbench", data
     assert data["built"] == {"style": "toon", "set": "workbench"}, data
+    assert data["swatches"] and data["swatches"][0]["name"] == "background", data  # the colours rendered with
     assert data["engine"] == "eevee" and data["seconds_per_frame"] > 0, data
     assert data["estimates"] is None and data["first"] is True and data["sheet"] == "look/kit.png", data
     assert out["frames"] == data["frames"]

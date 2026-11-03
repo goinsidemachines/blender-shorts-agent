@@ -191,3 +191,13 @@ def lit_expect(style: str, hex_: str, kit, key: bool) -> str:
         a = 0.85 if key else 0.22
         return _hex(_toward(_lin(blueprint_paper(kit)), _lin(c), a))
     return c
+
+
+def swatches(kit) -> list[dict]:
+    """The kit's colours as the look preview shows them: the palette roles in order, then the categories, each
+    {"name", "hex"}. `BLENDER look` stores them in look.json; the page compares them with the kit now."""
+    from bsa.kit import ROLES
+
+    return [{"name": r, "hex": kit.palette[r]} for r in ROLES if r in kit.palette] + [
+        {"name": str(k), "hex": v} for k, v in kit.categories.items()
+    ]

@@ -231,9 +231,17 @@ LOOK_SHOTS = ("s01", "s02", "s03")  # the look preview's first, middle and last 
 
 
 def write_look(sdir: Path, style: str = "toy", set_: str = "workbench", *, built: str = "toon", seconds: float = 2.5,
-               first: bool = True, no_estimates: bool = False, warnings: list | None = None) -> dict:
+               first: bool = True, no_estimates: bool = False, warnings: list | None = None,
+               swatches: list | None = None) -> dict:
     """stills/look/<shot>.jpg (PNG bytes: a flat colour that follows the style and set), stills/look/kit.png and
-    stills/look.json as `BLENDER look` writes them, built as `built` on the workbench. Returns the JSON."""
+    stills/look.json as `BLENDER look` writes them, built as `built` on the workbench, its swatches (by default) those
+    of the made-up kit (tests/kitfix.py) with the short's own style on top. Returns the JSON."""
+    if swatches is None:
+        import kitfix
+
+        from bsa import kit, looks
+
+        swatches = looks.swatches(kit.kit_for({"brand": kitfix.KIT}, load_short(Path(sdir) / "source" / "short.json")))
     look = Path(sdir) / "stills" / "look"
     tone = sum(map(ord, style + set_)) % 180
     for i, sid in enumerate(LOOK_SHOTS):
@@ -242,7 +250,7 @@ def write_look(sdir: Path, style: str = "toy", set_: str = "workbench", *, built
     data = {"style": style, "set": set_, "built": {"style": built, "set": "workbench"},
             "frames": [{"shot": sid, "frame": 10 * (i + 1), "file": f"look/{sid}.jpg"}
                        for i, sid in enumerate(LOOK_SHOTS)],
-            "sheet": "look/kit.png", "engine": "eevee", "seconds_per_frame": seconds,
+            "sheet": "look/kit.png", "swatches": swatches, "engine": "eevee", "seconds_per_frame": seconds,
             "estimates": None if no_estimates else {"eevee_s": 300.0, "cycles_s": 1200.0},
             "first": first, "warnings": list(warnings or [])}  # fmt: skip
     (Path(sdir) / "stills" / "look.json").write_text(json.dumps(data, indent=1), encoding="utf-8")

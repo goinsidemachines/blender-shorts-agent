@@ -165,6 +165,7 @@ def test_storyboard_look_lists_frames_swatches_and_other_choices(tmp_path):
     assert lk["engine"] == "eevee" and lk["seconds_per_frame"] == 2.5
     assert lk["estimates"] == {"eevee_s": 300.0, "cycles_s": 1200.0} and lk["first"] is True
     assert lk["warnings"] == ["shot s02: the label near 'Bob' is left out of the look (no room)"]
+    assert lk["kit_warning"] is None
     pagefix.write_look(sdir, set_="none", no_estimates=True)
     lk = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["content"]["look"]
     assert lk["sets"] == ["workbench", "graph", "outdoor", "studio"] and lk["estimates"] is None
@@ -181,6 +182,44 @@ def test_storyboard_look_skips_missing_frames_and_a_damaged_file_is_a_warning(tm
     st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
     assert st["problem"] is None and st["content"]["look"]["frames"] == []
     assert "stills/look.json" in st["content"]["look"]["warnings"][0]
+
+
+def test_a_look_json_with_wrongly_typed_fields_is_warnings_not_a_stage_problem(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    data = pagefix.write_look(sdir)
+    path = sdir / "stills" / "look.json"
+    bad = {**data, "frames": 5, "warnings": "oops", "style": 7, "set": ["x"], "built": "toon", "estimates": [1],
+           "seconds_per_frame": "fast", "swatches": [{"name": "accent", "hex": "red"}], "sheet": 3}  # fmt: skip
+    path.write_text(json.dumps(bad), encoding="utf-8")
+    st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
+    lk = st["content"]["look"]
+    assert st["problem"] is None and st["version"] is not None
+    assert lk["frames"] == [] and lk["style"] is None and lk["set"] is None and lk["sheet"] is None
+    assert lk["seconds_per_frame"] is None and lk["estimates"] is None and lk["swatches"] == []
+    wrong = " ".join(lk["warnings"])
+    for key in ("frames", "warnings", "style", "set", "built", "estimates", "seconds_per_frame", "swatches", "sheet"):
+        assert repr(key) in wrong
+    path.write_text(json.dumps({**data, "frames": [5, {"shot": 3}, data["frames"][0]]}), encoding="utf-8")
+    lk = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["content"]["look"]
+    assert [f["shot"] for f in lk["frames"]] == ["s01"] and "'frames'" in " ".join(lk["warnings"])
+    path.write_text("[1, 2]", encoding="utf-8")
+    st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
+    assert st["problem"] is None and "not a JSON object" in st["content"]["look"]["warnings"][0]
+
+
+def test_swatches_are_the_rendered_ones_and_a_changed_kit_is_a_warning_not_a_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    old = [{"name": "background", "hex": "#101010"}, {"name": "accent", "hex": "#ABCDEF"}]
+    pagefix.write_look(sdir, swatches=old)
+    st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
+    assert st["content"]["look"]["swatches"] == old and st["version"] == 1
+    assert st["content"]["look"]["kit_warning"] == snapshot.OLD_KIT
+    assert "run BLENDER look again" in snapshot.OLD_KIT
+    edited = {"brand": {**kitfix.KIT, "categories": {"spark": "#000000"}}}  # the kit changes again: same version
+    assert _stage(snapshot.build(sdir, settings=edited), "storyboard")["version"] == 1
+    pagefix.write_look(sdir)  # rendered again with the kit as it is now: the warning goes, a new version
+    st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
+    assert st["content"]["look"]["kit_warning"] is None and st["version"] == 2
 
 
 def test_a_new_look_changes_the_storyboard_version(tmp_path):

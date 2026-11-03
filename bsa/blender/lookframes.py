@@ -20,6 +20,7 @@ from pathlib import Path
 
 import bpy
 
+from bsa import looks
 from bsa.blender import cards as blender_cards
 from bsa.blender.stills import render_still
 from bsa.kitlayout import KitOverlay
@@ -256,6 +257,7 @@ def preview(sdir: Path, short, tl, kit, scenes: dict, still_frames: dict, engine
         "built": built,
         "frames": frames,
         "sheet": f"{LOOK_DIR}/{SHEET}",
+        "swatches": looks.swatches(kit),  # the kit colours the frames and the sheet were rendered with
         "engine": used_engine,
         "seconds_per_frame": round(sum(seconds) / len(seconds), 2) if seconds else None,
         "estimates": _estimates(sdir),

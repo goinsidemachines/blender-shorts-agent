@@ -552,12 +552,14 @@
       return el("li", { class: "cmp-shot cmp-look", "data-look": String(f.shot) },
         el("h5", null, name),
         el("div", { class: "cmp-pair" },
-          stillFig(ctx, "before", "Before (version " + h.version + ")", f.before, name + " before (version " + h.version + ")"),
+          stillFig(ctx, "before", "Before (version " + h.version + ")", f.before,
+            name + " before (version " + h.version + ")"),
           stillFig(ctx, "now", "Now", f.after, name + " now", null, ctx.version)));
     }));
     return { list: list, kids: [
       el("h4", { class: "cmp-look-head" }, "Look"),
-      el("p", { class: "cmp-look-line" }, "Style/set before → now: " + words(look.before) + " → " + words(look.after)),
+      el("p", { class: "cmp-look-line" },
+        "Style/set before → now: " + words(look.before) + " → " + words(look.after)),
       list,
     ] };
   }

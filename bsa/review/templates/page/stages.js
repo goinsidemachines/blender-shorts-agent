@@ -419,23 +419,27 @@
     return section(ctx, "Look", [
       ctx.el("p", null, "How this short will look: frames in your kit's style and set, with its cards. " +
         "Approving the storyboard approves this look too."),
-      lk.style ? ctx.el("p", { class: "look-line" }, ctx.el("strong", null, "Style: " + lk.style + ", set: " + (lk.set || "none")),
-        differs ? ctx.el("span", { class: "muted" }, " Built as " + built.style + ", set: " + (built.set || "none") + ".")
-          : null) : null,
-      lk.first ? ctx.el("p", { class: "look-first" }, "These choices are saved for every short.") : null,
+      lk.style ? ctx.el("p", { class: "look-line" },
+        ctx.el("strong", null, "Style: " + lk.style + ", set: " + (lk.set || "none")),
+        differs ? ctx.el("span", { class: "muted" },
+          " Built as " + built.style + ", set: " + (built.set || "none") + ".") : null) : null,
+      lk.first ? ctx.el("p", { class: "look-first" }, "These choices were saved for every short.") : null,
       frames.length ? ctx.el("ol", { class: "look-frames" }, frames) : null,
       lk.sheet || swatches.length ? ctx.el("div", { class: "look-kit" },
         lk.sheet ? ctx.el("img", { class: "look-sheet", src: ctx.fileUrl(lk.sheet, ctx.version),
           alt: "Your kit: colours, font and card shapes", loading: "lazy" }) : null,
-        swatches.length ? ctx.el("ul", { class: "swatches", "aria-label": "Your kit's colours" }, swatches.map(function (w) {
+        swatches.length ? ctx.el("ul", { class: "swatches", "aria-label": "Your kit's colours" },
+          swatches.map(function (w) {
           return ctx.el("li", null, ctx.el("span", { class: "swatch" },
             ctx.el("span", { class: "sw", "aria-hidden": "true", style: "background:" + w.hex }),
-            ctx.el("span", { class: "sw-name" }, String(w.name)), " ", ctx.el("span", { class: "sw-hex" }, String(w.hex))));
+            ctx.el("span", { class: "sw-name" }, String(w.name)), " ",
+            ctx.el("span", { class: "sw-hex" }, String(w.hex))));
         })) : null) : null,
       lookSpeed(ctx, lk),
-      (lk.warnings || []).length ? ctx.el("ul", { class: "warns" }, lk.warnings.map(function (w) {
-        return ctx.el("li", null, ctx.el("strong", null, "Warning: "), String(w));
-      })) : null,
+      (lk.warnings || []).length || lk.kit_warning ? ctx.el("ul", { class: "warns" },
+        (lk.kit_warning ? [lk.kit_warning] : []).concat(lk.warnings || []).map(function (w) {
+          return ctx.el("li", null, ctx.el("strong", null, "Warning: "), String(w));
+        })) : null,
       ctx.el("p", { class: "muted" }, "Want another look? Each button leaves a note; send it with your changes."),
       ctx.el("div", { class: "look-tries" },
         lookChoices(ctx, "Another style", lk.styles || [], "style"),
