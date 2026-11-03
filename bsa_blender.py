@@ -1265,7 +1265,7 @@ def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
         layouts, findings = {}, []
         for size, lay in (("1080x1920", thumbs.vertical(text, hero, style, h.crop)),
                           ("1280x720", thumbs.landscape(text, hero, style, h.crop))):  # fmt: skip
-            out = api.render(lay, png, sdir / files[size], style.font, caches, notes=notes)
+            out = api.render(lay, png, sdir / files[size], style.font, caches, notes=notes, card_dir=sdir / "cards")
             layouts[size] = thumbs.layout_dict(lay)
             findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size, busy=preset == "final")
             warnings += [w for w in lay.warnings if w not in warnings]

@@ -1,14 +1,18 @@
 """A thumbnail as a PNG, made in Blender's sequencer from a bsa.thumbs Layout: the hero frame as an image strip
 (cropped and moved through its transform), the landscape panel as a flat image strip, and the cards as the edit's own
-styled text strips (edit._Texts: the same font and glyph fallbacks as the video). One frame, no scene render, no GPU.
-Where everything goes is decided in bsa.thumbs (strip_placement, card_strips); this only builds the strips."""
+styled text strips (edit._Texts: the same font and glyph fallbacks as the video), or, with a brand kit, the kit's cards
+as image strips (bsa.blender.cards.ensure: drawn once, cached by content). One frame, no scene render, no GPU, and the
+render engine is never touched. Where everything goes is decided in bsa.thumbs (strip_placement, card_strips); this
+only builds the strips."""
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import bpy
 
+from bsa.blender.cards import ensure
 from bsa.blender.edit import _load_font, _Texts
 from bsa.image_checks import png_size
 from bsa.layout import Rect
@@ -48,10 +52,12 @@ def _image(seq, name: str, png: Path, channel: int, place: dict):
 
 
 def render(lay: Layout, src_png: Path, out_png: Path, font_name: str | None, cache_dirs: list[Path] | None = None,
-           notes: list[str] | None = None) -> Path:  # fmt: skip
+           notes: list[str] | None = None, card_dir: Path | None = None) -> Path:  # fmt: skip
     """Render `lay` with the hero frame `src_png` (any size: the layout's source rect is in 1080x1920 pixels) to
     `out_png`, an 8-bit RGB PNG at lay.size. `font_name` as the short's style font (edit._load_font, `cache_dirs`
-    for downloaded weights). `notes`, when given, gets the font note and the glyph fallbacks."""
+    for downloaded weights). `notes`, when given, gets the font note and the glyph fallbacks. A brand kit's card (one
+    with a `spec`) is its PNG from `card_dir` (drawn there when missing; a temp folder when None) as an image strip
+    on the card's rect."""
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     old = bpy.data.scenes.get(SCENE)
@@ -75,7 +81,18 @@ def render(lay: Layout, src_png: Path, out_png: Path, font_name: str | None, cac
                    strip_placement(Rect(0, 0, FLAT, FLAT), lay.panel, (FLAT, FLAT), lay.size, (FLAT, FLAT)))
         font, _, note = _load_font(font_name, cache_dirs)
         texts = _Texts(seq.strips, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
-        for i, c in enumerate(card_strips(lay)):
+        strips = iter(card_strips(lay))  # the text cards, in order (none for a kit's cards)
+        for i, card in enumerate(lay.cards):
+            if card.spec is not None:
+                if card_dir is None:
+                    card_dir = Path(tempfile.mkdtemp(prefix="bsa-cards-"))
+                spec, size = card.spec, (card.spec.w, card.spec.h)
+                png = ensure(spec, card_dir)
+                s = _image(seq, f"K_{spec.kind}", png, 3 + i, strip_placement(Rect(0, 0, *size), card.rect, size,
+                                                                               lay.size, size))  # fmt: skip
+                s.alpha_mode = "STRAIGHT"
+                continue
+            c = next(strips)
             s = texts.add(c["text"], 1, 1, 3 + i, c["size"], c["loc"], c["anchor"], c["margin"], color=c["colour"],
                           bold=c["bold"], wrap_px=c["wrap_px"], box=c["box"], frame=lay.size)  # fmt: skip
             s.use_box = c["use_box"]

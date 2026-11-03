@@ -7,12 +7,17 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bsa.fonts import BLENDER_BOX_H, BLENDER_LINE_H
 from bsa.layout import Rect, overlap_area
 from bsa.overlays import CHAR_W, est_lines, est_width
+
+if TYPE_CHECKING:
+    from bsa.cards import CardSpec
+    from bsa.kit import Kit
 
 VERTICAL = (1080, 1920)
 LANDSCAPE = (1280, 720)
@@ -119,12 +124,15 @@ class ThumbStyle:
     handle_text: str | None = None
     line_h: float = BLENDER_LINE_H  # the font's line height and first line's box, in em (bsa.fonts.line_metrics)
     box_h: float = BLENDER_BOX_H
+    kit: Kit | None = None  # the brand kit (bsa.kit.kit_for): its cards instead of the text cards
 
 
 def style_for(short, s: dict) -> ThumbStyle:
     """The thumbnail's colours and font from the captions, the brand and the short's own style: the title in the
     caption colours, the kicker on the palette's accent, the fact white on the caption box (less see-through), the
-    @handle in the badge colour, the landscape panel in the palette's background."""
+    @handle in the badge colour, the landscape panel in the palette's background. With a brand kit (brand.style set)
+    the cards are the kit's (`kit`)."""
+    from bsa import kit as kit_mod
     from bsa.closing import ACCENT, BACKGROUND, on_colour
     from bsa.overlays import BADGE_COLOR, BOX_COLOR, caption_colours, hex_colour
     from bsa.settings import brand_for
@@ -145,7 +153,7 @@ def style_for(short, s: dict) -> ThumbStyle:
         title=text, title_box=box, kicker=on_colour(accent), kicker_box=accent, fact=(1.0, 1.0, 1.0, 1.0),
         fact_box=fact_box, handle=BADGE_COLOR, handle_box=fact_box,
         panel=hex_colour(palette.get("background")) or hex_colour(BACKGROUND), font=font,
-        handle_text="@" + handle if handle else None,
+        handle_text="@" + handle if handle else None, kit=kit_mod.kit_for(s, short),
     )  # fmt: skip
 
 
@@ -158,6 +166,7 @@ class Card:
     colour: tuple
     box: tuple
     pad: float
+    spec: CardSpec | None = None  # a brand kit's card (bsa.cards), drawn as an image; `rect` is its size
 
 
 @dataclass
@@ -215,15 +224,53 @@ def _card(style: ThumbStyle, kind: str, text: str, size: int, pad: float, wrap: 
           y: float = 0.0) -> Card:  # fmt: skip
     """A card at (x, y) in the style's colours for `kind`, its text wrapped at `wrap` (the card is `wrap` + 2 * pad
     wide at most) and as tall as the sequencer draws its box in the style's font: the first line the font's
-    bounding box, each further line its line height (bsa.fonts.line_metrics)."""
+    bounding box, each further line its line height (bsa.fonts.line_metrics). With a brand kit, the kit's card
+    (_kit_card)."""
+    if style.kit is not None:
+        return _kit_card(style, kind, text, size, pad, wrap, x, y)
     w = est_width(text, size, wrap)
     h = (style.box_h + (est_lines(text, size, wrap) - 1) * style.line_h) * size
     return Card(kind, text, size, Rect(x, y, w + 2 * pad, h + 2 * pad), getattr(style, kind),
                 getattr(style, kind + "_box"), pad)  # fmt: skip
 
 
+def _kit_card(style: ThumbStyle, kind: str, text: str, size: int, pad: float, wrap: float, x: float,
+              y: float) -> Card:  # fmt: skip
+    """The kit's card for `kind` at (x, y), no wider than `wrap` + 2 * pad (as the text card it stands for): the
+    title a title card (a second line highlighted) at `size`, the kicker a category pill in the accent, the fact a
+    measure pill, the @handle the logo badge (its name, else the handle, beside the logo) when the kit has a readable
+    logo, else a label pill. `colour` and `box` are its (first) text colour and its fill, for the thumbnail's checks."""
+    from bsa import cards
+    from bsa.overlays import hex_colour
+
+    k, font = style.kit, style.font
+    width = wrap + 2 * pad
+    room = width - 2 * cards.PILL_PAD[0]
+    spec = None
+    if kind == "title":
+        lines = text.split("\n")
+        spec = cards.title(k, lines, 1 if len(lines) == 2 else None, font, width, size=size)
+    elif kind == "kicker":
+        spec = cards.pill(k, "category", text, font, fill=k.palette["accent"], wrap=room, size=size)
+    elif kind == "fact":
+        spec = cards.pill(k, "measure", text, font, wrap=room, size=size)
+    elif kind == "handle":
+        if k.logo:
+            spec = cards.logo_badge(k, font, k.logo.get("name") or text)
+            if spec is not None and spec.w > width:  # too wide for the room (the landscape panel): the logo alone
+                spec = cards.logo_badge(k, font, None)
+            if spec is not None and spec.w > width:
+                spec = None
+        if spec is None:
+            spec = cards.pill(k, "label", text, font, wrap=room, size=size)
+    if spec is None:
+        raise ValueError(f"no kit card for {kind!r}")
+    colour = spec.runs[0].colour if spec.runs else k.palette["text"]
+    return Card(kind, text, size, Rect(x, y, spec.w, spec.h), hex_colour(colour), hex_colour(spec.fill), pad, spec)
+
+
 def _moved(c: Card, x: float, y: float) -> Card:
-    return Card(c.kind, c.text, c.size, Rect(x, y, c.rect.w, c.rect.h), c.colour, c.box, c.pad)
+    return Card(c.kind, c.text, c.size, Rect(x, y, c.rect.w, c.rect.h), c.colour, c.box, c.pad, c.spec)
 
 
 def _v_cards(text: ThumbText, style: ThumbStyle, placement: str) -> list[Card]:
@@ -361,8 +408,11 @@ def _r(r: Rect | None) -> list | None:
 
 
 def _card_dict(c: Card) -> dict:
-    return {"kind": c.kind, "text": c.text, "size": c.size, "rect": _r(c.rect), "colour": list(c.colour),
-            "box": list(c.box), "pad": c.pad}  # fmt: skip
+    d = {"kind": c.kind, "text": c.text, "size": c.size, "rect": _r(c.rect), "colour": list(c.colour),
+         "box": list(c.box), "pad": c.pad}  # fmt: skip
+    if c.spec is not None:
+        d["card"] = c.spec.kind
+    return d
 
 
 def layout_dict(lay: Layout) -> dict:
@@ -608,11 +658,13 @@ def with_font(style: ThumbStyle, text: ThumbText, cache_dirs: list[Path] | None 
     """The style with the font file the thumbnail's text is drawn in and that font's line metrics, so the layout
     and the render use the same file: the style font (bsa.fonts.resolve: an installed fallback when it is missing),
     or, when it lacks a character of the text, the first OS font that has them all (bsa.fonts.cover_font). Without a
-    style font, Blender's own font and its measured metrics. Also the notes on what is used instead."""
-    from dataclasses import replace
+    style font, Blender's own font and its measured metrics. Also the notes on what is used instead.
 
+    With a brand kit (_kit_font), the kit's card font, as the edit's cards use."""
     from bsa import fonts
 
+    if style.kit is not None:
+        return _kit_font(style, text, cache_dirs)
     if not style.font:
         return style, []
     path, _, note = fonts.resolve(style.font, dirs, system, cache_dirs)
@@ -629,6 +681,30 @@ def with_font(style: ThumbStyle, text: ThumbText, cache_dirs: list[Path] | None 
         else:
             notes.append(f"no installed font has {chars}; they show as boxes on the thumbnail")
     line_h, box_h = (fonts.line_metrics(path) if path else None) or (BLENDER_LINE_H, BLENDER_BOX_H)
+    return replace(style, font=str(path) if path else None, line_h=line_h, box_h=box_h), notes
+
+
+def _kit_font(style: ThumbStyle, text: ThumbText, cache_dirs) -> tuple[ThumbStyle, list[str]]:
+    """The style with the kit's card font (bsa.cards.card_font_and_note; `style.font` when it is already a font file,
+    as a caller that resolved it sets) and its line metrics, and the notes: the font's own, each text a card draws in
+    a cover font (bsa.cards.font_for, as the card itself picks it) and a logo the badge can't draw."""
+    from bsa import cards
+    from bsa.kit import logo_missing
+
+    k = style.kit
+    if style.font and Path(style.font).is_file():
+        path, note = Path(style.font), None
+    else:
+        path, note = cards.card_font_and_note(k, cache_dirs)
+    notes = [note] if note else []
+    for words in (" ".join(text.title), text.kicker, text.fact, style.handle_text):
+        got = cards.font_for(words, path)[1] if words else None
+        if got:
+            notes.append(got)
+    if k.logo and cards.logo_badge(k, path, None) is None:
+        notes.append(logo_missing(k.logo) or f"your logo file {k.logo.get('file')} can't be read as a PNG, so no "
+                     "logo badge is drawn: set brand.logo.file again")  # fmt: skip
+    line_h, box_h = cards.metrics(path)
     return replace(style, font=str(path) if path else None, line_h=line_h, box_h=box_h), notes
 
 
@@ -691,11 +767,14 @@ def card_strips(lay: Layout) -> list[dict]:
     from the bottom-left) and anchor, box margin (the card's pad as a share of the thumbnail's width: Blender sizes
     a text strip's box margin by the image width, checked in Blender 5.2), wrap width in px, colours, and whether
     it has a box (only one that shows: alpha > 0). Cards of a band are centred on their box, the rest are left
-    aligned in it; the text wraps where the layout wrapped it."""
+    aligned in it; the text wraps where the layout wrapped it. A brand kit's cards (with a `spec`) are images, not
+    text strips: none for them."""
     fw, fh = lay.size
     wrap = V_SAFE.w if tuple(lay.size) == VERTICAL else _L_WRAP
     out = []
     for c in lay.cards:
+        if c.spec is not None:
+            continue
         centred = lay.placement in _CENTRED and c.kind != "handle"
         x = c.rect.x + c.rect.w / 2 if centred else c.rect.x + c.pad
         y = c.rect.y + c.pad

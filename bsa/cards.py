@@ -231,16 +231,19 @@ def caption(kit, text: str, font, width) -> CardSpec:
                     str(font) if font else None)  # fmt: skip
 
 
-def title(kit, lines, highlight: int | None, font, width) -> CardSpec:
+def title(kit, lines, highlight: int | None, font, width, size: int | None = None) -> CardSpec:
     """A title card: each line in the text colour (the `highlight` line bigger, in the highlight colour), shrunk to fit
-    down to TITLE_MIN, then wrapped; as wide as its longest line (`width`, the safe width at most)."""
+    down to TITLE_MIN, then wrapped; as wide as its longest line (`width`, the safe width at most). `size` sets the
+    plain lines' size (SIZES["title"] when None), the highlight line keeping its proportion to it."""
     maxw = _max_w(width)
     room = maxw - 2 * CARD_PAD
     font, _ = font_for(" ".join(lines), font)
+    base = SIZES["title"] if size is None else size
+    big_size = round(base * SIZES["title_highlight"] / SIZES["title"])
     rows: list[tuple[str, int, str]] = []
     for i, line in enumerate(lines):
         big = i == highlight
-        size = _fit(line, SIZES["title_highlight" if big else "title"], font, room, TITLE_MIN)
+        size = _fit(line, big_size if big else base, font, room, min(TITLE_MIN, base))
         colour = kit.palette["highlight" if big else "text"]
         rows += [(ln, size, colour) for ln in _lines(line, size, font, room)]
     text_w = max(measure(t, s, font) for t, s, _ in rows)
@@ -257,12 +260,14 @@ def _boxed(kit, kind, w, box_h, fill, radius, runs, font, **extra) -> CardSpec:
                     radius, tuple(runs), str(font) if font else None, **extra)  # fmt: skip
 
 
-def pill(kit, kind: str, text: str, font, fill=None, colour=None, dot=None, wrap=NEAR_WRAP_PX) -> CardSpec:
-    """A pill: a badge, category tag, step, label or measure label, its text wrapped at `wrap` px. A part label's
-    `dot` (a colour) sits before the text. A category is filled in its kit colour with text that reads on it."""
+def pill(kit, kind: str, text: str, font, fill=None, colour=None, dot=None, wrap=NEAR_WRAP_PX,
+         size: int | None = None) -> CardSpec:  # fmt: skip
+    """A pill: a badge, category tag, step, label or measure label, its text wrapped at `wrap` px, at `size` px
+    (SIZES[kind] when None). A part label's `dot` (a colour) sits before the text. A category is filled in its kit
+    colour with text that reads on it."""
     if kind not in PILL_KINDS:
         raise ValueError(f"{kind!r} is not a pill: use one of {', '.join(PILL_KINDS)}")
-    size = SIZES[kind]
+    size = SIZES[kind] if size is None else size
     if kind == "category" and fill is None:
         fill = kit.colour(text)
     fill = fill or kit.palette["card"]

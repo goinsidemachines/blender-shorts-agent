@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 import json
 from pathlib import Path
@@ -414,7 +415,10 @@ def test_thumbs_in_blender(blender_run):
     assert result.returncode == 0, result.stdout + result.stderr
     for name in ("test_both_sizes_at_exact_pixels_with_the_title_and_hero_where_the_layout_said",
                  "test_a_preview_frame_at_half_size_fills_the_same_layout",
-                 "test_drawn_boxes_match_the_cards_in_the_fonts_used"):  # fmt: skip
+                 "test_drawn_boxes_match_the_cards_in_the_fonts_used",
+                 "test_kit_thumbnail_draws_card_images_at_their_rects",
+                 "test_kit_thumbnail_with_a_logo_draws_the_badge",
+                 "test_without_a_kit_no_card_images_are_made"):  # fmt: skip
         assert f"PASS {name}" in result.stdout
 
 
@@ -452,9 +456,10 @@ def _tl(sdir):
                     [Span(**s) for s in data["lines"]], [Card(**c) for c in data["cards"]])  # fmt: skip
 
 
-def _go(monkeypatch, sdir, *argv, boxes=None):
+def _go(monkeypatch, sdir, *argv, boxes=None, s=None):
     """bsa_blender._cmd_thumbs with Blender stubbed: render writes a flat PNG of the layout's size, read_png reads
-    it back, and the .blend's hero boxes are `boxes` ({shot: {frame: [box, ...]}}; None: no .blend)."""
+    it back, and the .blend's hero boxes are `boxes` ({shot: {frame: [box, ...]}}; None: no .blend). `s`: the
+    settings ({"handle": "me"} when None)."""
     import types
 
     import pagefix
@@ -463,11 +468,12 @@ def _go(monkeypatch, sdir, *argv, boxes=None):
     from bsa import image_checks, settings
 
     monkeypatch.setattr(bsa_blender, "_timeline", lambda sdir_, short: (_tl(sdir), "h" * 16))
-    monkeypatch.setattr(settings, "load_settings", lambda: {"handle": "me"})
-    calls = {"render": [], "boxes": []}
+    monkeypatch.setattr(settings, "load_settings", lambda: {"handle": "me"} if s is None else s)
+    calls = {"render": [], "boxes": [], "card_dir": []}
 
-    def render(lay, src, out, font, cache_dirs=None, notes=None):
+    def render(lay, src, out, font, cache_dirs=None, notes=None, card_dir=None):
         calls["render"].append((lay, Path(src), Path(out), font))
+        calls["card_dir"].append(card_dir)
         pagefix.write_png(out, np.full((lay.size[1], lay.size[0], 3), 128, np.uint8))
         return Path(out)
 
@@ -527,6 +533,26 @@ def test_thumbs_named_heroes_make_candidates_in_both_sizes(tmp_path, monkeypatch
         ("final", "0015.png"), ("final", "0015.png"), ("preview", "0070.png"), ("preview", "0070.png")]
     assert f"candidate 2: {thumbs.FROM_PREVIEW}" in out["warnings"]
     assert thumbs.load(sdir)["candidates"] == out["candidates"]
+
+
+def test_thumbs_with_a_kit_lays_out_the_kit_cards_and_says_a_missing_logo(tmp_path, monkeypatch):
+    from tests.kitfix import KIT
+
+    sdir = _thumb_short(tmp_path, TH)
+    _frame(sdir, "final", "s01", 15)
+    gone = tmp_path / "gone.png"
+    go, calls = _go(monkeypatch, sdir, "--hero", "s01@15", s={"handle": "me", "brand": {**KIT,
+                    "logo": {"file": str(gone)}}})  # fmt: skip
+    out = go()
+    lay = out["candidates"][0]["layouts"]
+    assert [c["card"] for c in lay["1080x1920"]["cards"]] == ["label", "title", "category"]
+    assert [c["card"] for c in lay["1280x720"]["cards"]] == ["title", "category", "label"]
+    assert calls["card_dir"] == [sdir / "cards"] * 2  # the edit's card cache
+    said = [w for w in out["warnings"] if "no logo badge" in w]
+    assert said == [f"your logo file {gone} is missing, so no logo badge is drawn: set brand.logo.file again"]
+    go, calls = _go(monkeypatch, sdir, "--hero", "s01@15")  # no kit: today's text cards
+    out = go()
+    assert all("card" not in c for c in out["candidates"][0]["layouts"]["1080x1920"]["cards"])
 
 
 def test_thumbs_refuses_bad_heroes_and_missing_frames(tmp_path, monkeypatch):
@@ -842,3 +868,175 @@ def test_a_failed_short_json_write_puts_back_the_earlier_choice(tmp_path, monkey
     monkeypatch.setattr(jobstate, "write_atomic", real)
     thumbs.choose(sdir, 2, "page")  # the locks were let go
     assert thumbs.load(sdir)["chosen"]["n"] == 2
+
+
+# --------------------------------------------------------------------------- with a brand kit
+
+
+@pytest.fixture
+def short():
+    return _short()
+
+
+@pytest.fixture
+def font(tmp_path):
+    """Every printable ASCII character, each 0.5 em wide; line 1.0 em, box 1.2 em."""
+    import string
+
+    from fontbuild import build_font
+
+    p = tmp_path / "card.ttf"
+    p.write_bytes(build_font(string.ascii_letters + string.digits + string.punctuation + " ", advance=500))
+    return p
+
+
+def _png(path, w, h):
+    import struct
+    import zlib
+
+    raw = b"".join(b"\0" + b"\xff" * (4 * w) for _ in range(h))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                     + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))  # fmt: skip
+    return path
+
+
+HERO = Rect(400, 900, 300, 400)
+KTEXT = thumbs.ThumbText(("Two rows,", "one pull"), "How a zipper works", None)
+
+
+def _kit_style(short, font, **brand):
+    from dataclasses import replace
+
+    from tests.kitfix import KIT
+
+    return replace(thumbs.style_for(short, {"handle": "me", "brand": {**KIT, **brand}}), font=str(font))
+
+
+def test_without_a_kit_layouts_are_unchanged(short):
+    from tests.kitfix import KIT
+
+    plain = {"handle": "me", "brand": {"mode": "brand", "palette": dict(KIT["palette"])}}
+    spark = {"handle": "me", "brand": {"mode": "brand", "palette": {**KIT["palette"], "spark": "#D9483B"}}}
+    a, b = thumbs.style_for(short, plain), thumbs.style_for(short, spark)
+    assert a.kit is None and b.kit is None
+    for make in (thumbs.vertical, thumbs.landscape):
+        da, db = thumbs.layout_dict(make(TEXT, HERO, a)), thumbs.layout_dict(make(TEXT, HERO, b))
+        assert da == db and all("card" not in c for c in da["cards"])
+        assert all(c.spec is None for c in make(TEXT, HERO, a).cards)
+    assert thumbs.with_font(a, TEXT) == (a, [])  # no font, no kit: Blender's own font as before
+
+
+def test_kit_thumbnail_cards_are_kit_cards(short, font):
+    from bsa import cards
+
+    st = _kit_style(short, font)
+    assert st.kit is not None and st.kit.style == "toon"
+    lay = thumbs.vertical(KTEXT, HERO, st)
+    assert {c.kind: c.spec.kind for c in lay.cards} == {"title": "title", "kicker": "category", "handle": "label"}
+    d = thumbs.layout_dict(lay)
+    assert [c["card"] for c in d["cards"]] == ["label", "title", "category"]  # the @handle badge comes first
+    assert json.loads(json.dumps(d)) == d
+    for c in lay.cards:
+        assert (c.rect.w, c.rect.h) == (c.spec.w, c.spec.h) and _in_safe(c)
+        assert c.box == overlays.hex_colour(c.spec.fill) and c.colour == overlays.hex_colour(c.spec.runs[0].colour)
+    title = next(c for c in lay.cards if c.kind == "title")
+    assert title.spec.fill == "#FFFFFF" and title.spec.outline == "#1B2A3A"
+    assert [r.colour for r in title.spec.runs] == ["#1B2A3A", "#2E7D6B"]  # the second line highlighted
+    assert title.spec.runs[0].size == title.size and title.spec.runs[1].size > title.size
+    kicker = next(c for c in lay.cards if c.kind == "kicker")
+    assert kicker.spec.fill == "#7A4CE0" and kicker.spec.runs[0].size == cards.SIZES["thumb_kicker"]
+    handle = next(c for c in lay.cards if c.kind == "handle")
+    assert handle.spec.runs[0].text == "@me" and (handle.rect.x, handle.rect.y) == (48, 115.2)
+    fact = thumbs.vertical(TEXT, HERO, st)
+    got = next(c for c in fact.cards if c.kind == "fact")
+    assert got.spec.kind == "measure" and got.spec.runs[0].size == cards.SIZES["thumb_fact"]
+    assert got.spec.runs[0].colour == "#2E7D6B"
+    land = thumbs.landscape(KTEXT, HERO, st)
+    assert [c.spec.kind for c in land.cards] == ["title", "category", "label"]
+    assert all(c.rect.right <= thumbs.PANEL_W and c.rect.x == 48 for c in land.cards)
+    assert land.panel_colour == overlays.hex_colour("#EAF2F8") and land.warnings == []
+    assert thumbs.card_strips(lay) == [] and thumbs.card_strips(land) == []  # drawn as images, not text strips
+
+
+def test_kit_cards_keep_off_the_subject_and_apart(short, font):
+    st = _kit_style(short, font)
+    long = thumbs.ThumbText(("Why the zipper teeth never slip apart", "even under a heavy pull"), "How it works",
+                            "Teeth made to 0.01 mm")  # fmt: skip
+    for text in (TEXT, KTEXT, long, thumbs.ThumbText(("One",), None, None)):
+        for hero in (LOW_HERO, Rect(300, 200, 400, 300), Rect(0, 0, 1080, 1920), HERO):
+            for lay in (thumbs.vertical(text, hero, st), thumbs.landscape(text, hero, st)):
+                assert lay.covered == thumbs.covered(lay.cards, lay.hero)
+                if lay.size == thumbs.VERTICAL:
+                    assert all(_in_safe(c) for c in lay.cards), lay.cards
+                else:
+                    assert all(c.rect.right <= thumbs.PANEL_W for c in lay.cards)
+                for i, a in enumerate(lay.cards):
+                    for b in lay.cards[i + 1 :]:
+                        assert _apart(a, b) >= thumbs.GAP - 1e-6, (lay.placement, a, b)
+    lay = thumbs.vertical(TEXT, LOW_HERO, st)
+    assert lay.covered <= thumbs.COVER_LIMIT and lay.warnings == []
+    assert thumbs.vertical(TEXT, Rect(0, 0, 1080, 1920), st).warnings == [thumbs.COVERS_SUBJECT]
+
+
+def test_kit_thumbnail_with_a_logo_uses_the_logo_badge(tmp_path, short, font):
+    from bsa import cards
+
+    logo = _png(tmp_path / "logo.png", 200, 100)
+    st = _kit_style(short, font, logo={"file": str(logo), "name": "Acme"})
+    for lay in (thumbs.vertical(KTEXT, HERO, st), thumbs.landscape(KTEXT, HERO, st)):
+        handle = next(c for c in lay.cards if c.kind == "handle")
+        assert handle.spec.kind == "logo" and handle.spec.logo == str(logo.resolve())
+        assert handle.spec.runs[0].text == "Acme" and handle.spec.box_h == cards.LOGO_H
+        assert thumbs.layout_dict(lay)["cards"][[c.kind for c in lay.cards].index("handle")]["card"] == "logo"
+    st = _kit_style(short, font, logo={"file": str(logo)})  # no name: the @handle beside the logo
+    handle = next(c for c in thumbs.vertical(KTEXT, HERO, st).cards if c.kind == "handle")
+    assert handle.spec.kind == "logo" and handle.spec.runs[0].text == "@me"
+    gone = tmp_path / "gone.png"
+    st = _kit_style(short, font, logo={"file": str(logo)})
+    st = thumbs.ThumbStyle(**{**st.__dict__, "kit": dataclasses.replace(st.kit, logo={"file": str(gone)})})
+    handle = next(c for c in thumbs.vertical(KTEXT, HERO, st).cards if c.kind == "handle")
+    assert handle.spec.kind == "label"  # the logo file is gone: the @handle pill
+    _, notes = thumbs.with_font(st, KTEXT)
+    assert any("no logo badge" in n for n in notes)
+
+
+def test_a_logo_badge_too_wide_for_the_panel_drops_its_name(tmp_path, short, font):
+    logo = _png(tmp_path / "logo.png", 200, 100)
+    st = _kit_style(short, font, logo={"file": str(logo), "name": "A rather long company name here"})
+    for lay in (thumbs.vertical(KTEXT, HERO, st), thumbs.landscape(KTEXT, HERO, st)):
+        handle = next(c for c in lay.cards if c.kind == "handle")
+        assert handle.spec.kind == "logo"
+        if lay.size == thumbs.LANDSCAPE:
+            assert handle.spec.runs == () and handle.rect.right <= thumbs.PANEL_W  # the logo alone
+        else:
+            assert handle.spec.runs[0].text == "A rather long company name here" and _in_safe(handle)
+    wide = _png(tmp_path / "wide.png", 2000, 100)  # even alone it is wider than the panel: the @handle pill
+    st = _kit_style(short, font, logo={"file": str(wide)})
+    handle = next(c for c in thumbs.landscape(KTEXT, HERO, st).cards if c.kind == "handle")
+    assert handle.spec.kind == "label" and handle.rect.right <= thumbs.PANEL_W
+
+
+def test_with_a_kit_a_font_name_is_resolved_not_read_as_a_file(short, monkeypatch):
+    from bsa import cards
+    from tests.kitfix import KIT
+
+    st = thumbs.style_for(short, {"brand": {**KIT, "font": "No Such Font"}})
+    assert st.kit.font == "No Such Font" and st.font == "No Such Font"
+    seen = []
+    monkeypatch.setattr(cards, "card_font_and_note", lambda kit, cache_dirs=None: seen.append(kit.font) or (None,
+                        "no No Such Font: Blender's own"))  # fmt: skip
+    got, notes = thumbs.with_font(st, KTEXT)
+    assert seen == ["No Such Font"] and got.font is None and notes == ["no No Such Font: Blender's own"]
+
+
+def test_with_font_and_a_kit_uses_the_card_font(short, font, monkeypatch):
+    from bsa import cards, fonts
+
+    st = _kit_style(short, font)
+    monkeypatch.setattr(cards, "card_font_and_note", lambda kit, cache_dirs=None: (font, "a note"))
+    got, notes = thumbs.with_font(thumbs.ThumbStyle(**{**st.__dict__, "font": None}), KTEXT)
+    assert got.font == str(font) and (got.line_h, got.box_h) == fonts.line_metrics(font) and notes == ["a note"]
+    accented = thumbs.ThumbText(("Éclair",), None, None)  # the test font has no É
+    _, notes = thumbs.with_font(st, accented)
+    assert any("Éclair" in n for n in notes)
