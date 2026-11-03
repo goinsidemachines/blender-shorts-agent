@@ -172,3 +172,37 @@ def test_fetch_rejects_tampered_existing_file(root, capsys, monkeypatch):
     code, _ = run(capsys, "fetch", "--model", "kokoro")
     assert code == 1
     assert seen == [Path(first).name]
+
+
+def _verify_words(root, tmp_path, capsys, monkeypatch, *extra):
+    fake_install(root, "whisper-small.en")
+    (tmp_path / "line1.wav").write_bytes(b"")
+    seen = {}
+
+    def fake_worker(model, job, workdir):
+        seen.update(job)
+        out = {"texts": {"line1": "hello there"}}
+        if job.get("words"):
+            out["words"] = {"line1": [["hello", 0.1, 0.4], ["there", 0.5, 0.9]]}
+        return out
+
+    monkeypatch.setattr(cli, "run_worker", fake_worker)
+    monkeypatch.setattr(cli, "pick_device", lambda *a, **k: "cpu")
+    items = [{"id": "line1", "text": "Hello there."}]
+    code, out = run(
+        capsys, "verify", "--lines", str(lines_file(tmp_path, items)), "--takes", str(tmp_path), *extra
+    )  # fmt: skip
+    return code, out, seen
+
+
+def test_verify_words_passes_the_word_timings_through(root, tmp_path, capsys, monkeypatch):
+    code, out, seen = _verify_words(root, tmp_path, capsys, monkeypatch, "--words")
+    assert code == 0 and seen["words"] is True
+    assert out["line1"]["words"] == [["hello", 0.1, 0.4], ["there", 0.5, 0.9]]
+    assert out["line1"]["wer"] == 0.0
+
+
+def test_verify_without_words_is_unchanged(root, tmp_path, capsys, monkeypatch):
+    code, out, seen = _verify_words(root, tmp_path, capsys, monkeypatch)
+    assert code == 0 and not seen.get("words")
+    assert set(out["line1"]) == {"text", "wer"}

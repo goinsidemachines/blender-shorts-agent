@@ -100,6 +100,35 @@ def hear(lines, out_dir: Path, run=None) -> dict[str, dict] | None:
     }
 
 
+def word_times(lines, takes_dir: Path, run=None) -> dict[str, list[tuple[str, float, float]]] | None:
+    """Whisper's word timings per take, {id: [(word, start_s, end_s), ...]}. Best-effort: None when Whisper isn't
+    installed or the run fails; a take whose words are malformed is left out."""
+    try:
+        if not whisper_installed():
+            return None
+        run = run or subprocess.run
+        takes_dir = Path(takes_dir)
+        lines_file = takes_dir / "lines.json"
+        contract.write_lines(lines_file, lines)
+        proc = run(
+            _base("verify", "--lines", str(lines_file), "--takes", str(takes_dir), "--words"),
+            check=False, capture_output=True, text=True,
+        )  # fmt: skip
+        if proc.returncode != 0:
+            return None
+        out: dict[str, list[tuple[str, float, float]]] = {}
+        for i, v in _last_json(proc.stdout).items():
+            try:
+                out[i] = [(str(w[0]), float(w[1]), float(w[2])) for w in v["words"] if len(w) == 3]
+                if len(out[i]) != len(v["words"]):
+                    del out[i]
+            except (KeyError, TypeError, ValueError, IndexError):
+                out.pop(i, None)
+        return out
+    except (NarrationError, OSError):
+        return None
+
+
 def verify(lines, out_dir: Path, run=None) -> dict[str, float] | None:
     """Word error rate per line, or None when Whisper isn't installed."""
     heard = hear(lines, out_dir, run=run)

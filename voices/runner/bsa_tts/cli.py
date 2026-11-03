@@ -322,8 +322,16 @@ def cmd_verify(a: argparse.Namespace) -> dict:
     device = pick_device(model, name, a.cpu, cpu_fallback=True)
     with tempfile.TemporaryDirectory(prefix="bsa-tts-") as tmp:
         job = {"engine": "whisper", "weights": str(weights_dir(name)), "device": device, "files": files, "outdir": tmp}
-        texts = run_worker(model, job, Path(tmp))["texts"]
-    return {ln["id"]: {"text": texts[ln["id"]], "wer": wer(ln["text"], texts[ln["id"]])} for ln in lines}
+        if a.words:
+            job["words"] = True
+        result = run_worker(model, job, Path(tmp))
+    texts = result["texts"]
+    out = {ln["id"]: {"text": texts[ln["id"]], "wer": wer(ln["text"], texts[ln["id"]])} for ln in lines}
+    if a.words:
+        for i, w in (result.get("words") or {}).items():
+            if i in out:
+                out[i]["words"] = w
+    return out
 
 
 # --- fetch: download a model's weights from its official Hugging Face repo ----------------------------------------
@@ -420,6 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--lines", required=True)
     r.add_argument("--takes", required=True)
     r.add_argument("--cpu", action="store_true", help="force the CPU")
+    r.add_argument("--words", action="store_true", help="also return [word, start_s, end_s] timings per take")
     r.set_defaults(fn=cmd_verify)
 
     f = sub.add_parser("fetch", help="download a model's weights from Hugging Face (used by the installer)")

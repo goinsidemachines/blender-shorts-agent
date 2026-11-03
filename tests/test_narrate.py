@@ -998,3 +998,30 @@ def test_a_kept_take_is_padded_too(tmp_path):
     for lid in ("l01", "l02"):
         assert contract.leading_silence(vo / f"{lid}.wav") == pytest.approx(0.3, abs=0.01)
     assert res.durations["l01"] == pytest.approx(0.8, abs=0.01)
+
+
+def test_word_times_parses_the_runner_words(tmp_path, whisper_on):
+    seen = {}
+    words = {"l01": {"text": "hi there", "wer": 0.0, "words": [["hi", 0.1, 0.3], ["there", 0.4, 0.8]]}}
+    words["l02"] = {"text": "x", "wer": 0.0, "words": [["bad"]]}
+
+    def run(cmd, **kw):
+        seen["cmd"] = cmd
+        return completed(0, "noise\n" + json.dumps(words) + "\n")
+
+    got = local.word_times(lines("l01", "l02"), tmp_path, run=run)
+    assert "--words" in seen["cmd"]
+    assert got == {"l01": [("hi", 0.1, 0.3), ("there", 0.4, 0.8)]}
+
+
+def test_word_times_is_none_without_whisper_or_on_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return completed(1, "", "boom")
+
+    monkeypatch.setattr(install, "installed", lambda: {local.WHISPER_MODEL: False})
+    assert local.word_times(lines("l01"), tmp_path, run=run) is None and not calls
+    monkeypatch.setattr(install, "installed", lambda: {local.WHISPER_MODEL: True})
+    assert local.word_times(lines("l01"), tmp_path, run=run) is None and calls
