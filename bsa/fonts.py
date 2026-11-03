@@ -320,6 +320,80 @@ def line_metrics(path, index: int = 0) -> tuple[float, float] | None:
     return (line, box) if line > 0 and box > 0 else None
 
 
+_ADVANCE_CACHE: dict = {}
+
+
+def _cmap_glyphs(t: bytes, cps) -> dict[int, int]:
+    """{codepoint: glyph id} for the codepoints `cps` from the best Unicode subtable (format 12, else 4); 0 (the
+    .notdef glyph) for one the font has no glyph for."""
+    subs = {}
+    for i in range(_u16(t, 2)):
+        rec = 4 + 8 * i
+        subs[(_u16(t, rec), _u16(t, rec + 2))] = _u32(t, rec + 4)
+    for keys, fmt in ((((3, 10), (0, 4), (0, 6)), 12), (((3, 1), (0, 3), (0, 1), (0, 0)), 4)):
+        o = next((subs[k] for k in keys if k in subs and _u16(t, subs[k]) == fmt), None)
+        if o is None:
+            continue
+        if fmt == 12:
+            at = [o + 16 + 12 * i for i in range(_u32(t, o + 12))]
+            groups = [(_u32(t, g), _u32(t, g + 4), _u32(t, g + 8)) for g in at]
+            starts = [g[0] for g in groups]
+            out = {}
+            for cp in cps:
+                i = bisect.bisect_right(starts, cp) - 1
+                out[cp] = groups[i][2] + cp - groups[i][0] if i >= 0 and cp <= groups[i][1] else 0
+            return out
+        n = _u16(t, o + 6) // 2
+        ends_at, starts_at = o + 14, o + 16 + 2 * n
+        deltas, ranges = starts_at + 2 * n, starts_at + 4 * n
+        ends = [_u16(t, ends_at + 2 * i) for i in range(n)]
+        out = {}
+        for cp in cps:
+            i = bisect.bisect_left(ends, cp)
+            gid = 0
+            if cp <= 0xFFFF and i < n and _u16(t, starts_at + 2 * i) <= cp:
+                start, delta, ro = _u16(t, starts_at + 2 * i), _u16(t, deltas + 2 * i), _u16(t, ranges + 2 * i)
+                if ro == 0:
+                    gid = (cp + delta) & 0xFFFF
+                else:
+                    at = ranges + 2 * i + ro + 2 * (cp - start)
+                    gid = _u16(t, at) if at + 2 <= len(t) else 0
+                    gid = (gid + delta) & 0xFFFF if gid else 0
+            out[cp] = gid
+        return out
+    raise ValueError("the font has no Unicode cmap")
+
+
+def _advances(path, index: int):
+    """(unitsPerEm, advance widths, cmap table, {codepoint: glyph id} seen so far) of a font file, cached by its
+    size and mtime."""
+    path = Path(path)
+    st = path.stat()
+    key = (str(path.resolve()), index, st.st_size, st.st_mtime_ns)
+    if key not in _ADVANCE_CACHE:
+        tables = _tables(path.read_bytes(), index)
+        upm, n = _u16(tables["head"], 18), _u16(tables["hhea"], 34)
+        hmtx = tables["hmtx"]
+        if not upm or not n:
+            raise ValueError("the font has no advance widths")
+        _ADVANCE_CACHE[key] = (upm, [_u16(hmtx, 4 * g) for g in range(n)], tables["cmap"], {})
+    return _ADVANCE_CACHE[key]
+
+
+def advance_em(path, text: str, index: int = 0) -> float | None:
+    """The width of `text` set in the font, in em: the sum of its glyphs' advance widths (hmtx) over unitsPerEm. A
+    glyph past hhea.numberOfHMetrics takes the last advance; a character without a glyph counts glyph 0 (.notdef). No
+    kerning. None when the file can't be read as a font with advance widths."""
+    try:
+        upm, widths, cmap, gids = _advances(path, index)
+        new = {ord(c) for c in text} - gids.keys()
+        if new:
+            gids.update(_cmap_glyphs(cmap, new))
+        return sum(widths[min(gids[ord(c)], len(widths) - 1)] for c in text) / upm
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+
+
 def covers(info: dict, ch: str) -> bool:
     """Whether the font has a glyph for character `ch`."""
     cp = ord(ch)

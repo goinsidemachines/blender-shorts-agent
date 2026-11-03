@@ -2,6 +2,9 @@
 
 import platform
 
+import pytest
+from fontbuild import build_font
+
 from bsa import fonts
 
 
@@ -80,3 +83,18 @@ def test_text_items_include_card_text():
                  ("shot s1 step", "Step 2 of 4"), ("shot s1 value bar", "Bar"), ("shot s1 value bar", "2 kg"),
                  ("shot s1 value bar", "1"), ("shot s1 verdict", "Bar wins"), ("logo badge", "Acme")):
         assert item in items, item
+
+
+def test_advance_em_sums_hmtx(tmp_path):
+    p = tmp_path / "a.ttf"
+    p.write_bytes(build_font("AB", advance=500))  # upm 1000
+    assert fonts.advance_em(p, "ABA") == pytest.approx(1.5)
+    p.write_bytes(build_font("AB", advance={"A": 600, "B": 300, "": 250}, cmap_format=12))
+    assert fonts.advance_em(p, "AB A") == pytest.approx(0.6 + 0.3 + 0.25 + 0.6)
+    assert fonts.advance_em(p, "Z") == pytest.approx(0.25)  # a missing glyph counts glyph 0
+    p.write_bytes(build_font("AB", advance={"": 700, " ": 100, "A": 200, "B": 900}, n_metrics=2))
+    assert fonts.advance_em(p, "AB") == pytest.approx(0.2)  # ids past numberOfHMetrics take the last advance
+    assert fonts.advance_em(p, "") == 0
+    assert fonts.advance_em(tmp_path / "missing.ttf", "A") is None
+    p.write_bytes(build_font("AB"))  # no hmtx
+    assert fonts.advance_em(p, "A") is None
