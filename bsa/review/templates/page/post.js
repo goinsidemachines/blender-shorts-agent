@@ -27,7 +27,9 @@
 
   function issues(ctx, c) {
     var warnings = c.warnings || [];
-    var findings = c.findings || [];
+    var findings = (c.findings || []).filter(function (f) {  // an info row is no news (the snapshot drops it too)
+      return f && (f.severity === "error" || f.severity === "warning");
+    });
     if (!warnings.length && !findings.length) return ctx.el("p", { class: "muted" }, "No warnings or findings.");
     return ctx.el("ul", { class: "findings thumb-issues" },
       warnings.map(function (w) {
@@ -169,6 +171,10 @@
     return ctx.el("section", { class: "st-sec thumbs" },
       ctx.el("h3", null, "Thumbnail"),
       content.thumbs_problem ? ctx.el("p", { class: "problem" }, String(content.thumbs_problem)) : null,
+      Array.isArray(content.thumbnail_problems) && content.thumbnail_problems.length
+        ? ctx.el("ul", { class: "thumb-problems" }, content.thumbnail_problems.map(function (t) {
+          return ctx.el("li", { class: "problem" }, capital(t));
+        })) : null,
       list.length ? [ctx.el("p", { class: "muted" }, lead), list.map(function (c) { return candidate(ctx, c); })]
         : content.thumbs_problem ? null : ctx.el("p", { class: "muted" }, NONE));
   };

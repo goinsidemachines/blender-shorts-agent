@@ -52,12 +52,13 @@ def video_info(sdir: Path, short) -> dict:
             "size": megabytes(nbytes) if nbytes is not None else None}  # fmt: skip
 
 
-def files(sdir: Path, short, video: dict | None = None) -> list[dict]:
-    """The output files, one row each. A row's `path` is an absolute local path, also in the offline page's data."""
+def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None = None) -> list[dict]:
+    """The output files, one row each. A row's `path` is an absolute local path, also in the offline page's data.
+    `video` (video_info) and `cap_state` (captions.state) are read here when not given."""
     sdir = Path(sdir)
     video = video or video_info(sdir, short)
     cap = captions.paths(sdir, short)
-    stale = captions.state(sdir, short)["stale"]
+    stale = (cap_state or captions.state(sdir, short))["stale"]
     spec = [
         ("video", "Video", video["rel"]),
         ("thumbnail_vertical", "Thumbnail, Shorts and Reels", OUT_FILES["1080x1920"]),
@@ -77,14 +78,26 @@ def files(sdir: Path, short, video: dict | None = None) -> list[dict]:
     return rows
 
 
-def checklist_items(sdir: Path, short) -> list[dict]:
+def _from_an_earlier_make(sdir: Path) -> bool:
+    """True when review/thumbs.json has no choice (the chosen candidate was made again since) while short.json
+    still records one: the files in out/ are from the earlier make."""
+    from bsa import thumbs
+    from bsa.review.store import StoreDamaged
+
+    try:
+        return thumbs._chosen_n(thumbs.load(sdir).get("chosen")) is None
+    except StoreDamaged:
+        return False
+
+
+def checklist_items(sdir: Path, short, video: dict | None = None, cap_state: dict | None = None) -> list[dict]:
     """The before-you-post checklist, [{"id", "text"}] in CHECK_IDS order, built from what the plugin knows: the
-    video's length and size, the chosen thumbnail, the caption file and the pinned comment. Only the items that
-    apply are listed."""
+    video's length and size, the chosen thumbnail, the caption file (only when cut for the current timing) and the
+    pinned comment. Only the items that apply are listed. `video` and `cap_state` as for `files`."""
     from bsa import thumbs
 
     sdir = Path(sdir)
-    video = video_info(sdir, short)
+    video = video or video_info(sdir, short)
     p = post.fields(short)
     about = ", ".join(x for x in (video["length"], video["size"]) if x)
     sized = f" ({about})" if about else ""
@@ -95,11 +108,12 @@ def checklist_items(sdir: Path, short) -> list[dict]:
     ]  # fmt: skip
     th = p["thumbnail"] if isinstance(p["thumbnail"], dict) else {}
     if thumbs._chosen_n(th.get("chosen")) is not None and (sdir / OUT_FILES["1080x1920"]).is_file():
+        earlier = " (from an earlier make)" if _from_an_earlier_make(sdir) else ""
         items.append(("thumbnail", (f"Thumbnail: {OUT_FILES['1080x1920']} (Shorts and Reels: pick it as the cover "
                                     f"frame where the app allows), {OUT_FILES['1280x720']} (YouTube custom "
-                                    "thumbnail).")))  # fmt: skip
+                                    f"thumbnail){earlier}.")))  # fmt: skip
     srt = captions.paths(sdir, short)["srt"]
-    if srt.is_file():
+    if srt.is_file() and not (cap_state or captions.state(sdir, short))["stale"]:
         items.append(("captions", (f"Captions: out/{srt.name}. Upload it in YouTube Studio → Subtitles, so the "
                                    "numbers come out right.")))  # fmt: skip
     if isinstance(p["pinned_comment"], str) and p["pinned_comment"].strip():

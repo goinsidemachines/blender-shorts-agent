@@ -170,6 +170,31 @@ def test_a_remade_chosen_candidate_asks_to_pick_again(view, live_server):
     assert_healthy(p)
 
 
+def test_an_info_finding_is_not_a_warning(view, live_server):
+    srv = live_server("post")
+    info = {"check": "busy", "severity": "info", "size": "1080x1920", "message": "busy background not measured",
+            "value": None}  # fmt: skip
+    pagefix.write_thumbs(srv.sdir, 1, findings=[info])
+    p = open_short(view, srv, stage="post")
+    cand = p.locator("section.thumb-cand[data-n='1']")
+    expect(cand.get_by_text("No warnings or findings.")).to_be_visible()
+    expect(cand.get_by_text("busy background not measured")).to_have_count(0)
+    assert_healthy(p)
+
+
+def test_thumbnail_problems_show_in_the_thumbnail_section(view, live_server):
+    srv = live_server("post")
+    th = json.loads((srv.sdir / "source" / "short.json").read_text("utf-8"))["post"].get("thumbnail") or {}
+    path = srv.sdir / "source" / "short.json"
+    d = json.loads(path.read_text("utf-8"))
+    d["post"]["thumbnail"] = {**th, "title": ["Why it keeps time"], "kicker": 5}
+    path.write_text(json.dumps(d), "utf-8")
+    p = open_short(view, srv, stage="post")
+    sec = p.locator("section.thumbs")
+    expect(sec.get_by_text("Post thumbnail kicker must be text or null")).to_be_visible()
+    assert_healthy(p)
+
+
 # --------------------------------------------------------------------------- fields, files, checklist
 
 

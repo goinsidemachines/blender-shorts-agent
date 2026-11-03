@@ -145,6 +145,23 @@ def test_checklist_without_a_length_names_the_size_and_the_full_video(tmp_path):
     assert items[1]["text"] == "After uploading, check the platform shows the full video."
 
 
+def test_checklist_says_when_the_thumbnail_is_from_an_earlier_make(tmp_path):
+    from bsa import thumbs
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    pagefix.write_thumbs(sdir, 2)
+    thumbs.choose(sdir, 1, "page")
+    text = {i["id"]: i["text"] for i in postpack.checklist_items(sdir, _short(sdir))}["thumbnail"]
+    assert text.endswith("(YouTube custom thumbnail).")
+    row = thumbs.load(sdir)["candidates"][0]
+    thumbs.put_candidates(sdir, [row], only=1)  # candidate 1 made again: out/ still holds the earlier one
+    text = {i["id"]: i["text"] for i in postpack.checklist_items(sdir, _short(sdir))}["thumbnail"]
+    assert text.endswith("(YouTube custom thumbnail) (from an earlier make).")
+    (sdir / thumbs.THUMBS_JSON).write_text("{", encoding="utf-8")  # damaged: not known, so not said
+    text = {i["id"]: i["text"] for i in postpack.checklist_items(sdir, _short(sdir))}["thumbnail"]
+    assert text.endswith("(YouTube custom thumbnail).")
+
+
 def test_tick_refuses_an_unknown_item(tmp_path):
     sdir = pagefix.make_short(tmp_path, "post")
     with pytest.raises(ValueError, match="nope"):

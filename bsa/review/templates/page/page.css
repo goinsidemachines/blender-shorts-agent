@@ -454,6 +454,7 @@ a.chip { color: var(--fg); text-decoration: underline; }
 .feed .feed-img { display: block; flex: none; width: 180px; height: auto; background: var(--chip); }
 .feed .feed-ph { flex: 0 1 180px; min-width: 24px; background: var(--chip); border: 1.5px dashed var(--muted); }
 .thumb-issues { margin-top: 10px; }
+.thumb-problems { list-style: none; margin: 0; padding: 0; }
 .thumb-cand .btns .btn[aria-pressed="true"] { background: var(--soft); }
 @media (max-width: 767.98px) {
   .thumb-pair { flex-direction: column; }

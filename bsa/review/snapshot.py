@@ -434,10 +434,11 @@ def _final(ctx: Ctx) -> dict | None:
 
 
 # Where a post.problems line belongs: the first field whose words it starts with (the thumbnail's and posted's go to
-# none of the fields).
+# none of the fields: they are _OTHER_PREFIXES, shown in the Thumbnail section).
 _NOTE_PREFIXES = (("post pinned comment", "pinned_comment"), ("post title", "title"),
                   ("post description", "description"), ("post hashtag", "hashtags"), ("post has ", "hashtags"),
                   ("post tags", "tags"), ("post link", "link"), ("post related", "related"))  # fmt: skip
+_OTHER_PREFIXES = ("post thumbnail", "post posted")
 
 
 def _field_text(key: str, value) -> str:
@@ -450,17 +451,22 @@ def _field_text(key: str, value) -> str:
     return str(value or "")
 
 
-def _post_fields(short, settings: dict) -> tuple[list[dict], dict[str, str]]:
+def _post_fields(short, settings: dict) -> tuple[list[dict], dict[str, str], list[str]]:
     """One row per post field (its text, its count against the platform limit and, for the description, the
-    platforms it fits) and each field's warning or error, {key: note}. The notes are kept apart: they follow the
-    user's settings and the checks' wording, neither of which is the post itself, so they never move its version."""
+    platforms it fits), each field's warning or error, {key: note}, and the thumbnail's and posted's problems (no
+    field's). The notes are kept apart: they follow the user's settings and the checks' wording, neither of which is
+    the post itself, so they never move its version."""
     from bsa import post as post_mod
 
     p = post_mod.fields(short)
     counts = post_mod.counts(short)
     errors, warnings = post_mod.problems(short, settings or {})
     notes_of: dict[str, list[str]] = {}
+    others = []
     for line in errors + warnings:  # errors first: the worse news leads
+        if line.startswith(_OTHER_PREFIXES):
+            others.append(line)
+            continue
         key = next((k for prefix, k in _NOTE_PREFIXES if line.startswith(prefix)), None)
         if key:
             notes_of.setdefault(key, []).append(line)
@@ -471,7 +477,7 @@ def _post_fields(short, settings: dict) -> tuple[list[dict], dict[str, str]]:
         rows.append({"key": key, "label": post_mod.LABELS[key], "text": _field_text(key, p[key]),
                      "count": c.get("count"), "max": c.get("max"), "warn_over": c.get("warn_over"),
                      "state": c.get("state"), "badges": post_mod.fits(desc) if desc is not None else []})  # fmt: skip
-    return rows, {k: "; ".join(v) for k, v in notes_of.items()}
+    return rows, {k: "; ".join(v) for k, v in notes_of.items()}, others
 
 
 def _texts(items) -> list[str]:
@@ -479,7 +485,8 @@ def _texts(items) -> list[str]:
 
 
 def _candidates(sdir: Path, data: dict) -> list[dict]:
-    """The thumbnail candidates of review/thumbs.json as the page shows them, with which one is chosen."""
+    """The thumbnail candidates of review/thumbs.json as the page shows them, with which one is chosen. Only error
+    and warning findings: an info row (a measurement skipped, say) is no news, as in `BLENDER thumbs`'s output."""
     from bsa import thumbs
 
     chosen = thumbs._chosen_n(data.get("chosen"))
@@ -499,7 +506,8 @@ def _candidates(sdir: Path, data: dict) -> list[dict]:
         out.append({"n": n, "hero": c.get("hero") if isinstance(c.get("hero"), dict) else None,
                     "source": c.get("source"), "vertical": {"file": files["1080x1920"]},
                     "landscape": {"file": files["1280x720"]}, "warnings": _texts(c.get("warnings")),
-                    "findings": [f for f in c.get("findings") or [] if isinstance(f, dict)],
+                    "findings": [f for f in c.get("findings") or []
+                                 if isinstance(f, dict) and f.get("severity") in ("error", "warning")],
                     "chosen": n == chosen, "tag": "-".join(stamps)})  # fmt: skip
     return out
 
@@ -516,14 +524,16 @@ def _post(ctx: Ctx) -> dict | None:
 
     short = _short(ctx)
     post = short.post if isinstance(short.post, dict) else {}
-    fields, field_notes = _post_fields(short, ctx.settings)
+    fields, field_notes, thumbnail_problems = _post_fields(short, ctx.settings)
     th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
     chosen = thumbs._chosen_n(th.get("chosen"))
     out_file = postpack.OUT_FILES["1080x1920"]
     thumbnail = None
     if chosen is not None and (ctx.sdir / out_file).is_file():
         thumbnail = {"chosen": chosen, "file": {"file": out_file}}
-    content = {"fields": fields, "field_notes": field_notes, "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short),
+    video, cap_state = postpack.video_info(ctx.sdir, short), captions.state(ctx.sdir, short)  # once per build
+    content = {"fields": fields, "field_notes": field_notes, "thumbnail_problems": thumbnail_problems,
+               "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short, video, cap_state),
                "checklist": [], "closing": _closing_card(ctx, short), "credits": _asset_rows(short.assets)}  # fmt: skip
     try:
         content["candidates"] = _candidates(ctx.sdir, thumbs.load(ctx.sdir))
@@ -535,7 +545,7 @@ def _post(ctx: Ctx) -> dict | None:
         ticks = {}
         content["checklist_problem"] = _plain(ctx.sdir, e)
     content["checklist"] = [{**item, "done": ticks.get(item["id"], False)}
-                            for item in postpack.checklist_items(ctx.sdir, short)]  # fmt: skip
+                            for item in postpack.checklist_items(ctx.sdir, short, video, cap_state)]  # fmt: skip
     return content
 
 
@@ -556,7 +566,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
-                         "checklist_problem")}
+                         "checklist_problem", "thumbnail_problems")}
 
 
 def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:

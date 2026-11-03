@@ -260,10 +260,10 @@ def with_numbers(sdir: Path) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def write_thumbs(sdir: Path, n: int = 2) -> None:
+def write_thumbs(sdir: Path, n: int = 2, findings: list[dict] | None = None) -> None:
     """review/thumbs/<i>-<size>.png for i in 1..n, each a flat colour of its own at the real size, and a
-    review/thumbs.json with those candidates (hero s0<i>@<15*i>, from the final render, no findings or warnings, the
-    layouts of the centre hero)."""
+    review/thumbs.json with those candidates (hero s0<i>@<15*i>, from the final render, `findings` (none by default)
+    and no warnings, the layouts of the centre hero)."""
     from bsa import post, thumbs
 
     short = load_short(sdir / "source" / "short.json")
@@ -279,5 +279,6 @@ def write_thumbs(sdir: Path, n: int = 2) -> None:
             w, h = thumbs.SIZES[size]
             write_png(sdir / rel, np.full((h, w, 3), (30 * i % 256, 90, 200 - 20 * i % 200), np.uint8))
         rows.append({"n": i, "hero": {"shot": f"s0{i}", "frame": 15 * i, "crop": None, "why": thumbs.WHY_POST},
-                     "source": "final", "files": files, "layouts": layouts, "findings": [], "warnings": []})  # fmt: skip
+                     "source": "final", "files": files, "layouts": layouts, "findings": list(findings or []),
+                     "warnings": []})  # fmt: skip
     thumbs.put_candidates(sdir, rows)

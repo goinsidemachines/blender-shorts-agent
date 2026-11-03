@@ -252,10 +252,60 @@ def test_stale_caption_files_are_flagged_on_the_page(tmp_path):
     content = _stage(snapshot.build(sdir, settings={}), "post")["content"]
     row = next(f for f in content["files"] if f["key"] == "srt")
     assert row["exists"] and not row["stale"]
+    assert "captions" in [i["id"] for i in content["checklist"]]
     pagefix.record_edit(sdir, "final", stale=True)
     content = _stage(snapshot.build(sdir, settings={}), "post")["content"]
     row = next(f for f in content["files"] if f["key"] == "srt")
     assert row["exists"] and row["stale"]
+    assert "captions" not in [i["id"] for i in content["checklist"]]  # never "upload" a file cut for another timing
+
+
+def test_info_findings_stay_off_the_page(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    info = {"check": "busy", "severity": "info", "size": "1080x1920", "message": "busy background not measured",
+            "value": None}  # fmt: skip
+    warn = {**info, "severity": "warning", "message": "the background is busy behind the title"}
+    pagefix.write_thumbs(sdir, 1, findings=[info, warn, {**info, "severity": "error", "message": "unreadable"}])
+    c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    assert [f["severity"] for f in c["candidates"][0]["findings"]] == ["warning", "error"]
+
+
+def test_thumbnail_and_posted_problems_reach_the_page_unversioned(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    row = _stage(snapshot.build(sdir, settings={}), "post")
+    assert row["content"]["thumbnail_problems"] == []
+    th = json.loads((sdir / "source" / "short.json").read_text("utf-8"))["post"].get("thumbnail") or {}
+    _set_post(sdir, thumbnail={**th, "title": ["Why it keeps time"], "kicker": 5}, posted="youtube")
+    again = _stage(snapshot.build(sdir, settings={}), "post")
+    probs = again["content"]["thumbnail_problems"]
+    assert "post thumbnail kicker must be text or null" in probs
+    assert 'post posted must be a list of {"platform", "url", "at"}' in probs
+    assert not any(p.startswith(("post thumbnail", "post posted")) for p in again["content"]["field_notes"].values())
+    assert "thumbnail_problems" in snapshot._UNVERSIONED["post"]
+
+
+def test_the_post_stage_reads_the_video_and_caption_state_once(tmp_path, monkeypatch):
+    from bsa import captions, postpack
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    calls = {"video": 0, "state": 0}
+    real_video, real_state = postpack.video_info, captions.state
+
+    def video(*a, **k):
+        calls["video"] += 1
+        return real_video(*a, **k)
+
+    def state(*a, **k):
+        calls["state"] += 1
+        return real_state(*a, **k)
+
+    monkeypatch.setattr(postpack, "video_info", video)
+    monkeypatch.setattr(captions, "state", state)
+    snapshot.build(sdir, settings={})  # no .vtt yet: the Final stage does not ask
+    assert calls == {"video": 1, "state": 1}
+    calls.update(video=0, state=0)
+    postpack.shown(sdir)
+    assert calls == {"video": 1, "state": 1}
 
 
 # --------------------------------------------------------------------------- feedback
