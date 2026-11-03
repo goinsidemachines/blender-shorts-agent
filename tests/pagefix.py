@@ -227,6 +227,28 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
     return sdir
 
 
+LOOK_SHOTS = ("s01", "s02", "s03")  # the look preview's first, middle and last shot
+
+
+def write_look(sdir: Path, style: str = "toy", set_: str = "workbench", *, built: str = "toon", seconds: float = 2.5,
+               first: bool = True, no_estimates: bool = False, warnings: list | None = None) -> dict:
+    """stills/look/<shot>.jpg (PNG bytes: a flat colour that follows the style and set), stills/look/kit.png and
+    stills/look.json as `BLENDER look` writes them, built as `built` on the workbench. Returns the JSON."""
+    look = Path(sdir) / "stills" / "look"
+    tone = sum(map(ord, style + set_)) % 180
+    for i, sid in enumerate(LOOK_SHOTS):
+        write_png(look / f"{sid}.jpg", np.full((16, 9, 3), (tone + 20 * i, 120, 200 - tone // 2), np.uint8))
+    write_png(look / "kit.png", np.full((9, 16, 3), (234, 242, 248), np.uint8))
+    data = {"style": style, "set": set_, "built": {"style": built, "set": "workbench"},
+            "frames": [{"shot": sid, "frame": 10 * (i + 1), "file": f"look/{sid}.jpg"}
+                       for i, sid in enumerate(LOOK_SHOTS)],
+            "sheet": "look/kit.png", "engine": "eevee", "seconds_per_frame": seconds,
+            "estimates": None if no_estimates else {"eevee_s": 300.0, "cycles_s": 1200.0},
+            "first": first, "warnings": list(warnings or [])}  # fmt: skip
+    (Path(sdir) / "stills" / "look.json").write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return data
+
+
 def _wer(want: str, said: str) -> float:
     return sum(1 for op, *_ in worddiff.diff(want, said) if op != "same") / max(len(worddiff.words(want)), 1)
 

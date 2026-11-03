@@ -2,7 +2,8 @@
 the versions the page actually served to a person (the server's /state and the static page), the last KEEP per stage.
 
 A stage's history lives in review/history/<stage>/: index.json lists the kept versions in the order first shown,
-and v<N>/ holds what version N showed (Story: lines.json; Storyboard: shots.json and a copy of each still; Final:
+and v<N>/ holds what version N showed (Story: lines.json; Storyboard: shots.json and a copy of each still, plus
+look.json and look/ with the look preview's frames when it had one; Final:
 final.json, with the MP4's digest in the index entry; Post: post.json and a copy of the chosen thumbnail). A copy
 is made in v<N>.<pid>.tmp and renamed into place under the index's lock, so a half-copied folder is never listed.
 The approved final's outgoing MP4 is moved (not copied) into review/history/final/<sha256[:16]>.mp4 by the edit, and
@@ -87,6 +88,25 @@ def _copy_checked(sdir: Path, src: str, dest: Path) -> None:
         raise _Moved(src)
 
 
+def _copy_look(sdir: Path, look, tmp: Path) -> None:
+    """The storyboard's look preview (approved with it): each frame into look/ and look.json with the style, the set
+    and which frame is which shot's. Nothing without a look."""
+    if not isinstance(look, dict):
+        return
+    frames = []
+    for f in look.get("frames") or []:
+        ref = f.get("file") if isinstance(f, dict) else None
+        src = ref.get("file") if isinstance(ref, dict) else None
+        name = None
+        if isinstance(src, str) and src.startswith("stills/look/") and _plain_name(src[len("stills/look/"):]):
+            name = src[len("stills/look/"):]
+            (tmp / "look").mkdir(exist_ok=True)
+            _copy_checked(sdir, src, tmp / "look" / name)
+        if isinstance(f, dict):
+            frames.append({"shot": f.get("shot"), "still": name})
+    _write(tmp / "look.json", {"style": look.get("style"), "set": look.get("set"), "frames": frames})
+
+
 def _copy(sdir: Path, stage: str, content: dict, tmp: Path) -> dict:
     """What the version showed, into tmp; the extra index fields."""
     tmp.mkdir(parents=True)
@@ -114,6 +134,7 @@ def _copy(sdir: Path, stage: str, content: dict, tmp: Path) -> dict:
                 _copy_checked(sdir, src, tmp / "stills" / name)
             shots.append({"id": shot.get("id"), "title": shot.get("title"), "still": name})
         _write(tmp / "shots.json", shots)
+        _copy_look(sdir, content.get("look"), tmp)
         return {}
     _write(tmp / "final.json", {"size": content.get("size_mb"), "findings": content.get("findings") or []})
     video = content.get("video")
@@ -203,7 +224,38 @@ def _storyboard_compare(sdir: Path, folder: Path, entry: dict, content: dict) ->
         ref = n.get("still") if n else None
         after = {"file": ref["file"]} if isinstance(ref, dict) and isinstance(ref.get("file"), str) else None
         shots.append({"id": i, "title": (n or o).get("title"), "before": before, "after": after})
-    return {"shots": shots}
+    out = {"shots": shots}
+    look = _look_compare(sdir, folder, content.get("look"))
+    if look:
+        out["look"] = look
+    return out
+
+
+def _look_side(look: dict | None) -> dict | None:
+    return {"style": look.get("style"), "set": look.get("set")} if look is not None else None
+
+
+def _look_compare(sdir: Path, folder: Path, now) -> dict | None:
+    """The look preview then and now: each side's style and set (None for a side without a look) and its frames
+    paired by shot. None when neither side has a look."""
+    then = _read(folder / "look.json") if (folder / "look.json").is_file() else None
+    then = then if isinstance(then, dict) else None
+    now = now if isinstance(now, dict) else None
+    if then is None and now is None:
+        return None
+    old = {}
+    for f in (then or {}).get("frames") or []:
+        if isinstance(f, dict) and isinstance(f.get("shot"), str):
+            name = f.get("still")
+            ok = _plain_name(name) and (folder / "look" / name).is_file()
+            old[f["shot"]] = {"file": _rel(sdir, folder / "look" / name)} if ok else None
+    new = {}
+    for f in (now or {}).get("frames") or []:
+        if isinstance(f, dict) and isinstance(f.get("shot"), str):
+            ref = f.get("file")
+            new[f["shot"]] = {"file": ref["file"]} if isinstance(ref, dict) and isinstance(ref.get("file"), str) else None
+    return {"before": _look_side(then), "after": _look_side(now),
+            "frames": [{"shot": i, "before": old.get(i), "after": new.get(i)} for i in _merged(list(old), list(new))]}
 
 
 def _final_compare(sdir: Path, folder: Path, entry: dict, content: dict) -> dict:

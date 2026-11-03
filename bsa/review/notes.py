@@ -10,7 +10,8 @@ from pathlib import Path
 
 from bsa.review import stages, store
 
-KINDS = ("line", "shot", "still", "frame", "finding", "field", "thumbnail", "overall")  # thumbnail: the candidate's n
+# thumbnail: the candidate's n; look: "style" or "set" (a change to the look preview on the Storyboard stage)
+KINDS = ("line", "shot", "still", "frame", "finding", "field", "thumbnail", "look", "overall")
 MAX_TEXT = 4000
 MAX_REPLY = 300
 ANSWERS = ("done", "declined")

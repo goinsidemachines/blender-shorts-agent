@@ -525,10 +525,12 @@
           stillFig(ctx, "before", beforeLabel, s.before, name + " before (version " + h.version + ")"),
           stillFig(ctx, "now", "Now", s.after, name + " now")));
     }));
+    var look = lookCompare(ctx, h);
     var sides = {};
     function pick(side) {
       boardSide = side;
       list.className = "cmp-shots cmp-show-" + side;
+      if (look) look.list.className = "cmp-shots cmp-show-" + side;
       Object.keys(sides).forEach(function (k) { sides[k].setAttribute("aria-pressed", String(k === side)); });
     }
     [["before", "Show before"], ["now", "Show now"]].forEach(function (pair) {
@@ -536,7 +538,28 @@
         "data-k": "compare:" + stageId + ":side:" + pair[0], onclick: function () { pick(pair[0]); } }, pair[1]);
     });
     return [el("div", { class: "cmp-side", role: "group", "aria-label": "Which picture each shot shows" },
-      sides.before, sides.now), list];
+      sides.before, sides.now), list, look ? look.kids : null];
+  }
+
+  // The storyboard's look preview then and now: the style and set, and each look frame as a before/after pair.
+  function lookCompare(ctx, h) {
+    var el = ctx.el;
+    var look = h.compare && h.compare.look;
+    if (!look) return null;
+    function words(side) { return side && side.style ? side.style + ", set: " + (side.set || "none") : "no look"; }
+    var list = el("ul", { class: "cmp-shots cmp-show-" + boardSide }, (look.frames || []).map(function (f) {
+      var name = "The look in shot " + f.shot;
+      return el("li", { class: "cmp-shot cmp-look", "data-look": String(f.shot) },
+        el("h5", null, name),
+        el("div", { class: "cmp-pair" },
+          stillFig(ctx, "before", "Before (version " + h.version + ")", f.before, name + " before (version " + h.version + ")"),
+          stillFig(ctx, "now", "Now", f.after, name + " now", null, ctx.version)));
+    }));
+    return { list: list, kids: [
+      el("h4", { class: "cmp-look-head" }, "Look"),
+      el("p", { class: "cmp-look-line" }, "Style/set before → now: " + words(look.before) + " → " + words(look.after)),
+      list,
+    ] };
   }
 
   function finalView(ctx, h, content) {

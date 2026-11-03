@@ -541,10 +541,13 @@
     return el("button", { type: "button", class: "btn small", onclick: () => copyAnswer(text) }, label || "Copy");
   }
 
-  function noteButton(s, kind, id, label, prefill) {
+  // `key` (optional) tells apart buttons on the same target (each style the look could try), so focus comes back to
+  // the one that opened the editor.
+  function noteButton(s, kind, id, label, prefill, key) {
+    const k = key ? `note:${s.id}:${kind}:${id}:${key}` : `note:${s.id}:${kind}:${id}`;
     return el("button", {
-      type: "button", class: "note-btn", "data-act": "1", "data-k": `note:${s.id}:${kind}:${id}`,
-      onclick: () => openEditor(s, kind, id, { prefill }),
+      type: "button", class: "note-btn", "data-act": "1", "data-k": k,
+      onclick: () => openEditor(s, kind, id, { prefill, back: k }),
     }, label || `Note on ${kind} ${id}`);
   }
 
@@ -588,7 +591,7 @@
       el, stage: s, version: s.version, offline: OFFLINE, fileUrl, copyButton,
       history: Array.isArray(s.history) ? s.history : [], // earlier shown versions to compare with, newest first
       answerable: () => answerable(s), // the stage takes an answer now (none on its way, decisions readable)
-      noteButton: (kind, id, label, prefill) => noteButton(s, kind, id, label, prefill),
+      noteButton: (kind, id, label, prefill, key) => noteButton(s, kind, id, label, prefill, key),
       noteAt: (kind, id, label, prefill, shot) => noteAt(s, kind, id, label, prefill, shot),
       decide: (stage, decision, choice) => decide(stage, decision, choice),
       copy: (text, what) => copyPlain(text, what),

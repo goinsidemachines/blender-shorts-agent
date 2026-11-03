@@ -1,10 +1,13 @@
 import json
 
+import kitfix
 import numpy as np
 import pagefix
 
 from bsa import jobstate
+from bsa import kit as kit_mod
 from bsa.review import decisions, snapshot
+from bsa.short import load_short
 
 
 def _stage(snap, sid):
@@ -126,3 +129,65 @@ def test_damaged_versions_json_is_one_problem_line_and_content_still_shows(tmp_p
     assert len([p for p in snap["problems"] if "versions.json" in p]) == 1
     assert all(s["problem"] is None for s in snap["stages"])
     assert _stage(snap, "story")["content"] is not None and _stage(snap, "story")["version"] is None
+
+
+KIT_SETTINGS = {"brand": kitfix.KIT}  # the made-up kit (style toon)
+
+
+def test_storyboard_has_no_look_without_a_kit(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    pagefix.write_look(sdir)
+    st = _stage(snapshot.build(sdir, settings={}), "storyboard")
+    c = st["content"]
+    assert c["look"] is None and st["version"] == 1
+    before = {k: v for k, v in c.items() if k != "look"}  # the content as it was before the look preview existed
+    assert snapshot.stage_fingerprint(sdir, "storyboard", c) == snapshot.stage_fingerprint(sdir, "storyboard", before)
+    (sdir / "stills" / "look.json").unlink()  # a kit but no look preview yet: no look either, same version
+    st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
+    assert st["content"]["look"] is None and st["version"] == 1
+
+
+def test_storyboard_look_lists_frames_swatches_and_other_choices(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    pagefix.write_look(sdir, warnings=["shot s02: the label near 'Bob' is left out of the look (no room)"])
+    lk = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["content"]["look"]
+    assert lk["style"] == "toy" and lk["set"] == "workbench" and lk["built"] == {"style": "toon", "set": "workbench"}
+    assert lk["styles"] == ["realistic", "toon", "clay", "blueprint", "paper", "pencil"]
+    assert lk["sets"] == ["graph", "outdoor", "studio", "none"]
+    assert [f["shot"] for f in lk["frames"]] == ["s01", "s02", "s03"]
+    assert lk["frames"][0]["file"] == {"file": "stills/look/s01.jpg"} and lk["frames"][1]["title"]
+    assert lk["sheet"] == {"file": "stills/look/kit.png"}
+    names = [s["name"] for s in lk["swatches"]]
+    assert names == ["background", "ink", "card", "text", "accent", "highlight", "spark", "flow", "grip"]
+    kit = kit_mod.kit_for(KIT_SETTINGS, load_short(sdir / "source" / "short.json"))  # the short's own style counts
+    assert lk["swatches"][4] == {"name": "accent", "hex": kit.palette["accent"]}
+    assert lk["swatches"][6] == {"name": "spark", "hex": "#D9483B"}
+    assert lk["engine"] == "eevee" and lk["seconds_per_frame"] == 2.5
+    assert lk["estimates"] == {"eevee_s": 300.0, "cycles_s": 1200.0} and lk["first"] is True
+    assert lk["warnings"] == ["shot s02: the label near 'Bob' is left out of the look (no room)"]
+    pagefix.write_look(sdir, set_="none", no_estimates=True)
+    lk = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["content"]["look"]
+    assert lk["sets"] == ["workbench", "graph", "outdoor", "studio"] and lk["estimates"] is None
+    json.dumps(lk)
+
+
+def test_storyboard_look_skips_missing_frames_and_a_damaged_file_is_a_warning(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    pagefix.write_look(sdir)
+    (sdir / "stills" / "look" / "s02.jpg").unlink()
+    lk = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["content"]["look"]
+    assert lk["frames"][1]["file"] is None
+    (sdir / "stills" / "look.json").write_text("{not json", encoding="utf-8")
+    st = _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")
+    assert st["problem"] is None and st["content"]["look"]["frames"] == []
+    assert "stills/look.json" in st["content"]["look"]["warnings"][0]
+
+
+def test_a_new_look_changes_the_storyboard_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    pagefix.write_look(sdir)
+    assert _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["version"] == 1
+    pagefix.write_look(sdir, seconds=9.75, first=False)  # the same frames measured again: still the same look
+    assert _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["version"] == 1
+    pagefix.write_look(sdir, style="pencil")
+    assert _stage(snapshot.build(sdir, settings=KIT_SETTINGS), "storyboard")["version"] == 2

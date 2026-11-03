@@ -284,7 +284,7 @@
     z.frame.setAttribute("style", "--cap-px:" + (Number(frame.cap_px) || 64));
     z.safe.setAttribute("style", rect(frame.safe));
     z.cap.setAttribute("style", rect(frame.caption));
-    z.img.src = ctx.fileUrl(item.file);
+    z.img.src = ctx.fileUrl(item.file, item.tag);
     z.img.alt = item.alt;
     z.title.textContent = item.title;
     z.cards = item.cards;
@@ -304,7 +304,7 @@
     if (!item.file || !ctx.fileUrl(item.file)) return placeholder(ctx);
     var btn = ctx.el("button", { type: "button", class: "thumb", "data-k": item.key, "aria-label": label,
       onclick: function () { openZoom(ctx, frame || {}, item); } },
-    ctx.el("img", { class: "still", src: ctx.fileUrl(item.file), alt: item.alt, loading: "lazy",
+    ctx.el("img", { class: "still", src: ctx.fileUrl(item.file, item.tag), alt: item.alt, loading: "lazy",
       onerror: function () { if (btn.isConnected) btn.replaceWith(placeholder(ctx)); } }));
     return btn;
   }
@@ -371,11 +371,84 @@
         })) : null));
   }
 
+  // The look preview (`BLENDER look`): three frames in the kit's style and set with its cards, the kit sheet, its
+  // colours, and notes asking for another style or set. The speed is information only: the engine stays the user's.
+  var HEX = /^#[0-9A-Fa-f]{6}$/;
+
+  function lookChoices(ctx, title, names, what) {
+    if (!names.length) return null;
+    return ctx.el("div", { class: "look-try" }, ctx.el("h4", null, title),
+      ctx.el("ul", { class: "look-btns" }, names.map(function (name) {
+        var n = String(name);
+        var none = what === "set" && n === "none";
+        return ctx.el("li", null, ctx.noteButton("look", what, none ? "Try no set" : "Try " + n,
+          none ? "Use no set" : "Use the " + n + " " + what, n));
+      })));
+  }
+
+  function lookSpeed(ctx, lk) {
+    var out = [];
+    if (typeof lk.seconds_per_frame === "number" && lk.engine) {
+      out.push("About " + oneDecimal(lk.seconds_per_frame) + " s a frame in " + String(lk.engine).toUpperCase() +
+        " at preview quality.");
+    }
+    var est = lk.estimates || {};
+    var parts = [];
+    if (duration(est.eevee_s)) parts.push("about " + duration(est.eevee_s) + " in EEVEE");
+    if (duration(est.cycles_s)) parts.push("about " + duration(est.cycles_s) + " in Cycles");
+    if (parts.length) out.push("The final render: " + parts.join(", ") + ".");
+    if (!out.length) return null;
+    out.push("These are estimates only; the engine stays your choice.");
+    return ctx.el("div", { class: "look-speed" }, out.map(function (t) { return ctx.el("p", { class: "muted" }, t); }));
+  }
+
+  function lookSection(ctx, content) {
+    var lk = content.look;
+    if (!lk) return null;
+    var built = lk.built || {};
+    var differs = !!built.style && (built.style !== lk.style || (built.set || "none") !== (lk.set || "none"));
+    var frames = (lk.frames || []).map(function (f) {
+      var name = String(f.title || f.shot);
+      var item = { key: "enlarge:look:" + f.shot, file: f.file, alt: "The look in shot " + f.shot + ": " + name,
+        title: "The look in shot " + f.shot + ": " + name, cards: [], tag: ctx.version };
+      return ctx.el("li", { class: "look-frame" },
+        thumb(ctx, content.frame, item, "Enlarge the look in shot " + f.shot),
+        ctx.el("p", null, ctx.el("span", { class: "tag" }, String(f.shot)), " " + name));
+    });
+    var swatches = (lk.swatches || []).filter(function (w) { return HEX.test(String(w.hex)); });
+    return section(ctx, "Look", [
+      ctx.el("p", null, "How this short will look: frames in your kit's style and set, with its cards. " +
+        "Approving the storyboard approves this look too."),
+      lk.style ? ctx.el("p", { class: "look-line" }, ctx.el("strong", null, "Style: " + lk.style + ", set: " + (lk.set || "none")),
+        differs ? ctx.el("span", { class: "muted" }, " Built as " + built.style + ", set: " + (built.set || "none") + ".")
+          : null) : null,
+      lk.first ? ctx.el("p", { class: "look-first" }, "These choices are saved for every short.") : null,
+      frames.length ? ctx.el("ol", { class: "look-frames" }, frames) : null,
+      lk.sheet || swatches.length ? ctx.el("div", { class: "look-kit" },
+        lk.sheet ? ctx.el("img", { class: "look-sheet", src: ctx.fileUrl(lk.sheet, ctx.version),
+          alt: "Your kit: colours, font and card shapes", loading: "lazy" }) : null,
+        swatches.length ? ctx.el("ul", { class: "swatches", "aria-label": "Your kit's colours" }, swatches.map(function (w) {
+          return ctx.el("li", null, ctx.el("span", { class: "swatch" },
+            ctx.el("span", { class: "sw", "aria-hidden": "true", style: "background:" + w.hex }),
+            ctx.el("span", { class: "sw-name" }, String(w.name)), " ", ctx.el("span", { class: "sw-hex" }, String(w.hex))));
+        })) : null) : null,
+      lookSpeed(ctx, lk),
+      (lk.warnings || []).length ? ctx.el("ul", { class: "warns" }, lk.warnings.map(function (w) {
+        return ctx.el("li", null, ctx.el("strong", null, "Warning: "), String(w));
+      })) : null,
+      ctx.el("p", { class: "muted" }, "Want another look? Each button leaves a note; send it with your changes."),
+      ctx.el("div", { class: "look-tries" },
+        lookChoices(ctx, "Another style", lk.styles || [], "style"),
+        lookChoices(ctx, "Another set", lk.sets || [], "set")),
+    ]);
+  }
+
   BSA.stages.storyboard = function (content, ctx) {
     return ctx.el("div", { class: "st-board" },
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
       compareBlock(ctx, "storyboard", content),
       section(ctx, "Timing", timing(ctx, content)),
+      lookSection(ctx, content),
       section(ctx, "Shots", [
         ctx.el("p", { class: "muted" }, "Open a picture to enlarge it and see its captions where they will appear."),
         ctx.el("ol", { class: "shots" }, (content.shots || []).map(function (s) { return shotCard(ctx, content, s); }),

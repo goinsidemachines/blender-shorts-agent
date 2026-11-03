@@ -230,3 +230,11 @@ def test_read_json_retries_a_file_being_replaced(tmp_path, monkeypatch):  # Wind
     monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(PermissionError(13, "denied")))
     with pytest.raises(PermissionError):
         store.read_json(path, None)
+
+
+def test_look_note_kind_is_accepted(tmp_path):
+    assert "look" in notes.KINDS
+    n = notes.add(tmp_path, "storyboard", {"kind": "look", "id": "style", "version": 2}, "Use the pencil style", "page")
+    assert n["target"] == {"kind": "look", "id": "style", "version": 2} and n["text"] == "Use the pencil style"
+    n = notes.add(tmp_path, "storyboard", {"kind": "look", "id": "set", "version": 2}, "Use the graph set", "page")
+    assert n["target"]["id"] == "set"

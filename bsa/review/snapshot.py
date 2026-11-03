@@ -198,6 +198,66 @@ def _closing_card(ctx: Ctx, short: Short) -> dict | None:
     }
 
 
+LOOK_JSON = "look.json"  # stills/look.json, written by `BLENDER look` (bsa.blender.lookframes)
+LOOK_INFO = ("engine", "seconds_per_frame", "estimates", "first")  # shown with the look, never part of what is approved
+
+
+def _look_file(sdir: Path, rel) -> dict | None:
+    """A look preview file named relative to stills/ (as look.json names them) as a file ref, None when it is not a
+    plain file under stills/look/ or is not there."""
+    if not isinstance(rel, str) or not rel.startswith("look/"):
+        return None
+    name = rel[len("look/") :]
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    return {"file": f"stills/{rel}"} if (Path(sdir) / "stills" / rel).is_file() else None
+
+
+def _look(ctx: Ctx, short: Short) -> dict | None:
+    """The look preview (`BLENDER look`) for the Storyboard stage: None without a kit or without stills/look.json.
+    A damaged look.json is one warning, with no frames."""
+    from bsa import kit as kit_mod
+    from bsa import setplace
+
+    kit = kit_mod.kit_for(ctx.settings, short)
+    path = ctx.sdir / "stills" / LOOK_JSON
+    if kit is None or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise TypeError("it is not a JSON object")
+    except (OSError, ValueError, TypeError) as e:
+        data = {"warnings": [_plain(ctx.sdir, f"stills/{LOOK_JSON} can't be read: {e}: make the look preview again")]}
+    style = data.get("style") if isinstance(data.get("style"), str) else None
+    set_name = str(data.get("set") or "none") if "style" in data else None
+    built = data.get("built") if isinstance(data.get("built"), dict) else {}
+    titles = {s.id: s.title for s in short.shots}
+    frames = []
+    for f in data.get("frames") or []:
+        if isinstance(f, dict) and isinstance(f.get("shot"), str):
+            frames.append({"shot": f["shot"], "title": titles.get(f["shot"], f["shot"]),
+                           "file": _look_file(ctx.sdir, f.get("file"))})  # fmt: skip
+    est = data.get("estimates")
+    secs = data.get("seconds_per_frame")
+    return {
+        "style": style,
+        "set": set_name,
+        "built": {"style": built.get("style"), "set": built.get("set")},
+        "styles": [s for s in kit_mod.STYLES if s != style],
+        "sets": [s for s in setplace.SETS if s != set_name] + (["none"] if set_name != "none" else []),
+        "frames": frames,
+        "sheet": _look_file(ctx.sdir, data.get("sheet")),
+        "swatches": [{"name": r, "hex": kit.palette[r]} for r in kit_mod.ROLES if r in kit.palette]
+        + [{"name": str(k), "hex": v} for k, v in kit.categories.items()],
+        "engine": data.get("engine") if isinstance(data.get("engine"), str) else None,
+        "seconds_per_frame": float(secs) if isinstance(secs, (int, float)) and not isinstance(secs, bool) else None,
+        "estimates": {k: est.get(k) for k in ("eevee_s", "cycles_s")} if isinstance(est, dict) else None,
+        "first": data.get("first") is True,
+        "warnings": [str(w) for w in data.get("warnings") or [] if w],
+    }
+
+
 def _storyboard(ctx: Ctx) -> dict | None:
     short = _short(ctx)
     tl = _reading_timeline(ctx, short)
@@ -241,6 +301,7 @@ def _storyboard(ctx: Ctx) -> dict | None:
         "shots": shots,
         "closing": _closing_card(ctx, short),
         "rules": _rule_rows(ctx, short),
+        "look": _look(ctx, short),
         "frame": {
             "safe": _rect_pct(safe_rect()),
             "caption": _rect_pct(caption_rect(pages.CAPTION_LINES, size)),
@@ -572,6 +633,11 @@ _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
 def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:
     """The fingerprint a stage's version is looked up by: its content without the review blocks (_UNVERSIONED)."""
     seen = {k: v for k, v in content.items() if k not in _UNVERSIONED.get(stage, ())}
+    if stage == "storyboard" and "look" in seen:  # the look is approved with the storyboard, its timing is not
+        if seen["look"] is None:
+            del seen["look"]  # no look preview: the storyboard's version is what it was before looks existed
+        elif isinstance(seen["look"], dict):
+            seen["look"] = {k: v for k, v in seen["look"].items() if k not in LOOK_INFO}
     return versions.fingerprint(seen, sdir)
 
 

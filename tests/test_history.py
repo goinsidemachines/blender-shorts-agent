@@ -423,3 +423,39 @@ def test_the_edits_drop_waits_for_a_real_open_handle(tmp_path):
     bsa_blender._drop_outgoing(sdir, mp4, "final", engine_runs.EngineRun(None))
     assert f.closed and not mp4.exists()
     assert [p.read_bytes() for p in history.root(sdir, "final").glob("*.mp4")] == [b"the approved final"]
+
+
+def test_history_keeps_look_frames_and_compares_them(tmp_path):
+    import kitfix
+
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    pagefix.write_look(sdir)
+    kit = {"brand": kitfix.KIT}
+    history.shown(sdir, snapshot.build(sdir, settings=kit), now=1000.0)  # v1 shown: toy on the workbench
+    kept = history.root(sdir, "storyboard") / "v1"
+    assert json.loads((kept / "look.json").read_text("utf-8")) == {
+        "style": "toy", "set": "workbench",
+        "frames": [{"shot": s, "still": f"{s}.jpg"} for s in ("s01", "s02", "s03")]}
+    first = (sdir / "stills" / "look" / "s01.jpg").read_bytes()
+    pagefix.write_look(sdir, style="pencil", set_="graph")
+    snap = history.shown(sdir, snapshot.build(sdir, settings=kit), now=1001.0)
+    entry = stage(snap, "storyboard")["history"][0]
+    assert entry["version"] == 1 and "review/history/storyboard/v1/look.json" in entry["files"]
+    look = entry["compare"]["look"]
+    assert look["before"] == {"style": "toy", "set": "workbench"} and look["after"] == {"style": "pencil", "set": "graph"}
+    s01 = look["frames"][0]
+    assert s01 == {"shot": "s01", "before": {"file": "review/history/storyboard/v1/look/s01.jpg"},
+                   "after": {"file": "stills/look/s01.jpg"}}
+    assert (sdir / s01["before"]["file"]).read_bytes() == first != (sdir / "stills" / "look" / "s01.jpg").read_bytes()
+    assert [f["shot"] for f in look["frames"]] == ["s01", "s02", "s03"]
+    (sdir / "stills" / "look.json").unlink()  # no look now: the compare still shows the one before
+    snap = history.shown(sdir, snapshot.build(sdir, settings=kit), now=1002.0)
+    look = next(h for h in stage(snap, "storyboard")["history"] if h["version"] == 1)["compare"]["look"]
+    assert look["after"] is None and look["frames"][0]["after"] is None
+
+
+def test_storyboard_compare_has_no_look_when_neither_side_has_one(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    show(sdir)
+    pagefix.write_png(sdir / "stills" / "s02.png", pagefix.np.full((8, 8, 3), 200, pagefix.np.uint8))
+    assert "look" not in stage(show(sdir), "storyboard")["history"][0]["compare"]
