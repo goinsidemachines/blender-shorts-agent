@@ -177,15 +177,19 @@ def set_value(path: str, value) -> dict:
     """Store `value` at `path`. A whole `brand` object merges into the stored brand key by key (the setup flow sets
     brand.mode first, then the sampled kit: the kit never drops mode, exposure or a note it does not name)."""
     s = load_settings()
-    if path == "brand" and isinstance(value, dict) and isinstance(s.get("brand"), dict):
-        value = {**s["brand"], **value}
+    if path == "brand" and isinstance(value, dict):  # a null value deletes that key (brand.style null: no kit)
+        old = s.get("brand") if isinstance(s.get("brand"), dict) else {}
+        value = {k: v for k, v in {**old, **value}.items() if v is not None}
     node = s
     keys = path.split(".")
     for k in keys[:-1]:
         if not isinstance(node.get(k), dict):
             node[k] = {}
         node = node[k]
-    node[keys[-1]] = value
+    if value is None and path.startswith("brand."):  # brand.style none, brand.logo null: the key is removed
+        node.pop(keys[-1], None)
+    else:
+        node[keys[-1]] = value
     save_settings(s)
     return s
 

@@ -73,6 +73,11 @@ def style_name(value) -> str:
     return name
 
 
+def off(value) -> bool:
+    """A value that means "none" for brand.style and brand.logo: null, "" or "none" (and "null" typed as text)."""
+    return value is None or isinstance(value, str) and value.strip().lower() in ("", "none", "null")
+
+
 def _hex(key: str, value, alpha: bool = False) -> str:
     m = (_HEXA if alpha else _HEX).fullmatch(value.strip()) if isinstance(value, str) else None
     if not m:
@@ -135,8 +140,8 @@ def check(key: str, value, *, _must_exist: bool = True):
     top, _, rest = key.partition(".")
     if top in PASS or top not in _KIT_KEYS and top != "outline_3d":
         return value
-    if key == "style":
-        return style_name(value)
+    if key == "style":  # null, "" or "none": no kit (settings.set_value deletes the key)
+        return None if off(value) else style_name(value)
     if key == "set":
         word = str(value).strip().lower()
         if word not in SETS:
@@ -170,7 +175,7 @@ def check(key: str, value, *, _must_exist: bool = True):
             return _hex(key, value, alpha=True)
         return value  # an unknown caption key passes
     if top == "logo":
-        if value is None and not rest:
+        if not rest and off(value):  # no logo (settings.set_value deletes the key), never a file named "null"
             return None
         if not rest:
             if isinstance(value, str):
@@ -217,6 +222,8 @@ def _apply(merged: dict, layer: dict, prefix: str = "brand", problems: list | No
                 raise
             problems.append(f"{prefix}.{path}: {exc}; it is ignored, so the plain value is used")
             return
+        if name == "style" and stored is None:  # "no style" in a layer keeps what the layers before it set
+            return
         if into is None:
             merged[name] = stored
         else:
@@ -226,7 +233,7 @@ def _apply(merged: dict, layer: dict, prefix: str = "brand", problems: list | No
         if key not in layer:
             continue
         value = layer[key]
-        if key == "logo" and isinstance(value, str):
+        if key == "logo" and isinstance(value, str) and not off(value):
             value = {"file": value}
         if key in ("palette", "categories", "caption", "logo") and isinstance(value, dict):
             if merged[key] is None:
@@ -234,7 +241,7 @@ def _apply(merged: dict, layer: dict, prefix: str = "brand", problems: list | No
             for sub, v in value.items():
                 name = str(sub).strip().lower() if key in ("palette", "categories") else sub
                 put(f"{key}.{sub}", v, into=merged[key], name=name)
-        elif key == "logo" and value is None:
+        elif key == "logo" and off(value):
             merged["logo"] = None
         else:
             put(key, value, into=None, name=key)

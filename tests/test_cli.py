@@ -134,6 +134,38 @@ def test_setting_the_whole_brand_keeps_mode_exposure_and_prose_keys(home):
         "box"] == "#14161A99"  # fmt: skip
 
 
+def test_the_kit_is_turned_off_from_the_command_line_keeping_the_rest_of_the_brand(home, tmp_path):
+    """brand.style null, "" or none removes the style (no kit: today's look), keeping mode, palette and caption; a null
+    in a whole-brand object deletes that key, and brand.logo null removes the logo (never a file named "null")."""
+    from bsa import kit
+    from tests.kitfix import KIT
+
+    def brand():
+        return ok(run(home, "settings", "show"))["settings"]["brand"]
+
+    for off in ("null", "", "none", "None"):
+        ok(run(home, "settings", "set", "brand", json.dumps(KIT)))
+        assert kit.kit_for({"brand": brand()}) is not None
+        ok(run(home, "settings", "set", "brand.style", off))
+        b = brand()
+        assert "style" not in b and b["mode"] == "brand" and b["palette"] == KIT["palette"], (off, b)
+        assert b["caption"]["box"] == "#1B2A3A"
+        assert kit.kit_for({"brand": b}) is None  # no kit: the edit, thumbnails and closing card are today's
+    ok(run(home, "settings", "set", "brand", json.dumps(KIT)))
+    ok(run(home, "settings", "set", "brand", '{"style": null}'))
+    assert "style" not in brand() and brand()["palette"] == KIT["palette"]
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"))
+    ok(run(home, "settings", "set", "brand.logo", json.dumps({"file": str(logo)})))
+    assert brand()["logo"]["file"] == str(logo.resolve())
+    ok(run(home, "settings", "set", "brand.logo", "null"))
+    assert "logo" not in brand()
+    ok(run(home, "settings", "set", "brand.logo", json.dumps({"file": str(logo)})))
+    ok(run(home, "settings", "set", "brand", '{"logo": null, "style": "toon"}'))
+    assert "logo" not in brand() and brand()["style"] == "toon" and brand()["mode"] == "brand"
+    assert ok(run(home, "settings", "check"))["problems"] == []
+
+
 def test_new_short_needs_workspace(home):
     proc = run(home, "new-short", "Pendulum")
     assert proc.returncode != 0

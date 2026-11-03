@@ -15,7 +15,9 @@
 
 The kit is the structured part of `brand`. It is set up once (`00-first-run.md` section 4) and every brand short
 uses it. Cards turn on only with **`brand.style`**: without it every short keeps today's text captions, badges and
-labels, and the kit-only fields below only warn. Check the stored kit any time with `CLI settings check`; it names
+labels, and the kit-only fields below only warn. `settings set brand.style none` (or `null`, or `""`) turns the
+kit off and keeps the rest of the brand; `brand.logo null` removes the logo, and a `null` in `settings set brand
+'<json>'` removes that key (the object merges into the brand otherwise). Check the stored kit any time with `CLI settings check`; it names
 any bad value and says how to fix it. A bad value is ignored (the plain value is used), never a crash.
 
 **Keys** (set with `settings set brand.KEY VALUE`; numbers and `true`/`false` are read as JSON):
