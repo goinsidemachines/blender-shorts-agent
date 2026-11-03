@@ -84,16 +84,14 @@ def _started_from(sdir: Path, s: Short) -> dict:
     from bsa import like
 
     name = str(s.like.get("short") or "")
-    title = name
+    title = str(s.like.get("title") or "") or name  # the live title wins, then the recorded one, then the folder
     try:
-        if Path(name).name != name:
-            raise ValueError(name)
         if Path(name).name != name:
             raise ValueError(name)
         title = load_short(Path(sdir).parent / name / "source" / "short.json").title or name
     except Exception:  # noqa: BLE001, S110 - the other short may be gone: the page still names it
         pass
-    copied = [{"key": k, "label": like.LABELS.get(k, k), "value": like.describe(k, getattr(s, k, None))}
+    copied = [{"key": k, "label": like.LABELS.get(k, k), "value": like.describe(k, getattr(s, k, None), s.like)}
               for k in s.like.get("copied") or [] if k in like.COPY_KEYS]  # fmt: skip
     return {"title": title, "short": name, "copied": copied}
 

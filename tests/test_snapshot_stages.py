@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import kitfix
 import numpy as np
@@ -276,7 +277,7 @@ def test_interview_started_from_lists_what_was_copied(tmp_path):
     assert sf["title"] == "Eiffel Tower" and sf["short"] == other.name
     assert [c["key"] for c in sf["copied"]] == ["style", "look", "length_s", "pace", "closing", "narrator"]
     got = {c["key"]: c for c in sf["copied"]}
-    assert got["style"]["label"] == "the look" and got["style"]["value"].startswith("toy style, workbench set")
+    assert got["style"]["label"] == "the look" and got["style"]["value"] == "toy style, workbench set, own palette (accent), font Segoe UI"
     assert got["pace"]["value"] == "8 shots, about 4 s each, 2 holds"
     assert got["closing"]["value"] == "none" and got["length_s"]["value"] == "15 s"
     assert got["narrator"]["value"] == "voice af_heart at 1.0×, paragraph takes, 0.3 s lead-in"
@@ -290,7 +291,14 @@ def test_interview_started_from_names_a_short_whose_folder_is_gone(tmp_path):
     other = pagefix.write_like(sdir, "Eiffel Tower")
     shutil.rmtree(other)
     sf = _interview(sdir)["content"]["started_from"]
-    assert sf["title"] == other.name and sf["short"] == other.name and sf["copied"]
+    assert sf["title"] == "Eiffel Tower" and sf["short"] == other.name and sf["copied"]  # the recorded title
+    import json as _json
+
+    path = sdir / "source" / "short.json"  # an older short.json (no recorded title): the folder name
+    data = _json.loads(path.read_text("utf-8"))
+    del data["like"]["title"]
+    path.write_text(_json.dumps(data), "utf-8")
+    assert _interview(sdir)["content"]["started_from"]["title"] == other.name
 
 
 def test_interview_without_like_has_no_started_from(tmp_path):
@@ -311,3 +319,12 @@ def test_describe_one_plain_line_per_copied_value():
     assert like.describe("closing", False) == "none"
     assert like.describe("closing", {"voice_line": "Bye"}) == "Bye"
     assert like.describe("narrator", {"take_mode": "line"}) == "line takes"
+    # a style is described from the keys recorded as copied, never from what the style holds now
+    rec = {"style_keys": ["palette.accent", "palette.ink", "caption.box", "font"]}
+    now = {"style": "toy", "set": "workbench", "palette": {"accent": "#fff", "ink": "#000", "x": "#111"}, "font": "Lato"}
+    assert like.describe("style", now, rec) == "own palette (accent, ink), caption box, font Lato"
+    assert like.describe("style", now, {}) == "toy style, workbench set, own palette, font Lato"  # old record
+    assert like.style_keys({"palette": {"a": 1}, "caption": {"box": 1}, "font": "x"}) == ["palette.a", "caption.box",
+                                                                                           "font"]  # fmt: skip
+    p = like.provenance(Path("x/03-big-ben"), ["style"], now=0, title="Big Ben", style={"font": "x"})
+    assert p["title"] == "Big Ben" and p["style_keys"] == ["font"]

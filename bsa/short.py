@@ -434,9 +434,14 @@ def _like_problems(like) -> list[str]:
     if not isinstance(like, dict):
         return [f"like must be {{\"short\", \"copied\", \"at\"}} (where this short started from), got {like!r}"]
     out = []
-    extra = sorted(set(like) - {"short", "copied", "at"})
+    extra = sorted(set(like) - {"short", "copied", "at", "title", "style_keys"})
     if extra:
-        out.append(f"like has unknown keys {extra}: use short, copied and at")
+        out.append(f"like has unknown keys {extra}: use short, copied, at, title and style_keys")
+    if "title" in like and not isinstance(like["title"], str):
+        out.append(f"like.title must be the earlier short's title (text), got {like['title']!r}")
+    keys = like.get("style_keys")
+    if "style_keys" in like and not (isinstance(keys, list) and all(isinstance(k, str) for k in keys)):
+        out.append(f"like.style_keys must be a list of the style keys copied, got {keys!r}")
     if not isinstance(like.get("short"), str) or not like["short"].strip():
         out.append(f"like.short must be the earlier short's folder name, got {like.get('short')!r}")
     copied = like.get("copied")

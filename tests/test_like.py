@@ -140,6 +140,7 @@ def test_like_copies_look_pace_closing_and_voice_only(tmp_path, monkeypatch, cap
     assert data["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2}
     assert data["like"]["short"] == other.name and data["like"]["at"].endswith("Z")
     assert data["like"]["copied"] == list(like.COPY_KEYS) == out["copied"]
+    assert data["like"]["title"] == "Big Ben" and data["like"]["style_keys"] == like.style_keys(data["style"])
     assert out["like"] == other.name and out["notes"] == ["this short keeps Big Ben's look as its own"]
     assert out["skipped"] == ["look", "length", "pace", "closing", "voice"]
     assert out["said"].startswith("Started from Big Ben: I copied the look, length, pace, closing and voice")
@@ -272,3 +273,11 @@ def test_captions_only_source_says_so(tmp_path):
     other = _rich(tmp_path, record={"provider": "none"})
     assert like.copy_from(other, _SAME)[2] == ["this short keeps Big Ben's look as its own",
                                                "the voice wasn't copied: Big Ben was captions only"]  # fmt: skip
+
+
+def test_like_record_accepts_title_and_style_keys_and_checks_their_type():
+    from bsa.short import _like_problems
+
+    ok = {"short": "01-a", "copied": ["style"], "at": "2026-11-04T10:00:00Z"}
+    assert _like_problems(ok) == [] and _like_problems({**ok, "title": "A", "style_keys": ["font"]}) == []
+    assert _like_problems({**ok, "title": 3}) and _like_problems({**ok, "style_keys": "font"})

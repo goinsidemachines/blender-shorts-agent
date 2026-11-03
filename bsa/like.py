@@ -209,10 +209,28 @@ def copy_from(other: Path, settings_: dict) -> tuple[dict, list[str], list[str]]
     return values, [k for k in COPY_KEYS if k in values], notes
 
 
-def provenance(other: Path, copied: list[str], now: float | None = None) -> dict:
-    """short.json's `like`: where the short started from, what was copied and when (UTC)."""
+def style_keys(style: dict) -> list[str]:
+    """The style keys a copy took, one per value: "palette.accent", "caption.box", "font"."""
+    out: list[str] = []
+    for key, value in style.items():
+        if key in _SUB_KEYS and isinstance(value, dict):
+            out += [f"{key}.{sub}" for sub in value]
+        else:
+            out.append(key)
+    return out
+
+
+def provenance(other: Path, copied: list[str], now: float | None = None, title: str | None = None,
+               style: dict | None = None) -> dict:
+    """short.json's `like`: where the short started from, what was copied and when (UTC), the other short's title
+    (kept for when its folder is gone) and exactly which style keys were copied."""
     at = datetime.fromtimestamp(time.time() if now is None else now, tz=UTC)
-    return {"short": Path(other).name, "copied": list(copied), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    out = {"short": Path(other).name, "copied": list(copied), "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    if title:
+        out["title"] = title
+    if style:
+        out["style_keys"] = style_keys(style)
+    return out
 
 
 def skipped_questions(copied: list[str], narrator: dict | None = None) -> list[str]:
@@ -242,9 +260,36 @@ def _n(value) -> str:
     return f"{float(value):g}"
 
 
-def describe(key: str, value) -> str:
-    """One plain line for a copied value, as the page's "Started from" block shows it."""
+def _style_words(keys: list[str], value: dict) -> str:
+    """The style line from the record of copied keys (names only; a name or font is read from the style)."""
+    groups: dict[str, list[str]] = {}
+    for k in keys:
+        head, _, sub = k.partition(".")
+        groups.setdefault(head, [])
+        if sub:
+            groups[head].append(sub)
+    parts = []
+    for head, subs in groups.items():
+        if head == "style":
+            parts.append(f"{value['style']} style" if value.get("style") else "style")
+        elif head == "set":
+            parts.append(f"{value['set']} set" if value.get("set") else "set")
+        elif head == "font":
+            parts.append(f"font {value['font']}" if value.get("font") else "font")
+        elif head == "palette":
+            parts.append(f"own palette ({', '.join(subs)})" if subs else "own palette")
+        else:
+            name = head.replace("_", " ")
+            parts.append(f"{name} {subs[0]}" if len(subs) == 1 else f"{name} ({', '.join(subs)})" if subs else name)
+    return ", ".join(parts)
+
+
+def describe(key: str, value, record: dict | None = None) -> str:
+    """One plain line for a copied value, as the page's "Started from" block shows it. `record` is short.json's
+    `like`: a style is described from the keys it records as copied (without them, from the style as it is)."""
     try:
+        if key == "style" and isinstance(value, dict) and (record or {}).get("style_keys"):
+            return _style_words(record["style_keys"], value)
         return _describe(key, value)
     except (TypeError, ValueError, AttributeError):
         return "copied"

@@ -292,7 +292,7 @@ def cmd_new_short(args) -> dict:
             for key in copied:
                 if key != "length_s":
                     setattr(short, key, values[key])
-            short.like = like.provenance(other, copied)
+            short.like = like.provenance(other, copied, title=load(other).title, style=values.get("style"))
         save_short(short, path)
     out = {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
     if other is not None:

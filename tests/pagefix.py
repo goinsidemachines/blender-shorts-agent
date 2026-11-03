@@ -330,6 +330,7 @@ def write_like(sdir: Path, other_title: str = "Eiffel Tower", copied: tuple[str,
     mine["closing"] = False
     mine["narrator"] = {"voice": "af_heart", "speed": 1.0, "take_mode": "paragraph", "lead_in": 0.3}
     keys = copied or ("style", "look", "length_s", "pace", "closing", "narrator")
-    mine["like"] = {"short": other.name, "copied": list(keys), "at": "2026-11-04T10:00:00Z"}
+    mine["like"] = {"short": other.name, "copied": list(keys), "at": "2026-11-04T10:00:00Z", "title": other_title,
+                    "style_keys": ["style", "set", "palette.accent", "font"]}
     path.write_text(json.dumps(mine), encoding="utf-8")
     return other
