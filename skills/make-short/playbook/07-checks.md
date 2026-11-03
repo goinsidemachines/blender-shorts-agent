@@ -61,6 +61,8 @@ Tags the checks read (`bake.tag(obj, ...)` in build.py, `06-build.md`):
 | `overlay:may-exit` | An `overlay` (left out of the same checks) that leaves the frame on purpose: water falling out of shot, a stream running down a pipe past the frame's edge. `frame_edge` does not warn about it (not even when it is also a `hero`). Only for motion that is meant to leave the frame, never to hide a badly framed subject. |
 | `surface` | An open fluid surface that things may cross: water moved by waves (a grid with an Ocean modifier), a liquid level. Floating hulls and a wheel dipping into it are not overlaps. Left out of `overlap` and z-fighting (as either object of a pair) while its mesh is open; every other check still runs, and it still holds up a grounded object. A closed mesh is a solid and is checked whatever its tags: a `surface` tag on one is a `names` warning. Use `overlay` only for what is not physical at all. |
 | `category:<name>` | Not a check of its own: the part's category in the brand kit (`brand.categories`, lower case). A part label near it shows a dot in that category's colour, and the `covered` check measures that label with its dot. Without a brand kit it changes nothing. |
+| `set:floor` / `set:wall` / `set:backdrop` / `set:prop` | Scenery a brand kit's set made (its floor, wall, backdrop, or a prop placed round the subject). Never a hero (`bake.tag` refuses both on one object). The ink lines leave out a set's floor, wall and backdrop. |
+| `lines:off` | Not a check of its own: the ink lines (Freestyle) are not drawn round this part. `overlay` parts get no lines either. |
 
 At most 20 overlap findings are listed per scene; one more finding says how many pairs were left out. Fix the ones
 listed and check again.

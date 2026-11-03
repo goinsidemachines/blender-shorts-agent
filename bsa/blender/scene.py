@@ -77,7 +77,8 @@ def resolve_engine(scene, engine: str | None) -> str:
 
 @contextlib.contextmanager
 def preserved_render_state(scene):
-    """Restore every render setting a preset touches (engine, resolution %, samples, denoise, blur, device)."""
+    """Restore every render setting a preset touches (engine, resolution %, samples, denoise, blur, device), then
+    match a brand style's stamped lights and world to the restored engine (look.match_engine)."""
     r, cy, ev = scene.render, scene.cycles, scene.eevee
     snap = {
         "engine": r.engine,
@@ -100,6 +101,9 @@ def preserved_render_state(scene):
             ev.use_motion_blur = snap["ev_blur"]
         if snap["ev_rays"] is not None:
             ev.use_raytracing = snap["ev_rays"]
+        from bsa.blender import look  # look imports this module
+
+        look.match_engine(scene)
 
 
 def _motion_blur(scene, on: bool) -> None:

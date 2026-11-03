@@ -298,6 +298,7 @@ def paper_world(scene, hex_colour: str, light: float = 1.0, exposure: float | No
     world = scene.world or bpy.data.worlds.new(f"{scene.name} paper")
     scene.world = world
     world["bsa_backdrop"] = "paper"  # the stills' background check applies (bsa.colour.flat_backdrop)
+    world["bsa_paper"] = {"hex": hex_colour.upper(), "light": float(light)}  # a style change solves it again
     world.use_nodes = True
     nt = world.node_tree
     nt.nodes.clear()
@@ -375,42 +376,26 @@ RIG = (
 )
 
 
-def lights(scene, target, size: float, strength: float = 3.0) -> dict:
+def lights(scene, target, size: float, strength: float = 3.0, kind: str | None = None) -> dict:
     """Light the subject at `target` (a point, or an object: the centre of its bounding box) that is `size` metres
     across (its largest dimension) with a key, a fill and a rim light, placed around the scene camera's view (from
     -Y looking +Y when there is no camera). Subjects larger than SUN_ABOVE_M get sun lamps: a sun has no falloff, so
     a big flat face is lit evenly (area lights scaled up for a 100 m tower stand too close, and light its top far
     more than its base). Smaller subjects get the area-light rig AREA_DISTANCE sizes away, its power set so the key
     lights the subject as a sun of `strength` (W/m2) would. Calling it again moves and updates the same three lights
-    ("<scene> Key", "<scene> Fill", "<scene> Rim"). Returns {"kind": "sun" or "area", "distance": metres from the
-    target (None for suns), "lights": [the three light objects]}."""
-    from mathutils import Matrix, Vector
-
-    if hasattr(target, "bound_box"):
-        corners = [target.matrix_world @ Vector(c) for c in target.bound_box]
-        centre = sum(corners, Vector()) / len(corners)
-    else:
-        centre = Vector(target)
+    ("<scene> Key", "<scene> Fill", "<scene> Rim"). `kind="sun"` lights a subject of any size with suns. Returns
+    {"kind": "sun" or "area", "distance": metres from the target (None for suns), "lights": [the three light
+    objects]}."""
+    if kind not in (None, "sun"):
+        raise ValueError(f"unknown light kind {kind!r}: use None (chosen by size) or 'sun'")
+    centre, back = _aim(scene, target)
     size = max(float(size), 0.01)
-    cam = scene.camera
-    back = (cam.matrix_world.translation - centre) if cam is not None else Vector((0.0, -1.0, 0.0))
-    back.z = 0.0
-    back = back.normalized() if back.length > 1e-9 else Vector((0.0, -1.0, 0.0))
-    sun = size > SUN_ABOVE_M
+    sun = size > SUN_ABOVE_M or kind == "sun"
     distance = None if sun else AREA_DISTANCE * size
     made = []
     for name, around, up, share, colour in RIG:
-        flat = Matrix.Rotation(math.radians(around), 3, "Z") @ back
-        direction = (flat * math.cos(math.radians(up)) + Vector((0.0, 0.0, math.sin(math.radians(up))))).normalized()
-        full = f"{scene.name} {name}"
-        obj = bpy.data.objects.get(full)
-        kind = "SUN" if sun else "AREA"
-        if obj is None or obj.type != "LIGHT":
-            obj = bpy.data.objects.new(full, bpy.data.lights.new(full, kind))
-        if obj.data.type != kind:
-            obj.data.type = kind
-        if scene.collection.objects.get(obj.name) is None and obj.name not in scene.objects:
-            scene.collection.objects.link(obj)
+        direction = _direction(back, around, up)
+        obj = _light_object(scene, f"{scene.name} {name}", "SUN" if sun else "AREA")
         data = obj.data
         data.color = colour
         if sun:
@@ -424,3 +409,343 @@ def lights(scene, target, size: float, strength: float = 3.0) -> dict:
         obj.rotation_euler = (centre - obj.location).to_track_quat("-Z", "Y").to_euler()
         made.append(obj)
     return {"kind": "sun" if sun else "area", "distance": distance, "lights": made}
+
+
+def _aim(scene, target):
+    """(the target's centre, the flat unit direction from it toward the camera; -Y when there is no camera)."""
+    from mathutils import Vector
+
+    if hasattr(target, "bound_box"):
+        corners = [target.matrix_world @ Vector(c) for c in target.bound_box]
+        centre = sum(corners, Vector()) / len(corners)
+    else:
+        centre = Vector(target)
+    cam = scene.camera
+    back = (cam.matrix_world.translation - centre) if cam is not None else Vector((0.0, -1.0, 0.0))
+    back.z = 0.0
+    back = back.normalized() if back.length > 1e-9 else Vector((0.0, -1.0, 0.0))
+    return centre, back
+
+
+def _direction(back, around: float, up: float):
+    """The unit direction `around` degrees round from `back` (to the camera's left when positive), `up` above."""
+    from mathutils import Matrix, Vector
+
+    flat = Matrix.Rotation(math.radians(around), 3, "Z") @ back
+    return (flat * math.cos(math.radians(up)) + Vector((0.0, 0.0, math.sin(math.radians(up))))).normalized()
+
+
+def _light_object(scene, full: str, kind: str):
+    """The light object `full` of type `kind` ("SUN", "AREA"), made or reused, linked to the scene."""
+    obj = bpy.data.objects.get(full)
+    if obj is None or obj.type != "LIGHT":
+        obj = bpy.data.objects.new(full, bpy.data.lights.new(full, kind))
+    if obj.data.type != kind:
+        obj.data.type = kind
+    if scene.collection.objects.get(obj.name) is None and obj.name not in scene.objects:
+        scene.collection.objects.link(obj)
+    return obj
+
+
+# --- brand kit looks: stamped materials and lights, ink lines, engine matching ------------------------------------
+
+KIT_KINDS = ("plastic", "metal", "glass", "emissive", "toy", "toy_water", "matte")
+PATTERNS = (None, "dots", "grid", "wood")
+TOY_ROUGHNESS, TOY_COAT, TOY_COAT_ROUGHNESS = 0.28, 0.6, 0.08
+MATTE_ROUGHNESS = 0.6
+_KIND_ROUGHNESS = {"plastic": 0.4, "metal": 0.3, "glass": 0.05, "emissive": 0.5}
+
+
+def _mix_rgba(nt, factor, a, b):
+    """A colour Mix node from `a` (factor 0) to `b` (factor 1), `factor` an output socket; returns its colour result.
+    Sockets by identifier: the node's float, vector and colour sockets share the names "A", "B", "Result"."""
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+
+    def sock(sockets, ident):
+        return next(s for s in sockets if s.identifier == ident)
+
+    nt.links.new(factor, sock(mix.inputs, "Factor_Float"))
+    sock(mix.inputs, "A_Color").default_value = (*a, 1.0)
+    sock(mix.inputs, "B_Color").default_value = (*b, 1.0)
+    return sock(mix.outputs, "Result_Color")
+
+
+def _math(nt, operation: str, b: float | None = None):
+    node = nt.nodes.new("ShaderNodeMath")
+    node.operation = operation
+    if b is not None:
+        node.inputs[1].default_value = b
+    return node
+
+
+def _vmath(nt, operation: str):
+    node = nt.nodes.new("ShaderNodeVectorMath")
+    node.operation = operation
+    return node
+
+
+def _wood(nt, coords, lin):
+    """Wood grain: a distorted wave along the object's X between the colour x 0.72 and the colour, a little bump."""
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    mapping.inputs["Scale"].default_value = (0.25, 2.5, 2.5)
+    wave = nt.nodes.new("ShaderNodeTexWave")
+    wave.inputs["Scale"].default_value = 2.0
+    wave.inputs["Distortion"].default_value = 6.0
+    wave.inputs["Detail"].default_value = 3.0
+    nt.links.new(coords.outputs["Object"], mapping.inputs["Vector"])
+    nt.links.new(mapping.outputs["Vector"], wave.inputs["Vector"])
+    return _mix_rgba(nt, wave.outputs["Fac"], [c * 0.72 for c in lin], lin), wave.outputs["Fac"]
+
+
+def _dots(nt, coords, lin):
+    """Pegboard: dark round holes (x 0.35) on a 4 cm pitch, in the object's XY plane."""
+    scale = _vmath(nt, "SCALE")
+    scale.inputs["Scale"].default_value = 25.0
+    frac = _vmath(nt, "FRACTION")
+    centre = _vmath(nt, "SUBTRACT")
+    centre.inputs[1].default_value = (0.5, 0.5, 0.5)
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    flat = nt.nodes.new("ShaderNodeCombineXYZ")
+    length = _vmath(nt, "LENGTH")
+    hole = _math(nt, "LESS_THAN", 0.18)
+    nt.links.new(coords.outputs["Object"], scale.inputs[0])
+    nt.links.new(scale.outputs["Vector"], frac.inputs[0])
+    nt.links.new(frac.outputs["Vector"], centre.inputs[0])
+    nt.links.new(centre.outputs["Vector"], sep.inputs["Vector"])
+    nt.links.new(sep.outputs["X"], flat.inputs["X"])
+    nt.links.new(sep.outputs["Y"], flat.inputs["Y"])
+    nt.links.new(flat.outputs["Vector"], length.inputs[0])
+    nt.links.new(length.outputs["Value"], hole.inputs[0])
+    return _mix_rgba(nt, hole.outputs["Value"], lin, [c * 0.35 for c in lin]), None
+
+
+def _grid(nt, coords, lin):
+    """Graph paper: lighter lines (30% toward white) every 25 cm and every metre, in the object's XY plane (the style
+    sampler's grid)."""
+    acc = None
+    for every, width in ((4.0, 0.035), (1.0, 0.012)):
+        scale = _vmath(nt, "SCALE")
+        scale.inputs["Scale"].default_value = every
+        frac = _vmath(nt, "FRACTION")
+        sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+        nt.links.new(coords.outputs["Object"], scale.inputs[0])
+        nt.links.new(scale.outputs["Vector"], frac.inputs[0])
+        nt.links.new(frac.outputs["Vector"], sep.inputs["Vector"])
+        for axis in ("X", "Y"):
+            line = _math(nt, "LESS_THAN", width)
+            nt.links.new(sep.outputs[axis], line.inputs[0])
+            if acc is None:
+                acc = line
+                continue
+            top = _math(nt, "MAXIMUM")
+            nt.links.new(acc.outputs["Value"], top.inputs[0])
+            nt.links.new(line.outputs["Value"], top.inputs[1])
+            acc = top
+    return _mix_rgba(nt, acc.outputs["Value"], lin, [c + (1.0 - c) * 0.3 for c in lin]), None
+
+
+_PATTERN_NODES = {"wood": _wood, "dots": _dots, "grid": _grid}
+
+
+def kit_material(name: str, kind: str, colour: str, pattern: str | None = None):
+    """A brand kit material in `colour` ("#RRGGBB"): realistic Principled, made as `material` / `toy_water` make
+    them, of one of KIT_KINDS ("toy": a glossy toy plastic, roughness 0.28 under a clear coat; "matte": roughness
+    0.6), with an optional pattern from PATTERNS made from the colour ("dots" pegboard, "grid" graph lines, "wood"
+    grain). Stamped `mat["bsa_kit"]` (read it with `stamp`) so a brand style can rebuild it in its own look; with no
+    style it is what the realistic style keeps. ValueError for an unknown kind or pattern."""
+    from bsa import colour as colours
+
+    if kind not in KIT_KINDS:
+        raise ValueError(f"unknown kit material kind {kind!r}: use one of {', '.join(KIT_KINDS)}")
+    if pattern not in PATTERNS:
+        raise ValueError(f"unknown pattern {pattern!r}: use one of None, {', '.join(p for p in PATTERNS if p)}")
+    hex_ = colours.srgb_to_hex(colours.hex_to_srgb(colour)).upper()
+    lin = [float(c) for c in colours.srgb_to_linear(colours.hex_to_srgb(hex_))]
+    if kind == "toy_water":
+        mat = toy_water(name, hex_)
+    elif kind in ("toy", "matte"):
+        mat = material(name, lin, roughness=TOY_ROUGHNESS if kind == "toy" else MATTE_ROUGHNESS)
+    else:
+        mat = material(name, lin, roughness=_KIND_ROUGHNESS[kind], kind=kind)
+    nt = mat.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    if kind == "toy":
+        for key in ("Coat Weight", "Clearcoat"):  # Blender 4.0+, then 3.x
+            _set(bsdf, key, TOY_COAT)
+        for key in ("Coat Roughness", "Clearcoat Roughness"):
+            _set(bsdf, key, TOY_COAT_ROUGHNESS)
+    if pattern is not None:
+        shade, height = _PATTERN_NODES[pattern](nt, nt.nodes.new("ShaderNodeTexCoord"), lin)
+        nt.links.new(shade, bsdf.inputs["Base Color"])
+        if kind == "emissive":
+            nt.links.new(shade, bsdf.inputs["Emission Color"])
+        if height is not None:
+            bump = nt.nodes.new("ShaderNodeBump")
+            bump.inputs["Strength"].default_value = 0.08
+            nt.links.new(height, bump.inputs["Height"])
+            nt.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    mat["bsa_kit"] = {"kind": kind, "colour": hex_, "pattern": pattern or ""}
+    return mat
+
+
+def stamp(mat) -> dict | None:
+    """A kit material's stamp {"kind", "colour" ("#RRGGBB"), "pattern" (None when it has none)}, or None when `mat`
+    was not made by kit_material."""
+    if mat is None or "bsa_kit" not in mat:
+        return None
+    raw = mat["bsa_kit"]
+    return {"kind": str(raw["kind"]), "colour": str(raw["colour"]), "pattern": str(raw["pattern"]) or None}
+
+
+_RIG_NAMES = ("Key", "Fill", "Rim", "Sun")
+
+
+def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool = False, sun: bool | None = None,
+               sun_angle_deg: float = SUN_ANGLE_DEG, cycles_scale: float = 1.0) -> dict:  # fmt: skip
+    """A brand style's lights: the `lights` rig (suns when `size` > SUN_ABOVE_M or `sun=True`, each `sun_angle_deg`
+    across), or with `single_sun` one white sun "<scene> Sun" from the key's direction, `sun_angle_deg` across, of
+    `strength`. This scene's other "<scene> Key/Fill/Rim/Sun" lights are removed. Each light is stamped
+    `light["bsa_energy"] = {"eevee": e, "cycles": e * cycles_scale}` and set for the scene's engine now (match_engine
+    sets it again for the engine a render uses). Returns {"kind", "distance", "lights"} as `lights` does."""
+    if single_sun:
+        centre, back = _aim(scene, target)
+        _name, around, up, _share, _colour = RIG[0]
+        obj = _light_object(scene, f"{scene.name} Sun", "SUN")
+        obj.data.color = (1.0, 1.0, 1.0)
+        obj.data.energy = float(strength)
+        obj.data.angle = math.radians(sun_angle_deg)
+        obj.location = centre + _direction(back, around, up) * max(float(size), 0.01)
+        obj.rotation_euler = (centre - obj.location).to_track_quat("-Z", "Y").to_euler()
+        out = {"kind": "sun", "distance": None, "lights": [obj]}
+    else:
+        out = lights(scene, target, size, strength, kind="sun" if sun else None)
+        if out["kind"] == "sun":
+            for obj in out["lights"]:
+                obj.data.angle = math.radians(sun_angle_deg)
+    keep = {o.name for o in out["lights"]}
+    for name in _RIG_NAMES:
+        old = bpy.data.objects.get(f"{scene.name} {name}")
+        if old is not None and old.name not in keep:
+            data = old.data
+            bpy.data.objects.remove(old)
+            if data is not None and data.users == 0:
+                bpy.data.lights.remove(data)
+    engine = _engine(scene)
+    for obj in out["lights"]:
+        e = float(obj.data.energy)
+        obj["bsa_energy"] = {"eevee": e, "cycles": e * float(cycles_scale)}
+        obj.data.energy = float(obj["bsa_energy"][engine])
+    return out
+
+
+INK_LINESET = "bsa ink"
+CREASE_DEG = 140.0
+_NO_LINE_ROLES = ("floor", "wall", "backdrop")
+
+
+def _no_lines(scene, exclude):
+    """The collection "<scene> no lines" (made, and linked under the scene, when missing) holding exactly what the ink
+    lines leave out: `exclude`, every object tagged lines:off or overlay, and every set floor, wall and backdrop."""
+    from bsa.blender import bake
+
+    name = f"{scene.name} no lines"
+    col = bpy.data.collections.get(name) or bpy.data.collections.new(name)
+    if scene.collection.children.get(col.name) is None:
+        scene.collection.children.link(col)
+    want = {o.name for o in exclude}
+    for obj in scene.objects:
+        if bake.LINES_OFF in bake.tags(obj) or bake.is_overlay(obj) or bake.set_role(obj) in _NO_LINE_ROLES:
+            want.add(obj.name)
+    for obj in list(col.objects):
+        if obj.name not in want:
+            col.objects.unlink(obj)
+    for obj_name in sorted(want):
+        obj = bpy.data.objects.get(obj_name)
+        if obj is not None and col.objects.get(obj_name) is None:
+            col.objects.link(obj)
+    return col
+
+
+def ink_lines(scene, colour: str, px: float, *, crease: bool = True, exclude=()) -> object:
+    """Ink lines drawn by Freestyle at render time, adding no geometry: one lineset "bsa ink" on each of the scene's
+    view layers (visible silhouette, border, external contour and, with `crease`, creases sharper than 140 degrees)
+    in `colour` ("#RRGGBB"), `px` wide on a 1920-tall frame (RELATIVE thickness, so a smaller render keeps the same
+    share). What is in "<scene> no lines" gets no lines (`exclude`, lines:off, overlay, set floor, wall, backdrop).
+    Calling it again reuses the lineset and the collection; other linesets stop rendering. `px <= 0` turns Freestyle
+    off and removes "bsa ink" (returns None). Returns the lineset."""
+    from bsa import colour as colours
+    from bsa import looks
+
+    if px <= 0:
+        scene.render.use_freestyle = False
+        for layer in scene.view_layers:
+            ls = layer.freestyle_settings.linesets.get(INK_LINESET)
+            if ls is not None:
+                layer.freestyle_settings.linesets.remove(ls)
+        return None
+    scene.render.use_freestyle = True
+    scene.render.line_thickness_mode = "RELATIVE"
+    col = _no_lines(scene, exclude)
+    ink = [float(c) for c in colours.srgb_to_linear(colours.hex_to_srgb(colour))]
+    first = None
+    for layer in scene.view_layers:
+        layer.use_freestyle = True
+        fs = layer.freestyle_settings
+        fs.mode = "EDITOR"
+        fs.crease_angle = math.radians(CREASE_DEG)
+        ls = fs.linesets.get(INK_LINESET) or fs.linesets.new(INK_LINESET)
+        for other in fs.linesets:  # a view layer's default "LineSet" would draw lines on the excluded too
+            if other.name != INK_LINESET:
+                other.show_render = False
+        ls.show_render = True
+        ls.select_by_visibility = True
+        ls.visibility = "VISIBLE"
+        ls.select_by_edge_types = True
+        ls.select_silhouette = True
+        ls.select_border = True
+        ls.select_external_contour = True
+        ls.select_crease = bool(crease)
+        ls.select_by_collection = True
+        ls.collection = col
+        ls.collection_negation = "EXCLUSIVE"
+        if ls.linestyle is None:
+            ls.linestyle = bpy.data.linestyles.new(INK_LINESET)
+        ls.linestyle.color = ink
+        ls.linestyle.thickness = looks.freestyle_thickness(px)
+        first = first or ls
+    return first
+
+
+def _engine(scene) -> str:
+    from bsa.blender.scene import current_engine
+
+    return current_engine(scene)
+
+
+def match_engine(scene) -> str:
+    """Use the stamped values for the engine the scene renders with, read from the scene and never set: each light's
+    energy from its `bsa_energy` stamp, each world Background node's strength from `world["bsa_strength"]` ({node
+    name: {"eevee", "cycles"}}), and in Cycles `max_bounces` from `scene["bsa_style_bounces"]`; then stamps
+    `scene["bsa_style_engine"]`. Unstamped lights and worlds are left alone: a short without a brand style is
+    unchanged (and gets no stamp). Returns "eevee" or "cycles"."""
+    engine = _engine(scene)
+    touched = False
+    for obj in scene.objects:
+        if obj.type == "LIGHT" and "bsa_energy" in obj:
+            obj.data.energy = float(obj["bsa_energy"][engine])
+            touched = True
+    world = scene.world
+    if world is not None and "bsa_strength" in world and world.node_tree is not None:
+        for node_name, values in world["bsa_strength"].items():
+            node = world.node_tree.nodes.get(node_name)
+            if node is not None and "Strength" in node.inputs:
+                node.inputs["Strength"].default_value = float(values[engine])
+        touched = True
+    if "bsa_style_bounces" in scene:
+        touched = True
+        if engine == "cycles":
+            scene.cycles.max_bounces = int(scene["bsa_style_bounces"])
+    if touched:
+        scene["bsa_style_engine"] = engine
+    return engine

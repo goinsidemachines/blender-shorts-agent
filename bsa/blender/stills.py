@@ -7,6 +7,7 @@ from pathlib import Path
 
 import bpy
 
+from bsa.blender import look
 from bsa.blender.scene import apply_preset, preserved_render_state, resolve_engine
 
 
@@ -45,6 +46,7 @@ def render_still(
     try:
         with _window_scene(scene), preserved_render_state(scene):
             apply_preset(scene, engine, preset, percent)
+            look.match_engine(scene)  # a brand style's lights and world for the engine this still renders with
             ims.file_format = file_format
             if file_format == "PNG":
                 ims.color_depth = "8"

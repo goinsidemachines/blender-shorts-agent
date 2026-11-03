@@ -85,15 +85,33 @@ def _fcurves(action):
 # Every tag the checks read (07-checks.md documents each): "hero" / "hero:<shot ids>", "grounded",
 # "contact:<other>[:<max depth m>][:moves]" (moves: the pair moves against each other by design), "overlay" (a glow,
 # a guide line: not physical geometry), "overlay:may-exit" (an overlay that may leave the frame on purpose, such as
-# a falling stream: no frame_edge warning), "surface" (an open fluid surface, such as water: things may cross it) and
-# "category:<name>" (the part's category in a brand kit: its label's dot takes that category's colour).
+# a falling stream: no frame_edge warning), "surface" (an open fluid surface, such as water: things may cross it),
+# "category:<name>" (the part's category in a brand kit: its label's dot takes that category's colour),
+# "set:<role>" (scenery a set made: its floor, wall, backdrop or a prop; never a hero) and "lines:off" (no ink
+# lines drawn round it).
 MAY_EXIT = "overlay:may-exit"
-TAGS = ("hero", "grounded", "contact:", "overlay", MAY_EXIT, "surface", "category:")
+LINES_OFF = "lines:off"
+SET_ROLES = ("floor", "wall", "backdrop", "prop")
+SET_TAGS = tuple(f"set:{r}" for r in SET_ROLES)
+TAGS = ("hero", "grounded", "contact:", "overlay", MAY_EXIT, "surface", "category:", *SET_TAGS, LINES_OFF)
 
 
 def _is_tag_start(word: str) -> bool:
-    return word in ("hero", "grounded", "overlay", MAY_EXIT, "surface") or word.startswith(
-        ("contact:", "hero:", "category:"))
+    return word in ("hero", "grounded", "overlay", MAY_EXIT, "surface", LINES_OFF) or word.startswith(
+        ("contact:", "hero:", "category:", "set:"))
+
+
+def set_role(obj) -> str | None:
+    """The role of a set object ("floor", "wall", "backdrop" or "prop", from its "set:<role>" tag), or None."""
+    for t in tags(obj):
+        if t in SET_TAGS:
+            return t[len("set:") :]
+    return None
+
+
+def is_set(obj) -> bool:
+    """Whether the object is scenery a set made (tagged "set:<role>")."""
+    return set_role(obj) is not None
 
 
 def category(obj) -> str | None:
@@ -149,13 +167,18 @@ def is_hero(obj, shot_id: str | None = None) -> bool:
 
 
 def tag(obj, *new_tags: str) -> None:
-    """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay", "surface") into bsa_tags (comma-joined, no
-    duplicates). Only a hero:<shot ids> tag may hold commas (between its shot ids)."""
+    """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay", "surface", "set:<role>",
+    "lines:off") into bsa_tags (comma-joined, no duplicates). Only a hero:<shot ids> tag may hold commas (between its
+    shot ids). A set object (set:<role>) is never a hero: ValueError."""
     for t in new_tags:
         ids = t[5:].split(",") if t.startswith("hero:") else None
         bad = not t or (ids is None and "," in t) or (ids is not None and not all(i.strip() and " " not in i for i in ids))
         if bad:
             raise ValueError(f"invalid tag {t!r}: must be non-empty and contain no comma (hero:s03,s04 lists shots)")
+        if t.startswith("set:") and t not in SET_TAGS:
+            raise ValueError(f"invalid tag {t!r}: a set tag is one of {', '.join(SET_TAGS)}")
     merged = tags(obj)
     merged.extend(t for t in new_tags if t not in merged)
+    if any(t in SET_TAGS for t in merged) and any(t == "hero" or t.startswith("hero:") for t in merged):
+        raise ValueError(f"{getattr(obj, 'name', None) or 'object'}: set objects are scenery, never heroes")
     obj["bsa_tags"] = ",".join(merged)

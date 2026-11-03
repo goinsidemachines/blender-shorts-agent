@@ -79,3 +79,33 @@ def test_category_tag_parses_after_a_hero_list():
     o3 = Obj()
     o3["bsa_tags"] = "category: , grounded"  # an empty name is no category
     assert bake.category(o3) is None
+
+
+def test_set_tags_parse_and_set_objects_cannot_be_heroes():
+    """set:<role> marks a set's scenery (floor, wall, backdrop, prop); lines:off keeps a part out of the ink lines.
+    A set object is never a hero, whichever order the tags come in."""
+    for role in ("floor", "wall", "backdrop", "prop"):
+        o = Obj()
+        bake.tag(o, f"set:{role}", "grounded")
+        assert bake.tags(o) == [f"set:{role}", "grounded"]
+        assert bake.set_role(o) == role and bake.is_set(o)
+    assert bake.set_role(Obj()) is None and not bake.is_set(Obj())
+    for t in ("set:floor", "set:wall", "set:backdrop", "set:prop", "lines:off"):
+        assert t in bake.TAGS
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "lines:off")
+    assert bake.tags(o) == ["hero:s01,s02", "lines:off"] and not bake.is_set(o)
+    o2 = Obj()
+    o2["bsa_tags"] = "set:prop,lines:off"
+    assert bake.tags(o2) == ["set:prop", "lines:off"] and bake.set_role(o2) == "prop"
+    o3 = Obj()
+    o3["bsa_tags"] = "hero:s01,s02,lines:off"  # lines:off starts a tag: not read as another shot id
+    assert bake.tags(o3) == ["hero:s01,s02", "lines:off"] and not bake.is_hero(o3, "lines:off")
+    with pytest.raises(ValueError, match="set objects are scenery, never heroes"):
+        floor = Obj()
+        bake.tag(floor, "set:floor")
+        bake.tag(floor, "hero")
+    with pytest.raises(ValueError, match="set objects are scenery, never heroes"):
+        bake.tag(Obj(), "hero:s01", "set:wall")
+    with pytest.raises(ValueError, match="floor"):
+        bake.tag(Obj(), "set:ceiling")
