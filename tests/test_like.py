@@ -33,7 +33,7 @@ def _voice(sdir, provider="kokoro", voice="af_heart", speed=1.0):
 def test_summary_reads_style_set_length_and_voice(tmp_path):
     sdir = _make(tmp_path, "Big Ben", style={"style": "toon", "set": "workbench"})
     _voice(sdir)
-    engine_runs.record_mp4(sdir, "final", engine_runs.resolve(None, "eevee"), sdir / "out" / "a.mp4",
+    engine_runs.record_mp4(sdir, "final", engine_runs.EngineRun(None), sdir / "out" / "a.mp4",
                            edit={"timeline_hash": "x", "fps": 30, "frames": 1290, "closing": None})
     row = like.summary(sdir, {"brand": kitfix.KIT})
     assert row["short"] == sdir.name and row["number"] == 1 and row["title"] == "Big Ben"
