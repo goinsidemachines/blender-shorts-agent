@@ -1025,3 +1025,140 @@ def test_word_times_is_none_without_whisper_or_on_failure(tmp_path, monkeypatch)
     assert local.word_times(lines("l01"), tmp_path, run=run) is None and not calls
     monkeypatch.setattr(install, "installed", lambda: {local.WHISPER_MODEL: True})
     assert local.word_times(lines("l01"), tmp_path, run=run) is None and calls
+
+
+# --- paragraph take mode ---------------------------------------------------------------------------------------------
+
+
+def _sentence_pcm(text: str) -> bytes:
+    """0.2 s of silence, then per sentence a tone (0.025 s per character) and 0.3 s of silence (none after a sentence
+    with "joined" in it, unless it is the last): cuts cleanly where there is a pause."""
+    import re
+
+    import numpy as np
+
+    parts = [np.zeros(9600)]
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", text.strip()) if x]
+    for k, s in enumerate(sentences):
+        t = np.arange(round(48000 * 0.025 * len(s))) / 48000
+        parts.append(9000 * np.sin(2 * np.pi * (200 + 60 * k) * t))
+        if "joined" not in s or k == len(sentences) - 1:
+            parts.append(np.zeros(14400))
+    return np.concatenate(parts).astype("<i2").tobytes()
+
+
+def _sentence_gen(log):
+    def gen(model, lns, voice, speed, out, seed=7):
+        log.append(([x.id for x in lns], [contract_text(x) for x in lns], seed, Path(out).name))
+        for x in lns:
+            Path(out).mkdir(parents=True, exist_ok=True)
+            with wave.open(str(Path(out) / f"{x.id}.wav"), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(48000)
+                w.writeframes(_sentence_pcm(contract_text(x)))
+        return {x.id: round(contract.wav_seconds(Path(out) / f"{x.id}.wav"), 3) for x in lns}
+
+    return gen
+
+
+def contract_text(line):
+    from bsa.short import spoken_text
+
+    return spoken_text(line)
+
+
+def _para_short():
+    return Short(slug="t", title="T", length_s=10, lines=[
+        Line("l01", "The pendulum swings out wide.", "s1"),
+        Line("l02", "It takes 2 s.", "s1", say="It takes two whole seconds."),
+        Line("l03", "Only its length can change that.", "s1"),
+    ])  # fmt: skip
+
+
+PARA = {"provider": "kokoro", "voice": "v", "speed": 1.0, "take_mode": "paragraph", "verify": False}
+JOINED = "The pendulum swings out wide. It takes two whole seconds. Only its length can change that."
+
+
+def test_local_and_elevenlabs_speak_the_joined_text_in_paragraph_mode(tmp_path):
+    log = []
+    res = nrun.narrate(tmp_path / "local", _para_short(), {"narrator": PARA}, local=SimpleNamespace(generate=_sentence_gen(log)))
+    assert res.status == "ok", res.message
+    assert log == [(["t01"], [JOINED], 7, nrun.TAKES_DIR)]
+    vo = tmp_path / "local" / "audio" / "vo"
+    assert {k: v["source"] for k, v in nrun.line_sources(vo).items()} == {"l01": "take", "l02": "take", "l03": "take"}
+    assert all(contract.check_take(vo / f"{i}.wav") == [] for i in ("l01", "l02", "l03"))
+
+    calls = []
+
+    def http(req, timeout=None):
+        calls.append(json.loads(req.data)["text"])
+        return io.BytesIO(_sentence_pcm(calls[-1]))
+
+    el = lambda lns, voice, speed, out: elevenlabs.generate(lns, voice, speed, out, api_key=KEY, http=http)
+    settings = {"narrator": {**PARA, "provider": "elevenlabs"}}
+    res = nrun.narrate(tmp_path / "el", _para_short(), settings, elevenlabs=el)
+    assert res.status == "ok", res.message
+    assert calls == [JOINED]
+    vo = tmp_path / "el" / "audio" / "vo"
+    assert {k: v["source"] for k, v in nrun.line_sources(vo).items()} == {"l01": "take", "l02": "take", "l03": "take"}
+    assert (vo / nrun.TAKES_DIR / "t01.wav").is_file()
+    assert set(res.durations) == {"l01", "l02", "l03"}
+
+
+def test_unclear_line_of_a_take_is_retried_on_its_own(tmp_path):
+    log, heard = [], []
+
+    def hear(lns, out):
+        heard.append([x.id for x in lns])
+        first = len(heard) == 1
+        return {x.id: {"said": "x", "wer": 0.5 if first and x.id == "l02" else 0.0} for x in lns}
+
+    settings = {"narrator": {**PARA, "verify": True}}
+    res = nrun.narrate(tmp_path, _para_short(), settings, local=SimpleNamespace(generate=_sentence_gen(log), hear=hear))
+    assert res.status == "ok" and res.message is None
+    assert [(ids, seed) for ids, _, seed, _ in log] == [(["t01"], 7), (["l02"], 8)]
+    vo = tmp_path / "audio" / "vo"
+    assert {k: v["source"] for k, v in nrun.line_sources(vo).items()} == {"l01": "take", "l02": "line", "l03": "take"}
+    assert nrun.take_seeds(vo) == {"l01": 7, "l02": 8, "l03": 7}
+
+
+def test_whisper_word_timings_are_passed_to_the_cut(tmp_path, monkeypatch):
+    from bsa.narrate import takes
+
+    words = [("w", 0.0, 0.1)]
+    seen, asked = [], []
+    real = takes.cut
+
+    def cut(x, texts, ids, words=None, sr=48000):
+        seen.append(words)
+        return real(x, texts, ids, words=words, sr=sr)
+
+    def word_times(take_lines, takes_dir):
+        asked.append(([t.id for t in take_lines], Path(takes_dir).name))
+        return {"t01": words}
+
+    monkeypatch.setattr(takes, "cut", cut)
+    fake = SimpleNamespace(generate=_sentence_gen([]), word_times=word_times)
+    res = nrun.narrate(tmp_path, _para_short(), {"narrator": PARA}, local=fake)
+    assert asked == [(["t01"], nrun.TAKES_DIR)] and seen == [words]
+    assert "don't match the script's" in res.message  # one word heard for 15 written: cut by character timing
+
+
+def test_lead_in_pads_cut_lines_and_fallbacks(tmp_path):
+    short = Short(slug="t", title="T", length_s=10, lines=[
+        Line("l01", "The pendulum swings out wide and then slowly back.", "s1"),
+        Line("l02", "It is joined at the top.", "s1"),  # no pause after it: l02 and l03 fall back
+        Line("l03", "Each swing is even.", "s1"),
+        Line("l04", "Only the length of its string can ever change that.", "s1"),
+    ])  # fmt: skip
+    res = nrun.narrate(tmp_path, short, {"narrator": {**PARA, "lead_in": 0.4}},
+                       local=SimpleNamespace(generate=_sentence_gen([])))  # fmt: skip
+    assert res.status == "ok"
+    vo = tmp_path / "audio" / "vo"
+    ids = ["l01", "l02", "l03", "l04"]
+    sources = {k: v["source"] for k, v in nrun.line_sources(vo).items()}
+    assert sources == {"l01": "take", "l02": "fallback", "l03": "fallback", "l04": "take"}
+    for lid in ids:
+        assert contract.leading_silence(vo / f"{lid}.wav") == pytest.approx(0.4, abs=0.015)
+    assert contract.read_durations(vo, ids) == res.durations

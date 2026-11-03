@@ -314,3 +314,14 @@ def test_resampling_keeps_the_head_and_adds_no_pre_echo(tmp_path):
     after = rms_db(y[round(0.2 * 48000) : round(0.25 * 48000)])
     assert abs(after - before) <= 1.0, (before, after)
     assert contract.leading_silence(p) == pytest.approx(0.2, abs=0.011)  # the wrap read as the voice starting at 0
+
+def test_take_placeholder_is_the_take_id_or_empty(tmp_path):
+    from bsa.narrate.custom import TAKE_PLACEHOLDER, takes_supported
+
+    calls = []
+    cmd = "tts --lines {lines} --out {out} --take {take}"
+    generate(cmd, lines("t01"), tmp_path, run=fake_run(calls), take="t01")
+    generate(cmd, lines("l01"), tmp_path, run=fake_run(calls))
+    assert [c[0][c[0].index("--take") + 1] for c in calls] == ["t01", ""]
+    assert TAKE_PLACEHOLDER == "{take}"
+    assert takes_supported(cmd) and not takes_supported("tts --lines {lines} --out {out}") and not takes_supported("")

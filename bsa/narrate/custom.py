@@ -4,8 +4,12 @@ Everything the tool prints (stdout and stderr) is appended to <out>/narrator.log
 that mention a fallback, a warning or an error, for the narrate result.
 
 The command has placeholders {lines} (a lines JSON file), {out} (the folder for the takes), {seed}, and optionally
-{voice} and {speed}. It must write <out>/<id>.wav for every line. Whatever WAV it writes is normalised to the
+{voice}, {speed} and {take}. It must write <out>/<id>.wav for every line. Whatever WAV it writes is normalised to the
 contract (48 kHz mono 16-bit). The command is run without a shell, so a path with spaces stays one argument.
+
+{take} is what lets paragraph take mode use the tool: for a paragraph take it is the take's id (the lines file then
+holds one item, the take, whose text is several lines joined), and it is empty for a line spoken on its own. A command
+without {take} is always run line by line.
 """
 
 from __future__ import annotations
@@ -27,6 +31,12 @@ _ADAPTER_HINT = "ask Claude to write a small adapter that turns your tool's outp
 
 
 LOG_FILE = "narrator.log"  # everything the tool printed, per run, in the takes folder
+TAKE_PLACEHOLDER = "{take}"
+
+
+def takes_supported(command: str) -> bool:
+    """The command can speak a paragraph take: it has the {take} placeholder."""
+    return TAKE_PLACEHOLDER in str(command or "")
 _NOTE_WORDS = ("fallback", "fall back", "fell back", "warning", "error")
 LOG_NOTES_MAX = 20
 
@@ -87,9 +97,17 @@ def _argv(command: str, values: dict[str, str | None]) -> list[str]:
 
 
 def generate(
-    command: str, lines, out_dir: Path, seed: int = 7, voice=None, speed: float = 1.0, run=subprocess.run
+    command: str,
+    lines,
+    out_dir: Path,
+    seed: int = 7,
+    voice=None,
+    speed: float = 1.0,
+    run=subprocess.run,
+    take: str | None = None,
 ) -> dict[str, float]:
-    """Run the command for `lines` and return seconds per line, measured from the (normalised) WAVs."""
+    """Run the command for `lines` and return seconds per line, measured from the (normalised) WAVs. `take` fills
+    {take}: a paragraph take's id, or None (empty) for lines spoken on their own."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     lines_file = out_dir / "lines.json"
@@ -102,6 +120,7 @@ def generate(
             "seed": str(seed),
             "voice": str(voice) if voice else None,
             "speed": str(speed),
+            "take": str(take or ""),
         },
     )
     for ln in lines:  # an old take must not pass for the tool's new one

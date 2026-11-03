@@ -13,16 +13,20 @@ from __future__ import annotations
 import json
 import math
 import os
+import wave
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 from bsa import jobstate
 from bsa.narrate import custom as _custom
 from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
+from bsa.narrate import takes as _takes
 from bsa.narrate.contract import NarrationError, check_take, forget_durations, pad_lead, read_durations, voice_onset
 from bsa.narrate.local import RETRIES, WER_LIMIT
-from bsa.short import Short, line_id_problem, spoken_text
+from bsa.short import Line, Short, line_id_problem, spoken_text
 
 LOCAL_ENGINES = ("kokoro", "chatterbox", "chatterbox-turbo")
 HEARD_FILE = "heard.json"
@@ -34,6 +38,8 @@ WHISPER_MISSING = (
 )
 CHECK_OFF = "The voice check is turned off (narrator.verify false)."
 CAPTIONS_ONLY = "This short uses captions only, so there is no voice to check."
+TAKES_DIR = "takes"  # audio/vo/takes/<take id>.wav: paragraph takes, kept for re-cuts
+NO_TAKE_PLACEHOLDER = "take mode needs {take} in your voice command, so the lines were spoken one by one."
 
 
 @dataclass
@@ -244,14 +250,126 @@ def apply_lead_in(out_dir: Path, ids: list[str], lead_in: float) -> dict[str, fl
     return read_durations(out_dir, list(ids))
 
 
-def _spoken(short: Short, out_dir: Path, speak, hear, check, *, lead_in: float = 0.0) -> NarrationResult:
+def take_records(out_dir: Path) -> list[dict]:
+    """The paragraph takes narrator.json records, [{"id", "lines", "seed", "file"}], valid entries only."""
+    found = _read_record(out_dir).get("takes")
+    out = []
+    for t in found if isinstance(found, list) else []:
+        if (isinstance(t, dict) and isinstance(t.get("id"), str) and isinstance(t.get("lines"), list)
+                and all(isinstance(i, str) for i in t["lines"]) and isinstance(t.get("seed"), int)
+                and not isinstance(t.get("seed"), bool) and isinstance(t.get("file"), str)):  # fmt: skip
+            out.append({"id": t["id"], "lines": list(t["lines"]), "seed": t["seed"], "file": t["file"]})
+    return out
+
+
+def _record_takes(out_dir: Path, spoken: list[dict]) -> str | None:
+    """Record the takes spoken now over any earlier one of the same id. Best-effort like _record_seeds."""
+    record = _read_record(out_dir)
+    ids = {t["id"] for t in spoken}
+    record["takes"] = sorted([t for t in take_records(out_dir) if t["id"] not in ids] + spoken, key=lambda t: t["id"])
+    try:
+        _write_json(Path(out_dir) / RECORD_FILE, record)
+    except OSError as exc:
+        return f"The paragraph takes couldn't be recorded ({exc})."
+    return None
+
+
+def _take_samples(path: Path) -> np.ndarray:
+    """A take's samples as floats in -1..1 (the contract: 48 kHz mono 16-bit, already checked)."""
+    with wave.open(str(path), "rb") as w:
+        data = w.readframes(w.getnframes())
+    return np.frombuffer(data, dtype="<i2").astype(np.float64) / 32768.0
+
+
+def _plan(short: Short, todo: list) -> tuple[list[list], list]:
+    """(paragraph takes to speak, lines to speak on their own): a group of 2+ lines that all need speaking is a take;
+    the lines of any other group that need speaking are spoken on their own."""
+    need = {ln.id for ln in todo}
+    paragraphs, alone = [], []
+    for g in _takes.group(short.lines, short.shots):
+        if len(g) >= 2 and all(ln.id in need for ln in g):
+            paragraphs.append(g)
+        else:
+            alone += [ln for ln in g if ln.id in need]
+    return paragraphs, alone
+
+
+def _speak_takes(short: Short, out_dir: Path, todo: list, speak, take, words, lead_in: float):
+    """Paragraph mode: speak each planned take, cut it into line takes, and speak the lines it couldn't cut (and the
+    lines that are no take's) on their own. Returns (durations, seed used per line, notes)."""
+    paragraphs, alone = _plan(short, todo)
+    index = {id(g[0]): i for i, g in enumerate(_takes.group(short.lines, short.shots), start=1)}
+    old = {t["id"]: t for t in take_records(out_dir)}
+    takes_dir = out_dir / TAKES_DIR
+    durations: dict[str, float] = {}
+    used: dict[str, int] = {}
+    notes: list[str | None] = []
+    spoken = []  # (take line, group, seed, wav)
+    for g in paragraphs:
+        tid = _takes.take_id(index[id(g[0])])
+        had = old.get(tid)
+        seed = had["seed"] if had and had["lines"] == [ln.id for ln in g] else FIRST_SEED
+        (takes_dir / f"{tid}.wav").unlink(missing_ok=True)  # an old take must not pass for this one
+        take_line = Line(tid, _takes.joined(g), g[0].shot)
+        spoken.append((take_line, g, seed, Path(take(take_line, seed))))
+    timings = (words([t[0] for t in spoken], takes_dir) if words and spoken else None) or {}
+    fallback: dict[int, list] = {}
+    reasons: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    for take_line, g, seed, wav in spoken:
+        ids = [ln.id for ln in g]
+        x = _take_samples(wav)
+        pieces = _takes.cut(x, [spoken_text(ln) for ln in g], ids, words=timings.get(take_line.id))
+        cut_ids = [ids[p.line] for p in pieces if p.start is not None]
+        secs = _takes.write_pieces(x, pieces, ids, out_dir)
+        forget_durations(out_dir, cut_ids)  # an engine's old durations.json entry must not outlive its take
+        durations.update(apply_lead_in(out_dir, cut_ids, lead_in) if lead_in > 0 else secs)
+        sources.update({i: "take" for i in cut_ids})
+        for p in pieces:
+            if p.start is None:
+                fallback.setdefault(seed, []).append(g[p.line])
+                reasons[ids[p.line]] = p.reason or "the take couldn't be cut there"
+        note = next((p.note for p in pieces if p.note), None)
+        if note:
+            notes.append(f"Take {take_line.id}: {note}.")
+        used.update({i: seed for i in ids})
+        notes.append(_record_seeds(out_dir, {i: seed for i in ids}))
+    if spoken:
+        notes.append(_record_takes(out_dir, [
+            {"id": t.id, "lines": [ln.id for ln in g], "seed": seed, "file": f"{TAKES_DIR}/{t.id}.wav"}
+            for t, g, seed, _ in spoken
+        ]))  # fmt: skip
+    for seed, lns in fallback.items():
+        durations.update(speak(lns, seed))
+        sources.update({ln.id: "fallback" for ln in lns})
+    notes.append(record_sources(out_dir, sources, reasons))
+    seeds = take_seeds(out_dir)
+    by_seed: dict[int, list] = {}
+    for ln in alone:
+        by_seed.setdefault(seeds.get(ln.id, FIRST_SEED), []).append(ln)
+    for seed, lns in by_seed.items():
+        durations.update(speak(lns, seed))
+        used.update({ln.id: seed for ln in lns})
+        notes.append(_record_seeds(out_dir, {ln.id: seed for ln in lns}))
+        notes.append(record_sources(out_dir, {ln.id: "line" for ln in lns}))
+    return durations, used, notes
+
+
+def _spoken(short: Short, out_dir: Path, speak, hear, check, *, take=None, words=None, lead_in: float = 0.0,
+            retry: bool = True, note: str | None = None) -> NarrationResult:  # fmt: skip
     """Only lines without a good take on disk are spoken (clear_stale_takes has already removed takes of another
     voice, speed or text), so an interrupted, re-taken or reworded run remakes only what it must. Each take is
     spoken with its line's seed (take_seeds: 7 for a first take, the next one after a retake) and every seed used
-    is recorded; an unclear take spoken in this call is spoken again with its seed + 1, then + 2. An unclear take
-    kept from an earlier run already had its retries: it is reported, not spoken again. `speak(lines, seed)` makes
-    the takes and returns seconds per line; `hear(lines)` returns (heard, why_not) as _hear does. Writes
-    heard.json."""
+    is recorded; an unclear take spoken in this call is spoken again with its seed + 1, then + 2 (unless `retry` is
+    off: then it is only reported). An unclear take kept from an earlier run already had its retries: it is
+    reported, not spoken again. `speak(lines, seed)` makes the takes and returns seconds per line; `hear(lines)`
+    returns (heard, why_not) as _hear does. Writes heard.json.
+
+    With `take(take_line, seed) -> Path` (paragraph mode) the lines to speak are planned with takes.group: a group
+    whose lines all need speaking is spoken as one take into out_dir/TAKES_DIR and cut back into line takes (source
+    "take"); a line the cut can't reach is spoken on its own (source "fallback", with the cut's reason). `words` is
+    local.word_times (or None): Whisper's word timings, which settle where each line ends. Lead-in pads every line
+    take written, cut or spoken."""
     if lead_in > 0:
         spoke = speak
 
@@ -267,21 +385,26 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check, *, lead_in: float =
         durations = apply_lead_in(out_dir, kept_ids, lead_in)
     else:
         durations = read_durations(out_dir, kept_ids) if kept else {}
-    by_seed: dict[int, list] = {}
-    for ln in todo:
-        by_seed.setdefault(seeds.get(ln.id, FIRST_SEED), []).append(ln)
-    notes: list[str] = []
+    notes: list[str | None] = [note]
     used: dict[str, int] = {}
-    for seed, lns in by_seed.items():
-        durations.update(speak(lns, seed))
-        used.update({ln.id: seed for ln in lns})
-        notes.append(_record_seeds(out_dir, {ln.id: seed for ln in lns}))
-        notes.append(record_sources(out_dir, {ln.id: "line" for ln in lns}))
+    if take is not None:
+        got, used, more = _speak_takes(short, out_dir, todo, speak, take, words, lead_in)
+        durations.update(got)
+        notes += more
+    else:
+        by_seed: dict[int, list] = {}
+        for ln in todo:
+            by_seed.setdefault(seeds.get(ln.id, FIRST_SEED), []).append(ln)
+        for seed, lns in by_seed.items():
+            durations.update(speak(lns, seed))
+            used.update({ln.id: seed for ln in lns})
+            notes.append(_record_seeds(out_dir, {ln.id: seed for ln in lns}))
+            notes.append(record_sources(out_dir, {ln.id: "line" for ln in lns}))
     heard, why_not = hear(short.lines) if check else (None, CHECK_OFF)
     still_bad: list[str] = []
     by_id = {ln.id: ln for ln in short.lines}
     for lid in _unclear(heard, by_id):
-        if lid not in used:  # kept from an earlier run, which already retried it
+        if lid not in used or not retry:  # kept from an earlier run, which already retried it (or no retries)
             still_bad.append(lid)
             continue
         base = used[lid]
@@ -297,35 +420,97 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check, *, lead_in: float =
         else:
             still_bad.append(lid)
     write_heard(out_dir, short.lines, heard, why_not)
-    note = next((n for n in notes if n), None)
-    message = " ".join(m for m in (_unclear_message(still_bad), note) if m) or None
+    said = list(dict.fromkeys(n for n in notes if n))  # each note once: a save that failed fails for every line
+    message = " ".join(m for m in (_unclear_message(still_bad), *said) if m) or None
     return NarrationResult("ok", {ln.id: durations[ln.id] for ln in short.lines}, message)
+
+
+def _paragraph(narrator: dict) -> bool:
+    return narrator.get("take_mode") == "paragraph"
+
+
+def _words(mod):
+    """Whisper's word timings for the takes (the checker's word_times), or None when it has none."""
+    fn = getattr(mod, "word_times", None)
+    return (lambda take_lines, takes_dir: fn(take_lines, takes_dir)) if fn else None
 
 
 def _local_narrate(provider: str, short: Short, narrator: dict, out_dir: Path, mod) -> NarrationResult:
     voice, speed = narrator.get("voice"), float(narrator.get("speed") or 1.0)
     gen = _fn(mod, "generate")
+
+    def take(take_line, seed):
+        gen(provider, [take_line], voice, speed, out_dir / TAKES_DIR, seed=seed)
+        return out_dir / TAKES_DIR / f"{take_line.id}.wav"
+
+    para = _paragraph(narrator)
     return _spoken(
         short, out_dir,
         lambda lns, seed: gen(provider, lns, voice, speed, out_dir, seed=seed),
         lambda lns: _hear(mod, lns, out_dir),
         narrator.get("verify", True),
+        take=take if para else None,
+        words=_words(mod) if para else None,
         lead_in=float(narrator.get("lead_in") or 0.0),
     )  # fmt: skip
 
 
+def _move_log(takes_dir: Path, out_dir: Path) -> None:
+    """Append what the voice tool printed while speaking a take to the narration's own narrator.log."""
+    src = Path(takes_dir) / _custom.LOG_FILE
+    try:
+        text = src.read_text(encoding="utf-8", errors="replace")
+        with open(Path(out_dir) / _custom.LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+            f.write(text)
+        src.unlink()
+    except OSError:  # the log is a convenience: it never stops the narration
+        pass
+
+
 def _custom_narrate(short: Short, narrator: dict, out_dir: Path, mod, local) -> NarrationResult:
-    """The user's own voice tool; checked with Whisper only when the plugin's own runner has it installed."""
+    """The user's own voice tool; checked with Whisper only when the plugin's own runner has it installed. In
+    paragraph mode it speaks takes only when its command has {take}; otherwise line by line, and says so."""
     command = str(narrator.get("command") or "").strip()
     if not command:
         raise NarrationError("no voice command has been saved")
     voice, speed = narrator.get("voice"), float(narrator.get("speed") or 1.0)
     gen = _fn(mod, "generate")
+
+    def take(take_line, seed):
+        try:
+            gen(command, [take_line], out_dir / TAKES_DIR, seed=seed, voice=voice, speed=speed, take=take_line.id)
+        finally:
+            _move_log(out_dir / TAKES_DIR, out_dir)
+        return out_dir / TAKES_DIR / f"{take_line.id}.wav"
+
+    para = _paragraph(narrator) and _custom.takes_supported(command)
     return _spoken(
         short, out_dir,
         lambda lns, seed: gen(command, lns, out_dir, seed=seed, voice=voice, speed=speed),
         lambda lns: _hear(local, lns, out_dir),
         narrator.get("verify", True),
+        take=take if para else None,
+        words=_words(local) if para else None,
+        lead_in=float(narrator.get("lead_in") or 0.0),
+        note=NO_TAKE_PLACEHOLDER if _paragraph(narrator) and not para else None,
+    )  # fmt: skip
+
+
+def _elevenlabs_paragraph(short: Short, narrator: dict, out_dir: Path, gen, local) -> NarrationResult:
+    """ElevenLabs in paragraph mode: the same planner, with one voice check after and no retries (each take costs
+    credit)."""
+    voice, speed = narrator["voice"], float(narrator.get("speed") or 1.0)
+
+    def take(take_line, seed):
+        gen([take_line], voice, speed, out_dir / TAKES_DIR)
+        return out_dir / TAKES_DIR / f"{take_line.id}.wav"
+
+    return _spoken(
+        short, out_dir,
+        lambda lns, seed: dict(gen(lns, voice, speed, out_dir)),
+        lambda lns: _hear(local, lns, out_dir),
+        narrator.get("verify", True),
+        take=take, words=_words(local), retry=False,
         lead_in=float(narrator.get("lead_in") or 0.0),
     )  # fmt: skip
 
@@ -375,10 +560,15 @@ def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> Narra
                 if not narrator.get("voice"):
                     raise NarrationError("no ElevenLabs voice has been chosen")
                 gen = _fn(providers.get("elevenlabs", _elevenlabs), "generate")
-                durations = dict(gen(short.lines, narrator["voice"], float(narrator.get("speed") or 1.0), out_dir))
-                if float(narrator.get("lead_in") or 0.0) > 0:
-                    durations.update(apply_lead_in(out_dir, [ln.id for ln in short.lines], narrator["lead_in"]))
-                result = _elevenlabs_checked(short, narrator, out_dir, dict(durations), providers.get("local", _local))
+                if _paragraph(narrator):
+                    result = _elevenlabs_paragraph(short, narrator, out_dir, gen, providers.get("local", _local))
+                else:
+                    durations = dict(gen(short.lines, narrator["voice"], float(narrator.get("speed") or 1.0), out_dir))
+                    if float(narrator.get("lead_in") or 0.0) > 0:
+                        durations.update(apply_lead_in(out_dir, [ln.id for ln in short.lines], narrator["lead_in"]))
+                    result = _elevenlabs_checked(
+                        short, narrator, out_dir, dict(durations), providers.get("local", _local)
+                    )
             elif provider in LOCAL_ENGINES:
                 result = _local_narrate(provider, short, narrator, out_dir, providers.get("local", _local))
             elif provider == "custom":
@@ -446,6 +636,15 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     want["sources"] = {lid: v["source"] for lid, v in had_sources.items()
                        if old_lines.get(lid) == want["lines"].get(lid) and lid not in waiting}  # fmt: skip
     want["reasons"] = {lid: v["reason"] for lid, v in had_sources.items() if lid in want["sources"] and v["reason"]}
+    # a paragraph take is kept (for re-cuts) while it is of this voice and its lines' words are unchanged
+    kept_takes = [t for t in (take_records(out_dir) if same_voice else [])
+                  if all(lid in want["lines"] and old_lines.get(lid) == want["lines"][lid] for lid in t["lines"])]  # fmt: skip
+    if want.get("take_mode") == "paragraph" and kept_takes:
+        want["takes"] = kept_takes
+    keep = {f"{t['id']}.wav" for t in kept_takes} if want.get("take_mode") == "paragraph" else set()
+    for wav in sorted((out_dir / TAKES_DIR).glob("*.wav")):
+        if wav.name not in keep:
+            wav.unlink()
     out_dir.mkdir(parents=True, exist_ok=True)
     record_path.write_text(json.dumps(want, indent=2, ensure_ascii=False), encoding="utf-8")
     return removed

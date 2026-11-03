@@ -882,6 +882,15 @@ def cmd_narrate(args) -> dict:
                 if why:
                     closing_note += f"; the voice check's record couldn't be restored ({_one_line(why)})"
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    if result.status == "ok":  # where each line's audio came from: a paragraph take, its own, or its own after a take
+        from bsa.narrate.run import line_sources
+
+        found = line_sources(sdir / "audio" / "vo")
+        ids = [ln.id for ln in voiced.lines if ln.id in found]
+        out["sources"] = {i: found[i]["source"] for i in ids}
+        fallbacks = {i: found[i]["reason"] for i in ids if found[i]["source"] == "fallback"}
+        if fallbacks:
+            out["fallbacks"] = fallbacks
     if retaken:
         out["retake"] = retaken
     log = sdir / "audio" / "vo" / custom.LOG_FILE
