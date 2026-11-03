@@ -6,6 +6,7 @@ import itertools
 import wave
 
 import numpy as np
+import pytest
 
 from bsa import closing, timeline
 from bsa.narrate import contract, takes
@@ -228,7 +229,8 @@ def test_cut_keeps_a_soft_onset_before_the_first_word():
             pause = loud_starts[k] - loud_ends[k - 1]
             kept = loud_starts[k] - p.start
             assert kept >= min(takes.LEAD_S * SR, pause) - win, f"line {k + 1} keeps {kept / SR:.3f} s"
-    assert loud_starts[1] - pieces[1].start >= round(takes.LEAD_S * SR) - win  # the long gap keeps the full lead
+    # the long gap keeps the full lead before the first sound (the soft consonant), not just before the loud part
+    assert soft_starts[1] - pieces[1].start >= round(takes.LEAD_S * SR)
 
 
 def test_word_gaps_is_none_when_whisper_heard_another_word_count():
@@ -256,3 +258,62 @@ def test_write_pieces_writes_contract_takes(tmp_path):
     assert not list(tmp_path.glob("*.part"))
     p0 = pieces[0]
     assert secs["l01"] == round((p0.end - p0.start) / SR, 3)
+
+
+def test_cut_skips_a_sentence_pause_inside_a_line():
+    # l02 is two sentences, "….  Right.", with a pause between them as long as the pauses between lines
+    texts = ["a" * 50, "b" * 42 + ". Right.", "c" * 50]
+    ids = ["l01", "l02", "l03"]
+    for slow in (0.9, 2.5):  # line 3 at an ordinary pace, then slowly (its expected break moves past the real one)
+        x = take(silence(0.2), tone(1.2, 200), silence(0.4), tone(1.0, 300), silence(0.4), tone(0.5, 320),
+                 silence(0.4), tone(slow, 400), silence(0.3))  # fmt: skip
+        pieces = takes.cut(x, texts, ids)
+        assert all(p.reason is None for p in pieces), pieces
+        covers(pieces, len(x))
+        right_ends, l03_starts = round(3.7 * SR), round(4.1 * SR)
+        assert right_ends <= pieces[1].end <= l03_starts, '"Right." must stay on l02'
+        assert pieces[2].start <= l03_starts
+
+    # the same take with l02 and l03 run together: the sentence pause is not taken for the line break
+    x = take(silence(0.2), tone(1.2, 200), silence(0.4), tone(1.0, 300), silence(0.4), tone(0.5, 320),
+             tone(0.9, 400), silence(0.3))  # fmt: skip
+    pieces = takes.cut(x, texts, ids)
+    assert pieces[0].start == 0 and pieces[0].end is not None
+    assert [(p.start, p.reason) for p in pieces[1:]] == [(None, "no clear pause between l02 and l03")] * 2
+
+
+def test_cut_tolerates_a_line_spoken_slowly():
+    # three lines of equal length; line 1 is spoken twice as slowly, so its real break lies past the halfway point
+    # between the character estimates
+    x = take(silence(0.2), tone(2.4, 200), silence(0.4), tone(0.8, 300), silence(0.4), tone(1.0, 400), silence(0.3))
+    pieces = takes.cut(x, ["a" * 50, "b" * 50, "c" * 50], ["l01", "l02", "l03"])
+    assert all(p.reason is None for p in pieces)
+    assert round(2.6 * SR) <= pieces[0].end <= round(3.0 * SR)
+    assert round(3.8 * SR) <= pieces[1].end <= round(4.2 * SR)
+
+
+@pytest.mark.parametrize(("noise_dbfs", "gap", "soft_s"), [(-45.0, 0.15, 0.06), (-50.0, 0.06, 0.08)])
+def test_cut_keeps_a_soft_onset_above_a_noise_floor(noise_dbfs, gap, soft_s):
+    # a mic's noise floor fills the gaps (above the onset detector's silence level), and line 2 opens with a soft
+    # consonant 45 dB below the peak: the cut stays in the noise before it, never in the middle of the pause
+    amp = 0.9
+    rng = np.random.default_rng(0)
+    soft = tone(soft_s, 3000, amp * 10 ** (-45 / 20)) + silence(soft_s, noise_dbfs, rng)
+    x = take(silence(0.2, noise_dbfs, rng), tone(0.6, 200, amp), silence(gap, noise_dbfs, rng), soft,
+             tone(0.6, 300, amp), silence(0.3, noise_dbfs, rng))  # fmt: skip
+    line1_ends = round(0.8 * SR)
+    soft_starts = line1_ends + round(gap * SR)
+    pieces = takes.cut(x, ["a" * 20, "b" * 20], ["l01", "l02"])
+    assert all(p.reason is None for p in pieces)
+    assert line1_ends <= pieces[0].end == pieces[1].start <= soft_starts
+
+
+def test_cut_says_when_the_word_timings_could_not_be_used():
+    x = take(silence(0.2), tone(0.6, 200), silence(0.3), tone(0.6, 300), silence(0.3))
+    words = [("one", 0.2, 0.5), ("two", 0.5, 0.8)]  # three words written, two heard
+    pieces = takes.cut(x, ["one two", "three"], ["l01", "l02"], words=words)
+    assert all(p.start is not None for p in pieces)
+    assert {p.note for p in pieces} == {
+        "the words heard (2) don't match the script's (3), so the take was cut by character timing"
+    }
+    assert {p.note for p in takes.cut(x, ["one two", "three"], ["l01", "l02"])} == {None}
