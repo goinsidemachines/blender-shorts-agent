@@ -259,3 +259,16 @@ def test_setting_the_whole_brand_merges_into_the_stored_one_and_checks_every_key
         settings.check_value("brand", {"exposure": "bright"})
     assert settings.check_value("brand", {"mode": "Brand", "exposure": "0.3", "style": "flat"}) == {
         "mode": "brand", "exposure": 0.3, "style": "toon"}  # fmt: skip
+
+
+def test_take_mode_and_lead_in_settings():
+    assert settings.check_value("narrator.take_mode", "Paragraph") == "paragraph"
+    with pytest.raises(ValueError, match="line, paragraph"):
+        settings.check_value("narrator.take_mode", "fast")
+    for bad in (1.5, -0.1, "soon"):
+        with pytest.raises(ValueError, match="narrator.lead_in must be seconds from 0 to 1"):
+            settings.check_value("narrator.lead_in", bad)
+    v = settings.check_value("narrator.lead_in", 0.3)
+    assert v == 0.3 and isinstance(v, float)
+    assert settings.check_value("narrator.lead_in", 1) == 1.0
+    assert settings.DEFAULTS["narrator"]["take_mode"] == "line" and settings.DEFAULTS["narrator"]["lead_in"] == 0.0

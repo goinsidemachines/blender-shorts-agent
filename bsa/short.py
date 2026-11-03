@@ -112,6 +112,12 @@ class Short:
     # This short's render choices: {"engine": "cycles" | "eevee"} is the engine the engine stage proposes (the
     # approved engine stays the engine stage's own). Empty = the setting.
     render: dict = dc_field(default_factory=dict)
+    # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in (never the
+    # provider or command). Empty = the settings.
+    narrator: dict = dc_field(default_factory=dict)
+
+
+NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in")
 
 
 def _build(cls, data: dict):
@@ -372,6 +378,30 @@ def _render_problems(render) -> list[str]:
     return out
 
 
+def _narrator_problems(narrator) -> list[str]:
+    from bsa.settings import ENUMS, LEAD_IN_RANGE_S
+
+    if not isinstance(narrator, dict):
+        return [f"narrator must be an object such as {{\"take_mode\": \"paragraph\"}}, got {narrator!r}"]
+    out = []
+    extra = sorted(set(narrator) - set(NARRATOR_KEYS))
+    if extra:
+        out.append(f"narrator has unknown keys {extra}: use {', '.join(NARRATOR_KEYS)}")
+    speed = narrator.get("speed")
+    if "speed" in narrator and (isinstance(speed, bool) or not isinstance(speed, (int, float))
+                                or not 0.5 <= speed <= 2.0):  # fmt: skip
+        out.append(f"narrator.speed must be a number from 0.5 to 2.0, got {speed!r}")
+    if "take_mode" in narrator and narrator["take_mode"] not in ENUMS["narrator.take_mode"]:
+        out.append(f"narrator.take_mode must be {' or '.join(ENUMS['narrator.take_mode'])}, got "
+                   f"{narrator['take_mode']!r}")  # fmt: skip
+    lead = narrator.get("lead_in")
+    if "lead_in" in narrator and (isinstance(lead, bool) or not isinstance(lead, (int, float))
+                                  or not LEAD_IN_RANGE_S[0] <= lead <= LEAD_IN_RANGE_S[1]):  # fmt: skip
+        out.append(f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to {LEAD_IN_RANGE_S[1]:g}, "
+                   f"got {lead!r}")  # fmt: skip
+    return out
+
+
 def _card_problems(s: Shot, cited: bool) -> list[str]:
     """Problems of a shot's title card, category, step and value bars (all optional)."""
     out = []
@@ -474,6 +504,7 @@ def validate(short: Short) -> list[str]:
     if short.look not in (None, "fresh", "brand"):
         errors.append(f"look must be \"fresh\" (this short's own style, the brand off) or \"brand\", got {short.look!r}")
     errors += _render_problems(short.render)
+    errors += _narrator_problems(short.narrator)
     if short.sound_policy not in SOUND_POLICIES:
         errors.append(f"sound_policy must be one of {', '.join(p for p in SOUND_POLICIES if p)} (or empty), got "
                       f"{short.sound_policy!r}")  # fmt: skip

@@ -13,7 +13,8 @@ from pathlib import Path
 DEFAULTS = {
     "workspace": None,
     "blender_exe": None,
-    "narrator": {"provider": None, "voice": None, "speed": 1.0, "command": None, "label": None},
+    "narrator": {"provider": None, "voice": None, "speed": 1.0, "command": None, "label": None,
+                 "take_mode": "line", "lead_in": 0.0},
     "render": {"engine": "ask"},
     "brand": {"mode": None},
     "handle": None,
@@ -39,11 +40,15 @@ SECRET_KEYS = ("freesound.api_key",)
 # "ask-always": ask for the engine for every short.
 ENUMS = {
     "narrator.provider": ("none", "elevenlabs", "kokoro", "chatterbox", "chatterbox-turbo", "custom"),
+    "narrator.take_mode": ("line", "paragraph"),  # one take per line, or one take for the whole story
     "render.engine": ("cycles", "eevee", "ask-always"),
     "brand.mode": ("brand", "fresh"),
     "sound_policy": ("any", "natural-only"),
     "feedback": ("ask", "never", "off"),
 }
+
+# narrator.lead_in: seconds of quiet before the voice starts in each take.
+LEAD_IN_RANGE_S = (0.0, 1.0)
 
 # Settings that are true or false (JSON booleans on the command line).
 BOOLEANS = ("page.lan", "post_format_asked")
@@ -160,6 +165,17 @@ def check_value(path: str, value):
             return post.format_value(value)
         key = path.split(".", 1)[1]
         return post.format_value({key: value})[key]
+    if path == "narrator.lead_in":
+        seconds = None
+        if not isinstance(value, bool):
+            try:
+                seconds = float(value)
+            except (TypeError, ValueError):
+                pass
+        if seconds is None or not LEAD_IN_RANGE_S[0] <= seconds <= LEAD_IN_RANGE_S[1]:
+            raise ValueError(f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to "
+                             f"{LEAD_IN_RANGE_S[1]:g}, got {value!r}")  # fmt: skip
+        return seconds
     if path in BOOLEANS:
         if not isinstance(value, bool):
             raise ValueError(f"{value!r} is not a valid {path}: use true or false")

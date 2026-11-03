@@ -77,7 +77,7 @@ def built_timeline(sdir: Path, short):
     return tl, from_takes
 
 
-_STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command",
+_STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command", "narrator.take_mode",
                 "narrator.label", "render.engine", "post_format.title_suffix", "post_format.link_line",
                 "post_format.pinned_comment", "post_format.title_style",
                 "brand.mode", "sound_policy", "freesound.api_key", "feedback"}  # fmt: skip
@@ -842,7 +842,7 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
 
 
 def cmd_narrate(args) -> dict:
-    from bsa.narrate.run import HEARD_FILE, check_line_ids, clear_stale_takes, narrate
+    from bsa.narrate.run import HEARD_FILE, check_line_ids, clear_stale_takes, narrate, narrator_for
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
@@ -854,7 +854,7 @@ def cmd_narrate(args) -> dict:
     from bsa import closing
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
-    narrator = s.get("narrator") or {}
+    narrator = narrator_for(s, short)
     try:
         check_line_ids(voiced)  # before anything is deleted or spoken
     except ValueError as exc:

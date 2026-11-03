@@ -195,3 +195,13 @@ def test_title_lines_and_step_text():
     assert category_text("spark") == "Spark" and category_text("fluid flow") == "Fluid flow"
     assert label_kind({"text": "x", "kind": "measure"}) == "measure" and label_kind("x") == "label"
     assert bar_text({"label": "a", "value": 2.5}) == "2.5" and bar_text({"label": "a", "value": 3, "text": "3 kg"}) == "3 kg"
+
+
+def test_short_narrator_override_is_validated():
+    assert validate(_short(narrator={"take_mode": "paragraph", "lead_in": 0.3, "voice": "v", "speed": 1.2})) == []
+    assert any("provider" in e for e in validate(_short(narrator={"provider": "kokoro"})))
+    assert any("lead_in" in e for e in validate(_short(narrator={"lead_in": 2})))
+    assert any("take_mode" in e for e in validate(_short(narrator={"take_mode": "fast"})))
+    assert any("speed" in e for e in validate(_short(narrator={"speed": 3})))
+    assert any("narrator" in e for e in validate(_short(narrator="paragraph")))
+    assert _short().narrator == {}

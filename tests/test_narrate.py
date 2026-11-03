@@ -787,3 +787,41 @@ def test_sources_that_cannot_be_saved_say_why_and_never_raise(tmp_path, monkeypa
 
     monkeypatch.setattr(nrun, "_write_json", broken)
     assert "disk full" in nrun.record_sources(tmp_path, {"l01": "line"})
+
+
+def test_narrator_for_puts_the_short_over_the_settings():
+    s = {"narrator": {"provider": "custom", "command": "tool", "label": "L", "voice": "a", "speed": 1.0}}
+    short = _take_short()
+    got = nrun.narrator_for(s, short)
+    assert got == {**s["narrator"], "take_mode": "line", "lead_in": 0.0}
+    short.narrator = {"voice": "b", "take_mode": "paragraph", "lead_in": 0.3}
+    got = nrun.narrator_for(s, short)
+    assert got["voice"] == "b" and got["speed"] == 1.0 and got["take_mode"] == "paragraph" and got["lead_in"] == 0.3
+    assert got["provider"] == "custom" and got["command"] == "tool" and got["label"] == "L"
+    short.narrator = {"provider": "kokoro", "command": "other", "label": "X"}  # never per short
+    got = nrun.narrator_for(s, short)
+    assert (got["provider"], got["command"], got["label"]) == ("custom", "tool", "L")
+    assert s["narrator"]["voice"] == "a" and "take_mode" not in s["narrator"]  # the settings are not touched
+
+
+def test_record_has_no_new_keys_for_the_defaults():
+    rec = nrun._takes_record(_take_short(), nrun.narrator_for(KOKORO, _take_short()))
+    assert set(rec) == {"command", "provider", "voice", "speed", "lines"}
+    para = nrun._takes_record(_take_short(), {**KOKORO["narrator"], "take_mode": "paragraph", "lead_in": 0.3})
+    assert para["take_mode"] == "paragraph" and para["lead_in"] == 0.3
+
+
+def test_changing_take_mode_or_lead_in_throws_the_takes_away(tmp_path):
+    vo = tmp_path / "vo"
+    vo.mkdir()
+    short = _take_short()
+    base = nrun.narrator_for(KOKORO, short)
+    nrun.clear_stale_takes(vo, short, base)
+    (vo / "l01.wav").write_bytes(b"x")
+    assert nrun.clear_stale_takes(vo, short, base) == []  # the same settings keep it
+    assert nrun.clear_stale_takes(vo, short, {**base, "take_mode": "paragraph"}) == ["l01"]
+    (vo / "l01.wav").write_bytes(b"x")
+    assert nrun.clear_stale_takes(vo, short, {**base, "take_mode": "paragraph"}) == []
+    assert nrun.clear_stale_takes(vo, short, {**base, "take_mode": "paragraph", "lead_in": 0.3}) == ["l01"]
+    (vo / "l01.wav").write_bytes(b"x")
+    assert nrun.clear_stale_takes(vo, short, base) == ["l01"]

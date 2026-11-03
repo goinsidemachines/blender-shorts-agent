@@ -325,10 +325,23 @@ def check_line_ids(short: Short) -> None:
             raise ValueError(problem)
 
 
+def narrator_for(settings: dict, short) -> dict:
+    """The narrator settings with this short's own choices (voice, speed, take_mode, lead_in) over them. The
+    provider, command and label are never per short."""
+    from bsa.short import NARRATOR_KEYS
+
+    own = getattr(short, "narrator", None) or {}
+    out = dict(settings.get("narrator") or {})
+    out.update({k: v for k, v in own.items() if k in NARRATOR_KEYS})
+    out["take_mode"] = out.get("take_mode") or "line"
+    out["lead_in"] = float(out.get("lead_in") or 0.0)
+    return out
+
+
 def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> NarrationResult:
     check_line_ids(short)
     short_dir = Path(short_dir)
-    narrator = settings.get("narrator") or {}
+    narrator = narrator_for(settings, short)
     provider = narrator.get("provider")
     out_dir = short_dir / "audio" / "vo"
     if provider in (None, "none"):
@@ -361,7 +374,12 @@ def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> Narra
 
 
 def _takes_record(short: Short, narrator: dict) -> dict:
-    return {
+    extra = {}
+    if narrator.get("take_mode") == "paragraph":
+        extra["take_mode"] = "paragraph"
+    if float(narrator.get("lead_in") or 0.0) > 0:
+        extra["lead_in"] = float(narrator["lead_in"])
+    return {**extra,
         "command": (narrator.get("command") or None) if narrator.get("provider") == "custom" else None,
         "provider": narrator.get("provider"),
         "voice": narrator.get("voice"),
@@ -383,6 +401,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     except (OSError, ValueError):
         had = None
     same_voice = isinstance(had, dict) and all(had.get(k) == want[k] for k in ("provider", "voice", "speed", "command"))
+    same_voice = same_voice and had.get("take_mode") == want.get("take_mode") and had.get("lead_in") == want.get("lead_in")
     old_lines = had.get("lines", {}) if same_voice else {}
     removed = []
     waiting = {lid for lid in take_seeds(out_dir) if not (out_dir / f"{lid}.wav").is_file()}  # a re-take's line
