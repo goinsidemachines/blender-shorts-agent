@@ -1952,9 +1952,9 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     status = _say_starting(args)
     try:
-        if args.command in GPU_COMMANDS - {"render"}:  # render takes it itself, so the preview chain's render does
-            sdir = _short_dir(args.short)
-            with _gpu(args, sdir, sdir.name, args.command):
+        place = _gpu_place(args) if args.command in GPU_COMMANDS - {"render"} else None  # render takes it itself
+        if place is not None:  # (so the preview chain's render does too)
+            with _gpu(args, place, place.name, args.command):
                 out = args.fn(args)
         else:
             out = args.fn(args)
@@ -1975,7 +1975,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
-GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look"}  # one at a time per workspace (gpulock); preview via render
+GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample"}  # one at a time per workspace (gpulock); preview via render
+
+
+def _gpu_place(args) -> Path | None:
+    """Where a heavy command takes the GPU lock (its parent is the workspace): the short's folder, or for a command
+    with no short (style-sample) the workspace itself as "<workspace>/style-sample" (None, unlocked, with no
+    workspace set)."""
+    if getattr(args, "short", None):
+        return _short_dir(args.short)
+    ws = settings.load_settings().get("workspace")
+    return Path(ws) / args.command if ws else None
 
 
 @contextmanager

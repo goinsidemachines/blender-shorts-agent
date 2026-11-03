@@ -101,3 +101,25 @@ def test_test_frames_arguments():
     for bad in ("s01", "s01:1.5", ":0.5", "s01:half"):
         with pytest.raises(argparse.ArgumentTypeError):
             bsa_blender._at_spec(bad)
+
+
+def test_style_sample_takes_the_workspace_gpu_lock(tmp_path, monkeypatch):
+    """style-sample renders (one Blender job per style): it holds the workspace's GPU lock like the other heavy
+    commands, though it has no short; without a workspace it runs unlocked."""
+    import bsa_blender
+
+    home, ws = tmp_path / "home", tmp_path / "ws"
+    home.mkdir()
+    ws.mkdir()
+    monkeypatch.setenv("BSA_HOME", str(home))
+    seen = []
+    monkeypatch.setattr(bsa_blender, "cmd_style_sample", lambda args: seen.append(gpulock.read(gpulock.lock_path(ws)))
+                        or {"ok": True})  # fmt: skip
+    assert "style-sample" in bsa_blender.GPU_COMMANDS
+    argv = ["style-sample", "--engine", "eevee", "--out", str(tmp_path / "x.png")]
+    (home / "settings.json").write_text(json.dumps({"workspace": str(ws)}), encoding="utf-8")
+    assert bsa_blender.main(argv) == 0
+    assert seen[-1] and seen[-1]["pid"] == os.getpid() and seen[-1]["command"] == "style-sample"
+    assert not gpulock.lock_path(ws).exists()  # released
+    (home / "settings.json").write_text("{}", encoding="utf-8")
+    assert bsa_blender.main(argv) == 0 and len(seen) == 2
