@@ -262,6 +262,8 @@ def test_closing_cue_waits_for_the_voice_with_a_lead_in(tmp_path):
         cue, _ = captions._closing_cue(sdir, _short(sdir), s, rec, tl.fps)
         return cue
 
+    from bsa.narrate.contract import ONSET_PREROLL_S as voice_onset_preroll
+
     plain, waited = start(False), start(True)
-    assert waited.f0 - plain.f0 == pytest.approx(12, abs=2)
+    assert waited.f0 - plain.f0 == pytest.approx((0.4 - voice_onset_preroll) * 30, abs=1)
     assert waited.f1 == plain.f1

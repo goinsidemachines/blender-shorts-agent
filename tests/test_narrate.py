@@ -898,9 +898,17 @@ def test_lead_in_runs_after_every_provider(tmp_path):
     assert res.durations["l01"] == pytest.approx(0.8, abs=0.01)
 
     n = {**n, "provider": "elevenlabs"}
-    eleven = lambda lns, voice, speed, out: lead_gen("", lns, voice, speed, out)
+    def eleven(lns, voice, speed, out):
+        got = lead_gen("", lns, voice, speed, out)
+        durs = {x.id: round(contract.wav_seconds(Path(out) / f"{x.id}.wav"), 3) for x in lns}
+        (Path(out) / "durations.json").write_text(json.dumps(durs), encoding="utf-8")  # the pre-pad seconds
+        return got
+
+    vo = tmp_path / "eleven" / "audio" / "vo"
     assert nrun.narrate(tmp_path / "eleven", short, {"narrator": n}, elevenlabs=eleven).status == "ok"
-    check(tmp_path / "eleven" / "audio" / "vo")
+    check(vo)
+    assert not set(json.loads((vo / "durations.json").read_text("utf-8"))) & {"l01", "l02"}  # forgotten, not stale
+    assert contract.read_durations(vo, ["l01", "l02"])["l01"] == pytest.approx(0.8, abs=0.01)
 
     def run(cmd, **kw):
         out = Path(cmd[cmd.index("--out") + 1])
@@ -945,3 +953,48 @@ def test_changing_lead_in_or_take_mode_remakes_the_takes(tmp_path):
     assert spoken == []  # nothing changed: the takes stay
     n = {"provider": "kokoro", "voice": "v", "speed": 1.0, "lead_in": 0.3, "take_mode": "paragraph"}
     assert nrun.clear_stale_takes(vo, short, nrun.narrator_for({"narrator": n}, short)) == ["l01", "l02"]
+
+
+def test_forget_durations_drops_only_the_listed_ids(tmp_path):
+    contract.forget_durations(tmp_path, ["a"])  # no file: nothing happens
+    assert not (tmp_path / "durations.json").exists()
+    (tmp_path / "durations.json").write_text("[1, 2]", encoding="utf-8")
+    contract.forget_durations(tmp_path, ["a"])  # not a dict: left alone
+    assert (tmp_path / "durations.json").read_text("utf-8") == "[1, 2]"
+    (tmp_path / "durations.json").write_text(json.dumps({"a": 1.0, "b": 2.0}), encoding="utf-8")
+    contract.forget_durations(tmp_path, ["x"])  # not listed: unchanged
+    assert json.loads((tmp_path / "durations.json").read_text("utf-8")) == {"a": 1.0, "b": 2.0}
+    contract.forget_durations(tmp_path, ["a", "x"])
+    assert json.loads((tmp_path / "durations.json").read_text("utf-8")) == {"b": 2.0}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_pad_lead_leaves_a_silent_or_non_16_bit_take_alone(tmp_path):
+    silent, wide = tmp_path / "s.wav", tmp_path / "w.wav"
+    for path, width in ((silent, 2), (wide, 1)):
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(width)
+            w.setframerate(48000)
+            w.writeframes(bytes(4800 * width))
+    raw = {p: p.read_bytes() for p in (silent, wide)}
+    for p in (silent, wide):
+        assert contract.leading_silence(p) == 0.0 and contract.pad_lead(p, 0.4) == 0.0
+        assert p.read_bytes() == raw[p]
+
+
+def test_a_kept_take_is_padded_too(tmp_path):
+    short = _take_short()
+    vo = tmp_path / "audio" / "vo"
+    for lid in ("l01", "l02"):
+        _lead_wav(vo / f"{lid}.wav", 0.1, voice_s=0.5)  # written, but a crash came before the padding
+
+    def never(*a, **k):
+        raise AssertionError("kept takes are not spoken again")
+
+    n = {"provider": "kokoro", "voice": "v", "speed": 1.0, "lead_in": 0.3, "verify": False}
+    res = nrun.narrate(tmp_path, short, {"narrator": n}, local=SimpleNamespace(generate=never))
+    assert res.status == "ok"
+    for lid in ("l01", "l02"):
+        assert contract.leading_silence(vo / f"{lid}.wav") == pytest.approx(0.3, abs=0.01)
+    assert res.durations["l01"] == pytest.approx(0.8, abs=0.01)

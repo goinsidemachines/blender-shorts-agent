@@ -262,7 +262,11 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check, *, lead_in: float =
     seeds = take_seeds(out_dir)
     kept = [ln for ln in short.lines if (out_dir / f"{ln.id}.wav").is_file() and not check_take(out_dir / f"{ln.id}.wav")]
     todo = [ln for ln in short.lines if ln not in kept]
-    durations = read_durations(out_dir, [ln.id for ln in kept]) if kept else {}
+    kept_ids = [ln.id for ln in kept]
+    if kept and lead_in > 0:  # a crash between a take's write and its padding must not leave it unpadded
+        durations = apply_lead_in(out_dir, kept_ids, lead_in)
+    else:
+        durations = read_durations(out_dir, kept_ids) if kept else {}
     by_seed: dict[int, list] = {}
     for ln in todo:
         by_seed.setdefault(seeds.get(ln.id, FIRST_SEED), []).append(ln)

@@ -98,36 +98,47 @@ LEAD_BELOW_PEAK_DB = 50.0  # more sensitive than the caption onset, so a soft fi
 LEAD_FLOOR_DBFS = -60.0
 
 
-def leading_silence(path: Path) -> float:
-    """Seconds before the first 10 ms window within LEAD_BELOW_PEAK_DB of the loudest one (and above
-    LEAD_FLOOR_DBFS); no pre-roll. 0.0 for a take that can't be read or is silent."""
+def _lead_seconds(path: Path) -> float | None:
+    """Seconds before the first loud 10 ms window (so to that window's granularity), or None for a take that can't
+    be read, isn't 16-bit, or is silent."""
     try:
         with wave.open(str(path), "rb") as w:
             rate, width, channels = w.getframerate(), w.getsampwidth(), w.getnchannels()
             data = w.readframes(w.getnframes())
     except (wave.Error, EOFError, OSError):
-        return 0.0
+        return None
     if width != 2 or rate <= 0 or channels < 1:
-        return 0.0
+        return None
     x = np.frombuffer(data[: len(data) - len(data) % (2 * channels)], dtype="<i2").astype(np.float64) / 32768.0
     x = x.reshape(-1, channels).mean(axis=1)
     win = max(1, round(ONSET_WINDOW_S * rate))
     n = len(x) // win
     if n == 0:
-        return 0.0
+        return None
     rms = np.sqrt(np.mean(x[: n * win].reshape(n, win) ** 2, axis=1))
     threshold = max(float(rms.max()) * 10 ** (-LEAD_BELOW_PEAK_DB / 20), 10 ** (LEAD_FLOOR_DBFS / 20))
     loud = np.nonzero(rms >= threshold)[0]
     if len(loud) == 0:
-        return 0.0
+        return None
     return round(loud[0] * win / rate, 3)
+
+
+def leading_silence(path: Path) -> float:
+    """Seconds before the first 10 ms window within LEAD_BELOW_PEAK_DB of the loudest one (and above
+    LEAD_FLOOR_DBFS), at that window's granularity; no pre-roll. 0.0 for a take that can't be read, isn't 16-bit
+    or is silent."""
+    return _lead_seconds(path) or 0.0
 
 
 def pad_lead(path: Path, lead_in: float) -> float:
     """Prepend the silence a take is missing so it has `lead_in` seconds before its first word. Returns the seconds
-    added; 0.0 when it already has that much (a take is never trimmed) or can't be read."""
+    added; 0.0 when it already has that much (a take is never trimmed), or when it can't be read, isn't 16-bit or is
+    silent (nothing to measure, so nothing is added: padding is idempotent)."""
     path = Path(path)
-    missing = round((lead_in - leading_silence(path)) * SR)
+    have = _lead_seconds(path)
+    if have is None:
+        return 0.0
+    missing = round((lead_in - have) * SR)
     if missing <= 0:
         return 0.0
     try:
@@ -139,7 +150,7 @@ def pad_lead(path: Path, lead_in: float) -> float:
     try:
         with wave.open(str(part), "wb") as w:
             w.setparams(params)
-            w.writeframes(bytes(1) * (2 * params.nchannels * missing) + data)
+            w.writeframes(bytes(2 * params.nchannels * missing) + data)
         os.replace(part, path)
     finally:
         part.unlink(missing_ok=True)
