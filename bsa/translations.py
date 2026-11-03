@@ -191,3 +191,31 @@ def problems(short, settings: dict) -> tuple[list[str], list[str]]:
         names = ", ".join("the closing line" if b == CLOSING else b for b in bad)
         warnings.append(f"{lang} subtitles for {names} were made for the old English: update them")
     return errors, warnings
+
+
+def cues(tl, short, lang: str, closing=None) -> list:
+    """The language's subtitle cues, with the English timing: per line one span from its first card's start to its
+    last card's end, the translated text wrapped like the English and shared out when it needs more than MAX_LINES
+    lines. The closing cue keeps the English cue's frames with the translated closing text. A line (or the closing
+    line) with no translation gets no cue."""
+    from bsa import captions
+
+    data = getattr(short, "captions_translations", None)
+    entry = data.get(lang) if isinstance(data, dict) else None
+    if not isinstance(entry, dict) or not isinstance(entry.get("lines"), dict):
+        return []
+    out = []
+    for line in short.lines:
+        cards = [c for c in tl.cards if c.line_id == line.id and c.f1 >= c.f0]
+        text = entry["lines"].get(line.id)
+        if not cards or not _text_ok(text):
+            continue
+        f0, f1 = min(c.f0 for c in cards), max(c.f1 for c in cards)
+        wrapped = captions.wrap(text)
+        if not wrapped:
+            continue
+        out += [captions.Cue(f0, f1, wrapped)] if len(wrapped) <= captions.MAX_LINES else captions._share(wrapped, f0, f1)
+    text = entry.get(CLOSING)
+    if closing is not None and _text_ok(text) and captions.wrap(text):
+        out.append(captions.Cue(closing.f0, closing.f1, captions.wrap(text)))
+    return out

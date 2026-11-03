@@ -267,3 +267,85 @@ def test_closing_cue_waits_for_the_voice_with_a_lead_in(tmp_path):
     plain, waited = start(False), start(True)
     assert waited.f0 - plain.f0 == pytest.approx((0.4 - voice_onset_preroll) * 30, abs=1)
     assert waited.f1 == plain.f1
+
+
+# --------------------------------------------------------------------------- translated subtitles
+
+_EN = ["A pendulum swings like clockwork.", "Length sets the beat.", "Four times longer, twice slower.",
+       "Clocks kept time this way."]  # fmt: skip
+
+
+def _translate(sdir, lang, texts, **entry):
+    p = sdir / "source" / "short.json"
+    d = json.loads(p.read_text("utf-8"))
+    body = {"lines": {f"l0{i + 1}": t for i, t in enumerate(texts)},
+            "from": {f"l0{i + 1}": e for i, e in enumerate(_EN)}}  # fmt: skip
+    body.update(entry)
+    d["captions_translations"] = {**(d.get("captions_translations") or {}), lang: body}
+    p.write_text(json.dumps(d, ensure_ascii=False), "utf-8")
+
+
+def _blocks(path):
+    out = []
+    for b in path.read_text("utf-8").strip().split("\n\n"):
+        rows = b.split("\n")
+        start, end = rows[1].split(" --> ")
+        out.append((start, end, rows[2:]))
+    return out
+
+
+def test_language_files_have_the_english_timing(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    arabic = ["البندول يتأرجح مثل الساعة.", "الطول يحدد الإيقاع.", "أطول أربع مرات، أبطأ مرتين.", "الساعات حفظت الوقت."]
+    _translate(sdir, "ar", arabic)
+    out = captions.write_files(sdir, _short(sdir), {})
+    assert out["skipped"] == {} and set(out["languages"]["ar"]) == {"srt", "vtt"}
+    en = _blocks(sdir / "out" / "pendulum.srt")
+    ar = _blocks(sdir / "out" / "pendulum.ar.srt")
+    tl = json.loads((sdir / "source" / "timeline.json").read_text("utf-8"))
+    fps = tl["fps"]
+    for line_id, text in zip(("l01", "l02", "l03"), arabic):
+        cards = [c for c in tl["cards"] if c["line_id"] == line_id]
+        first = captions.stamp((cards[0]["f0"] - 1) / fps, ",")
+        last = captions.stamp(cards[-1]["f1"] / fps, ",")
+        mine = [b for b in ar if b[0] >= first and b[1] <= last]
+        assert mine[0][0] == first and mine[-1][1] == last
+        assert " ".join(" ".join(b[2]) for b in mine) == text
+    assert en[0][0] == ar[0][0]
+    assert (sdir / "out" / "pendulum.ar.vtt").read_text("utf-8").startswith("WEBVTT\n\n")
+    assert arabic[0].encode("utf-8") in (sdir / "out" / "pendulum.ar.srt").read_bytes()
+
+
+def test_language_closing_cue_keeps_the_english_frames(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    pagefix.record_edit(sdir, "final", closing=75)
+    _take(sdir / "audio" / "vo" / "closing.wav", 1.0)
+    s = {"website": "example.com", "closing": {"voice_line": "Find out more."}}
+    frm = {f"l0{i + 1}": e for i, e in enumerate(_EN)} | {"closing": "Find out more."}
+    _translate(sdir, "es", ["Uno.", "Dos.", "Tres.", "Cuatro."], closing="Descubre mas.", **{"from": frm})
+    out = captions.write_files(sdir, _short(sdir), s)
+    assert "es" in out["languages"]
+    en = _blocks(sdir / "out" / "pendulum.srt")[-1]
+    es = _blocks(sdir / "out" / "pendulum.es.srt")[-1]
+    assert es[:2] == en[:2] and es[2] == ["Descubre mas."]
+
+
+def test_captions_skip_a_language_with_problems(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    _translate(sdir, "es", ["Uno.", "Dos.", "Tres.", "Cuatro."])
+    _translate(sdir, "de", ["Eins.", "Zwei.", "Drei."])  # l04 has no translation
+    _translate(sdir, "fr", ["Un.", "Deux.", "Trois.", "Quatre."], **{"from": {"l01": "Something older"}})
+    out = captions.write_files(sdir, _short(sdir), {})
+    assert set(out["languages"]) == {"es"}
+    assert not (sdir / "out" / "pendulum.de.srt").exists()
+    assert "l04" in out["skipped"]["de"]
+    assert "old English" in out["skipped"]["fr"] and not (sdir / "out" / "pendulum.fr.vtt").exists()
+    before = (sdir / "out" / "pendulum.es.srt").read_bytes()
+    out = captions.write_files(sdir, _short(sdir), {})
+    assert (sdir / "out" / "pendulum.es.srt").read_bytes() == before and "fr" in out["skipped"]
+
+
+def test_paths_for_a_language(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    p = captions.paths(sdir, _short(sdir), "pt-BR")
+    assert p == {"srt": sdir / "out" / "pendulum.pt-BR.srt", "vtt": sdir / "out" / "pendulum.pt-BR.vtt"}

@@ -472,3 +472,11 @@ def test_skill_lists_shorts_like_and_take():
     t = _flat((ROOT / "skills" / "make-short" / "SKILL.md").read_text(encoding="utf-8"))
     for word in ("CLI shorts", "new-short", "--like", "narrate SHORT --line ID --take"):
         assert word in t, word
+
+
+def test_post_chapter_offers_translated_subtitles_once():
+    t = _flat(_read("playbook/09-post.md"))
+    assert "Want subtitles in other languages?" in t and "captions_translations" in t
+    assert "once per short" in t and "is None" in t and "{}" in t
+    assert "checked by a speaker" in t and "CLI captions SHORT" in t and "CLI validate" in t
+    assert "right-to-left" in t and '"from"' in t

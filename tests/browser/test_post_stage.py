@@ -328,3 +328,29 @@ def test_the_whole_post_stage_on_one_short(view, live_server):
     expect(stage.get_by_role("heading", name="Files")).to_be_visible()
     expect(stage.get_by_role("heading", name="Before you post")).to_be_visible()
     assert_healthy(p)
+
+
+def test_post_lists_each_language_file(view, live_server):
+    srv = live_server("done")
+    mp4 = srv.sdir / "out" / "pendulum.mp4"
+    if not mp4.is_file():
+        mp4.write_bytes(bytes(2000))
+    path = srv.sdir / "source" / "short.json"
+    d = json.loads(path.read_text("utf-8"))
+    en = {ln["id"]: ln["text"] for ln in d["lines"]}
+    d["captions_translations"] = {
+        "es": {"lines": {k: f"es {k}" for k in en}, "from": dict(en)},
+        "de": {"lines": {k: f"de {k}" for k in en}, "from": {"l01": "older"}},
+    }
+    path.write_text(json.dumps(d), "utf-8")
+    captions.write_files(srv.sdir, load_short(path), {})
+    (srv.sdir / "out" / "pendulum.de.srt").write_text("1\n", "utf-8")  # written before the English moved
+    p = open_short(view, srv, stage="post")
+    files = p.locator("section.post-files")
+    row = files.locator("li.file-row", has=p.get_by_text("Captions, es (SRT)", exact=True))
+    expect(row.get_by_text("out/pendulum.es.srt", exact=True)).to_be_visible()
+    expect(row.get_by_role("button", name="Copy path")).to_be_visible()
+    expect(files.get_by_text("Captions, es (VTT)", exact=True)).to_be_visible()
+    old = files.locator("li.file-row", has=p.get_by_text("Captions, de (SRT)", exact=True))
+    expect(old.get_by_text("Made for the old English", exact=False)).to_be_visible()
+    assert_healthy(p)

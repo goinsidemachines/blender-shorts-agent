@@ -160,8 +160,10 @@ def transcript(short, closing_line: str | None) -> str:
     return "\n\n".join(paras) + "\n"
 
 
-def paths(sdir: Path, short) -> dict[str, Path]:
+def paths(sdir: Path, short, lang: str | None = None) -> dict[str, Path]:
     out = Path(sdir) / "out"
+    if lang:
+        return {"srt": out / f"{short.slug}.{lang}.srt", "vtt": out / f"{short.slug}.{lang}.vtt"}
     return {"srt": out / f"{short.slug}.srt", "vtt": out / f"{short.slug}.vtt",
             "transcript": out / f"{short.slug}-transcript.txt"}  # fmt: skip
 
@@ -232,4 +234,38 @@ def write_files(sdir: Path, short, s: dict) -> dict:
     _write(where["srt"], to_srt(cs, tl.fps))
     _write(where["vtt"], to_vtt(cs, tl.fps))
     _write(where["transcript"], transcript(short, line))
-    return {"srt": str(where["srt"]), "vtt": str(where["vtt"]), "transcript": str(where["transcript"]), "cues": len(cs)}
+    languages, skipped = _write_languages(sdir, short, s or {}, tl, last)
+    return {"srt": str(where["srt"]), "vtt": str(where["vtt"]), "transcript": str(where["transcript"]),
+            "cues": len(cs), "languages": languages, "skipped": skipped}  # fmt: skip
+
+
+def _write_languages(sdir: Path, short, s: dict, tl, last: Cue | None) -> tuple[dict, dict]:
+    """Each translated language's SRT and VTT, with the English timing. A language with problems or lines made for
+    older English is skipped (its files are left as they are) and the reason said."""
+    import copy
+
+    from bsa import translations
+
+    data = getattr(short, "captions_translations", None)
+    if not isinstance(data, dict):
+        return {}, {}
+    old = translations.stale(short, s)
+    written: dict[str, dict] = {}
+    skipped: dict[str, str] = {}
+    for lang, entry in data.items():
+        one = copy.copy(short)
+        one.captions_translations = {lang: entry}
+        errors, _ = translations.problems(one, s)
+        if errors:
+            skipped[str(lang)] = f"{lang} subtitles have problems: {errors[0]}"
+            continue
+        if lang in old:
+            names = ", ".join("the closing line" if b == translations.CLOSING else b for b in old[lang])
+            skipped[lang] = f"{lang} subtitles for {names} were made for the old English: update them, then run again"
+            continue
+        cs = translations.cues(tl, short, lang, last)
+        where = paths(sdir, short, lang)
+        _write(where["srt"], to_srt(cs, tl.fps))
+        _write(where["vtt"], to_vtt(cs, tl.fps))
+        written[lang] = {"srt": str(where["srt"]), "vtt": str(where["vtt"])}
+    return written, skipped

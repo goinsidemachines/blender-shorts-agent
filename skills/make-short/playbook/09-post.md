@@ -47,6 +47,19 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
    **Caption files.** The final edit writes `out/<slug>.srt`, `.vtt` and `-transcript.txt` (`08-render.md`). A
    post-only change never makes them stale, so `CLI captions SHORT` is not needed again. If the page says they are
    stale, run the final edit again.
+   **Subtitles in other languages.** Ask once per short, only while `captions_translations` in short.json is None
+   (nobody asked yet): "Want subtitles in other languages?" Record a no as `{}` and never ask again. For a yes,
+   write each language into `captions_translations` (`{"es": {"lines": {line id: text}, "closing": text, "from":
+   {line id: the English it was made from, "closing": ...}}}`, closing only when the short has a closing voice
+   line). Say that the translations are your own and should be checked by a speaker for anything important. Keep
+   every number (validate refuses a translation that leaves one out); right-to-left languages are fine, write the
+   text as it reads. Then run `CLI validate SHORT` and `CLI captions SHORT`: it writes `out/<slug>.<lang>.srt` and
+   `.vtt` with the English timing, and says why it skipped a language with problems or lines made for older
+   English. If the English changes, update that language's translation (the Post stage flags it as made for the
+   old English); when only the wording changed and the meaning did not, set the language's `from` to the new
+   English instead of translating again, and say so. The user uploads each language in YouTube Studio →
+   Subtitles; the checklist on the Post stage lists the files.
+
 3. `CLI page SHORT --stage final` switches the page to the Final stage: the final video, the checks summary and the
    user's hard rules with how this short kept each (`rules_check`: re-read it against the finished video first);
    each finding says its shot, and a frame finding its redo command. Under the video is its timeline (shots,

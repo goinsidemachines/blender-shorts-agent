@@ -131,7 +131,8 @@
           ctx.el("p", { class: "file-head" }, ctx.el("strong", { id: id }, String(f.label || f.key)),
             f.size ? ctx.el("span", { class: "muted" }, " · " + String(f.size)) : null),
           ctx.el("p", { class: "file-rel" }, ctx.el("code", null, String(f.rel || ""))),
-          f.stale ? ctx.el("p", { class: "problem" }, "Made for an older timing: run the final edit again.") : null,
+          f.stale ? ctx.el("p", { class: "problem" },
+            f.why ? String(f.why) : "Made for an older timing: run the final edit again.") : null,
           ctx.el("button", { type: "button", class: "btn small", "data-k": "copy-path:" + f.key,
             "aria-describedby": id, onclick: function () { ctx.copy(String(f.path || ""), "the path of " + f.rel); } },
           "Copy path"));

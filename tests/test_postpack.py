@@ -126,7 +126,7 @@ def test_checklist_copy_is_built_from_what_the_plugin_knows(tmp_path):
     (sdir / "out" / "pendulum.srt").write_text("1\n", "utf-8")
     _set_post(sdir, pinned_comment="Watch more: https://example.com")
     items = postpack.checklist_items(sdir, _short(sdir))
-    assert [i["id"] for i in items] == list(postpack.CHECK_IDS)
+    assert [i["id"] for i in items] == [c for c in postpack.CHECK_IDS if c != "languages"]
     text = {i["id"]: i["text"] for i in items}
     assert text["thumbnail"] == ("Thumbnail: out/thumbnail-1080x1920.png (Shorts and Reels: pick it as the cover frame "
                                  "where the app allows), out/thumbnail-1280x720.png (YouTube custom thumbnail).")
@@ -174,3 +174,46 @@ def test_tick_refuses_an_unknown_item(tmp_path):
     assert checklist.tick(sdir, "link", True) == {"upload": True, "link": True}
     assert checklist.tick(sdir, "upload", False) == {"upload": False, "link": True}
     assert checklist.load(sdir) == {"upload": False, "link": True}
+
+
+def _translated(sdir, **langs):
+    p = sdir / "source" / "short.json"
+    d = json.loads(p.read_text("utf-8"))
+    en = {ln["id"]: ln["text"] for ln in d["lines"]}
+    out = {}
+    for lang, fresh in langs.items():
+        out[lang] = {"lines": {k: f"{lang} {k}" for k in en}, "from": dict(en) if fresh else {"l01": "older"}}
+    d["captions_translations"] = out
+    p.write_text(json.dumps(d), "utf-8")
+
+
+def test_language_rows_and_checklist(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    _translated(sdir, es=True, de=False)
+    out = sdir / "out"
+    for name in ("es.srt", "es.vtt", "de.srt"):
+        (out / f"pendulum.{name}").write_text("1\n", "utf-8")
+    rows = {r["key"]: r for r in postpack.files(sdir, _short(sdir))}
+    assert rows["srt-es"]["label"] == "Captions, es (SRT)" and rows["srt-es"]["rel"] == "out/pendulum.es.srt"
+    assert rows["vtt-es"]["exists"] and not rows["srt-es"]["stale"] and "why" not in rows["srt-es"]
+    assert rows["srt-de"]["stale"] and rows["srt-de"]["why"].startswith("Made for the old English")
+    assert "CLI captions SHORT" in rows["srt-de"]["why"] and not rows["vtt-de"]["exists"]
+    assert "why" not in rows["srt"]
+    keys = [r["key"] for r in postpack.files(sdir, _short(sdir))]
+    assert keys.index("srt-es") > keys.index("transcript") and keys[-1] == "pack"
+    md = postpack.markdown(sdir, _short(sdir))
+    assert "- Captions, es (SRT): out/pendulum.es.srt" in md and "- Captions, es (VTT): out/pendulum.es.vtt" in md
+    assert "Captions, de (SRT): out/pendulum.de.srt (" in md and "old English" in md
+    assert postpack.CHECK_IDS.index("languages") == postpack.CHECK_IDS.index("captions") + 1
+    (out / "pendulum.srt").write_text("1\n", "utf-8")
+    items = postpack.checklist_items(sdir, _short(sdir))
+    ids = [i["id"] for i in items]
+    assert ids[ids.index("captions") + 1] == "languages"
+    text = {i["id"]: i["text"] for i in items}
+    assert text["languages"] == "Upload each language in YouTube Studio → Subtitles: out/pendulum.es.srt"
+
+
+def test_no_language_files_no_languages_item(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    _translated(sdir, es=True)
+    assert "languages" not in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir))]
