@@ -450,9 +450,10 @@ def _field_text(key: str, value) -> str:
     return str(value or "")
 
 
-def _post_fields(short, settings: dict) -> list[dict]:
-    """One row per post field: its text, its count against the platform limit, its warning or error (note) and,
-    for the description, the platforms it fits."""
+def _post_fields(short, settings: dict) -> tuple[list[dict], dict[str, str]]:
+    """One row per post field (its text, its count against the platform limit and, for the description, the
+    platforms it fits) and each field's warning or error, {key: note}. The notes are kept apart: they follow the
+    user's settings and the checks' wording, neither of which is the post itself, so they never move its version."""
     from bsa import post as post_mod
 
     p = post_mod.fields(short)
@@ -469,9 +470,8 @@ def _post_fields(short, settings: dict) -> list[dict]:
         desc = p["description"] if key == "description" and isinstance(p["description"], str) else None
         rows.append({"key": key, "label": post_mod.LABELS[key], "text": _field_text(key, p[key]),
                      "count": c.get("count"), "max": c.get("max"), "warn_over": c.get("warn_over"),
-                     "state": c.get("state"), "note": "; ".join(notes_of[key]) if key in notes_of else None,
-                     "badges": post_mod.fits(desc) if desc is not None else []})  # fmt: skip
-    return rows
+                     "state": c.get("state"), "badges": post_mod.fits(desc) if desc is not None else []})  # fmt: skip
+    return rows, {k: "; ".join(v) for k, v in notes_of.items()}
 
 
 def _texts(items) -> list[str]:
@@ -508,22 +508,22 @@ def _post(ctx: Ctx) -> dict | None:
     """The post text to copy with its counts and notes (a note on any field), the chosen thumbnail and the
     candidates to choose from, the files to upload, the before-you-post checklist, the closing card and the asset
     credits. The thumbnail is versioned only once short.json records a choice and its file is in out/; the
-    candidates, files and checklist are not (see _UNVERSIONED): making them, or ticking a box, is not something to
-    answer. A damaged review/thumbs.json or review/checklist.json is a line (`thumbs_problem`,
+    candidates, files, checklist and field notes are not (see _UNVERSIONED): making them, ticking a box or changing
+    a setting is not something to answer. A damaged review/thumbs.json or review/checklist.json is a line (`thumbs_problem`,
     `checklist_problem`), not a broken stage."""
     from bsa import postpack, thumbs
     from bsa.review import checklist
 
     short = _short(ctx)
     post = short.post if isinstance(short.post, dict) else {}
-    fields = _post_fields(short, ctx.settings)
+    fields, field_notes = _post_fields(short, ctx.settings)
     th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
     chosen = thumbs._chosen_n(th.get("chosen"))
     out_file = postpack.OUT_FILES["1080x1920"]
     thumbnail = None
     if chosen is not None and (ctx.sdir / out_file).is_file():
         thumbnail = {"chosen": chosen, "file": {"file": out_file}}
-    content = {"fields": fields, "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short),
+    content = {"fields": fields, "field_notes": field_notes, "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short),
                "checklist": [], "closing": _closing_card(ctx, short), "credits": _asset_rows(short.assets)}  # fmt: skip
     try:
         content["candidates"] = _candidates(ctx.sdir, thumbs.load(ctx.sdir))
@@ -555,7 +555,8 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 # user approves, so it must not move the version they answered).
 _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
-                "post": ("candidates", "files", "checklist", "thumbs_problem", "checklist_problem")}
+                "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
+                         "checklist_problem")}
 
 
 def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:

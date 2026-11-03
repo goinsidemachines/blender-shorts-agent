@@ -191,6 +191,7 @@ def test_copy_buttons_and_limit_badges(view, live_server):
     stage = p.locator("#bsa-stage")
     expect(stage.get_by_text("70 / 100", exact=True)).to_be_visible()
     expect(stage.get_by_text("may be cut off in the feed")).to_be_visible()
+    expect(stage.locator(".count", has_text="70 / 100").get_by_text("Near the limit", exact=True)).to_be_visible()
     expect(stage.get_by_text("Fits YouTube", exact=True)).to_be_visible()
     expect(stage.get_by_text("Fits TikTok", exact=True)).to_be_visible()
     assert stage.locator(".count").first.get_attribute("aria-live") == "off"

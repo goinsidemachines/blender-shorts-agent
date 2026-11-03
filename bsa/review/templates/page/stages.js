@@ -736,7 +736,7 @@
       compareBlock(ctx, "post", content),
       BSA.post ? [
         BSA.post.thumbnails(ctx, content),
-        BSA.post.fields(ctx, content.fields || []),
+        BSA.post.fields(ctx, content.fields || [], content.field_notes),
         BSA.post.files(ctx, content.files),
         BSA.post.checklist(ctx, content.checklist, content.checklist_problem),
       ] : null,

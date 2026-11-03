@@ -53,6 +53,7 @@ def video_info(sdir: Path, short) -> dict:
 
 
 def files(sdir: Path, short, video: dict | None = None) -> list[dict]:
+    """The output files, one row each. A row's `path` is an absolute local path, also in the offline page's data."""
     sdir = Path(sdir)
     video = video or video_info(sdir, short)
     cap = captions.paths(sdir, short)
@@ -93,7 +94,7 @@ def checklist_items(sdir: Path, short) -> list[dict]:
         ("length", f"After uploading, check the platform shows the full {video['length'] or 'video'}."),
     ]  # fmt: skip
     th = p["thumbnail"] if isinstance(p["thumbnail"], dict) else {}
-    if thumbs._chosen_n(th.get("chosen")) is not None:
+    if thumbs._chosen_n(th.get("chosen")) is not None and (sdir / OUT_FILES["1080x1920"]).is_file():
         items.append(("thumbnail", (f"Thumbnail: {OUT_FILES['1080x1920']} (Shorts and Reels: pick it as the cover "
                                     f"frame where the app allows), {OUT_FILES['1280x720']} (YouTube custom "
                                     "thumbnail).")))  # fmt: skip

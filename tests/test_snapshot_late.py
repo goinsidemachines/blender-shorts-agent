@@ -190,11 +190,12 @@ def test_post_fields_show_counts_notes_and_platform_badges(tmp_path):
     c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
     title = _field(c, "title")
     assert (title["count"], title["max"], title["warn_over"], title["state"]) == (70, 100, 60, "warn")
-    assert "may be cut off in the feed" in title["note"] and title["badges"] == []
+    notes = c["field_notes"]
+    assert "may be cut off in the feed" in notes["title"] and title["badges"] == []
     desc = _field(c, "description")
-    assert desc["state"] == "warn" and desc["badges"] == ["YouTube"] and "too long for Instagram" in desc["note"]
+    assert desc["state"] == "warn" and desc["badges"] == ["YouTube"] and "too long for Instagram" in notes["description"]
     hashtags = _field(c, "hashtags")
-    assert (hashtags["count"], hashtags["max"], hashtags["state"], hashtags["note"]) == (4, 6, "ok", None)
+    assert (hashtags["count"], hashtags["max"], hashtags["state"]) == (4, 6, "ok") and "hashtags" not in notes
     tags = _field(c, "tags")
     assert tags["text"] == "pendulum clock, physics" and tags["count"] == post.tags_length(["pendulum clock", "physics"])
     for key in ("link", "related"):
@@ -203,10 +204,21 @@ def test_post_fields_show_counts_notes_and_platform_badges(tmp_path):
     assert _field(c, "related")["text"] == "How a lever works https://example.com/lever"
     _set_post(sdir, title="T" * 101, link="http://example.com")
     c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
-    assert _field(c, "title")["state"] == "over" and "YouTube allows 100" in _field(c, "title")["note"]
-    assert "must start with https://" in _field(c, "link")["note"]
-    assert set(_field(c, "description")) == {"key", "label", "text", "count", "max", "warn_over", "state", "note",
-                                             "badges"}  # fmt: skip
+    assert _field(c, "title")["state"] == "over" and "YouTube allows 100" in c["field_notes"]["title"]
+    assert "must start with https://" in c["field_notes"]["link"]
+    assert set(_field(c, "description")) == {"key", "label", "text", "count", "max", "warn_over", "state", "badges"}
+
+
+def test_settings_change_field_notes_but_never_the_post_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    _set_post(sdir, link="https://example.com/pendulum")
+    row = _stage(snapshot.build(sdir, settings={"website": "example.com"}), "post")
+    assert "link" not in row["content"]["field_notes"]
+    again = _stage(snapshot.build(sdir, settings={}), "post")
+    assert "is not on your website (none is set)" in again["content"]["field_notes"]["link"]
+    assert again["version"] == row["version"]
+    fmt = {"post_format": {"title_style": "question"}}
+    assert _stage(snapshot.build(sdir, settings=fmt), "post")["version"] == row["version"]
 
 
 def test_ticks_and_files_never_move_the_post_version(tmp_path):

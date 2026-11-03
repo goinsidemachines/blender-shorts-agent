@@ -76,16 +76,18 @@
     return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
   }
 
-  // "<count> / <max>" for a field with a limit, coloured by its state; over the limit it also says so in words.
+  // "<count> / <max>" for a field with a limit, coloured by its state and, near or over the limit, said in words.
   function counter(ctx, f) {
     if (typeof f.count !== "number" || typeof f.max !== "number") return null;
     var state = f.state === "over" || f.state === "warn" ? f.state : "ok";
     return ctx.el("p", { class: "count count-" + state, "aria-live": "off" },
       ctx.el("span", { class: "count-n" }, f.count + " / " + f.max),
-      state === "over" ? ctx.el("span", { class: "count-word" }, "Over the limit") : null);
+      state === "over" ? ctx.el("span", { class: "count-word" }, "Over the limit")
+        : state === "warn" ? ctx.el("span", { class: "count-word" },
+          typeof f.warn_over === "number" ? "Near the limit" : "Check this") : null);
   }
 
-  function field(ctx, f) {
+  function field(ctx, f, note) {
     var label = String(f.label || f.key);
     var name = label.toLowerCase();
     var text = String(f.text || "");
@@ -96,7 +98,7 @@
           onclick: function () { ctx.copy(text, "the " + name); } }, "Copy the " + name) : null),
       text ? ctx.el("pre", { class: "copytext" }, text) : ctx.el("p", { class: "muted" }, "Not written yet."),
       text ? counter(ctx, f) : null,
-      f.note ? ctx.el("p", { class: "field-note" }, capital(f.note)) : null,
+      note ? ctx.el("p", { class: "field-note" }, capital(note)) : null,
       badges.length ? ctx.el("p", { class: "fits" }, badges.map(function (b) {
         return ctx.el("span", { class: "tag fit" }, "Fits " + String(b));
       })) : null,
@@ -104,12 +106,15 @@
   }
 
   // The post text, one field at a time: "Copy the <label>", its count against the limit, its warning or problem
-  // and, for the description, the platforms it fits.
-  post.fields = function (ctx, fields) {
+  // and, for the description, the platforms it fits. `notes` is {field key: its warning or problem}.
+  post.fields = function (ctx, fields, notes) {
     if (!Array.isArray(fields)) return null;
+    var byKey = notes && typeof notes === "object" ? notes : {};
     return ctx.el("section", { class: "st-sec post-text" },
       ctx.el("h3", null, "Post text"),
-      ctx.el("div", { class: "fields" }, fields.map(function (f) { return field(ctx, f); })));
+      ctx.el("div", { class: "fields" }, fields.map(function (f) {
+        return field(ctx, f, typeof byKey[f.key] === "string" ? byKey[f.key] : null);
+      })));
   };
 
   // The files in out/ to upload, each with "Copy path"; a caption file cut for an older timing says so.

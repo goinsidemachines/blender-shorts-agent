@@ -118,6 +118,11 @@ def test_checklist_copy_is_built_from_what_the_plugin_knows(tmp_path):
     assert items[2]["text"] == "After posting, tell Claude the link"
     pagefix.write_thumbs(sdir, 2)
     thumbs.choose(sdir, 1, "page")
+    out = sdir / postpack.OUT_FILES["1080x1920"]
+    kept = out.read_bytes()
+    out.unlink()  # a choice whose file is gone from out/: nothing to point at
+    assert "thumbnail" not in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir))]
+    out.write_bytes(kept)
     (sdir / "out" / "pendulum.srt").write_text("1\n", "utf-8")
     _set_post(sdir, pinned_comment="Watch more: https://example.com")
     items = postpack.checklist_items(sdir, _short(sdir))
