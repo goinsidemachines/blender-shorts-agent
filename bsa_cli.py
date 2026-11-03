@@ -297,6 +297,18 @@ def _gate(sdir: Path, stage: str) -> None:
                        + "; ".join(errors))  # fmt: skip
 
 
+def cmd_shorts(args) -> dict:
+    from bsa import like
+
+    s = settings.load_settings()
+    root = s.get("workspace")
+    if not root:
+        raise CliError("No workspace is set yet: run settings set workspace PATH first.")
+    rows = like.list_shorts(Path(root), s)
+    done = [r["title"] for r in rows if r["finished"] and r["title"]]
+    return {"shorts": rows, "last_finished": done[:3]}
+
+
 def cmd_state(args) -> dict:
     sdir = short_dir(args.short)
     if args.action == "done":
@@ -1319,6 +1331,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--topic", default=None, help="what a viewer should understand at the end (short.json topic)")
     sp.add_argument("--length", type=float, default=None, help="length in seconds, 15 to 90 (short.json length_s)")
     sp.set_defaults(fn=cmd_new_short)
+
+    sp = sub.add_parser("shorts", help="list the workspace's shorts: title, style, set, length, narrator")
+    sp.set_defaults(fn=cmd_shorts)
 
     sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     sp.add_argument("short")
