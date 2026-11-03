@@ -85,6 +85,7 @@ def _sheet(kit, tiles: list[np.ndarray], names: list[str], out_png: Path, font_p
     base = tmp / f"sheet-{uuid.uuid4().hex[:8]}.png"
     cards._write_rgba(sheet, base)
     total_w, total_h = sheet.shape[1], sheet.shape[0]
+    added: list[str] = []
     scene = bpy.data.scenes.new(f"{SCENE}Sheet")
     try:
         r = scene.render
@@ -95,7 +96,9 @@ def _sheet(kit, tiles: list[np.ndarray], names: list[str], out_png: Path, font_p
         scene.frame_start = scene.frame_end = 1
         seq = scene.sequence_editor_create()
         seq.strips.new_image("Sheet", str(base), 1, 1, fit_method="ORIGINAL")
+        had = set(bpy.data.fonts.keys())
         font = bpy.data.fonts.load(str(font_path), check_existing=True) if font_path else None
+        added = [n for n in bpy.data.fonts.keys() if n not in had]  # noqa: SIM118 - ID collection, not a dict
         colour = hex_colour(str(kit.caption.get("color"))) or (1.0, 1.0, 1.0, 1.0)
         for i, name in enumerate(names):
             _caption_strip(seq, name, (i + 0.5) / len(tiles), 1.0 - (h + CAPTION_H / 2) / total_h, font, colour)
@@ -113,6 +116,9 @@ def _sheet(kit, tiles: list[np.ndarray], names: list[str], out_png: Path, font_p
         part.replace(out_png)
     finally:
         bpy.data.scenes.remove(scene)
+        for n in added:
+            if n in bpy.data.fonts:
+                bpy.data.fonts.remove(bpy.data.fonts[n])
         base.unlink(missing_ok=True)
 
 

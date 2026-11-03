@@ -38,6 +38,7 @@ def _args(**kw):
 def test_style_sample_sheet_has_one_tile_per_style():
     SETTINGS.write_text('{"brand": {"mode": "fresh"}}', encoding="utf-8")
     before = SETTINGS.read_bytes()
+    fonts_before, images_before = set(bpy.data.fonts.keys()), len(bpy.data.images)
     out = bsa_blender.cmd_style_sample(_args(styles="toy,toon", engine="eevee"))
     px = read_png(Path(out["png"]))
     assert px.shape[:2] == (192 + 32, 2 * 108), px.shape
@@ -55,6 +56,10 @@ def test_style_sample_sheet_has_one_tile_per_style():
         assert (~on_box[:, i * 108 : (i + 1) * 108]).sum() > 20, f"no caption text under tile {i}"  # ...with text
     assert SETTINGS.read_bytes() == before  # nothing written to the settings
     assert not [s for s in bpy.data.scenes if s.name.startswith("StyleSample")]
+    assert not [c for c in bpy.data.collections if c.name.endswith(" no lines")]
+    assert not [ls for ls in bpy.data.linestyles if "bsa ink" in ls.name.lower()], list(bpy.data.linestyles.keys())
+    assert set(bpy.data.fonts.keys()) == fonts_before, list(bpy.data.fonts.keys())  # the sheet's font is gone again
+    assert len(bpy.data.images) == images_before
     assert not [m for m in bpy.data.materials if m.users == 0 and m.name.startswith(("Crate", "Lever"))]
 
 
@@ -76,3 +81,10 @@ def test_the_kits_own_style_is_the_default():
     SETTINGS.write_text("{}", encoding="utf-8")
     out = bsa_blender.cmd_style_sample(_args(engine="eevee", set="none"))
     assert out["styles"] == ["toon"]  # the made-up kit's style
+
+
+def test_styles_with_their_own_lines_leave_nothing_behind():
+    SETTINGS.write_text("{}", encoding="utf-8")
+    bsa_blender.cmd_style_sample(_args(styles="blueprint,pencil,toon", engine="eevee", set="workbench"))
+    assert not [c for c in bpy.data.collections if c.name.endswith(" no lines")], list(bpy.data.collections.keys())
+    assert not [ls for ls in bpy.data.linestyles if ls.name.lower().startswith("bsa")], list(bpy.data.linestyles.keys())

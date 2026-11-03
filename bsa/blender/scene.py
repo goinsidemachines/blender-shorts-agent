@@ -180,8 +180,11 @@ def remove_scenes(names) -> None:
     refer to objects by name). Data the scenes did not use, or still used elsewhere, is never touched: in MCP mode the
     open file is the user's. The untouched factory scene goes too (`remove_factory_scene`)."""
     scenes = [bpy.data.scenes[n] for n in names if n in bpy.data.scenes]
+    from bsa.blender import look, styles  # both import this module
     owned: set = set()
     for sc in scenes:
+        styles._extra_lines_off(sc)  # a style's own linesets (blueprint, pencil) hold the collection too
+        look._ink_off(sc)  # its ink lineset, line style and "no lines" collection go first: removing the scene would leave them badly counted
         _own(sc, owned)
     for sc in scenes:
         bpy.data.scenes.remove(sc)

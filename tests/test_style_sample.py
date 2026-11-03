@@ -11,8 +11,10 @@ def test_style_sample_in_blender(blender_run):
     assert result.returncode == 0, result.stdout + result.stderr
     for name in ("test_style_sample_sheet_has_one_tile_per_style",
                  "test_the_engine_comes_from_the_settings_when_no_flag_is_given",
-                 "test_the_kits_own_style_is_the_default"):
+                 "test_the_kits_own_style_is_the_default",
+                 "test_styles_with_their_own_lines_leave_nothing_behind"):
         assert f"PASS {name}" in result.stdout, result.stdout + result.stderr
+    assert "user decrement error" not in result.stdout + result.stderr  # removing the scenes leaves no bad counts
 
 
 def test_style_sample_only_applies_the_users_engine():
