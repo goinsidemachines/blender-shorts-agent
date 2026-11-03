@@ -584,6 +584,39 @@ def _shots(scene, short, tl) -> list:
     return out
 
 
+def _label_tracks(scene, shots) -> tuple[dict, dict]:
+    """Empty per-shot tracks to fill at the dressed frames (_track_labels): ({shot: {object: {"f0", "points",
+    "category"}}} for each near label's object, {shot: {"f0", "boxes": {hero: [...]}}}), with a slot per frame of the
+    shot, as overlays.shot_boxes reads anchors and heroes."""
+    from bsa.short import label_near
+
+    near_at, heroes_at = {}, {}
+    for shot, span, _ in shots:
+        if shot is None:
+            continue
+        n = span.f1 - span.f0 + 1
+        for label in shot.labels or []:
+            name = label_near(label)
+            obj = scene.objects.get(name) if name else None
+            if obj is not None:
+                near_at.setdefault(shot.id, {})[name] = {"f0": span.f0, "points": [None] * n,
+                                                        "category": bake.category(obj)}  # fmt: skip
+        heroes_at[shot.id] = {"f0": span.f0, "boxes": {h: [None] * n for h in anchors.heroes(scene, shot.id)}}
+    return near_at, heroes_at
+
+
+def _track_labels(scene, cam_ev, dg, frame, shot_id, near_at, heroes_at) -> None:
+    """Fill the near labels' anchor points and the heroes' screen boxes of shot `shot_id` at `frame`."""
+    heroes = heroes_at.get(shot_id)
+    if heroes is None:
+        return
+    i = frame - heroes["f0"]
+    for name, rec in near_at.get(shot_id, {}).items():
+        rec["points"][i] = anchors.screen_top(scene, cam_ev, scene.objects[name], dg)
+    for name, boxes in heroes["boxes"].items():
+        boxes[i] = anchors.screen_box(scene, cam_ev, scene.objects[name], dg)
+
+
 def _corners(box_min, box_max, matrix) -> list:
     return [matrix @ Vector((x, y, z)) for x in (box_min[0], box_max[0]) for y in (box_min[1], box_max[1])
             for z in (box_min[2], box_max[2])]  # fmt: skip
@@ -738,7 +771,8 @@ def dress(scene, kit, short, tl, sdir, *, save: bool = True, replace: bool | lis
     far edge. (2) The props: the saved arrangement (setplace.reusable: only while the storyboard's approval of its
     current version stands and the entry is valid), but the names in `replace`; else (or `replace=True`) the seeded
     candidates (setplace.candidates) placed (setplace.place) clear of the subject's screen boxes (plus
-    SUBJECT_MARGIN_PX) and of the kit's cards and captions (setplace.text_rects) on every frame. (3) The kept props
+    SUBJECT_MARGIN_PX) and of the kit's cards, captions and near labels (setplace.text_rects, each label at
+    its part's top on screen, as the edit places it) on every frame. (3) The kept props
     are built from primitives in the set's colours, tagged set:prop, in "<scene> set props". (4) With `save` (and a
     short folder `sdir`) the arrangement goes to sets.json (setplace.save_scene). `sdir` None: nothing is read or
     saved. Without a kit, or a scene with no set (or set "none"), nothing at all: {}.
@@ -759,10 +793,12 @@ def dress(scene, kit, short, tl, sdir, *, save: bool = True, replace: bool | lis
     views: dict[int, _View] = {}
     subj_rects: dict[int, list[Rect]] = {}
     box = [math.inf, math.inf, -math.inf, -math.inf]
+    near_at, heroes_at = _label_tracks(scene, shots)
 
     def look_at(frame, cam_ev, dg):
         views[frame] = _View(cam_ev, dg)
         subj_rects[frame] = []
+        _track_labels(scene, cam_ev, dg, frame, frame_shot[frame], near_at, heroes_at)
         for obj in _subjects(scene, frame_shot[frame]):
             ev = obj.evaluated_get(dg)
             pts = _corners(Vector(ev.bound_box[0]), Vector(ev.bound_box[6]), ev.matrix_world)
@@ -788,7 +824,8 @@ def dress(scene, kit, short, tl, sdir, *, save: bool = True, replace: bool | lis
             if shot is None:
                 continue
             try:
-                for f, rects in setplace.text_rects(short, tl, shot, span, kit, font, fs).items():
+                for f, rects in setplace.text_rects(short, tl, shot, span, kit, font, fs, near_at.get(shot.id),
+                                                    heroes_at.get(shot.id)).items():  # fmt: skip
                     texts.setdefault(f, []).extend(rects)
             except kitlayout.LayoutError as exc:
                 warnings.append(f"shot {shot.id!r}: {exc}; its cards were left out of the props' placement")

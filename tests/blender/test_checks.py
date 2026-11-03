@@ -1309,9 +1309,10 @@ def test_style_bevels_change_no_floating_or_overlap_finding():
         assert all(m.show_viewport and m.show_render for m in mods), style  # put back as found
 
 
-def _lever(set_name, style):
+def _lever(set_name, style, labels=(), heroes=()):
     """The demo lever (rocking) in a fresh file, with the set `set_name` (based and dressed) and the style `style`
-    (None: neither), and a timeline of its main-scene shot "s1" only."""
+    (None: neither), and a timeline of its main-scene shot "s1" only. `labels`: shot s1's labels; `heroes`: parts
+    tagged hero (before the set is dressed)."""
     _fixtures()
     from dataclasses import replace
 
@@ -1326,6 +1327,7 @@ def _lever(set_name, style):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
     short = two_shot(sc.name, "lever")
+    short.shots[0].labels = list(labels)
     setup_scene(sc, short, "eevee", "still")
     k = kit_from({**KIT, "style": style or "toy"})
     if set_name:
@@ -1335,6 +1337,8 @@ def _lever(set_name, style):
     for f, deg in ((1, 11.0), (15, -11.0), (30, 11.0)):
         pivot.rotation_euler = (0.0, math.radians(deg), 0.0)
         pivot.keyframe_insert("rotation_euler", frame=f)
+    for name in heroes:
+        bake.tag(bpy.data.objects[name], "hero")
     full = build_timeline(short, {"l1": 0.6, "l2": 0.4})
     if style:
         styles.apply(sc, k, **{key: built[key] for key in ("target", "size", "key")})
@@ -1410,16 +1414,23 @@ def test_set_clearance_flags_a_prop_moved_onto_the_subject():
     assert len(found) == 1 and found[0].severity == "warning" and found[0].obj == prop.name, found
     msg = found[0].message
     assert f"set prop {prop.name!r} is over the subject in shot 's1'" in msg, msg
-    assert f"replace=[{prop['bsa_prop']!r}]" in msg, msg
+    assert f"place it again with sets.dress(..., replace=[{prop['bsa_prop']!r}])" in msg, msg
 
 
 def test_set_clearance_flags_a_prop_under_the_caption():
-    from bsa import overlays
+    _fixtures()
+    from kitfix import KIT
+
+    from bsa import cards, overlays
+    from bsa.fonts import font_caches
+    from bsa.kit import kit_from
 
     sc, short, tl, _ = _lever("workbench", "toon")
     span = tl.shots[0]
     frame = (span.f0 + span.f1) // 2
-    boxes = overlays.shot_boxes(short, tl, short.shots[0], span, None, None, [frame])[frame]
+    k = kit_from({**KIT, "style": "toon"})  # the kit and card font the checks measure (_lever_findings)
+    boxes = overlays.shot_boxes(short, tl, short.shots[0], span, None, None, [frame], kit=k,
+                                font=cards.card_font(k, font_caches(None)))[frame]  # fmt: skip
     cap = next(b for kind, _, _, b in boxes if kind == "caption")
     sc.frame_set(frame)
     cam = sc.camera
@@ -1433,3 +1444,80 @@ def test_set_clearance_flags_a_prop_under_the_caption():
     found = _clearance(_lever_findings(sc, short, tl))
     assert len(found) == 1 and found[0].obj == prop.name, found
     assert "over the caption in shot 's1'" in found[0].message, found[0].message
+
+
+def test_set_clearance_measures_the_shots_heroes():
+    """With a hero in the shot, the subject is the hero: a prop in front of another part is fine, in front of the
+    hero it is not."""
+    sc, short, tl, _ = _lever("workbench", "toon", heroes=("Crate",))
+    assert not _clearance(_lever_findings(sc, short, tl))
+    prop = _a_prop(sc)
+    prop.scale = (0.3, 0.3, 0.3)
+    cam = sc.camera.matrix_world.translation
+
+    def in_front_of(name):
+        at = bpy.data.objects[name].matrix_world.translation.copy()
+        prop.location = at + 0.4 * (cam - at)
+
+    in_front_of("StandPlate")  # not a hero in this shot
+    assert not _clearance(_lever_findings(sc, short, tl))
+    in_front_of("Crate")
+    found = _clearance(_lever_findings(sc, short, tl))
+    assert len(found) == 1 and "over the subject" in found[0].message, found
+
+
+def test_set_clearance_keeps_props_off_near_labels():
+    """Placement keeps props off near labels as the edit places them (the same text rects the check measures): a
+    long label near the crate lands where a prop went without it, and the dressed set gets no warning."""
+    sc, short, tl, dressed = _lever("workbench", "toon", labels=[{"text": "A long label for this part here",
+                                                                   "near": "Crate"}])  # fmt: skip
+    assert dressed["kept"], dressed
+    assert not _clearance(_lever_findings(sc, short, tl))
+
+
+def test_style_bevels_are_put_back_when_the_checks_fail():
+    _fixtures()
+    from types import SimpleNamespace
+
+    from kitfix import KIT
+
+    from bsa.blender import styles
+    from bsa.kit import kit_from
+
+    sc = _bevel_scene()
+    styles.apply(sc, kit_from({**KIT, "style": "toy"}), target="OnEdge", size=3.0)
+    mods = [o.modifiers[styles.BEVEL] for o in sc.objects if o.name in ("OnEdge", "Base", "Tipped")]
+    run = checks._Run
+
+    def broken(scene):
+        assert not any(m.show_viewport or m.show_render for m in mods)  # hidden while the checks measure
+        raise RuntimeError("stopped")
+
+    checks._Run = broken
+    try:
+        checks.run_checks(sc, _timeline())
+        raise AssertionError("run_checks should have raised")
+    except RuntimeError as exc:
+        assert str(exc) == "stopped"
+    finally:
+        checks._Run = run
+    assert all(m.show_viewport and m.show_render for m in mods)
+
+    class Stuck:  # a modifier that can't be switched off: hiding stops part-way
+        name, show_viewport, show_render = styles.BEVEL, True, True
+
+        def __setattr__(self, key, value):
+            if not value:
+                raise RuntimeError("can't switch it off")
+
+    stuck = SimpleNamespace(type="MESH", library=None, modifiers={styles.BEVEL: Stuck()})
+    first = sc.objects["OnEdge"]
+    hidden = []
+    try:
+        checks._hide_style_bevels(SimpleNamespace(objects=[first, stuck]), hidden)
+        raise AssertionError("hiding should have stopped")
+    except RuntimeError:
+        pass
+    assert not first.modifiers[styles.BEVEL].show_viewport
+    checks._restore_modifiers(hidden)
+    assert first.modifiers[styles.BEVEL].show_viewport and first.modifiers[styles.BEVEL].show_render

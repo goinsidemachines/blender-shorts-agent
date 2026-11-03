@@ -75,5 +75,8 @@ def test_checks_in_blender(blender_run):
         "test_set_props_are_not_heroes_and_set_pairs_are_not_tested",
         "test_set_clearance_flags_a_prop_moved_onto_the_subject",
         "test_set_clearance_flags_a_prop_under_the_caption",
+        "test_set_clearance_measures_the_shots_heroes",
+        "test_set_clearance_keeps_props_off_near_labels",
+        "test_style_bevels_are_put_back_when_the_checks_fail",
     ):
         assert f"PASS {name}" in result.stdout

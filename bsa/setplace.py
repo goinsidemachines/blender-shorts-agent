@@ -180,13 +180,16 @@ def covered_rects() -> list[Rect]:
     return [Rect(0, H * (1 - b), W, H * b), Rect(W * (1 - r), 0, W * r, H)]
 
 
-def text_rects(short, tl, shot, span, kit, font, frames) -> dict[int, list[tuple[str, Rect]]]:
+def text_rects(short, tl, shot, span, kit, font, frames, anchors: dict | None = None,
+               heroes: dict | None = None) -> dict[int, list[tuple[str, Rect]]]:  # fmt: skip
     """{frame: [(kind, rect)]}: every card and caption the edit puts on screen at each frame (overlays.shot_boxes,
-    with the kit's cards when there is a kit) plus ("covered", r) for each covered strip. The one rule placement and
-    set_clearance share."""
+    with the kit's cards when there is a kit) plus ("covered", r) for each covered strip. `anchors`: {object: {"f0",
+    "points", "category"?}} for the shot's near labels (each label's object top on screen; a near label without
+    them is left out) and `heroes`: the shot's {"f0", "boxes"} (near labels keep off them), as overlays.shot_boxes
+    takes them. The one rule placement and set_clearance share."""
     from bsa import overlays
 
-    boxes = overlays.shot_boxes(short, tl, shot, span, None, None, frames, kit=kit, font=font)
+    boxes = overlays.shot_boxes(short, tl, shot, span, anchors, heroes, frames, kit=kit, font=font)
     covered = [("covered", r) for r in covered_rects()]
     return {f: [(b[0], b[3]) for b in items] + covered for f, items in boxes.items()}
 

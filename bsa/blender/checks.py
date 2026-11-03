@@ -1,5 +1,5 @@
 """Scene checks run before a short is published: materials, textures, normals, shading, overlaps, framing,
-grounding, pops, names, z-fighting inside one mesh, live Booleans and contact parts that follow different parents. All geometry is the evaluated (modifier-applied, animated) mesh at the frame checked.
+grounding, pops, names, z-fighting inside one mesh, live Booleans and contact parts that follow different parents. All geometry is the evaluated (modifier-applied, animated) mesh at the frame checked, but for a style's bevel (below).
 
 Coverage: mesh objects get every check. Other renderable geometry (curves, text, surfaces, metaballs) gets the
 materials and images checks (a grey text label, a pink curve). Instanced geometry (collection instances, geometry
@@ -14,8 +14,9 @@ frame_edge, self_overlap or the covered check's subjects; a pair of two set obje
 z-fighting, but a set object against any other object is, so a prop sunk into the subject or a face flush with it is
 still found; floating, pops and pop_in skip them, and a "set:floor" still holds up a grounded part. A style's bevel
 (the "bsa style bevel" modifier of toy, clay and paper) is switched off while the checks run (and put back after):
-every geometry check measures the parts as built, so rounding an edge never makes a part resting on it float, nor
-hides a shallow overlap. An open mesh
+every geometry check (overlap, z-fighting, floating, self_overlap, self_zfight, faceted, normals) measures the parts
+as built, without the style bevel, so rounding an edge never makes a part resting on it float, nor hides a shallow
+overlap, and faceted and normals see the mesh as modelled, not the bevel's geometry. An open mesh
 tagged "surface" (water moved by waves, a liquid level: things float in it and dip into it) is left out of the
 overlap and z-fighting checks (as either object of a pair) and gets every other check; it still holds up a grounded
 object. A closed mesh is a solid: it is checked as usual whatever its tags, and a "surface" tag on it is a names
@@ -263,8 +264,9 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
     mesh, material, collection and library names with words a rule may forbid are "hard_rule" warnings. `cap`: list
     the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead)."""
     original = scene.frame_current
-    bevels = _hide_style_bevels(scene)  # measure the parts as built, not rounded by a style
+    bevels: list[tuple] = []
     try:
+        _hide_style_bevels(scene, bevels)  # measure the parts as built, not rounded by a style
         run = _Run(scene)
         short = _short_beside_blend() if short is None else short
         run.short, run.tl = short, tl
@@ -285,22 +287,23 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
     return sorted(found, key=lambda f: f.severity != "error")
 
 
-def _hide_style_bevels(scene) -> list[tuple]:
+def _hide_style_bevels(scene, hidden: list[tuple]) -> None:
     """Switch off every style bevel ("bsa style bevel", bsa.blender.styles) in the viewport and render, so the
-    evaluated meshes the checks read are the parts as built. Returns what to put back (_restore_modifiers)."""
-    hidden = []
+    evaluated meshes the checks read are the parts as built. Each one is noted in `hidden` before it is changed, so
+    _restore_modifiers puts back all that was changed even when this stops part-way."""
     for obj in scene.objects:
         mod = obj.modifiers.get(STYLE_BEVEL) if obj.type == "MESH" and obj.library is None else None
         if mod is not None and (mod.show_viewport or mod.show_render):
-            hidden.append((obj.name, mod.name, mod.show_viewport, mod.show_render))
+            hidden.append((obj, mod.name, mod.show_viewport, mod.show_render))
             mod.show_viewport = mod.show_render = False
-    return hidden
 
 
 def _restore_modifiers(hidden: list[tuple]) -> None:
-    for obj_name, mod_name, viewport, render in hidden:
-        obj = bpy.data.objects.get(obj_name)
-        mod = obj.modifiers.get(mod_name) if obj is not None else None
+    for obj, mod_name, viewport, render in hidden:
+        try:
+            mod = obj.modifiers.get(mod_name)
+        except ReferenceError:  # the object was deleted meanwhile
+            continue
         if mod is not None:
             mod.show_viewport, mod.show_render = viewport, render
 
@@ -463,9 +466,9 @@ class _Run:
         boxes = {o.name: screen_box(self.scene, cam_ev, o, dg) for o in heroes}
         seen["framing"][frame] = [viewer.box_rect(b) for b in boxes.values()]
         shot = self.short_shot(span.id)
-        texts = []
+        anchors, hero_track = {}, {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}
         if shot is not None and self.tl is not None:
-            anchors, subjects = {}, {n: viewer.box_rect(b) for n, b in boxes.items()}
+            subjects = {n: viewer.box_rect(b) for n, b in boxes.items()}
             for label in shot.labels:
                 near = label_near(label)
                 obj = self.scene.objects.get(near) if near else None
@@ -475,20 +478,21 @@ class _Run:
                                  "category": category(obj)}  # a kit's part label shows its category's dot
                 subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
             try:
-                texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
-                                            {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame],
+                texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors, hero_track, [frame],
                                             kit=self.kit, font=self.kit_font)[frame]  # fmt: skip
             except kitlayout.LayoutError as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
                 self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
             else:
                 seen["texts"][frame] = {"subjects": subjects, "texts": texts}
-        self.set_clearance(frame, cam_ev, objs, boxes if heroes else None, texts, seen["props"])
+        self.set_clearance(frame, cam_ev, objs, shot, span, anchors, hero_track if heroes else None, seen["props"])
 
-    def set_clearance(self, frame, cam_ev, objs, hero_boxes, texts, hits):
-        """Note each rendered set prop on screen at `frame` that meets the subject (`hero_boxes`, the shot's heroes'
-        screen boxes; None with no hero: every other rendered mesh that is not scenery or an overlay, as placement
-        takes it), a text box of the edit (`texts`: (kind, text, near, rect)) or a strip the player covers:
-        hits[prop] gets (frame, why) (bsa.setplace.collision, no margin)."""
+    def set_clearance(self, frame, cam_ev, objs, shot, span, anchors, heroes, hits):
+        """Note each rendered set prop on screen at `frame` that meets the subject or a text rect, by the rule
+        placement uses (bsa.setplace.collision, no margin): the subject is the shot's heroes (`heroes`: {"f0",
+        "boxes"} at this frame; None with no hero: every other rendered mesh that is not scenery or an overlay, as
+        placement takes it), the text rects setplace.text_rects (the edit's cards, captions and near labels, from
+        `anchors`, and the covered strips; without the short only the covered strips, as placement). hits[prop]
+        gets (frame, why)."""
         props = [o for o in objs if o.name in self.set_objs and set_role(o) == "prop"]
         if not props:
             return
@@ -497,12 +501,19 @@ class _Run:
         def rect(o):
             return viewer.box_rect(screen_box(self.scene, cam_ev, o, dg))
 
-        if hero_boxes is None:
+        if heroes is None:
             subjects = [rect(o) for o in objs if o.name not in self.set_objs and o.name not in self.overlay]
         else:
-            subjects = [viewer.box_rect(b) for b in hero_boxes.values()]
+            subjects = [viewer.box_rect(b[0]) for b in heroes["boxes"].values()]
         subjects = [r for r in subjects if r is not None]
-        rects = [(kind, r) for kind, _, _, r in texts] + [("covered", r) for r in setplace.covered_rects()]
+        if shot is None or self.tl is None:
+            rects = [("covered", r) for r in setplace.covered_rects()]
+        else:
+            try:
+                rects = setplace.text_rects(self.short, self.tl, shot, span, self.kit, self.kit_font, [frame], anchors,
+                                            heroes)[frame]  # fmt: skip
+            except kitlayout.LayoutError:  # named by the covered check; placement leaves such cards out too
+                rects = []
         for prop in props:
             r = rect(prop)
             why = setplace.collision(r, subjects, rects, 0) if r is not None else None
@@ -555,8 +566,9 @@ class _Run:
             prop = str(obj.get("bsa_prop", name)) if obj is not None else name  # the set's name for it
             self.add("set_clearance", "warning", name, frames[0],
                      f"set prop {name!r} is {hits[0][1]} in shot {span.id!r} (frames "
-                     f"{viewer.frame_spans(frames, max(1, every))}): move or drop it with sets.dress(..., "
-                     f"replace=[{prop!r}]) after asking, or let the next dress place it again",
+                     f"{viewer.frame_spans(frames, max(1, every))}). sets.dress reuses the saved arrangement as it "
+                     f"is, so after asking, place it again with sets.dress(..., replace=[{prop!r}]) (or move the "
+                     "prop by hand)",
                      key=(name, span.id))  # fmt: skip
 
     def track_positions(self, frame, positions):
