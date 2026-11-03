@@ -3,9 +3,10 @@ the versions the page actually served to a person (the server's /state and the s
 
 A stage's history lives in review/history/<stage>/: index.json lists the kept versions in the order first shown,
 and v<N>/ holds what version N showed (Story: lines.json; Storyboard: shots.json and a copy of each still; Final:
-final.json, with the MP4's digest in the index entry; Post: post.json and a copy of the chosen thumbnail). A copy is made in v<N>.<pid>.tmp and renamed into place under
-the index's lock, so a half-copied folder is never listed. The approved final's outgoing MP4 is moved (not copied)
-into review/history/final/<sha256[:16]>.mp4 by the edit, and the last MP4_KEEP of those are kept."""
+final.json, with the MP4's digest in the index entry; Post: post.json and a copy of the chosen thumbnail). A copy
+is made in v<N>.<pid>.tmp and renamed into place under the index's lock, so a half-copied folder is never listed.
+The approved final's outgoing MP4 is moved (not copied) into review/history/final/<sha256[:16]>.mp4 by the edit, and
+the last MP4_KEEP of those are kept."""
 
 from __future__ import annotations
 

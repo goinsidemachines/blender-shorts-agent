@@ -80,6 +80,10 @@ def test_candidates_and_feed_previews_render(view, live_server):
         assert abs(land["y"] - v["y"]) < 2 and land["x"] > v["x"]
     for btn in p.get_by_role("button", name="Use this one").all():
         expect(btn).to_have_attribute("aria-pressed", "false")
+    two = p.locator("section.thumb-cand", has=p.get_by_role("heading", name="Candidate 2"))
+    heading_id = two.get_by_role("heading", name="Candidate 2").get_attribute("id")
+    expect(two.get_by_role("button", name="Use this one")).to_have_attribute("aria-describedby", heading_id)
+    expect(two.get_by_role("button", name="Use this one")).to_have_accessible_description("Candidate 2")
     assert_healthy(p)
 
 
@@ -144,3 +148,20 @@ def test_render_runs_have_no_thumbnail_button(view, live_server):
     p = open_short(view, srv, stage="render")
     expect(p.get_by_role("tabpanel").get_by_role("button", name="Note at this moment")).to_be_visible()
     expect(p.get_by_role("button", name="Use this frame for the thumbnail")).to_have_count(0)
+    assert_healthy(p)
+
+
+def test_a_remade_chosen_candidate_asks_to_pick_again(view, live_server):
+    from bsa import thumbs
+
+    srv = live_server("post")
+    pagefix.write_thumbs(srv.sdir, 2)
+    thumbs.choose(srv.sdir, 1, "chat")
+    row = thumbs.load(srv.sdir)["candidates"][0]
+    thumbs.put_candidates(srv.sdir, [row], only=1)  # candidate 1 made again: out/ still holds the earlier one
+    p = open_short(view, srv, stage="post")
+    expect(p.get_by_text("The thumbnail files in out/ are from an earlier make of candidate 1, which has been made "
+                         "again since. Pick again to post one of these.")).to_be_visible()  # fmt: skip
+    for btn in p.get_by_role("button", name="Use this one").all():
+        expect(btn).to_have_attribute("aria-pressed", "false")
+    assert_healthy(p)

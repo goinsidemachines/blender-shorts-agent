@@ -775,3 +775,48 @@ def test_two_choices_at_once_leave_one_consistent_pair(tmp_path):  # Review Focu
         for size, rel in postpack.OUT_FILES.items():
             assert (sdir / rel).read_bytes() == (sdir / f"review/thumbs/{n}-{size}.png").read_bytes()
         assert load_short(_short_json(sdir)).post["thumbnail"]["chosen"] == n
+
+
+def test_choose_changes_nothing_while_short_json_is_locked(tmp_path, monkeypatch):
+    import pagefix
+
+    from bsa.review import store
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    pagefix.write_thumbs(sdir, 2)
+    monkeypatch.setattr(thumbs, "LOCK_S", 0.2)
+    before = _short_json(sdir).read_bytes()
+    with store.locked(_short_json(sdir)), pytest.raises(TimeoutError):
+        thumbs.choose(sdir, 1, "page")
+    assert thumbs.load(sdir)["chosen"] is None and _short_json(sdir).read_bytes() == before
+    assert not (sdir / "out" / "thumbnail-1080x1920.png").exists()
+    assert not (sdir / "out" / "thumbnail-1280x720.png").exists()
+
+
+def test_a_failed_short_json_write_puts_back_the_earlier_choice(tmp_path, monkeypatch):
+    import pagefix
+
+    from bsa import jobstate, postpack
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    pagefix.write_thumbs(sdir, 2)
+    thumbs.choose(sdir, 1, "page", now=1.0)
+    store_before = (sdir / thumbs.THUMBS_JSON).read_bytes()
+    short_before = _short_json(sdir).read_bytes()
+    real = jobstate.write_atomic
+
+    def failing(path, data, *a, **k):
+        if Path(path).name == "short.json":
+            raise OSError("disk full")
+        return real(path, data, *a, **k)
+
+    monkeypatch.setattr(jobstate, "write_atomic", failing)
+    with pytest.raises(OSError, match="disk full"):
+        thumbs.choose(sdir, 2, "page", now=2.0)
+    assert (sdir / thumbs.THUMBS_JSON).read_bytes() == store_before
+    assert _short_json(sdir).read_bytes() == short_before
+    for size, rel in postpack.OUT_FILES.items():
+        assert (sdir / rel).read_bytes() == (sdir / f"review/thumbs/1-{size}.png").read_bytes()
+    monkeypatch.setattr(jobstate, "write_atomic", real)
+    thumbs.choose(sdir, 2, "page")  # the locks were let go
+    assert thumbs.load(sdir)["chosen"]["n"] == 2

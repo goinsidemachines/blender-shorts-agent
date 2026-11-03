@@ -397,6 +397,9 @@ def _page_decide_thumbnail(args, sdir: Path) -> dict:
 
     if len(args.words) != 3:
         raise CliError("usage: page decide SHORT thumbnail --choice N [--by page|chat]")
+    if args.note is not None or args.version is not None:
+        raise CliError("page decide SHORT thumbnail takes only --choice N and --by page|chat (no --note or --version): "
+                       "leave a note on a candidate with the page, or tell Claude in the chat")  # fmt: skip
     by = args.by or "chat"
     if by not in ("page", "chat"):
         raise CliError("A thumbnail is chosen on the page or in the chat: --by page|chat")

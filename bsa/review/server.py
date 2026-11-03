@@ -521,7 +521,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, {"decision": entry, "notes_sent": sent})
 
     def _thumbnail(self, _name: str, sdir: Path, body: dict) -> None:
-        """The page's "Use this one" on a thumbnail candidate: its files go to out/ and the choice is recorded (bsa.thumbs)."""
+        """The page's "Use this one" on a thumbnail candidate: its files go to out/ and the choice is recorded
+        (bsa.thumbs.choose)."""
         choice = body.get("choice")
         if not isinstance(choice, int) or isinstance(choice, bool):
             raise ValueError("the choice must be a whole number: the candidate to use")  # noqa: TRY004 - a 400

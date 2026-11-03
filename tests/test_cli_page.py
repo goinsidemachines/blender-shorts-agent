@@ -474,9 +474,12 @@ def test_page_decide_thumbnail_records_the_choice(home, pendulum):
     assert load_short(pendulum / "source" / "short.json").post["thumbnail"]["chosen"] == 2
     ok(run(home, "page", "decide", "pendulum", "thumbnail", "--choice", "1", "--by", "page"))
     assert thumbs.load(pendulum)["chosen"]["by"] == "page"
-    for bad in (["--choice", "two"], [], ["--choice", "9"], ["--choice", "1", "--by", "settings"]):
+    for bad in (["--choice", "two"], [], ["--choice", "9"], ["--choice", "1", "--by", "settings"],
+                ["--choice", "2", "--note", "brighter"], ["--choice", "2", "--version", "3"]):  # fmt: skip
         proc = run(home, "page", "decide", "pendulum", "thumbnail", *bad)
         assert proc.returncode == 1 and "Traceback" not in proc.stderr, bad
     assert "There is no thumbnail candidate 9" in run(home, "page", "decide", "pendulum", "thumbnail",
                                                       "--choice", "9").stderr  # fmt: skip
+    assert "no --note or --version" in run(home, "page", "decide", "pendulum", "thumbnail", "--choice", "2",
+                                           "--note", "brighter").stderr  # fmt: skip
     assert thumbs.load(pendulum)["chosen"]["n"] == 1

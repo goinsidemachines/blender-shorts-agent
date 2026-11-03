@@ -31,7 +31,8 @@
     return ctx.el("ul", { class: "findings thumb-issues" },
       warnings.map(function (w) {
         return ctx.el("li", { class: "finding warning" },
-          ctx.el("p", { class: "finding-head" }, ctx.el("span", { class: "sev" }, "Warning")), ctx.el("p", null, String(w)));
+          ctx.el("p", { class: "finding-head" }, ctx.el("span", { class: "sev" }, "Warning")),
+          ctx.el("p", null, String(w)));
       }),
       findings.map(function (f) {
         var err = f.severity === "error";
@@ -47,8 +48,10 @@
     var n = Number(c.n);
     var name = "Candidate " + n;
     var hid = "bsa-thumb-" + n;
-    return ctx.el("section", { class: "thumb-cand" + (c.chosen ? " chosen" : ""), "aria-labelledby": hid, "data-n": String(n) },
-      ctx.el("div", { class: "thumb-head" }, ctx.el("h4", { id: hid }, name), c.chosen ? ctx.el("span", { class: "tag" }, "Chosen") : null),
+    return ctx.el("section", { class: "thumb-cand" + (c.chosen ? " chosen" : ""), "aria-labelledby": hid,
+      "data-n": String(n) },
+      ctx.el("div", { class: "thumb-head" }, ctx.el("h4", { id: hid }, name),
+        c.chosen ? ctx.el("span", { class: "tag" }, "Chosen") : null),
       heroText(c) ? ctx.el("p", { class: "muted" }, heroText(c)) : null,
       ctx.el("div", { class: "thumb-pair" },
         ctx.el("figure", { class: "thumb-fig thumb-v" }, picture(ctx, c, c.vertical, name + ", vertical", "thumb-img"),
@@ -62,7 +65,7 @@
       issues(ctx, c),
       ctx.el("div", { class: "btns" },
         ctx.el("button", { type: "button", class: "btn" + (c.chosen ? "" : " primary"), "data-act": "1",
-          "data-k": "thumb:use:" + n, "aria-pressed": String(!!c.chosen),
+          "data-k": "thumb:use:" + n, "aria-pressed": String(!!c.chosen), "aria-describedby": hid,
           onclick: function () { ctx.chooseThumb(n); } }, "Use this one"),
         ctx.noteButton("thumbnail", String(n), "+ Note on candidate " + n)));
   }
@@ -74,8 +77,12 @@
     if (!content || !Array.isArray(content.candidates)) return null;
     var list = content.candidates;
     var chosen = content.thumbnail && typeof content.thumbnail.chosen === "number" ? content.thumbnail.chosen : null;
-    var lead = chosen !== null ? "Candidate " + chosen + " is the thumbnail: its files are in out/. Pick another to change it."
-      : "Pick the one to post. Each is shown at full size, then at feed size beside a neighbouring video.";
+    var pressed = list.some(function (c) { return c.chosen; });
+    var lead = chosen === null
+      ? "Pick the one to post. Each is shown at full size, then at feed size beside a neighbouring video."
+      : pressed ? "Candidate " + chosen + " is the thumbnail: its files are in out/. Pick another to change it."
+        : "The thumbnail files in out/ are from an earlier make of candidate " + chosen + ", which has been made " +
+          "again since. Pick again to post one of these.";
     return ctx.el("section", { class: "st-sec thumbs" },
       ctx.el("h3", null, "Thumbnail"),
       content.thumbs_problem ? ctx.el("p", { class: "problem" }, String(content.thumbs_problem)) : null,

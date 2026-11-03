@@ -539,11 +539,16 @@ def _read_short_json(path: Path) -> tuple[dict, bool]:
     return data, b"\r\n" in raw
 
 
+LOCK_S = 5.0  # how long choose waits for the review/thumbs.json and short.json locks
+
+
 def choose(sdir, n: int, by: str, now: float | None = None) -> dict:
     """Make candidate `n` the short's thumbnail: copy both its sizes to out/ (postpack.OUT_FILES), record
     review/thumbs.json `chosen` {"n", "by", "at"} and short.json `post.thumbnail.chosen` (that one key, nothing else).
-    All of it under the review/thumbs.json lock, so two choices at once never leave out/ and the records naming
-    different candidates. ValueError for a candidate that isn't there, a missing file or an unreadable short.json."""
+    All or nothing: both locks (review/thumbs.json, then short.json) are taken and short.json read before anything is
+    written, and a write that fails puts back what was there. Two choices at once never leave out/ and the records
+    naming different candidates. ValueError for a candidate that isn't there, a missing file or an unreadable
+    short.json; TimeoutError when a lock stays held."""
     import time
 
     from bsa import jobstate, postpack
@@ -557,7 +562,7 @@ def choose(sdir, n: int, by: str, now: float | None = None) -> dict:
     path = sdir / THUMBS_JSON
     short_path = sdir / "source" / "short.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with store.locked(path):
+    with store.locked(path, timeout_s=LOCK_S), store.locked(short_path, timeout_s=LOCK_S):
         data = {**_empty(), **store.read_json(path, _empty(), expect=dict)}
         row = next((c for c in data["candidates"] if isinstance(c, dict) and c.get("n") == n), None)
         if row is None:
@@ -567,18 +572,34 @@ def choose(sdir, n: int, by: str, now: float | None = None) -> dict:
             if not (sdir / rel).is_file():
                 raise ValueError(f"Thumbnail candidate {n} has no file {rel}: make it again (BLENDER thumbs SHORT "
                                  f"--only {n})")  # fmt: skip
-        _read_short_json(short_path)  # refused before anything is copied
-        (sdir / "out").mkdir(parents=True, exist_ok=True)
-        for size, rel in postpack.OUT_FILES.items():
-            jobstate.write_atomic(sdir / rel, store.read_bytes(sdir / files[size]))
+        short, crlf = _read_short_json(short_path)
+        post = short.get("post") if isinstance(short.get("post"), dict) else {}
+        th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
+        short["post"] = {**post, "thumbnail": {**th, "chosen": n}}
         data["chosen"] = {"n": n, "by": by, "at": time.time() if now is None else now}
-        jobstate.write_atomic(path, json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
-        with store.locked(short_path):
-            short, crlf = _read_short_json(short_path)
-            post = short.get("post") if isinstance(short.get("post"), dict) else {}
-            th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
-            short["post"] = {**post, "thumbnail": {**th, "chosen": n}}
-            jobstate.write_atomic(short_path, _dumps(short, crlf))
+        writes = [(sdir / rel, store.read_bytes(sdir / files[size])) for size, rel in postpack.OUT_FILES.items()]
+        writes += [(path, json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")),
+                   (short_path, _dumps(short, crlf))]  # fmt: skip
+        before = {}  # what each written file held (None: it wasn't there), to put back if a later write fails
+        for target, _ in writes:
+            try:
+                before[target] = store.read_bytes(target)
+            except FileNotFoundError:
+                before[target] = None
+        (sdir / "out").mkdir(parents=True, exist_ok=True)
+        done = []
+        try:
+            for target, body in writes:
+                jobstate.write_atomic(target, body)
+                done.append(target)
+        except BaseException:
+            for target in reversed(done):
+                old = before[target]
+                if old is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    jobstate.write_atomic(target, old)
+            raise
     return {"chosen": n, "files": list(postpack.OUT_FILES.values())}
 
 
