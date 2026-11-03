@@ -166,7 +166,7 @@ def test_real_windows_fonts():
 
 def test_brand_playbook_covers_variable_fonts_and_glyphs():
     text = (ROOT / "skills/make-short/playbook/look-and-brand.md").read_text(encoding="utf-8")
-    assert "variable font" in text and "font:Fredoka@600" in text and "--short SHORT" in text and "glyph" in text
+    assert "variable font" in text and "font:Inter@600" in text and "--short SHORT" in text and "glyph" in text
 
 
 def _cli(*args, env_home):
