@@ -288,3 +288,12 @@ def test_kit_sample_frame_has_the_background_and_the_cards():
     assert isinstance(warnings, list)
     assert {s.name: s.render.engine for s in bpy.data.scenes} == engines  # the engine is the user's choice
     assert not bpy.data.scenes.get("KitSample")
+
+
+def test_kit_sample_says_a_missing_logo_once():
+    (TMP / "logo-gone").mkdir(exist_ok=True)
+    logo = _red_png(TMP / "logo-gone" / "red.png")
+    k = kit.kit_from({**KIT, "logo": {"file": str(logo), "name": "Acme"}})
+    logo.unlink()
+    warnings = bsa.blender.cards.render_sample(k, TMP / "sample-gone" / "sheet.png", TMP / "sample-cache")
+    assert sum("logo file" in w for w in warnings) == 1, warnings

@@ -201,10 +201,10 @@ def kit_layout(cfg: dict, kit, font) -> list[tuple]:
             specs.append(_plain_text(kit, text, font, cards.SIZES["lead"], maxw))
             continue
         pill_kind, fill, colour = (("category", kit.palette["accent"],
-                                    cards._hex_of(on_colour(hex_colour(kit.palette["accent"]))))
+                                    cards.hex_of(on_colour(hex_colour(kit.palette["accent"]))))
                                    if kind == "pill" else ("label", None, None))  # fmt: skip
         used, _ = cards.font_for(text, font)
-        size = cards._fit(text, cards.SIZES["website" if kind == "pill" else "handle"], used, room)
+        size = cards.fit(text, cards.SIZES["website" if kind == "pill" else "handle"], used, room)
         while True:
             spec = cards.pill(kit, pill_kind, text, font, fill=fill, colour=colour, wrap=room, size=size)
             if spec.w <= maxw or size <= 1:
@@ -223,7 +223,7 @@ def _plain_text(kit, text: str, font, size: int, maxw: float):
     from bsa import cards
 
     used, _ = cards.font_for(text, font)
-    size = cards._fit(text, size, used, maxw - 2 * KIT_TEXT_PAD)
+    size = cards.fit(text, size, used, maxw - 2 * KIT_TEXT_PAD)
     w = math.ceil(cards.measure(text, size, used)) + 2 * KIT_TEXT_PAD
     h = math.ceil(cards.text_height(1, size, used))
     run = cards.Run(text, size, kit.palette["text"], w / 2, h / 2, "CENTER")

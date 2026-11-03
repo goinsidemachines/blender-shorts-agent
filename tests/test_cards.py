@@ -84,6 +84,13 @@ def test_caption_is_the_full_width_and_wraps_by_real_widths(font):
     assert cards.shape_rgba(half)[half.box_h // 2, half.w // 2, 3] == 128
 
 
+def test_fit_and_hex_of_are_public_for_the_closing_card(font):
+    assert cards.fit("ABAB", 40, font, 40) == 20 and cards.fit("AB", 40, font, 400) == 40
+    assert cards.fit("ABAB", 40, font, 4, floor=10) == 10
+    assert cards.hex_of((1.0, 0.0, 0x2A / 255, 0.5)) == "#FF002A"
+    assert not hasattr(cards, "_fit") and not hasattr(cards, "_hex_of")
+
+
 def test_an_8_digit_caption_box_keeps_its_alpha_times_the_opacity(font):
     """brand.caption.box "#1B2A3A80" is half see-through; with opacity 0.5 on top it is a quarter (one alpha, never a
     second one appended)."""
@@ -288,6 +295,7 @@ def test_cards_in_blender(blender_run):
                  "test_card_text_is_drawn_inside_the_box", "test_the_logo_shows_on_the_logo_badge",
                  "test_ensure_renders_once", "test_rendering_cards_leaves_every_engine_alone",
                  "test_overlay_strips_are_placed_where_the_layout_said", "test_pointer_strip_reaches_the_anchor",
+                 "test_kit_sample_says_a_missing_logo_once",
                  "test_blenders_own_font_fits_its_padding_and_is_centred",
                  "test_a_tracked_card_without_a_track_is_left_out",
                  "test_a_scene_named_card_is_left_alone"):

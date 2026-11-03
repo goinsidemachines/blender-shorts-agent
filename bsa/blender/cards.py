@@ -223,7 +223,7 @@ def render_sample(kit, out_png: Path, cache_dir: Path) -> list[str]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     font, note = cards.card_font_and_note(kit, fonts.font_caches())
     ov = sample(kit, font)
-    warnings = [n for n in [note, *ov.notes, logo_missing(kit.logo)] if n]
+    warnings = list(dict.fromkeys(n for n in [note, *ov.notes, logo_missing(kit.logo)] if n))  # the logo note once
     bg_png = cache_dir / f"sample-background-{uuid.uuid4().hex[:8]}.png"
     old = bpy.data.scenes.get("KitSample")
     if old is not None:

@@ -184,7 +184,7 @@ def font_for(text: str, font) -> tuple[Path | None, str | None]:
     return Path(font), f"{text!r}: no installed font has {chars}; they show as boxes"
 
 
-def _fit(text: str, size: int, font, width: float, floor: int = 1) -> int:
+def fit(text: str, size: int, font, width: float, floor: int = 1) -> int:
     """`size`, shrunk (to `floor` at least) so `text` fits in `width` on one line."""
     w = measure(text, size, font)
     return size if w <= width or w <= 0 else max(floor, int(size * width / w))
@@ -197,7 +197,8 @@ def _hexa(value: str, opacity: float) -> str:
     return rgb if a >= 255 else f"{rgb}{a:02X}"
 
 
-def _hex_of(rgba) -> str:
+def hex_of(rgba) -> str:
+    """"#RRGGBB" of an RGBA (or RGB) tuple of 0..1 floats; the alpha is dropped."""
     return "#" + "".join(f"{round(c * 255):02X}" for c in rgba[:3])
 
 
@@ -245,7 +246,7 @@ def title(kit, lines, highlight: int | None, font, width, size: int | None = Non
     rows: list[tuple[str, int, str]] = []
     for i, line in enumerate(lines):
         big = i == highlight
-        size = _fit(line, big_size if big else base, font, room, min(TITLE_MIN, base))
+        size = fit(line, big_size if big else base, font, room, min(TITLE_MIN, base))
         colour = kit.palette["highlight" if big else "text"]
         rows += [(ln, size, colour) for ln in _lines(line, size, font, room)]
     text_w = max(measure(t, s, font) for t, s, _ in rows)
@@ -274,7 +275,7 @@ def pill(kit, kind: str, text: str, font, fill=None, colour=None, dot=None, wrap
         fill = kit.colour(text)
     fill = fill or kit.palette["card"]
     if colour is None:
-        colour = (_hex_of(on_colour(hex_colour(fill))) if kind == "category" else
+        colour = (hex_of(on_colour(hex_colour(fill))) if kind == "category" else
                   kit.palette["highlight" if kind == "measure" else "text"])  # fmt: skip
     extra = DOT_D + DOT_GAP if dot else 0
     room = min(wrap, safe_rect().w - 2 * PILL_PAD[0] - extra)
@@ -312,7 +313,7 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
     runs, boxes, y = [], [], CARD_PAD
     for item, v in zip(items, values, strict=True):
         label = str(item.get("label") or "")
-        ls = max(BAR_LABEL_MIN, _fit(label, size, font, label_w - DOT_GAP))
+        ls = max(BAR_LABEL_MIN, fit(label, size, font, label_w - DOT_GAP))
         lines = _lines(label, ls, font, label_w - DOT_GAP)
         total, ys = _stack([ls] * len(lines), font)
         row_h = max(BAR_H, total, text_height(1, size, font))
@@ -324,7 +325,7 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
         boxes.append((bx, cy - BAR_H / 2, length, BAR_H, kit.colour(item.get("category"))))
         text = bar_text(item)
         if text:
-            runs.append(Run(text, _fit(text, size, font, value_w), kit.palette["text"], bx + length + DOT_GAP, cy,
+            runs.append(Run(text, fit(text, size, font, value_w), kit.palette["text"], bx + length + DOT_GAP, cy,
                             "LEFT"))  # fmt: skip
         y += row_h + BAR_GAP
     if verdict:
@@ -367,7 +368,7 @@ def logo_badge(kit, font, name: str | None) -> CardSpec | None:
     room = safe_rect().w - x - PILL_PAD[0]
     if name and room >= SIZES["logo_name"]:  # no room for a name: the logo alone
         used, _ = font_for(name, font)
-        size = _fit(name, SIZES["logo_name"], used, room)
+        size = fit(name, SIZES["logo_name"], used, room)
         runs.append(Run(name, size, kit.palette["text"], x, LOGO_H / 2, "LEFT"))
         w = x + measure(name, size, used) + PILL_PAD[0]
     return _boxed(kit, "logo", min(_max_w(safe_rect().w), round(w)), LOGO_H, kit.palette["card"], kit.corner_px, runs,
