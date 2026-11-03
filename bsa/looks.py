@@ -51,7 +51,8 @@ ENGINE_DELTA_E = {"realistic": 6, "toy": 6, "toon": 3, "clay": 6, "blueprint": 2
 
 
 def toon_sun_energy(size: float, smooth: float, k: float) -> float:
-    """The sun strength that makes a toon-diffuse lit face show its colour exactly in Cycles (flat pdf over the cone)."""
+    """The sun strength that makes a toon-diffuse lit face show its colour exactly in Cycles (flat pdf over the
+    cone)."""
     a = min((size + smooth) * math.pi / 2, math.pi / 2)
     pdf = 0.5 / math.pi / (1 - math.cos(a))
     return k / pdf
@@ -116,16 +117,21 @@ def backdrop(style: str, kit) -> str:
     return warm(bg) if style == "clay" else bg
 
 
+def _lmix(a: str, b: str, t: float) -> str:
+    """a + (b - a) * t in linear light, as hex (the sampler's mixc)."""
+    return _hex(_toward(_lin(a), _lin(b), t))
+
+
 def part_colour(style: str, hex_: str, kit, key: bool) -> str:
     hex_ = colour.srgb_to_hex(colour.hex_to_srgb(hex_))
     if style == "clay":
         return warm(hex_)
     if style == "paper":
-        return colour.mix(hex_, "#FFFFFF", 0.12)
+        return _lmix(hex_, "#FFFFFF", 0.12)
     if style == "pencil":
-        return colour.mix(kit.palette["accent"], "#FFFFFF", 0.25) if key else colour.mix(backdrop(style, kit), "#FFFFFF", 0.5)
+        return _lmix(kit.palette["accent"], "#FFFFFF", 0.25) if key else _lmix(backdrop(style, kit), "#FFFFFF", 0.5)
     if style == "blueprint":
-        return kit.palette["accent"] if key else colour.mix(blueprint_paper(kit), "#FFFFFF", 0.75)
+        return kit.palette["accent"] if key else _lmix(blueprint_paper(kit), "#FFFFFF", 0.75)
     return hex_
 
 

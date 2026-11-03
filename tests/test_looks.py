@@ -51,3 +51,17 @@ def test_lit_expect_and_tolerances():
     assert looks.lit_expect("toy", "#3B8ED9", k, key=False) == "#3B8ED9"
     assert looks.lit_expect("blueprint", "#123456", k, key=True) != k.palette["accent"]
     assert set(looks.LIT_DELTA_E) == set(looks.ENGINE_DELTA_E) == set(kit.STYLES)
+
+
+def _lin_mix_to_white(hex_, t):
+    c = colour.srgb_to_linear(colour.hex_to_srgb(hex_))
+    return colour.srgb_to_hex(colour.linear_to_srgb(c + (1 - c) * t))
+
+
+def test_part_colours_mix_in_linear_light_like_the_sampler():
+    k = kit.kit_from(KIT)
+    assert looks.part_colour("paper", "#3B8ED9", k, key=False) == _lin_mix_to_white("#3B8ED9", 0.12)
+    assert looks.part_colour("pencil", "#123456", k, key=True) == _lin_mix_to_white(k.palette["accent"], 0.25)
+    assert looks.part_colour("pencil", "#123456", k, key=False) == _lin_mix_to_white("#F5F2EA", 0.5)
+    assert looks.part_colour("blueprint", "#123456", k, key=False) == _lin_mix_to_white(looks.blueprint_paper(k), 0.75)
+    assert looks.part_colour("paper", "#000000", k, key=False) == "#636363"  # 0.12 linear is sRGB 99
