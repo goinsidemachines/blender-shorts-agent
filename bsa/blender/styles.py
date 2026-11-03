@@ -15,8 +15,8 @@ import numpy as np
 
 from bsa import colour, looks
 from bsa.blender import bake, look
+from bsa.kit import DEFAULT_CODE, Kit
 from bsa.kit import STYLES as STYLE_NAMES
-from bsa.kit import Kit
 
 BEVEL = "bsa style bevel"
 BEVEL_ANGLE_DEG = 30.0
@@ -29,6 +29,12 @@ REALISTIC_ROUGHNESS = {"plastic": 0.5, "metal": 0.3, "toy": look.TOY_ROUGHNESS, 
 AS_LOOK = ("glass", "toy_water", "emissive")  # kinds every style here keeps as look.kit_material makes them
 TOY_TINT, TOY_EDGE_BLEND = 0.35, 0.35
 CLAY_ROUGHNESS, CLAY_SPECULAR, CLAY_BUMP, CLAY_BUMP_DISTANCE = 0.88, 0.25, 0.12, 0.02
+TOON_INK_LIFT, TOON_INK_STEP, TOON_SET_STEP = 0.15, 0.6, 0.78  # the sampler's ink parts (#3A4152-style) and set step
+BLUEPRINT_KEY_ALPHA, BLUEPRINT_ALPHA = 0.85, 0.22
+BLUEPRINT_GRID = ((4.0, 0.035), (1.0, 0.012))  # (lines per metre, line width as a share of a cell): minor, major
+BLUEPRINT_GRID_SHIFT = 0.0371  # the sampler's offset, so no grid line runs exactly along a face at a whole metre
+HIDDEN_LINESET = "bsa hidden"
+BLUEPRINT_HIDDEN_COLOUR, BLUEPRINT_HIDDEN_ALPHA, BLUEPRINT_DASH = (0.85, 0.9, 1.0), 0.45, (5, 4)
 
 
 @dataclass
@@ -80,6 +86,8 @@ def _reset(mat):
             pass
     if hasattr(mat, "use_backface_culling"):
         mat.use_backface_culling = False
+    if hasattr(getattr(mat, "cycles", None), "emission_sampling"):
+        mat.cycles.emission_sampling = "AUTO"
     return nt
 
 
@@ -240,6 +248,195 @@ def clay(kit: Kit) -> Style:
     return Style("clay", looks.TABLE["clay"], material)
 
 
+def _outputs(nt, eevee, cycles) -> None:
+    """One Material Output per engine: `eevee` (a shader socket) for EEVEE, `cycles` for Cycles."""
+    for target, socket in (("EEVEE", eevee), ("CYCLES", cycles)):
+        out = nt.nodes.new("ShaderNodeOutputMaterial")
+        out.target = target
+        nt.links.new(socket, out.inputs["Surface"])
+
+
+def _emission(nt, lin, strength: float = 1.0):
+    node = nt.nodes.new("ShaderNodeEmission")
+    node.inputs["Color"].default_value = (*lin, 1.0)
+    node.inputs["Strength"].default_value = strength
+    return node
+
+
+def _see_through(mat, nt, shader, alpha: float):
+    """`shader` at `alpha` over what is behind it (a Transparent BSDF mix), blended in EEVEE."""
+    clear = nt.nodes.new("ShaderNodeBsdfTransparent")
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    mix.inputs["Fac"].default_value = alpha
+    nt.links.new(clear.outputs["BSDF"], mix.inputs[1])
+    nt.links.new(shader, mix.inputs[2])
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "BLENDED"
+    return mix.outputs["Shader"]
+
+
+def _cel(mat, lin, shadow, alpha: float | None = None) -> None:
+    """The sampler's toon material: the colour `lin` where the sun reaches, the flat dark step `shadow` elsewhere,
+    lit by nothing else, so the lit area shows the exact colour under the Standard view. EEVEE: Diffuse -> Shader to
+    RGB -> a constant ramp at looks.RAMP_AT -> mix(shadow, colour) -> Emission. Cycles (no Shader to RGB there):
+    Emission(shadow) + a Toon BSDF (diffuse) of colour - shadow, size looks.TOON_SIZE, smooth 0, which the calibrated
+    sun (looks.cycles_energy) brings up to the colour exactly; the flat step glows for camera rays only, so a big cel
+    floor or wall lights no other part (in a room it lifted the shadow side ΔE 4.5 off the dark step and EEVEE).
+    `alpha` (glass, water): seen through at that alpha."""
+    nt = _reset(mat)
+    diffuse = nt.nodes.new("ShaderNodeBsdfDiffuse")
+    to_rgb = nt.nodes.new("ShaderNodeShaderToRGB")
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.interpolation = "CONSTANT"
+    dark, light = ramp.color_ramp.elements
+    dark.position, dark.color = 0.0, (0.0, 0.0, 0.0, 1.0)
+    light.position, light.color = looks.RAMP_AT, (1.0, 1.0, 1.0, 1.0)
+    nt.links.new(diffuse.outputs["BSDF"], to_rgb.inputs["Shader"])
+    nt.links.new(to_rgb.outputs["Color"], ramp.inputs["Fac"])
+    flat = look._mix_rgba(nt, ramp.outputs["Color"], shadow, lin)
+    eevee = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(flat, eevee.inputs["Color"])
+    toon_bsdf = nt.nodes.new("ShaderNodeBsdfToon")
+    toon_bsdf.component = "DIFFUSE"
+    toon_bsdf.inputs["Color"].default_value = (*[max(0.0, c - s) for c, s in zip(lin, shadow)], 1.0)
+    toon_bsdf.inputs["Size"].default_value = looks.TOON_SIZE
+    toon_bsdf.inputs["Smooth"].default_value = 0.0
+    add = nt.nodes.new("ShaderNodeAddShader")
+    base = _emission(nt, shadow)
+    path = nt.nodes.new("ShaderNodeLightPath")  # the flat step is for the camera: it lights no other part
+    nt.links.new(path.outputs["Is Camera Ray"], base.inputs["Strength"])
+    if hasattr(getattr(mat, "cycles", None), "emission_sampling"):
+        mat.cycles.emission_sampling = "NONE"
+    nt.links.new(base.outputs["Emission"], add.inputs[0])
+    nt.links.new(toon_bsdf.outputs["BSDF"], add.inputs[1])
+    shaders = [eevee.outputs["Emission"], add.outputs["Shader"]]
+    if alpha is not None:
+        shaders = [_see_through(mat, nt, s, alpha) for s in shaders]
+    _outputs(nt, *shaders)
+
+
+def _heat(kit: Kit) -> str:
+    return kit.categories.get("heat") or DEFAULT_CODE["heat"]
+
+
+def toon(kit: Kit) -> Style:
+    """Cel shading: every part flat in its kit colour where the single sun reaches and a fixed dark step
+    (looks.shadow_of: x 0.68, 15% toward the ink) where it does not, a material output per engine (`_cel`). Ink parts
+    show the ink lifted 15% toward white (their dark step: the ink x 0.6), so their lines still read; set surfaces get
+    the same cel material in their colour, a lighter step toward the heat colour (the sampler's x 0.78). Emissive parts
+    glow flat; glass and water are cel at look.WATER_ALPHA. Ink lines from the style's line width."""
+    ink = colour.srgb_to_hex(colour.hex_to_srgb(kit.palette["ink"]))
+
+    def material(mat, stamp, ctx, key):
+        hex_ = looks.part_colour("toon", stamp["colour"], ctx.kit, key)
+        if ctx.scenery(mat):
+            _cel(mat, _lin(hex_), _lin(looks.shadow_of(hex_, _heat(ctx.kit), TOON_SET_STEP)))
+            return
+        kind = stamp["kind"]
+        if kind == "emissive":
+            nt = _reset(mat)
+            glow = _emission(nt, _lin(hex_)).outputs["Emission"]
+            _outputs(nt, glow, glow)
+            return
+        alpha = look.WATER_ALPHA if kind in ("glass", "toy_water") else None
+        if hex_ == ink:
+            _cel(mat, _lin(colour.mix(ink, "#FFFFFF", TOON_INK_LIFT)), [c * TOON_INK_STEP for c in _lin(ink)], alpha)
+            return
+        _cel(mat, _lin(hex_), _lin(looks.shadow_of(hex_, ink)), alpha)
+
+    return Style("toon", looks.TABLE["toon"], material)
+
+
+def _grid_paper(mat, paper) -> None:
+    """The sampler's blueprint grid paper: flat emission of `paper` (linear) with lines 10% toward white every 25 cm
+    (width 0.035 of a cell) and 22% toward white every metre (0.012), in object space on all three axes."""
+    nt = _reset(mat)
+    coords = nt.nodes.new("ShaderNodeTexCoord")
+    masks = []
+    for every, width in BLUEPRINT_GRID:
+        shift = look._vmath(nt, "ADD")
+        shift.inputs[1].default_value = (BLUEPRINT_GRID_SHIFT,) * 3
+        scale = look._vmath(nt, "SCALE")
+        scale.inputs["Scale"].default_value = every
+        frac = look._vmath(nt, "FRACTION")
+        sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+        nt.links.new(coords.outputs["Object"], shift.inputs[0])
+        nt.links.new(shift.outputs["Vector"], scale.inputs[0])
+        nt.links.new(scale.outputs["Vector"], frac.inputs[0])
+        nt.links.new(frac.outputs["Vector"], sep.inputs["Vector"])
+        acc = None
+        for axis in ("X", "Y", "Z"):
+            line = look._math(nt, "LESS_THAN", width)
+            nt.links.new(sep.outputs[axis], line.inputs[0])
+            if acc is not None:
+                top = look._math(nt, "MAXIMUM")
+                nt.links.new(acc.outputs["Value"], top.inputs[0])
+                nt.links.new(line.outputs["Value"], top.inputs[1])
+                line = top
+            acc = line
+        masks.append(acc.outputs["Value"])
+    white = [1.0, 1.0, 1.0]
+    minor = look._mix_rgba(nt, masks[0], paper, looks._toward(paper, white, 0.10))
+    major = look._mix_rgba(nt, masks[1], paper, looks._toward(paper, white, 0.22))
+    nt.links.new(minor, next(s for s in major.node.inputs if s.identifier == "A_Color"))
+    glow = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(major, glow.inputs["Color"])
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(glow.outputs["Emission"], out.inputs["Surface"])
+
+
+def blueprint(kit: Kit) -> Style:
+    """A technical drawing on blue grid paper: every part a flat see-through fill (emission over a Transparent BSDF,
+    one output for both engines, blended in EEVEE): key parts the accent at alpha 0.85, the rest the paper 75% toward
+    white at 0.22. Set surfaces are the grid paper. No lights; the world is the paper. Lines white-blue with contours,
+    and hidden edges dashed (`_blueprint_lines`)."""
+
+    def material(mat, stamp, ctx, key):
+        if ctx.scenery(mat):
+            _grid_paper(mat, _lin(looks.blueprint_paper(ctx.kit)))
+            return
+        nt = _reset(mat)
+        fill = _emission(nt, _lin(looks.part_colour("blueprint", stamp["colour"], ctx.kit, key)))
+        shader = _see_through(mat, nt, fill.outputs["Emission"], BLUEPRINT_KEY_ALPHA if key else BLUEPRINT_ALPHA)
+        out = nt.nodes.new("ShaderNodeOutputMaterial")
+        nt.links.new(shader, out.inputs["Surface"])
+
+    return Style("blueprint", looks.TABLE["blueprint"], material, lines=_blueprint_lines)
+
+
+def _blueprint_lines(ctx: Ctx) -> None:
+    """Contours on the ink lineset, and "bsa hidden": the hidden edges dashed 5/4, faint (alpha 0.45), half as thick,
+    in the sampler's pale blue, leaving out what the ink leaves out."""
+    for layer in ctx.scene.view_layers:
+        fs = layer.freestyle_settings
+        ink = fs.linesets.get(look.INK_LINESET)
+        if ink is None:
+            continue
+        ink.select_contour = True
+        hidden = fs.linesets.get(HIDDEN_LINESET) or fs.linesets.new(HIDDEN_LINESET)
+        hidden.show_render = True
+        hidden.select_by_visibility = True
+        hidden.visibility = "HIDDEN"
+        hidden.select_by_edge_types = True
+        hidden.select_silhouette = True
+        hidden.select_border = True
+        hidden.select_crease = True
+        hidden.select_by_collection = True
+        hidden.collection = ink.collection
+        hidden.collection_negation = "EXCLUSIVE"
+        if hidden.linestyle is None or hidden.linestyle.name != HIDDEN_LINESET:
+            old = hidden.linestyle
+            hidden.linestyle = bpy.data.linestyles.get(HIDDEN_LINESET) or bpy.data.linestyles.new(HIDDEN_LINESET)
+            if old is not None and old.users == 0:
+                bpy.data.linestyles.remove(old)
+        style = hidden.linestyle
+        style.color = BLUEPRINT_HIDDEN_COLOUR
+        style.alpha = BLUEPRINT_HIDDEN_ALPHA
+        style.thickness = ink.linestyle.thickness / 2
+        style.use_dashed_line = True
+        style.dash1, style.gap1 = BLUEPRINT_DASH
+
+
 def _later(name: str):
     def make(kit: Kit) -> Style:
         raise NotImplementedError(f"the {name} style is not built yet")
@@ -248,7 +445,7 @@ def _later(name: str):
 
 
 STYLES: dict[str, Callable[[Kit], Style]] = {name: _later(name) for name in STYLE_NAMES}
-STYLES.update({"realistic": realistic, "toy": toy, "clay": clay})
+STYLES.update({"realistic": realistic, "toy": toy, "clay": clay, "toon": toon, "blueprint": blueprint})
 
 
 # --- apply --------------------------------------------------------------------------------------------------------
@@ -447,12 +644,25 @@ def _world(scene, kit: Kit, name: str, sl: looks.StyleLook, warnings: list) -> N
     scene.world["bsa_strength"] = {lit.name: {"eevee": float(sl.world), "cycles": float(cycles)}}
 
 
+def _lights_off(scene) -> list:
+    """Remove this scene's style lights ("<scene> Key/Fill/Rim/Top/Sun"), for a style lit by nothing; returns []."""
+    for name in look._RIG_NAMES:
+        old = bpy.data.objects.get(f"{scene.name} {name}")
+        if old is not None and old.type == "LIGHT":
+            data = old.data
+            bpy.data.objects.remove(old)
+            if data is not None and data.users == 0:
+                bpy.data.lights.remove(data)
+    return []
+
+
 def _extra_lines_off(scene) -> None:
     """Remove a previous style's own linesets ("bsa <...>" but the ink) and their unused line styles."""
     for layer in scene.view_layers:
         fs = layer.freestyle_settings
         for ls in [x for x in fs.linesets if x.name.startswith("bsa ") and x.name != look.INK_LINESET]:
             style = ls.linestyle
+            ls.collection = None  # removing a lineset takes a user from its collection that setting it never added
             fs.linesets.remove(ls)
             if style is not None and style.users == 0:
                 bpy.data.linestyles.remove(style)
@@ -483,9 +693,12 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
     view = _view(scene, name, sl, warnings)
     restyled, kept = _materials(scene, st, ctx)
     _bevels(scene, sl)
-    lit = look.kit_lights(scene, aim, size, sl.strength, single_sun=sl.single_sun,
-                          sun=scene.get("bsa_set") == "outdoor", sun_angle_deg=sl.sun_angle_deg,
-                          cycles_scale=sl.cycles_trim, rig=looks.RIGS.get(name, look.RIG))  # fmt: skip
+    if sl.strength > 0:
+        lit = look.kit_lights(scene, aim, size, sl.strength, single_sun=sl.single_sun,
+                              sun=scene.get("bsa_set") == "outdoor", sun_angle_deg=sl.sun_angle_deg,
+                              cycles_scale=sl.cycles_trim, rig=looks.RIGS.get(name, look.RIG))  # fmt: skip
+    else:
+        lit = {"lights": _lights_off(scene)}
     if name in ("toon", "pencil"):
         for obj in lit["lights"]:
             e = float(obj["bsa_energy"]["eevee"])
@@ -495,6 +708,12 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
     _extra_lines_off(scene)
     px = looks.line_px(name, kit)
     lines = look.ink_lines(scene, LINE_COLOUR.get(name, kit.palette["ink"]), px) is not None
+    for layer in scene.view_layers:  # contours are a style's own (blueprint's): off unless its lines put them on
+        ink = layer.freestyle_settings.linesets.get(look.INK_LINESET)
+        if ink is not None:
+            ink.select_contour = False
+    if name == "blueprint" and not key:
+        warnings.append("blueprint shows its key part in the accent colour: pass key=[...] to styles.apply")
     if st.lines is not None:
         st.lines(ctx)
         lines = True

@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 import tempfile
@@ -44,44 +45,50 @@ def _build(engine: str, style: str | None = "toy", room: bool = True):
     return sc, kit, built, result
 
 
-def _probe(scene, obj_name: str, engine: str) -> np.ndarray:
-    """The median sRGB (0..1) of a 5x5 patch at the projected centre of the probe object's face whose normal is most
-    square to the Key (or Sun) light, among the faces that face the camera."""
+def _probe(scene, obj_name: str, engine: str, side: str = "lit", percent: int = 10, half: int = 2) -> np.ndarray:
+    """The median sRGB (0..1) of a (2 half + 1) square patch (5x5) rendered at `percent` at the projected centre of the probe object's face whose normal is most
+    square to the Key (or Sun) light (`side="dark"`: most turned away from it), among the faces that face the camera.
+    With no light (blueprint) the face most square to the camera."""
     from bpy_extras.object_utils import world_to_camera_view
 
     scene.view_layers[0].update()
     obj = bpy.data.objects[obj_name]
-    light = bpy.data.objects.get(f"{scene.name} Key") or bpy.data.objects[f"{scene.name} Sun"]
+    light = bpy.data.objects.get(f"{scene.name} Key") or bpy.data.objects.get(f"{scene.name} Sun")
     cam = scene.camera
     mw = obj.matrix_world
     rot = mw.to_3x3().inverted().transposed()
-    toward = (light.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()  # a light shines down its -Z
     best = None
     for poly in obj.data.polygons:
         centre = mw @ poly.center
         normal = (rot @ poly.normal).normalized()
-        if normal.dot((cam.matrix_world.translation - centre).normalized()) <= 0.05:
+        to_cam = (cam.matrix_world.translation - centre).normalized()
+        if normal.dot(to_cam) <= 0.05:
             continue
-        lit = normal.dot(toward)
+        if light is None:
+            toward = to_cam
+        else:
+            toward = (light.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()  # a light shines down -Z
+        lit = normal.dot(toward) * (1 if side == "lit" else -1)
         if best is None or lit > best[0]:
             best = (lit, centre)
-    png = OUT / f"{scene.get('bsa_style')}_{engine}_{obj_name}.png"
-    render_still(scene, scene.frame_current, png, preset=PRESET, percent=10, engine=engine, file_format="PNG")
+    png = OUT / f"{scene.get('bsa_style')}_{engine}_{obj_name}_{side}.png"
+    render_still(scene, scene.frame_current, png, preset=PRESET, percent=percent, engine=engine, file_format="PNG")
     img = read_png(png)[..., :3].astype(np.float64) / 255.0
     h, w = img.shape[:2]
     uv = world_to_camera_view(scene, cam, best[1])
     x, y = round(uv.x * w - 0.5), round((1.0 - uv.y) * h - 0.5)
-    patch = img[max(y - 2, 0) : y + 3, max(x - 2, 0) : x + 3].reshape(-1, 3)
+    patch = img[max(y - half, 0) : y + half + 1, max(x - half, 0) : x + half + 1].reshape(-1, 3)
     return np.median(patch, axis=0)
 
 
 def _lit_check(room: bool) -> None:
-    for style in ("realistic", "toy", "clay"):
+    """The probe (the crate, the demo's key part) on its lit face: blueprint shows key parts in the accent colour."""
+    for style in ("realistic", "toy", "clay", "toon", "blueprint"):
         got = {}
         for engine in ("eevee", "cycles"):
             sc, kit, built, _ = _build(engine, style, room=room)
             got[engine] = _probe(sc, built["probe"], engine)
-            want = looks.lit_expect(style, SPARK, kit, key=False)
+            want = looks.lit_expect(style, SPARK, kit, key=style == "blueprint")
             de = colour.delta_e(want, got[engine])
             limit = looks.lit_limit(style, engine, room)
             print(f"LIT room={room} {style} {engine} {colour.srgb_to_hex(got[engine])} want {want} dE {de:.2f}")
@@ -264,3 +271,120 @@ def test_engine_is_never_changed_by_apply():
         assert sc.render.engine == before
         styles.reapply(sc, kit, "clay")
         assert sc.render.engine == before
+
+
+def test_toon_shadow_side_is_the_fixed_dark_step():
+    """A face turned away from the sun shows the part's fixed dark step (looks.shadow_of) in both engines. The crate
+    is turned 37 degrees so its shadowed side faces the camera broadly (as built it is a sliver on screen)."""
+    for engine in ("eevee", "cycles"):
+        sc, kit, built, _ = _build(engine, "toon")
+        bpy.data.objects[built["probe"]].rotation_euler.z = math.radians(-37)
+        got = _probe(sc, built["probe"], engine, side="dark", percent=20)
+        want = looks.shadow_of(SPARK, kit.palette["ink"])
+        de = colour.delta_e(want, got)
+        print(f"SHADOW toon {engine} {colour.srgb_to_hex(got)} want {want} dE {de:.2f}")
+        assert de <= 4, (engine, de)
+
+
+def _outputs(mat) -> list[str]:
+    return sorted(n.target for n in mat.node_tree.nodes if n.type == "OUTPUT_MATERIAL")
+
+
+def test_toon_has_a_material_output_per_engine_and_blueprint_one():
+    _build("eevee", "toon")
+    for name in ("Crate", "Lever", "Floor", "Wall", "Ink"):
+        assert _outputs(bpy.data.materials[name]) == ["CYCLES", "EEVEE"], name
+    _build("eevee", "blueprint")
+    for mat in (m for m in bpy.data.materials if look.stamp(m) is not None):
+        assert _outputs(mat) == ["ALL"], mat.name
+    assert bpy.data.materials["Lever"].surface_render_method == "BLENDED"
+
+
+def _linesets(sc) -> list[list[str]]:
+    """The style linesets ("bsa ...") on each view layer (a factory view layer has its own "LineSet" too)."""
+    return [sorted(ls.name for ls in v.freestyle_settings.linesets if ls.name.startswith("bsa "))
+            for v in sc.view_layers]  # fmt: skip
+
+
+def test_line_styles_reapplied_keep_one_lineset():
+    sc, kit, _built, _ = _build("eevee", "toon")
+    assert _linesets(sc) == [["bsa ink"]]
+    styles_once = sorted(s.name for s in bpy.data.linestyles)
+    no_lines = bpy.data.collections[f"{sc.name} no lines"]
+    users = no_lines.users
+    assert not sc.view_layers[0].freestyle_settings.linesets["bsa ink"].select_contour
+    styles.reapply(sc, kit, "blueprint")
+    assert _linesets(sc) == [["bsa hidden", "bsa ink"]]
+    fs = sc.view_layers[0].freestyle_settings
+    hidden = fs.linesets["bsa hidden"]
+    assert hidden.visibility == "HIDDEN" and hidden.linestyle.use_dashed_line
+    assert (hidden.linestyle.dash1, hidden.linestyle.gap1) == (5, 4)
+    assert abs(hidden.linestyle.alpha - 0.45) < 1e-6
+    assert abs(hidden.linestyle.thickness - fs.linesets["bsa ink"].linestyle.thickness / 2) < 1e-6
+    assert fs.linesets["bsa ink"].select_contour
+    styles.reapply(sc, kit, "toon")
+    assert _linesets(sc) == [["bsa ink"]]
+    assert not sc.view_layers[0].freestyle_settings.linesets["bsa ink"].select_contour
+    assert sorted(s.name for s in bpy.data.linestyles) == styles_once
+    assert no_lines.users == users  # removing "bsa hidden" left the shared "no lines" collection its users
+    _no_dot_names()
+
+
+def _verts(sc) -> int:
+    deps = bpy.context.evaluated_depsgraph_get()
+    deps.update()
+    return sum(len(o.evaluated_get(deps).data.vertices) for o in sc.objects if o.type == "MESH")
+
+
+def test_lines_add_no_geometry():
+    sc, kit, built, _ = _build("eevee", None)
+    before = _verts(sc)
+    styles.apply(sc, kit, style="toon", **{k: built[k] for k in ("target", "size", "key")})
+    assert sc.render.use_freestyle
+    assert _verts(sc) == before
+
+
+def test_blueprint_needs_no_lights():
+    sc, kit, _built, _ = _build("eevee", "toon")
+    assert bpy.data.objects.get(f"{sc.name} Sun") is not None
+    result = styles.reapply(sc, kit, "blueprint")
+    assert result["lights"] == []
+    for name in ("Key", "Fill", "Rim", "Top", "Sun"):
+        assert bpy.data.objects.get(f"{sc.name} {name}") is None, name
+    assert not any(o.type == "LIGHT" for o in sc.objects) and len(bpy.data.lights) == 0
+
+
+def test_blueprint_without_a_key_warns():
+    sc, kit, built, _ = _build("eevee", None)
+    result = styles.apply(sc, kit, target=built["target"], size=built["size"], style="blueprint")
+    assert any("pass key=[...] to styles.apply" in w for w in result["warnings"]), result["warnings"]
+    keyed = styles.apply(sc, kit, style="blueprint", **{k: built[k] for k in ("target", "size", "key")})
+    assert not any("key=" in w for w in keyed["warnings"])
+
+
+def _state(sc) -> dict:
+    layer = sc.view_layers[0]
+    fs = layer.freestyle_settings
+    return {
+        **_counts(sc),
+        "trees": _stamped_trees(),
+        "freestyle": (sc.render.use_freestyle, sc.render.line_thickness_mode, layer.use_freestyle, fs.mode,
+                      round(fs.crease_angle, 5), _linesets(sc)),
+        "bounces": sc.cycles.max_bounces,
+        "props": sorted(k for k in sc.keys() if k.startswith("bsa_")),  # noqa: SIM118 - an ID, not a dict
+        "view": (sc.view_settings.view_transform, sc.view_settings.look),
+        "lights": sorted(o.name for o in sc.objects if o.type == "LIGHT"),
+        "smooth": {o.name: [p.use_smooth for p in o.data.polygons] for o in sc.objects if o.type == "MESH"},
+    }  # fmt: skip
+
+
+def test_style_switches_leave_no_trace():
+    """toy -> toon -> blueprint -> realistic ends as realistic applied once: Freestyle, bounces, lights, materials."""
+    _build("eevee", "realistic")
+    once = _state(bpy.context.scene)
+    sc, kit, _built, _ = _build("eevee", "toy")
+    for name in ("toon", "blueprint", "realistic"):
+        styles.reapply(sc, kit, name)
+    after = _state(sc)
+    for key in once:
+        assert after[key] == once[key], (key, after[key], once[key])

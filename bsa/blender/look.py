@@ -677,6 +677,7 @@ def _ink_off(scene) -> None:
         ls = fs.linesets.get(INK_LINESET)
         if ls is not None:
             style = ls.linestyle
+            ls.collection = None  # removing a lineset takes a user from its collection that setting it never added
             fs.linesets.remove(ls)
             if style is not None and style.users == 0:
                 bpy.data.linestyles.remove(style)

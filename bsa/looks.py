@@ -55,6 +55,7 @@ RIGS = {
                   ("Rim", 150.0, 51.0, 0.69, WHITE)),
     "toy": (("Key", -25.0, 40.0, 1.0, WHITE), ("Fill", 42.0, 15.0, 0.7, WHITE), ("Top", 0.0, 87.0, 0.33, WHITE)),
     "clay": (("Key", -36.0, 41.0, 1.0, (1.0, 0.95, 0.88)), ("Fill", 48.0, 17.0, 0.25, WHITE)),
+    "toon": (("Sun", -32.0, 38.0, 1.0, WHITE),),  # the sampler's sun (52, 0, -32): its single sun's direction
 }  # fmt: skip
 
 # The lit-face checks run twice, Cycles on the CPU. In a room (the demo with the sampler's floor and wall, what shorts
@@ -65,8 +66,8 @@ RIGS = {
 # floorless demo plus 3 (EEVEE 11.1, Cycles 14.3, between 5.2). Never raise these and never move an approved rig to
 # pass them: tune the lights within the approved look instead.
 ROOM_LIT_DELTA_E = {"realistic": {"eevee": 17.9, "cycles": 29.6}, "toy": {"eevee": 16.8, "cycles": 20.5},
-                    "clay": {"eevee": 8.9, "cycles": 9.0}}  # fmt: skip
-ROOM_ENGINE_DELTA_E = {"realistic": 14.9, "toy": 7.2, "clay": 7.2}
+                    "clay": {"eevee": 8.9, "cycles": 9.0}, "toon": 2, "blueprint": 6}  # fmt: skip
+ROOM_ENGINE_DELTA_E = {"realistic": 14.9, "toy": 7.2, "clay": 7.2, "toon": 3, "blueprint": 2}
 LIT_DELTA_E = {"realistic": 15, "toy": {"eevee": 14.1, "cycles": 17.3}, "toon": 2, "clay": 12, "blueprint": 6,
                "paper": 8, "pencil": 6}  # fmt: skip
 ENGINE_DELTA_E = {"realistic": 6, "toy": 8.2, "toon": 3, "clay": 6, "blueprint": 2, "paper": 6, "pencil": 4}

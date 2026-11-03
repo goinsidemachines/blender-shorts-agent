@@ -34,6 +34,7 @@ def test_the_scan_catches_an_engine_write():
 def test_styles_in_blender(blender_run, bsa_home):
     result = blender_run(HERE / "blender" / "test_styles.py", timeout=1200)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "user decrement error" not in result.stdout + result.stderr  # a removed lineset left its collection alone
     for name in (
         "test_lit_colour_matches_the_kit_in_both_engines",
         "test_lit_colour_matches_without_a_floor_too",
@@ -45,5 +46,12 @@ def test_styles_in_blender(blender_run, bsa_home):
         "test_materials_not_from_kit_material_are_kept_and_named",
         "test_match_engine_follows_the_render_engine_not_the_build",
         "test_engine_is_never_changed_by_apply",
+        "test_toon_shadow_side_is_the_fixed_dark_step",
+        "test_toon_has_a_material_output_per_engine_and_blueprint_one",
+        "test_line_styles_reapplied_keep_one_lineset",
+        "test_lines_add_no_geometry",
+        "test_blueprint_needs_no_lights",
+        "test_blueprint_without_a_key_warns",
+        "test_style_switches_leave_no_trace",
     ):
         assert f"PASS {name}" in result.stdout
