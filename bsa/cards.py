@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import platform
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ DOT_GAP = 16  # between the dot and the text (and between a bar and its value, t
 BAR_H = 28
 BAR_GAP = 18
 BAR_LABEL_SHARE = 0.32  # of a bars card's inner width, for the labels
+BAR_LABEL_MIN = 24  # a bar label shrinks to fit down to this size, then wraps (its row grows)
 PROGRESS_H = 26
 POINTER_DOT = 22
 PILL_KINDS = ("badge", "category", "step", "label", "measure")
@@ -271,7 +273,7 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
 
     items = [i for i in (bars or {}).get("items") or [] if isinstance(i, dict)]
     verdict = str((bars or {}).get("verdict") or "").strip()
-    values = [max(0.0, float(i.get("value") or 0)) for i in items]
+    values = [_value(i.get("value")) for i in items]
     top = (bars or {}).get("max")
     top = float(top) if isinstance(top, int | float) and not isinstance(top, bool) and top > 0 else max(values or [0])
     w = _max_w(width)
@@ -282,12 +284,16 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
     size = SIZES["bar"]
     value_w = min(inner / 4, max([measure(bar_text(i), size, font) for i in items] or [0]))
     track = max(0.0, inner - label_w - DOT_GAP - value_w)
-    row_h = max(BAR_H, text_height(1, size, font))
     runs, boxes, y = [], [], CARD_PAD
     for item, v in zip(items, values, strict=True):
-        cy = y + row_h / 2
         label = str(item.get("label") or "")
-        runs.append(Run(label, _fit(label, size, font, label_w - DOT_GAP), kit.palette["text"], CARD_PAD, cy, "LEFT"))
+        ls = max(BAR_LABEL_MIN, _fit(label, size, font, label_w - DOT_GAP))
+        lines = _lines(label, ls, font, label_w - DOT_GAP)
+        total, ys = _stack([ls] * len(lines), font)
+        row_h = max(BAR_H, total, text_height(1, size, font))
+        cy = y + row_h / 2
+        runs += [Run(ln, ls, kit.palette["text"], CARD_PAD, cy - total / 2 + c, "LEFT") for ln, c in zip(lines, ys,
+                 strict=True)]  # fmt: skip
         length = track * min(1.0, v / top) if top > 0 else 0.0
         bx = CARD_PAD + label_w
         boxes.append((bx, cy - BAR_H / 2, length, BAR_H, kit.colour(item.get("category"))))
@@ -306,6 +312,13 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
     return _boxed(kit, "bars", w, box_h, kit.palette["card"], kit.corner_px, runs, font, bars=tuple(boxes))
 
 
+def _value(v) -> float:
+    """A bar's value as a number, 0 when it isn't one (short.validate is where a bad value is an error)."""
+    if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
+        return 0.0
+    return max(0.0, float(v))
+
+
 def logo_badge(kit, font, name: str | None) -> CardSpec | None:
     """The user's logo (brand.logo.file) LOGO_IMG tall, keeping its aspect, with their `name` after it when given;
     None without a readable logo file."""
@@ -318,16 +331,18 @@ def logo_badge(kit, font, name: str | None) -> CardSpec | None:
         lw = lh = 0
     if not lw or not lh:
         return None
-    img_w = LOGO_IMG * lw / lh
     side = (LOGO_H - LOGO_IMG) / 2
-    rect = (side, side, img_w, LOGO_IMG)
+    img_w = min(LOGO_IMG * lw / lh, safe_rect().w - 2 * side)  # a very wide logo is scaled down to the safe width
+    img_h = img_w * lh / lw
+    rect = (side, (LOGO_H - img_h) / 2, img_w, img_h)
     runs, used = [], font
     w = side + img_w + side
     name = str(name or "").strip()
-    if name:
+    x = side + img_w + DOT_GAP
+    room = safe_rect().w - x - PILL_PAD[0]
+    if name and room >= SIZES["logo_name"]:  # no room for a name: the logo alone
         used, _ = font_for(name, font)
-        x = side + img_w + DOT_GAP
-        size = _fit(name, SIZES["logo_name"], used, safe_rect().w - x - PILL_PAD[0])
+        size = _fit(name, SIZES["logo_name"], used, room)
         runs.append(Run(name, size, kit.palette["text"], x, LOGO_H / 2, "LEFT"))
         w = x + measure(name, size, used) + PILL_PAD[0]
     return _boxed(kit, "logo", min(_max_w(safe_rect().w), round(w)), LOGO_H, kit.palette["card"], kit.corner_px, runs,

@@ -382,8 +382,9 @@ def _advances(path, index: int):
 
 def advance_em(path, text: str, index: int = 0) -> float | None:
     """The width of `text` set in the font, in em: the sum of its glyphs' advance widths (hmtx) over unitsPerEm. A
-    glyph past hhea.numberOfHMetrics takes the last advance; a character without a glyph counts glyph 0 (.notdef). No
-    kerning. None when the file can't be read as a font with advance widths."""
+    glyph past hhea.numberOfHMetrics takes the last advance; a character without a glyph counts glyph 0 (.notdef).
+    Kerning is ignored: kerning mostly tightens pairs, so this errs wide, the safe side for sizing a card. None when
+    the file can't be read as a font with advance widths."""
     try:
         upm, widths, cmap, gids = _advances(path, index)
         new = {ord(c) for c in text} - gids.keys()

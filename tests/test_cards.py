@@ -91,7 +91,9 @@ def test_no_card_is_wider_than_the_safe_area(font):
               cards.caption(K, "y" * 90, font, 2000), cards.bars(K, long_bars, font, 2000),
               cards.progress_track(K, 2000)):  # fmt: skip
         assert c.w <= safe_rect().w, c.kind
-        assert all(cards.measure(r.text, r.size, font) <= c.w for r in c.runs), c.kind
+        pad = {"title": cards.CARD_PAD, "bars": cards.CARD_PAD, "caption": K.caption["pad_px"]}.get(c.kind,
+                                                                                                cards.PILL_PAD[0])
+        assert all(cards.measure(r.text, r.size, font) <= c.w - 2 * pad + 1e-6 for r in c.runs), c.kind
     near = cards.pill(K, "label", "a long near label that keeps going and going", font)
     assert len(near.runs) > 1 and near.w <= cards.NEAR_WRAP_PX + 2 * cards.PILL_PAD[0]
 
@@ -221,3 +223,33 @@ def test_card_font_falls_back_to_an_os_font(monkeypatch, tmp_path):
     assert cards.card_font(kit.kit_from({**KIT, "font": "Brandy"}), cache_dirs=[]) == d / "Brandy.ttf"
     (d / "arial.ttf").unlink()
     assert cards.card_font(K) is None  # nothing installed: Blender's own font
+
+
+def test_a_long_bar_label_wraps_at_a_readable_size(font):
+    spec = {"items": [{"label": "Fixed pulley with one rope", "value": 2}, {"label": "Lever", "value": 4}]}
+    c = cards.bars(K, spec, font, safe_rect().w)
+    label = [r for r in c.runs if r.text not in ("2", "4", "Lever")]
+    assert len(label) == 2 and all(r.size == cards.BAR_LABEL_MIN for r in label)  # two lines at the floor size
+    assert " ".join(r.text for r in label) == "Fixed pulley with one rope"
+    (x1, y1, _, h1, _), (x2, y2, _, _, _) = c.bars
+    first_mid = (label[0].y + label[1].y) / 2
+    assert x1 == x2 and y1 + h1 / 2 == pytest.approx(first_mid)  # the bar sits in the middle of its taller row
+    assert y2 - y1 > cards.BAR_H + cards.BAR_GAP  # the first row grew
+    room = (c.w - 2 * cards.CARD_PAD) * cards.BAR_LABEL_SHARE - cards.DOT_GAP
+    assert all(cards.measure(r.text, r.size, font) <= room + 1e-6 for r in label)
+
+
+def test_a_bar_value_that_is_not_a_number_counts_as_zero(font):
+    c = cards.bars(K, {"items": [{"label": "a", "value": "lots"}, {"label": "b", "value": 2}]}, font, 800)
+    assert c.bars[0][2] == 0 and c.bars[1][2] > 0
+
+
+def test_a_very_wide_logo_is_scaled_to_the_safe_width(font, tmp_path):
+    logo = _png(tmp_path / "wide.png", 400, 20)  # 20:1
+    k = kit.kit_from({**KIT, "logo": {"file": str(logo)}})
+    c = cards.logo_badge(k, font, "Acme")
+    _, y, w, h = c.logo_rect
+    side = (cards.LOGO_H - cards.LOGO_IMG) / 2
+    assert w == pytest.approx(safe_rect().w - 2 * side) and h == pytest.approx(w / 20)
+    assert y == pytest.approx((cards.LOGO_H - h) / 2) and c.w <= safe_rect().w
+    assert c.runs == ()  # no room left for the name
