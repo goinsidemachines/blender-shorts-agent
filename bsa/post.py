@@ -26,7 +26,7 @@ THUMB_WORDS = 6
 FORMAT_KEYS = ("title_suffix", "title_style", "link_line", "pinned_comment", "always_hashtags")
 TITLE_STYLES = ("question", "statement")
 
-_HASHTAG = re.compile(r"^#[^\s#]+$")
+_HASHTAG = re.compile(r"#[^\s#]+")
 _TEXT_FORMAT_KEYS = ("title_suffix", "link_line", "pinned_comment")
 FRAME_W, FRAME_H = 1080, 1920
 
@@ -80,7 +80,7 @@ def counts(short) -> dict[str, dict]:
     hashtags = p["hashtags"] if isinstance(p["hashtags"], list) else []
     tags = [t for t in p["tags"] if isinstance(t, str)] if isinstance(p["tags"], list) else []
     n_hash = len(hashtags)
-    hash_state = "over" if n_hash > HASHTAGS[1] else "warn" if n_hash and n_hash < HASHTAGS[0] else "ok"
+    hash_state = "warn" if n_hash and not HASHTAGS[0] <= n_hash <= HASHTAGS[1] else "ok"
     tl = tags_length(tags)
     return {
         "title": {"count": len(title), "max": TITLE_MAX, "warn_over": TITLE_FEED,
@@ -108,7 +108,7 @@ def format_value(value) -> dict:
         elif key == "title_style":
             if v not in TITLE_STYLES:
                 raise ValueError(f"post_format.title_style must be one of {', '.join(TITLE_STYLES)}, got {v!r}")
-        elif not isinstance(v, list) or not all(isinstance(h, str) and _HASHTAG.match(h) for h in v):
+        elif not isinstance(v, list) or not all(isinstance(h, str) and _HASHTAG.fullmatch(h) for h in v):
             raise ValueError(f"post_format.always_hashtags must be a list of #words, got {v!r}")
         out[key] = v
     return out
@@ -264,7 +264,7 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
     elif len(desc) > PLATFORMS[1][1]:
         warnings.append(f"post description is {len(desc):,} characters, too long for Instagram and TikTok (2,200)")
     for h in p["hashtags"]:
-        if not _HASHTAG.match(h):
+        if not _HASHTAG.fullmatch(h):
             errors.append(f"post hashtag {h!r} must be one word starting with #")
     n = len(p["hashtags"])
     if n and not HASHTAGS[0] <= n <= HASHTAGS[1]:
@@ -276,7 +276,7 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
         errors.append(f"post pinned comment is {len(pinned):,} characters; YouTube allows {PINNED_MAX:,}")
     link = p["link"].strip()
     if link:
-        if not link.startswith("https://"):
+        if not link.lower().startswith("https://"):
             errors.append(f"post link {link!r} must start with https://")
         else:
             site = _site_host((s or {}).get("website"))
@@ -290,7 +290,7 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
     if rel is not None:
         if not isinstance(rel, dict):
             errors.append('post related must be {"title", "url"} or null')
-        elif rel.get("url") and not str(rel["url"]).startswith("https://"):
+        elif rel.get("url") and not str(rel["url"]).lower().startswith("https://"):
             errors.append(f"post related url {rel['url']!r} must start with https://")
     th = p["thumbnail"]
     if th is not None:

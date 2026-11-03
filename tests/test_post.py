@@ -105,6 +105,14 @@ def test_thumbnail_text_shape_words_and_numbers():
     assert post.problems(with_thumbnail(kicker=3), {})[0]
 
 
+def test_trailing_newline_is_not_a_hashtag_and_https_is_case_blind():
+    assert post.problems(short_with(hashtags=["#a\n", "#b", "#c"]), {})[0]
+    with pytest.raises(ValueError):
+        post.format_value({"always_hashtags": ["#a\n"]})
+    assert post.problems(short_with(link="HTTPS://example.com/p"), {"website": "example.com"}) == ([], [])
+    assert post.problems(short_with(related={"title": "t", "url": "HTTPS://x.org"}), {})[0] == []
+
+
 def test_posted_must_be_platform_url_at():
     assert post.problems(short_with(posted=[{"platform": "youtube"}]), {})[0]
     entry = {"platform": "youtube", "url": "https://y.example/1", "at": "2026-11-03"}
@@ -117,6 +125,8 @@ def test_counts_say_ok_warn_or_over():
     assert post.counts(short_with(title="x" * 101))["title"]["state"] == "over"
     assert post.counts(short_with(title="x"))["title"]["state"] == "ok"
     assert post.counts(short_with(hashtags=["#a", "#b"]))["hashtags"]["state"] == "warn"
+    assert post.counts(short_with(hashtags=[f"#h{i}" for i in range(7)]))["hashtags"]["state"] == "warn"
+    assert post.counts(short_with(hashtags=GOOD_HASHTAGS))["hashtags"]["state"] == "ok"
 
 
 def test_format_value_rejects_bad_values():

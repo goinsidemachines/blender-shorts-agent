@@ -1717,3 +1717,8 @@ def test_validate_reports_post_problems(home, pendulum):
     (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
     proc = run(home, "validate", "pendulum")
     assert proc.returncode == 1 and "YouTube allows 100" in proc.stderr
+
+
+def test_a_dotted_post_format_key_alone_marks_the_question_asked(home):
+    ok(run(home, "settings", "set", "post_format.title_suffix", " #shorts"))
+    assert ok(run(home, "settings", "post-format"))["asked"] is True

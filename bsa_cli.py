@@ -691,6 +691,7 @@ def _reading_timeline(short):
 
 
 def cmd_validate(args) -> dict:
+    from bsa import post
     from bsa.short import spoken_warnings, validate
     from bsa.timeline import length_warning
 
@@ -698,8 +699,6 @@ def cmd_validate(args) -> dict:
     short = load(sdir)
     rule_errors, rule_warnings = _rule_problems(short)
     errors = validate(short) + rule_errors
-    from bsa import post
-
     post_errors, post_warnings = post.problems(short, settings.load_settings())
     errors += post_errors
     warnings = spoken_warnings(short) if not errors else []
