@@ -1165,10 +1165,12 @@ def cmd_kit_sample(args) -> dict:
     """One sample sheet of a brand kit (every card on the kit's background) to --out, before anything is saved: from
     --kit (a brand object as JSON) or the settings' brand. Writes nothing to the settings; no short, no engine."""
     from bsa.blender import cards as blender_cards
+    from bsa.kit import cvd_problems
 
     k = _sample_kit(args)
     out = Path(args.out)
-    warnings = blender_cards.render_sample(k, out, settings.bsa_home() / "cards")
+    warnings = list(blender_cards.render_sample(k, out, settings.bsa_home() / "cards"))
+    warnings += cvd_problems(k.categories)
     return {"png": str(out), "warnings": warnings}
 
 

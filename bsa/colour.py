@@ -149,3 +149,35 @@ def background_warning(pixels: np.ndarray, want_hex: str, where: str, limit: flo
     return (f"{where}: the background renders {srgb_to_hex(got)}, ΔE {d:.0f} from {whose} "
             f"{want_hex.upper()}: set the world with bsa.blender.look.paper_world(scene, \"{want_hex}\") (it solves "
             f"the colour through the view transform), or {view}")  # fmt: skip
+
+
+# Machado, Oliveira & Fernandes (2009), "A Physiologically-based Model for Simulation of Color Vision Deficiency",
+# IEEE TVCG 15(6): the severity 1.0 matrices, applied to linear RGB.
+CVD = {
+    "protanopia": np.array([[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216],
+                            [-0.003882, -0.048116, 1.051998]]),
+    "deuteranopia": np.array([[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413],
+                              [-0.011820, 0.042940, 0.968881]]),
+    "tritanopia": np.array([[1.255528, -0.076749, -0.178779], [-0.078411, 0.930809, 0.147602],
+                            [0.004733, 0.691367, 0.303900]]),
+}  # fmt: skip
+CVD_DELTA_E = 10.0  # two category colours closer than this (CIE76) under a deficiency look alike
+
+
+def simulate(hex_: str, kind: str) -> str:
+    """The colour as someone with `kind` (protanopia, deuteranopia or tritanopia) sees it, as hex."""
+    lin = np.clip(CVD[kind] @ srgb_to_linear(hex_to_srgb(hex_)), 0.0, 1.0)
+    return srgb_to_hex(linear_to_srgb(lin))
+
+
+def look_alike(colours: dict[str, str], limit: float = CVD_DELTA_E) -> list[tuple[str, str, str, float]]:
+    """(a, b, kind, ΔE) for each pair of named colours (dict order) within `limit` under any deficiency, with the kind
+    where they are closest."""
+    out = []
+    names = list(colours)
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            d, kind = min((delta_e(simulate(colours[a], k), simulate(colours[b], k)), k) for k in CVD)
+            if d <= limit:
+                out.append((a, b, kind, d))
+    return out

@@ -110,3 +110,17 @@ def test_ground_and_sky_follow_motion_and_heat_or_the_default_code():
 def test_mix_ends():
     assert colour.mix("#000000", "#FFFFFF", 0) == "#000000" and colour.mix("#000000", "#FFFFFF", 1) == "#FFFFFF"
     assert colour.mix("#000000", "#FFFFFF", 0.5) == "#808080"
+
+
+def test_simulate_keeps_grey():
+    for kind in colour.CVD:
+        assert colour.delta_e("#808080", colour.simulate("#808080", kind)) < 1
+
+
+def test_look_alike_finds_a_red_green_pair():
+    found = colour.look_alike({"stop": "#D9483B", "go": "#4A9A3B"})
+    assert len(found) == 1
+    a, b, kind, d = found[0]
+    assert (a, b, kind) == ("stop", "go", "deuteranopia") and d == pytest.approx(6.5, abs=0.3)
+    assert colour.delta_e("#D9483B", "#4A9A3B") > 50
+    assert colour.look_alike({"stop": "#D9483B", "go": "#4A9A3B"}, limit=1) == []

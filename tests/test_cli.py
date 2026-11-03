@@ -1985,6 +1985,9 @@ def test_kit_sample_command_paths(home, tmp_path, monkeypatch):
     assert sample(json.dumps(KIT)) == {"png": str(out), "warnings": ["w"]}
     assert calls == [("toon", out, home / "cards")]
     assert settings_file.read_bytes() == before
+    clash = {**KIT, "categories": {"stop": "#D9483B", "go": "#4A9A3B"}}
+    got = sample(json.dumps(clash))
+    assert got["warnings"][0] == "w" and "stop and go look alike to people with deuteranopia" in got["warnings"][1]
 
 
 def test_style_sample_refuses_without_an_engine(home, tmp_path, monkeypatch):

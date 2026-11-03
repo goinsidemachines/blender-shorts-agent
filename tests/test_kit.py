@@ -205,3 +205,17 @@ def test_outline_3d_is_a_kit_key(bsa_home):
     settings.set_value("brand.outline_3d", False)
     assert settings.load_settings()["brand"]["outline_3d"] is False
     assert kit.check("outline_3d", "false") is False
+
+
+def test_kit_problems_warn_on_categories_that_look_alike():
+    s = {"brand": {**KIT, "categories": {"force": "#D9483B", "heat": "#4A9A3B", "flow": "#3B8ED9"}}}
+    text = " ".join(kit.problems(s))
+    assert "force and heat look alike to people with deuteranopia" in text and "ΔE" in text
+    assert "flow" not in text
+    assert kit.cvd_problems({"a": "#D9483B", "b": "#4A9A3B"})[0].startswith("brand.categories a and b look alike")
+
+
+def test_default_code_and_the_test_kit_raise_no_cvd_warning():
+    assert kit.cvd_problems(kit.DEFAULT_CODE) == []
+    assert kit.cvd_problems(KIT["categories"]) == []
+    assert kit.cvd_problems({}) == []

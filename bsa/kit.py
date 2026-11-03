@@ -327,8 +327,21 @@ def problems(settings: dict, short=None) -> list[str]:
             out.append(f"shot {s.id} category {cat!r} is not in your kit's categories ({', '.join(names) or 'none'}): "
                        "it shows in the accent colour")  # fmt: skip
     out += contrast_problems(merged["palette"])
+    out += cvd_problems(merged["categories"])
     note = logo_missing(merged.get("logo"))
     return out + [note] if note else out
+
+
+def cvd_problems(categories: dict) -> list[str]:
+    """A warning per pair of category colours that look alike under protanopia, deuteranopia or tritanopia."""
+    from bsa import colour
+
+    try:
+        found = colour.look_alike(dict(categories or {}))
+    except ValueError:
+        return []
+    return [f"brand.categories {a} and {b} look alike to people with {kind} (ΔE {d:.0f} when simulated): change one "
+            "so they differ in lightness too, not only in hue" for a, b, kind, d in found]
 
 
 MIN_CONTRAST = 3.0  # WCAG 2.x for large text: the cards' text is 30 px and up
