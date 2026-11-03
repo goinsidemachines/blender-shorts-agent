@@ -194,3 +194,14 @@ def test_low_contrast_text_or_highlight_on_the_card_is_a_problem():
     pale = {**KIT, "palette": {**KIT["palette"], "text": "#DDDDDD"}}
     assert any("brand.palette.text #DDDDDD" in p and "darker text" in p for p in kit.problems({"brand": pale}))
     assert kit.problems({"brand": {**pale, "style": None}}) == []  # no kit: nothing to report
+
+
+def test_outline_3d_is_a_kit_key(bsa_home):
+    assert kit.kit_from({**KIT, "outline_3d": True}).outline_3d is True
+    assert kit.kit_from(KIT).outline_3d is False
+    assert kit.PLAIN["outline_3d"] is False
+    from bsa import settings
+
+    settings.set_value("brand.outline_3d", False)
+    assert settings.load_settings()["brand"]["outline_3d"] is False
+    assert kit.check("outline_3d", "false") is False

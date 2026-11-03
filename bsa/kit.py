@@ -35,11 +35,11 @@ PLAIN = {
     "categories": {}, "outline_px": 0, "shadow_px": 0, "corner_px": 16, "pill_corner_px": None, "font": None,
     "caption": {"color": "#FFFFFF", "box": "#050608", "size": 64, "opacity": 0.55, "corner_px": 16, "pad_px": 35,
                 "draw": True},
-    "logo": None, "progress": True, "set": "auto",
+    "logo": None, "progress": True, "set": "auto", "outline_3d": False,
 }  # fmt: skip
 
 _KIT_KEYS = ("style", "palette", "categories", "outline_px", "shadow_px", "corner_px", "pill_corner_px", "font",
-             "caption", "logo", "progress", "set")  # fmt: skip
+             "caption", "logo", "progress", "set", "outline_3d")  # fmt: skip
 _HEX = re.compile(r"#?([0-9a-fA-F]{6})")
 _HEXA = re.compile(r"#?([0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)")  # caption colours: 8 digits keep their alpha
 
@@ -58,6 +58,7 @@ class Kit:
     logo: dict | None
     progress: bool
     set: str
+    outline_3d: bool = False
 
     def colour(self, category: str | None) -> str:
         """The category's hex, else the accent."""
@@ -138,7 +139,7 @@ def check(key: str, value, *, _must_exist: bool = True):
     if key == "":
         return {k: check(k, v, _must_exist=_must_exist) for k, v in _dict("", value, "settings").items()}
     top, _, rest = key.partition(".")
-    if top in PASS or top not in _KIT_KEYS and top != "outline_3d":
+    if top in PASS or top not in _KIT_KEYS:
         return value
     if key == "style":  # null, "" or "none": no kit (settings.set_value deletes the key)
         return None if off(value) else style_name(value)
@@ -254,7 +255,7 @@ def _make(merged: dict) -> Kit:
         style=merged["style"], palette=merged["palette"], categories=merged["categories"],
         outline_px=merged["outline_px"], shadow_px=merged["shadow_px"], corner_px=merged["corner_px"],
         pill_corner_px=merged["pill_corner_px"], font=merged["font"], caption=merged["caption"], logo=merged["logo"],
-        progress=merged["progress"], set=merged["set"],
+        progress=merged["progress"], set=merged["set"], outline_3d=merged["outline_3d"],
     )  # fmt: skip
 
 
