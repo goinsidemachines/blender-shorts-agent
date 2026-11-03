@@ -1213,6 +1213,58 @@ def cmd_style_sample(args) -> dict:
             "warnings": warnings}  # fmt: skip
 
 
+def _look_engine(args, sdir: Path) -> str:
+    """The engine the user chose for the look preview: --engine, else the short's (the approved engine, short.json's
+    render.engine, the render.engine setting). Never a default: without one Claude must ask the user."""
+    chosen = getattr(args, "engine", None) or _engine(sdir)
+    if chosen not in ("cycles", "eevee"):
+        raise CliError("look needs an engine: pass --engine eevee or --engine cycles, or set render.engine (the "
+                       "engine is always yours to pick: ask the user)")  # fmt: skip
+    return chosen
+
+
+def cmd_look(args) -> dict:
+    """The look preview: the first, middle and last shots in the chosen style (--style) and set (--set), each built
+    one by default, with the kit's cards on top, the kit sheet, and stills/look.json. Another style or set is put on
+    the scenes in memory only: the .blend is never saved, and the file is reverted afterwards. The engine is the
+    user's (_look_engine); the time per frame is a measured estimate."""
+    import bpy
+
+    from bsa import kit as kit_mod
+    from bsa import setplace
+    from bsa.kit import STYLES
+
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    k = kit_mod.kit_for(settings.load_settings(), short)
+    if k is None:
+        raise CliError("the look preview needs a brand kit: brand.style is not set")
+    style = args.style.strip().lower() if args.style else None
+    if style is not None and style not in STYLES:
+        raise CliError(f"{style!r} is not a style: use one of {', '.join(STYLES)}")
+    set_name = args.set.strip().lower() if args.set else None
+    if set_name is not None and set_name != "none" and set_name not in setplace.SETS:
+        raise CliError(f"{set_name!r} is not a set: use one of {', '.join(setplace.SETS)} or none")
+    engine = _look_engine(args, sdir)
+    tl, tl_hash = _timeline(sdir, short)
+    spans = {s.id: s for s in tl.shots}
+    data = _open_blend(sdir)
+    from bsa.blender import lookframes
+
+    scenes, frames = {}, {}
+    for shot in lookframes.look_shots(short):
+        shot, scene = _scene(data, short, shot.id, tl_hash)
+        scenes[shot.id], frames[shot.id] = scene, _still_frame(shot, spans[shot.id])
+    try:
+        out = lookframes.preview(sdir, short, tl, k, scenes, frames, engine, style, set_name)
+    except BaseException:
+        bpy.ops.wm.revert_mainfile()  # whatever was changed in memory goes: the file on disk is the short's
+        raise
+    if out.pop("changed"):
+        bpy.ops.wm.revert_mainfile()
+    return {**out, "path": str(sdir / "stills" / lookframes.LOOK_JSON)}
+
+
 THUMB_TEXT_FIRST = "Write the thumbnail text first: short.json post.thumbnail title (one or two lines)"
 MAX_HEROES = 3
 
@@ -1838,6 +1890,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", required=True, metavar="PNG")
     sp.set_defaults(fn=cmd_style_sample)
 
+    sp = sub.add_parser("look", help="the look preview: three stills with the kit's cards, the kit sheet, look.json")
+    sp.add_argument("short")
+    sp.add_argument("--style", metavar="NAME", help="show this style instead of the built one (in memory only)")
+    sp.add_argument("--set", metavar="NAME", help="show this set (workbench, graph, outdoor, studio) or none instead "
+                                                  "of the built one (in memory only)")  # fmt: skip
+    sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
+                    help="the render engine (the user's choice); else the short's approved engine or render.engine")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.set_defaults(fn=cmd_look)
+
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")
     sp.set_defaults(fn=cmd_probe)
@@ -1906,7 +1968,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
-GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames"}  # one at a time per workspace (gpulock); preview via render
+GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look"}  # one at a time per workspace (gpulock); preview via render
 
 
 @contextmanager
