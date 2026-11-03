@@ -239,3 +239,29 @@ def test_a_malformed_timeline_warns_instead_of_losing_the_edit_result(tmp_path, 
     monkeypatch.setattr(captions, "write_files", lambda *a, **k: (_ for _ in ()).throw(KeyError("cards")))
     out = go()
     assert out["mp4"] and "captions" not in out and out["warnings"] == ["caption files not written: 'cards'"]
+
+
+def test_closing_cue_waits_for_the_voice_with_a_lead_in(tmp_path):
+    def start(record):
+        sdir = pagefix.make_short(tmp_path / ("r" if record else "n"), "done")
+        pagefix.record_edit(sdir, "final", closing=75)
+        take = sdir / "audio" / "vo" / "closing.wav"
+        _take(take, 1.0)
+        with wave.open(str(take)) as w:
+            pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+        with wave.open(str(take), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(np.concatenate([np.zeros(round(0.4 * 48000), dtype="<i2"), pcm]).tobytes())
+        if record:
+            (sdir / "audio" / "vo" / "narrator.json").write_text(json.dumps({"lead_in": 0.4}), encoding="utf-8")
+        s = {"website": "example.com", "closing": {"voice_line": "Find out more."}}
+        tl = captions.timeline.timeline_from_json(captions._timeline_json(sdir))
+        rec = captions.engine_runs.edit_info(sdir, "final") or {}
+        cue, _ = captions._closing_cue(sdir, _short(sdir), s, rec, tl.fps)
+        return cue
+
+    plain, waited = start(False), start(True)
+    assert waited.f0 - plain.f0 == pytest.approx(12, abs=2)
+    assert waited.f1 == plain.f1

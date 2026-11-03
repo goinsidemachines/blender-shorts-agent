@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import wave
 from pathlib import Path
 
 import numpy as np
 
+from bsa import jobstate
 from bsa.short import Line, spoken_text
 
 SR = 48000
@@ -90,6 +92,72 @@ def voice_onset(path: Path) -> float:
     if len(loud) == 0:
         return 0.0
     return round(max(0.0, loud[0] * win / rate - ONSET_PREROLL_S), 3)
+
+
+LEAD_BELOW_PEAK_DB = 50.0  # more sensitive than the caption onset, so a soft first consonant is never silence
+LEAD_FLOOR_DBFS = -60.0
+
+
+def leading_silence(path: Path) -> float:
+    """Seconds before the first 10 ms window within LEAD_BELOW_PEAK_DB of the loudest one (and above
+    LEAD_FLOOR_DBFS); no pre-roll. 0.0 for a take that can't be read or is silent."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            rate, width, channels = w.getframerate(), w.getsampwidth(), w.getnchannels()
+            data = w.readframes(w.getnframes())
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+    if width != 2 or rate <= 0 or channels < 1:
+        return 0.0
+    x = np.frombuffer(data[: len(data) - len(data) % (2 * channels)], dtype="<i2").astype(np.float64) / 32768.0
+    x = x.reshape(-1, channels).mean(axis=1)
+    win = max(1, round(ONSET_WINDOW_S * rate))
+    n = len(x) // win
+    if n == 0:
+        return 0.0
+    rms = np.sqrt(np.mean(x[: n * win].reshape(n, win) ** 2, axis=1))
+    threshold = max(float(rms.max()) * 10 ** (-LEAD_BELOW_PEAK_DB / 20), 10 ** (LEAD_FLOOR_DBFS / 20))
+    loud = np.nonzero(rms >= threshold)[0]
+    if len(loud) == 0:
+        return 0.0
+    return round(loud[0] * win / rate, 3)
+
+
+def pad_lead(path: Path, lead_in: float) -> float:
+    """Prepend the silence a take is missing so it has `lead_in` seconds before its first word. Returns the seconds
+    added; 0.0 when it already has that much (a take is never trimmed) or can't be read."""
+    path = Path(path)
+    missing = round((lead_in - leading_silence(path)) * SR)
+    if missing <= 0:
+        return 0.0
+    try:
+        with wave.open(str(path), "rb") as w:
+            params, data = w.getparams(), w.readframes(w.getnframes())
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+    part = path.with_name(path.name + ".part")
+    try:
+        with wave.open(str(part), "wb") as w:
+            w.setparams(params)
+            w.writeframes(bytes(1) * (2 * params.nchannels * missing) + data)
+        os.replace(part, path)
+    finally:
+        part.unlink(missing_ok=True)
+    return missing / SR
+
+
+def forget_durations(out_dir: Path, ids) -> None:
+    """Drop these ids from durations.json (atomically), so read_durations measures them from their WAVs."""
+    jpath = Path(out_dir) / "durations.json"
+    try:
+        listed = json.loads(jpath.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(listed, dict) or not any(i in listed for i in ids):
+        return
+    for i in ids:
+        listed.pop(i, None)
+    jobstate.write_atomic(jpath, json.dumps(listed, indent=2).encode("utf-8"))
 
 
 def read_durations(out_dir: Path, ids: list[str]) -> dict[str, float]:

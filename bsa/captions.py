@@ -17,6 +17,8 @@ from pathlib import Path
 
 from bsa import closing as closing_mod
 from bsa import engine_runs, timeline
+from bsa.narrate.contract import voice_onset
+from bsa.narrate.run import _read_record
 
 MAX_CHARS = 42
 MAX_LINES = 2
@@ -183,6 +185,14 @@ def state(sdir: Path, short) -> dict:
     return {"stale": False, "why": None}
 
 
+def _lead_in(sdir: Path) -> float:
+    try:
+        value = float(_read_record(Path(sdir) / "audio" / "vo").get("lead_in") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
 def _closing_cue(sdir: Path, short, s: dict, rec: dict, fps: int) -> tuple[Cue | None, str | None]:
     cfg = closing_mod.resolve(s, short)
     span = rec.get("closing")
@@ -193,6 +203,8 @@ def _closing_cue(sdir: Path, short, s: dict, rec: dict, fps: int) -> tuple[Cue |
         return None, None
     line_f0 = int(span["f0"]) + round(closing_mod.LEAD_S * fps)
     line_f1 = min(line_f0 + math.ceil(round(take_s * fps, 6)) - 1, int(span["f1"]))
+    if _lead_in(sdir) > 0:  # the take opens with padded silence: the words wait for the voice, the cue still ends with the take
+        line_f0 += round(voice_onset(closing_mod.take(Path(sdir) / "audio" / "vo")) * fps)
     lines = wrap(cfg["voice_line"])
     if not lines or line_f1 < line_f0:
         return None, None

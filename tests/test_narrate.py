@@ -825,3 +825,123 @@ def test_changing_take_mode_or_lead_in_throws_the_takes_away(tmp_path):
     assert nrun.clear_stale_takes(vo, short, {**base, "take_mode": "paragraph", "lead_in": 0.3}) == ["l01"]
     (vo / "l01.wav").write_bytes(b"x")
     assert nrun.clear_stale_takes(vo, short, base) == ["l01"]
+
+
+def _lead_wav(path: Path, silence_s: float, soft_s: float = 0.0, soft_db: float = 45.0, voice_s: float = 1.0) -> None:
+    import numpy as np
+
+    t = np.arange(round(voice_s * 48000)) / 48000
+    voice = 9000 * np.sin(2 * np.pi * 220 * t)
+    parts = [np.zeros(round(silence_s * 48000))]
+    if soft_s:
+        ts = np.arange(round(soft_s * 48000)) / 48000
+        parts.append(9000 * 10 ** (-soft_db / 20) * np.sin(2 * np.pi * 330 * ts))
+    parts.append(voice)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(np.concatenate(parts).astype("<i2").tobytes())
+
+
+def test_leading_silence_counts_a_soft_onset_as_voice(tmp_path):
+    _lead_wav(tmp_path / "a.wav", 0.3, soft_s=0.08, soft_db=45)
+    assert contract.leading_silence(tmp_path / "a.wav") == pytest.approx(0.3, abs=0.015)
+    (tmp_path / "b.wav").write_bytes(b"nope")
+    assert contract.leading_silence(tmp_path / "b.wav") == 0.0
+    _lead_wav(tmp_path / "c.wav", 0.0, voice_s=0.5)
+    assert contract.leading_silence(tmp_path / "c.wav") == 0.0
+
+
+def test_pad_lead_adds_only_what_is_missing(tmp_path):
+    p = tmp_path / "a.wav"
+    _lead_wav(p, 0.1)
+    before = contract.wav_seconds(p)
+    added = contract.pad_lead(p, 0.4)
+    assert added == pytest.approx(0.3, abs=0.001)
+    assert contract.wav_seconds(p) - before == pytest.approx(0.3, abs=2 / 48000)
+    assert contract.leading_silence(p) == pytest.approx(0.4, abs=0.015)
+    assert contract.pad_lead(p, 0.4) == 0.0
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_pad_lead_never_trims(tmp_path):
+    short = _take_short()
+    vo = tmp_path / "audio" / "vo"
+    _lead_wav(vo / "l01.wav", 0.6)
+    _lead_wav(vo / "l02.wav", 0.6)
+    raw = (vo / "l01.wav").read_bytes()
+    assert contract.pad_lead(vo / "l01.wav", 0.3) == 0.0
+    assert (vo / "l01.wav").read_bytes() == raw
+    jobstate.mark_done(tmp_path, "narration", status="ok")
+    assert nrun.takes_onsets(tmp_path, short)["l01"] == pytest.approx(0.55, abs=0.015)
+
+
+def test_lead_in_runs_after_every_provider(tmp_path):
+    short = _take_short()
+
+    def lead_gen(model, lns, voice, speed, out, seed=7):
+        for x in lns:
+            _lead_wav(Path(out) / f"{x.id}.wav", 0.1, voice_s=0.5)
+        return {x.id: 0.6 for x in lns}
+
+    def check(vo):
+        for lid in ("l01", "l02"):
+            assert contract.leading_silence(vo / f"{lid}.wav") == pytest.approx(0.3, abs=0.01)
+        contract.read_durations(vo, ["l01", "l02"])
+
+    n = {"provider": "kokoro", "voice": "v", "speed": 1.0, "lead_in": 0.3, "verify": False}
+    res = nrun.narrate(tmp_path / "local", short, {"narrator": n}, local=SimpleNamespace(generate=lead_gen))
+    assert res.status == "ok"
+    check(tmp_path / "local" / "audio" / "vo")
+    assert res.durations["l01"] == pytest.approx(0.8, abs=0.01)
+
+    n = {**n, "provider": "elevenlabs"}
+    eleven = lambda lns, voice, speed, out: lead_gen("", lns, voice, speed, out)
+    assert nrun.narrate(tmp_path / "eleven", short, {"narrator": n}, elevenlabs=eleven).status == "ok"
+    check(tmp_path / "eleven" / "audio" / "vo")
+
+    def run(cmd, **kw):
+        out = Path(cmd[cmd.index("--out") + 1])
+        for lid in ("l01", "l02"):
+            _lead_wav(out / f"{lid}.wav", 0.1, voice_s=0.5)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    from bsa.narrate import custom as custom_mod
+
+    n = {**n, "provider": "custom", "command": "tts --lines {lines} --out {out}"}
+    cust = SimpleNamespace(generate=lambda *a, **k: custom_mod.generate(*a, **k, run=run))
+    assert nrun.narrate(tmp_path / "custom", short, {"narrator": n}, custom=cust).status == "ok"
+    check(tmp_path / "custom" / "audio" / "vo")
+
+
+def test_changing_lead_in_or_take_mode_remakes_the_takes(tmp_path):
+    short = _take_short()
+    spoken = []
+
+    def lead_gen(model, lns, voice, speed, out, seed=7):
+        spoken.extend(x.id for x in lns)
+        for x in lns:
+            _lead_wav(Path(out) / f"{x.id}.wav", 0.1, voice_s=0.5)
+        return {x.id: 0.6 for x in lns}
+
+    vo = tmp_path / "audio" / "vo"
+
+    def go(**extra):
+        n = {"provider": "kokoro", "voice": "v", "speed": 1.0, "verify": False, **extra}
+        nrun.clear_stale_takes(vo, short, nrun.narrator_for({"narrator": n}, short))
+        return nrun.narrate(tmp_path, short, {"narrator": n}, local=SimpleNamespace(generate=lead_gen))
+
+    go(lead_in=0.5)
+    assert spoken == ["l01", "l02"]
+    spoken.clear()
+    go(lead_in=0.3)
+    assert spoken == ["l01", "l02"]
+    for lid in ("l01", "l02"):
+        assert contract.leading_silence(vo / f"{lid}.wav") == pytest.approx(0.3, abs=0.01)
+    spoken.clear()
+    go(lead_in=0.3)
+    assert spoken == []  # nothing changed: the takes stay
+    n = {"provider": "kokoro", "voice": "v", "speed": 1.0, "lead_in": 0.3, "take_mode": "paragraph"}
+    assert nrun.clear_stale_takes(vo, short, nrun.narrator_for({"narrator": n}, short)) == ["l01", "l02"]

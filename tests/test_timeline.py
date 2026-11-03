@@ -240,3 +240,37 @@ def test_timeline_round_trips_through_json():
     assert timeline_from_json(json.loads(json.dumps(to_json(tl)))) == tl
     with pytest.raises(ValueError):
         timeline_from_json({"fps": 30})
+
+
+def test_lead_in_takes_put_captions_at_the_voice(tmp_path):
+    import wave
+
+    import numpy as np
+
+    from bsa import jobstate
+    from bsa.narrate import contract
+    from bsa.narrate import run as nrun
+
+    lines = [Line("l01", "The pendulum swings. Then it stops.", "s01"), Line("l02", "Every time.", "s01")]
+    short = _short(lines)
+    vo = tmp_path / "audio" / "vo"
+    vo.mkdir(parents=True)
+    for lid, sil in (("l01", 0.1), ("l02", 0.25)):
+        t = np.arange(48000) / 48000
+        x = np.concatenate([np.zeros(round(sil * 48000)), 9000 * np.sin(2 * np.pi * 220 * t)])
+        with wave.open(str(vo / f"{lid}.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(x.astype("<i2").tobytes())
+        contract.pad_lead(vo / f"{lid}.wav", 0.4)
+    jobstate.mark_done(tmp_path, "narration", status="ok")
+    onsets = nrun.takes_onsets(tmp_path, short)
+    want = 0.4 - contract.ONSET_PREROLL_S
+    assert onsets["l01"] == pytest.approx(want, abs=0.015) and onsets["l02"] == pytest.approx(want, abs=0.015)
+    durs = nrun.takes_durations(tmp_path, short)
+    plain = build_timeline(short, durs)
+    tl = build_timeline(short, durs, onsets=onsets)
+    assert [(s.f0, s.f1) for s in tl.lines] == [(s.f0, s.f1) for s in plain.lines]
+    first = next(c for c in tl.cards if c.line_id == "l01")
+    assert first.f0 == tl.lines[0].f0 + round(onsets["l01"] * tl.fps)

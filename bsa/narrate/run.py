@@ -20,7 +20,7 @@ from bsa import jobstate
 from bsa.narrate import custom as _custom
 from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
-from bsa.narrate.contract import NarrationError, check_take, read_durations, voice_onset
+from bsa.narrate.contract import NarrationError, check_take, forget_durations, pad_lead, read_durations, voice_onset
 from bsa.narrate.local import RETRIES, WER_LIMIT
 from bsa.short import Short, line_id_problem, spoken_text
 
@@ -234,7 +234,17 @@ def _unclear_message(ids: list[str]) -> str | None:
     return f"Lines {', '.join(ids)} may not be spoken clearly; listen to them or reword before publishing."
 
 
-def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
+def apply_lead_in(out_dir: Path, ids: list[str], lead_in: float) -> dict[str, float]:
+    """Pad each id's take to `lead_in` seconds before its first word (only what is missing), forget their durations
+    (so they are measured from the padded WAVs) and return the new seconds per id."""
+    out_dir = Path(out_dir)
+    for i in ids:
+        pad_lead(out_dir / f"{i}.wav", lead_in)
+    forget_durations(out_dir, ids)
+    return read_durations(out_dir, list(ids))
+
+
+def _spoken(short: Short, out_dir: Path, speak, hear, check, *, lead_in: float = 0.0) -> NarrationResult:
     """Only lines without a good take on disk are spoken (clear_stale_takes has already removed takes of another
     voice, speed or text), so an interrupted, re-taken or reworded run remakes only what it must. Each take is
     spoken with its line's seed (take_seeds: 7 for a first take, the next one after a retake) and every seed used
@@ -242,6 +252,13 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
     kept from an earlier run already had its retries: it is reported, not spoken again. `speak(lines, seed)` makes
     the takes and returns seconds per line; `hear(lines)` returns (heard, why_not) as _hear does. Writes
     heard.json."""
+    if lead_in > 0:
+        spoke = speak
+
+        def speak(lns, seed):  # every call (first takes and retries) is padded to the lead-in
+            got = spoke(lns, seed)
+            return {**got, **apply_lead_in(out_dir, [ln.id for ln in lns], lead_in)}
+
     seeds = take_seeds(out_dir)
     kept = [ln for ln in short.lines if (out_dir / f"{ln.id}.wav").is_file() and not check_take(out_dir / f"{ln.id}.wav")]
     todo = [ln for ln in short.lines if ln not in kept]
@@ -289,6 +306,7 @@ def _local_narrate(provider: str, short: Short, narrator: dict, out_dir: Path, m
         lambda lns, seed: gen(provider, lns, voice, speed, out_dir, seed=seed),
         lambda lns: _hear(mod, lns, out_dir),
         narrator.get("verify", True),
+        lead_in=float(narrator.get("lead_in") or 0.0),
     )  # fmt: skip
 
 
@@ -304,6 +322,7 @@ def _custom_narrate(short: Short, narrator: dict, out_dir: Path, mod, local) -> 
         lambda lns, seed: gen(command, lns, out_dir, seed=seed, voice=voice, speed=speed),
         lambda lns: _hear(local, lns, out_dir),
         narrator.get("verify", True),
+        lead_in=float(narrator.get("lead_in") or 0.0),
     )  # fmt: skip
 
 
@@ -352,7 +371,9 @@ def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> Narra
                 if not narrator.get("voice"):
                     raise NarrationError("no ElevenLabs voice has been chosen")
                 gen = _fn(providers.get("elevenlabs", _elevenlabs), "generate")
-                durations = gen(short.lines, narrator["voice"], float(narrator.get("speed") or 1.0), out_dir)
+                durations = dict(gen(short.lines, narrator["voice"], float(narrator.get("speed") or 1.0), out_dir))
+                if float(narrator.get("lead_in") or 0.0) > 0:
+                    durations.update(apply_lead_in(out_dir, [ln.id for ln in short.lines], narrator["lead_in"]))
                 result = _elevenlabs_checked(short, narrator, out_dir, dict(durations), providers.get("local", _local))
             elif provider in LOCAL_ENGINES:
                 result = _local_narrate(provider, short, narrator, out_dir, providers.get("local", _local))
