@@ -392,7 +392,7 @@ def test_build_doc_calls_sets_and_styles_in_order():
     base, dress, apply = t.index("sets.base("), t.index("sets.dress("), t.index("styles.apply(")
     assert base < dress < apply
     flat = _flat(t)
-    for s in ("kit_for(load_settings(), short)", "setplace.resolve(kit.set, size_m)", "look.kit_material(",
+    for s in ("kit_for(load_settings(), short)", "setplace.resolve(kit.set, size_m, measuring)", "look.kit_material(",
               "lines:off", "set:floor", "key=["):
         assert s in flat, s
     import ast
@@ -434,6 +434,17 @@ def test_docs_use_no_owner_values():
     for name in STYLE_DOCS:
         t = _read(f"playbook/{name}")
         for value in banned:
-            if name == "look-and-brand.md" and value == "Fredoka":
-                continue  # the font section's existing example of a static weight
             assert value.lower() not in t.lower(), (name, value)
+
+
+def test_readme_has_your_brand_with_both_images():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## Your brand" in text
+    base = "https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/"
+    for name in ("brand-styles.jpg", "brand-sets.jpg"):
+        assert base + name in text, name
+    section = text.split("## Your brand", 1)[1].split("\n## ", 1)[0]
+    flat = _flat(section)
+    assert "your engine" in flat.lower() and "your choice" in flat.lower()
+    for banned in ("goinsidemachines.com", "Inside Machines", "Mojood", "#F4B400"):
+        assert banned not in section, banned

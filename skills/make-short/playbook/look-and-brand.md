@@ -275,20 +275,20 @@ A look is a few decisions held consistently across every shot:
 Two things go wrong with a brand font, and both are caught before anything renders:
 
 - **Variable fonts draw the wrong weight.** A family installed only as a variable font (one file such as
-  `Fredoka-VF.ttf` or `Inter[wght].ttf`) loads in Blender as its default instance, which is often Light: captions and
+  `Inter-VF.ttf` or `Source[wght].ttf`) loads in Blender as its default instance, which is often Light: captions and
   3D text come out thin. `CLI fonts "NAME"` reports `variable`, the `default_weight` and `default_instance` Blender
   will use, a `warning`, and any installed `static_weights` of the family. Use a static weight instead: set
-  `brand.font` and `style.font` to the family with its weight, `"Fredoka@600"` (a file path still works too). It
+  `brand.font` and `style.font` to the family with its weight, `"Inter@600"` (a file path still works too). It
   loads an installed static file of exactly that weight, else the one `CLI assets` downloaded into
-  `<workspace>/.assets-cache/fonts/` (`Fredoka-600.ttf`). `CLI fonts "Fredoka@600"` says which file that is; when
+  `<workspace>/.assets-cache/fonts/` (`Inter-600.ttf`). `CLI fonts "Inter@600"` says which file that is; when
   neither exists it warns (and `CLI validate` and the edit's `font_fallback` say so) and the text uses the family as
-  installed. Then offer to download it: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
+  installed. Then offer to download it: `CLI assets plan SHORT "font:Inter@600"` plans a static weight from Google
   Fonts (its licence is checked: OFL, Apache 2.0 or Ubuntu Font Licence), shown and approved like any asset
-  (`assets.md`); after the yes, `assets download SHORT` puts it in the cache, where `"Fredoka@600"` finds it for
-  every short of the workspace. In `build.py`, load the same file for 3D text: `bsa.fonts.resolve("Fredoka@600",
+  (`assets.md`); after the yes, `assets download SHORT` puts it in the cache, where `"Inter@600"` finds it for
+  every short of the workspace. In `build.py`, load the same file for 3D text: `bsa.fonts.resolve("Inter@600",
   cache_dirs=bsa.fonts.font_caches(SHORT_DIR))[0]`. Don't thicken thin text with `curve.offset` instead. For a brand, this is checked once,
   at setup: `settings set brand.font NAME` returns a `font_check` with the same facts and a `warning` that says how
-  to fix it in the brand (set `brand.font` to a static weight, `"Fredoka@600"` or a file path, then every brand
+  to fix it in the brand (set `brand.font` to a static weight, `"Inter@600"` or a file path, then every brand
   short uses it). While a brand short still uses a variable `brand.font`, `CLI validate` says so in one short line
   that points at the setting, rather than repeating the full advice on every short.
 - **Missing glyphs draw as boxes.** Every character of the captions, labels, badges (upper case, as drawn) and the

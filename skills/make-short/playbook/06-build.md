@@ -92,7 +92,9 @@ def build(short_dir):
     for name in names:
         sc = bpy.data.scenes.new(name)
         bsa_scene.setup_scene(sc, short, ENGINE, "preview")
-        set_name = setplace.resolve(kit.set, size_m) if kit else None  # "auto" picks by size; "none" is None
+        measuring = any(isinstance(lb, dict) and lb.get("kind") == "measure"
+                        for s in short.shots if s.scene == name for lb in s.labels)  # a measure label in the scene
+        set_name = setplace.resolve(kit.set, size_m, measuring) if kit else None  # "auto" picks; "none" is None
         sets.base(sc, kit, set_name, size_m)  # the floor and walls first, before the subject (no kit: nothing)
         # ... models (parts from look.kit_material(name, kind, colour) with category: tags; `hero` is the
         # subject's main object), lights, camera moves, baked motion, tags ...
@@ -122,8 +124,11 @@ open Blender uses the plugin's current code (`mcp-mode.md`).
 With a brand kit (`brand.style`, `look-and-brand.md`) build.py also makes the short's set and puts the style on it.
 Without a kit all three calls do nothing, so one build.py serves both. The order in the skeleton is fixed:
 
-1. `kit = kit_for(load_settings(), short)` once, then for each scene `set_name = setplace.resolve(kit.set, size_m)
-   if kit else None` (`size_m` is the subject's real size: `auto` picks the set from it; `"none"` gives `None`).
+1. `kit = kit_for(load_settings(), short)` once, then for each scene `set_name = setplace.resolve(kit.set, size_m,
+   measuring) if kit else None`. `size_m` is the subject's real size. `measuring` is true when a shot of that scene has
+   a label with `"kind": "measure"` (the scene explains by measuring): `auto` then gives `graph` for a subject under
+   5 m. `"none"` gives `None`. `BLENDER look` never chooses a set itself: it shows the set build.py made (or the
+   `--set` the user asked for), so the preview and the build always agree.
 2. `sets.base(sc, kit, set_name, size_m)` **before** the subject: the floor (its top at z = 0), walls and backdrop,
    tagged `set:floor`, `set:wall`, `set:backdrop`, in the kit's colours. Build the subject on that floor.
 3. Parts with `look.kit_material(name, kind, colour)` and a `category:<name>` tag when a label points at them. The
