@@ -600,7 +600,7 @@ def test_kit_edit_places_card_images_and_no_caption_text():
     assert not [s for s in _texts(sc) if s.channel < edit.CH_END]  # every overlay is a card image
     assert sorted(s.text for s in _texts(sc)) == ["@me", "Follow for more"]  # the end card stays today's text
     imgs = _images(sc)
-    assert {s.channel for s in imgs} >= {kitlayout.CH["caption"], kitlayout.CH["badge"], 3, 4, 5}
+    assert {s.channel for s in imgs} >= {kitlayout.CH["caption"], kitlayout.CH["badge"], *(kitlayout.CH["progress"] + i for i in range(3))}
     assert {s.channel for s in imgs} >= {kitlayout.CH["stacked"]}  # "Label A", stacked under the badge
     caps = sorted((s.frame_final_start, s.frame_final_end - 1) for s in _images(sc, kitlayout.CH["caption"]))
     assert caps == [(3, 12), (18, 28)]
@@ -716,3 +716,62 @@ def test_caption_draw_false_draws_no_captions_in_either_path():
     off = {**_kit(), "caption": {**_kit()["caption"], "draw": False}}  # the kit's own switch
     sc = edit.build_edit(short, tl, frames, wav, out, {"handle": None, "brand": off}, preset="preview")
     assert not _images(sc, kitlayout.CH["caption"]) and not _captions(sc)
+
+
+def test_a_pointer_crossing_the_title_card_passes_behind_it():
+    """The pointer line draws under the static cards: where it crosses the title card's padding, the card's fill
+    shows, not the line's ink (the line is visible outside the card, and the dot stays on top)."""
+    from bsa import cards, kit, kitlayout
+
+    short, tl, frames, wav, out = _fixture(badge=None, labels=())
+    short.shots[0].title_card = {"lines": ["How a lever", "lifts more"], "highlight": 1}
+    short.shots[0].labels = [{"text": "Ball", "near": "Ball"}]
+    settings = {"handle": None, "brand": _kit()}
+    k = kit.kit_for(settings, short)
+    font = cards.card_font(k)
+    far = {"a": {"Ball": {"f0": 1, "points": [[540, 1000]] * 15}}}
+    title = next(p for p in kitlayout.build(short, tl, k, font, far).cards if p.channel == kitlayout.CH["title"])
+    t = title.at
+    anchor = [t.x + t.w * 0.3, t.y + 25]
+    anchors = {"a": {"Ball": {"f0": 1, "points": [anchor] * 15}}}  # in the title card's top padding
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview", anchors=anchors)
+    ptr = kitlayout.build(short, tl, k, font, anchors).pointers[0]
+    start, end = ptr.ends[5]
+    keep = Path(os.environ["BSA_TEST_KEEP"]) / "kit-pointer-behind.png" if os.environ.get("BSA_TEST_KEEP") else None
+    a = _render_frame(sc, 5, keep)
+    ink = np.array([0x1B, 0x2A, 0x3A]) / 255
+
+    def ink_near(y):  # how close to the line's ink the pixels around the line are at row y
+        u = (y - start[1]) / (end[1] - start[1])
+        x = start[0] + u * (end[0] - start[0])
+        return min(float(np.abs(a[round(y), round(x) + dx] - ink).max()) for dx in range(-3, 4))
+
+    lo, hi = sorted((start[1], end[1]))
+    pad, o, box_h = cards.CARD_PAD, k.outline_px, title.spec.box_h
+    bands = [*range(round(t.y) + o + 6, round(t.y + pad) - 8),
+             *range(round(t.y + box_h - pad) + 8, round(t.y + box_h) - o - 6)]  # fmt: skip
+    inside = [y for y in bands if lo + 2 < y < hi - 2 and abs(y - end[1]) > 20]  # the card's padding, on the line
+    outside = [y for y in range(round(lo) + 6, round(hi) - 6) if y < t.y - 10 or y > t.y + title.spec.h + 10]
+    assert inside and outside, (start, end, t)
+    assert all(ink_near(y) > 0.3 for y in inside), [round(ink_near(y), 2) for y in inside]  # hidden by the card
+    assert all(ink_near(y) < 0.1 for y in outside), [round(ink_near(y), 2) for y in outside]  # drawn outside it
+    dot = [round(v * 255) for v in a[round(end[1]), round(end[0])]]
+    assert all(abs(g - w) <= 3 for g, w in zip(dot, (0x1B, 0x2A, 0x3A), strict=True)), dot  # the dot over the card
+
+
+def test_kit_end_card_uses_the_kits_font_unless_the_short_names_one():
+    from bsa import cards, kit
+
+    short, tl, frames, wav, out = _fixture()
+    settings = {"handle": "me", "brand": _kit()}
+    want = cards.card_font(kit.kit_for(settings, short))
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    ends = _end_strips(sc)
+    assert ends and want is not None
+    assert all(s.font is not None and Path(bpy.path.abspath(s.font.filepath)) == Path(want) for s in ends), ends
+    plain = edit.build_edit(short, tl, frames, wav, out, {"handle": "me"}, preset="preview")
+    assert all(s.font is None for s in _end_strips(plain))  # no kit: today's end card, Blender's own font
+    short.style["font"] = "Segoe UI" if os.name == "nt" else "DejaVu Sans"
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    named = edit.find_font_file(short.style["font"], edit.font_dirs())
+    assert all(Path(bpy.path.abspath(s.font.filepath)).name.lower() == named.name.lower() for s in _end_strips(sc))

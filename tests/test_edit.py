@@ -41,6 +41,8 @@ def test_edit_in_blender(blender_run):
         "test_kit_edit_without_its_logo_file_warns_and_draws_no_badge",
         "test_kit_edit_leaves_every_engine_alone",
         "test_caption_draw_false_draws_no_captions_in_either_path",
+        "test_a_pointer_crossing_the_title_card_passes_behind_it",
+        "test_kit_end_card_uses_the_kits_font_unless_the_short_names_one",
     ):
         assert f"PASS {name}" in result.stdout
 

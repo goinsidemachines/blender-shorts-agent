@@ -239,23 +239,21 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
 
 
 def _add_kit(short: Short, tl: Timeline, seq, k, sdir: Path | None, anchors: dict | None,
-             label_heroes: dict | None) -> tuple[int, list[str]]:  # fmt: skip
+             label_heroes: dict | None) -> tuple[int, list[str], Path | None]:  # fmt: skip
     """The brand kit's cards as image strips where bsa.kitlayout puts them, drawn into `sdir`/cards (a temp folder
-    without a short folder). Returns (card images placed, notes: the card font's and the layout's)."""
+    without a short folder). Returns (card images placed, notes: the card font's and the layout's, the card font)."""
     import tempfile
 
     from bsa import cards, kitlayout
     from bsa.blender.cards import add_overlay
 
-    caches = font_caches(sdir)
-    font = cards.card_font(k, caches)
-    notes = [resolve(k.font, cache_dirs=caches)[2]] if k.font else []
+    font, note = cards.card_font_and_note(k, font_caches(sdir))
     ov = kitlayout.build(short, tl, k, font, anchors, label_heroes)
     cache_dir = Path(sdir) / "cards" if sdir is not None else Path(tempfile.mkdtemp(prefix="bsa-cards-"))
     before = {s.name for s in seq.strips_all}
     add_overlay(seq, ov, cache_dir)
     placed = sum(1 for s in seq.strips_all if s.type == "IMAGE" and s.name not in before)
-    return placed, [n for n in [*notes, *ov.notes] if n]
+    return placed, [n for n in [note, *ov.notes] if n], font
 
 
 def _add_end_card(tl: Timeline, texts: _Texts, settings: dict, heroes: dict | None = None, short=None) -> str | None:
@@ -387,9 +385,16 @@ def build_edit(
     if k is None:  # no brand.style: exactly today's text captions, badges and labels
         _add_overlays(short, tl, texts, settings, anchors, label_heroes)
     else:
-        n, notes = _add_kit(short, tl, seq, k, sdir, anchors, label_heroes)
+        n, notes, card_font = _add_kit(short, tl, seq, k, sdir, anchors, label_heroes)
         scene[KIT_CARDS_PROP] = n
         texts.notes += notes
+        if not short.style.get("font") and card_font is not None:  # the end card in the kit's font, as its cards
+            try:
+                texts.font = bpy.data.fonts.load(str(card_font), check_existing=True)
+                texts.font_path = Path(card_font)
+                scene[FONT_USED_PROP] = family_of(card_font)
+            except RuntimeError:
+                pass
     note = _add_end_card(tl, texts, settings, hero_boxes, short)  # today's text strips, with a kit too
     if note:
         scene[END_NOTE_PROP] = note

@@ -287,3 +287,14 @@ def test_no_kit_code_touches_the_render_engine():
     for f in ("bsa/kit.py", "bsa/cards.py", "bsa/kitlayout.py", "bsa/thumbs.py", "bsa/closing.py", "bsa/overlays.py",
               "bsa/blender/cards.py", "bsa/blender/edit.py", "bsa/blender/thumbs.py", "bsa/blender/closing_card.py"):
         assert not re.search(r"\.engine\s*=|render\.engine", (ROOT / f).read_text(encoding="utf-8")), f
+
+
+def test_card_font_and_note_resolves_once_and_says_why():
+    from bsa import kit
+
+    k = kit.kit_from(KIT)
+    path, note = cards.card_font_and_note(k)
+    assert path == cards.card_font(k) and note is None  # no kit font: the first OS fallback, nothing to say
+    missing = kit.kit_from({**KIT, "font": "No Such Font Anywhere"})
+    path, note = cards.card_font_and_note(missing)
+    assert note and "No Such Font Anywhere" in note and path == cards.card_font(missing)

@@ -317,3 +317,14 @@ def test_labels_per_shot_are_capped_so_channels_never_meet(font):
         kitlayout.build(_short(labels=[*six, "one more"]), _tl(), K, font)
     with pytest.raises(ValueError, match="at most 6"):
         kitlayout.top_band(None, _short(labels=[*six, "x"]).shots[0], K, font)
+
+
+def test_pointer_lines_sit_under_every_static_card_and_dots_and_near_cards_over_them():
+    """A pointer line crossing a static card (title, bars, caption, logo, category, badge, step, stacked) passes
+    behind it; the near cards and their dots stay on top of everything."""
+    top_pointer = kitlayout.CH["pointer"] + kitlayout.MAX_LABELS - 1
+    statics = [kitlayout.CH[k] for k in ("title", "bars", "caption", "logo", "category", "badge", "step", "stacked")]
+    assert top_pointer < min(statics) and top_pointer < kitlayout.CH["progress"]
+    assert min(kitlayout.CH["near"], kitlayout.CH["dot"]) > max(statics) + kitlayout.MAX_LABELS
+    assert kitlayout.CH["pointer"] >= 3  # over the shot frames (1) and the sound (2)
+    assert issubclass(kitlayout.TooManyLabels, ValueError)

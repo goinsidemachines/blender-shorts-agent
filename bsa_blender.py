@@ -1009,7 +1009,8 @@ def _drop_outgoing(sdir: Path, out_mp4: Path, preset: str, side) -> None:
 def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     from bsa import engine_runs, kit
 
-    kit_errors = kit.errors(settings.load_settings(), short)  # before anything is touched: the kit can't lay it out
+    s = settings.load_settings()  # read once: the whole edit uses the same settings
+    kit_errors = kit.errors(s, short)  # before anything is touched: the kit can't lay it out
     if kit_errors:
         raise CliError("; ".join(kit_errors))
     side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4
@@ -1025,7 +1026,7 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     anchors = freshness.load_anchors(sdir, fps, tl_hash, need) if need else None
     label_heroes = _label_heroes(sdir, fps, tl_hash, need)
     warnings, heroes = [], None
-    if settings.has_end_card(settings.load_settings(), short):  # the end card is polish: without anchors it is only warned
+    if settings.has_end_card(s, short):  # the end card is polish: without anchors it is only warned
         try:
             last = short.shots[-1].id
             heroes = freshness.load_hero_boxes(sdir, fps, tl_hash, last).get(last)
@@ -1045,7 +1046,7 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     _drop_outgoing(sdir, out_mp4, args.preset, side)
     scene = edit.build_edit(short, tl, engine_runs.frames_root(sdir, args.preset, side), mix if mix.is_file() else None,
                             out_mp4,
-                            settings.load_settings(), preset=args.preset, anchors=anchors, hero_boxes=heroes,
+                            s, preset=args.preset, anchors=anchors, hero_boxes=heroes,
                             label_heroes=label_heroes, closing=end)  # fmt: skip
     run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
@@ -1064,7 +1065,9 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     if edit.end_card_note(scene):
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
-    warnings += [p for p in kit.problems(settings.load_settings(), short) if "logo" in p]  # a logo file gone
+    k = kit.kit_for(s, short)
+    logo_note = kit.logo_missing(k.logo) if k is not None else None
+    warnings += [logo_note] if logo_note else []  # the logo file is gone: no badge
     warnings = list(dict.fromkeys(warnings))  # the edit's layout notes a missing logo too: say it once
     out = {"mp4": str(path), "timeline_hash": tl_hash, **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
     if edit.kit_cards(scene):
@@ -1077,7 +1080,7 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         from bsa import captions
 
         try:
-            out["captions"] = captions.write_files(sdir, short, settings.load_settings())
+            out["captions"] = captions.write_files(sdir, short, s)
         except Exception as exc:  # noqa: BLE001 - auxiliary output: never lose the recorded MP4 result
             warnings.append(f"caption files not written: {exc}")
     return {**out, "warnings": warnings} if warnings else out

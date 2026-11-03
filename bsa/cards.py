@@ -91,15 +91,21 @@ class CardSpec:
 def card_font(kit, cache_dirs=None) -> Path | None:
     """The font the cards are drawn in: the kit's font (or what fonts.resolve uses instead), else the first installed
     OS fallback (fonts.FALLBACKS); None (Blender's own font) when nothing is found."""
+    return card_font_and_note(kit, cache_dirs)[0]
+
+
+def card_font_and_note(kit, cache_dirs=None) -> tuple[Path | None, str | None]:
+    """(card_font, the note when the kit's font or its weight is missing and another is used), resolved once."""
     if kit.font:
-        return fonts.resolve(kit.font, cache_dirs=cache_dirs)[0]
+        path, _, note = fonts.resolve(kit.font, cache_dirs=cache_dirs)
+        return path, note
     dirs = fonts.font_dirs()
     files = fonts.font_files(dirs)
     for family in fonts.FALLBACKS.get(platform.system(), fonts.FALLBACKS["Linux"]):
         path = fonts.find_font_file(family, dirs, files)
         if path is not None:
-            return path
-    return None
+            return path, None
+    return None, None
 
 
 def measure(text: str, size: float, font) -> float:

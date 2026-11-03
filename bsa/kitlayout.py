@@ -19,13 +19,19 @@ from bsa.kit import logo_missing
 from bsa.layout import CAPTION_LIFT_PX, SAFE, H, Rect, W, overlap_area, safe_rect
 from bsa.overlays import SMALL_MARGIN, STACK_GAP_PX
 
-# Sequencer channels. "stacked", "pointer", "near" and "dot" add the label's index in shot.labels; the progress bar
-# takes 3 (track), 4 and 5 (fill). The end card keeps 30 and up (today's text strips).
-CH = {"progress": 3, "title": 6, "bars": 7, "caption": 10, "logo": 20, "category": 21, "badge": 22, "step": 23,
-      "stacked": 24, "pointer": 40, "near": 50, "dot": 60}  # fmt: skip
-# Labels per shot: stacked ones take 24 + index, which must stay under the end card's 30; pointers 40-45, near cards
-# 50-55 and dots 60-65 then never meet either.
+# Sequencer channels (a higher one draws over a lower one). "stacked", "pointer", "near" and "dot" add the label's
+# index in shot.labels. Pointer lines (3-8) sit under every static card, so a line that crosses one passes behind it;
+# the progress bar takes 9 (track), 10 (fill) and 11 (outline). Near cards and their dots draw over everything. The
+# end card keeps 30 and up (today's text strips).
+CH = {"pointer": 3, "progress": 9, "title": 12, "bars": 13, "caption": 14, "logo": 20, "category": 21, "badge": 22,
+      "step": 23, "stacked": 24, "near": 50, "dot": 60}  # fmt: skip
+# Labels per shot: stacked ones take 24 + index, which must stay under the end card's 30; pointers 3-8 stay under the
+# progress bar's 9, near cards 50-55 and dots 60-65 then never meet either.
 MAX_LABELS = 6
+
+
+class TooManyLabels(ValueError):
+    """A shot has more labels than a brand kit draws (MAX_LABELS); kit.errors names it before any edit runs."""
 TITLE_GAP_PX = 24  # between the top cards and the title card, and between the title card and the bars
 PROGRESS_DROP_PX = 36  # the progress bar's top under today's caption bottom
 
@@ -129,7 +135,7 @@ def _static(shot, kit, font, logo: CardSpec | None, notes: list[str]) -> list[tu
 
     labels = getattr(shot, "labels", None) or []
     if len(labels) > MAX_LABELS:
-        raise ValueError(f"shot {shot.id} has {len(labels)} labels: a brand kit draws at most {MAX_LABELS} per shot "
+        raise TooManyLabels(f"shot {shot.id} has {len(labels)} labels: a brand kit draws at most {MAX_LABELS} per shot "
                          "(more would share sequencer channels with the pointers and the end card): move some to "
                          "another shot")  # fmt: skip
     s = safe_rect()

@@ -117,7 +117,7 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from bsa import overlays, viewer
+from bsa import kitlayout, overlays, viewer
 from bsa.blender.anchors import screen_box, screen_top
 from bsa.blender.bake import category, is_hero, is_overlay, is_surface, may_exit, tags
 from bsa.findings import cap_pairs, not_listed
@@ -432,7 +432,7 @@ class _Run:
             texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
                                         {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame],
                                         kit=self.kit, font=self.kit_font)  # fmt: skip
-        except ValueError as exc:  # a kit's cards can't be laid out (too many labels): CLI validate names it
+        except kitlayout.TooManyLabels as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
             self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
             return
         seen["texts"][frame] = {"subjects": subjects, "texts": texts[frame]}
