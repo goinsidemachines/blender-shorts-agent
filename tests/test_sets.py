@@ -29,5 +29,6 @@ def test_sets_in_blender(blender_run, bsa_home):
         "test_outdoor_ground_keeps_its_colour_in_the_lit_styles",
         "test_taking_a_set_away_leaves_no_world_behind",
         "test_clear_puts_film_transparent_back",
+        "test_look_restyle_applies_the_style_once_per_scene",
     ):
         assert f"PASS {name}" in result.stdout

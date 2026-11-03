@@ -112,7 +112,8 @@ def _size(scene) -> float:
 
 def restyle(scene, kit, short, tl, sdir: Path, style: str | None, set_name: str | None) -> tuple[bool, list[str]]:
     """Show `scene` with `set_name` and `style` where they differ from what it was built with (None: as built), in
-    memory only (sets.clear + base + dress(save=False), then styles.reapply). Returns (changed, warnings)."""
+    memory only (sets.base, which clears the built set, + dress(save=False), then the style applied once). Returns
+    (changed, warnings)."""
     from bsa.blender import sets, styles
 
     warnings: list[str] = []
@@ -120,13 +121,19 @@ def restyle(scene, kit, short, tl, sdir: Path, style: str | None, set_name: str 
     built_set = str(scene.get("bsa_set") or "none")
     if set_name is not None and set_name != built_set:
         size = _size(scene)
-        sets.clear(scene)
-        if set_name != "none":
-            sets.base(scene, kit, set_name, size)
-            got = sets.dress(scene, kit, short, tl, sdir, save=False, replace=True)  # sets.json is the built set's
-            warnings += got.get("warnings", [])
-        else:
-            sets.base(scene, kit, "none", size)  # the style's paper backdrop back
+        # The set's base and dress restyle a styled scene as they go; the style is applied once, below, instead.
+        args = scene.get("bsa_style_args")
+        args = args.to_dict() if hasattr(args, "to_dict") else args
+        if args is not None:
+            del scene["bsa_style_args"]
+        try:
+            sets.base(scene, kit, set_name, size)  # "none": the set taken away, a paper backdrop back
+            if set_name != "none":
+                got = sets.dress(scene, kit, short, tl, sdir, save=False, replace=True)  # sets.json: the built set's
+                warnings += got.get("warnings", [])
+        finally:
+            if args is not None:
+                scene["bsa_style_args"] = args
         changed = True
     built_style = scene.get("bsa_style")
     want = style or (str(built_style) if built_style else kit.style)

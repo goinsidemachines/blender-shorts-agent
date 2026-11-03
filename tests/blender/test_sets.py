@@ -518,3 +518,34 @@ def test_clear_puts_film_transparent_back():
             assert sc.render.film_transparent is False
         sets.clear(sc)
         assert sc.render.film_transparent is was, was
+
+
+def test_look_restyle_applies_the_style_once_per_scene():
+    """The look preview's restyle (another set and style in memory) applies the style once, whatever it changes, and
+    a set taken away there puts the style's paper backdrop back."""
+    from bsa.blender import lookframes
+
+    real = styles.apply
+    calls = []
+
+    def counted(*a, **k):
+        calls.append(k.get("style"))
+        return real(*a, **k)
+
+    styles.apply = counted
+    try:
+        for styled in (False, True):
+            for to_set, to_style in (("graph", "clay"), ("none", "paper"), ("outdoor", None)):
+                sc, kit, short, tl, built, _ = _build("workbench")
+                sets.dress(sc, kit, short, tl, None)
+                if styled:
+                    real(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
+                calls.clear()
+                changed, _warnings = lookframes.restyle(sc, kit, short, tl, _sdir(), to_style, to_set)
+                want = to_style or ("toy" if styled else kit.style)
+                assert changed and calls == [want], (styled, to_set, calls)
+                assert sc.get("bsa_style") == want and str(sc.get("bsa_set") or "none") == to_set
+                if to_set == "none":
+                    assert sc.world.get("bsa_backdrop") == "paper" and colour.flat_backdrop(sc.world) is True
+    finally:
+        styles.apply = real
