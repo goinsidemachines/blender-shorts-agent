@@ -16,7 +16,9 @@ STANDARD = ("toy", "toon", "blueprint", "paper", "pencil")
 RAMP_AT = 0.25
 TOON_SIZE = 0.874
 PENCIL_TOON_SIZE = 0.95
-CYCLES_TOON_K = {"toon": 0.92, "pencil": 0.915}
+# Cycles toon-sun trims, measured on the CPU with the flat steps glowing for camera rays only (styles._cel): toon's
+# lit face shows its colour exactly at 1.0 (the sampler's 0.92 made up for its cel floor and wall lighting the parts).
+CYCLES_TOON_K = {"toon": 1.0, "pencil": 0.915}
 OUTLINE_3D_PX = 2.0
 FREESTYLE_REF_H = 480
 

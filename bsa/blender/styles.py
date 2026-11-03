@@ -644,18 +644,6 @@ def _world(scene, kit: Kit, name: str, sl: looks.StyleLook, warnings: list) -> N
     scene.world["bsa_strength"] = {lit.name: {"eevee": float(sl.world), "cycles": float(cycles)}}
 
 
-def _lights_off(scene) -> list:
-    """Remove this scene's style lights ("<scene> Key/Fill/Rim/Top/Sun"), for a style lit by nothing; returns []."""
-    for name in look._RIG_NAMES:
-        old = bpy.data.objects.get(f"{scene.name} {name}")
-        if old is not None and old.type == "LIGHT":
-            data = old.data
-            bpy.data.objects.remove(old)
-            if data is not None and data.users == 0:
-                bpy.data.lights.remove(data)
-    return []
-
-
 def _extra_lines_off(scene) -> None:
     """Remove a previous style's own linesets ("bsa <...>" but the ink) and their unused line styles."""
     for layer in scene.view_layers:
@@ -698,7 +686,7 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
                               sun=scene.get("bsa_set") == "outdoor", sun_angle_deg=sl.sun_angle_deg,
                               cycles_scale=sl.cycles_trim, rig=looks.RIGS.get(name, look.RIG))  # fmt: skip
     else:
-        lit = {"lights": _lights_off(scene)}
+        lit = {"lights": look.lights_off(scene)}  # a style lit by nothing
     if name in ("toon", "pencil"):
         for obj in lit["lights"]:
             e = float(obj["bsa_energy"]["eevee"])

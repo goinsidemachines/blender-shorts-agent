@@ -20,6 +20,7 @@ def test_look_in_blender(blender_run):
         "test_a_fresh_short_keeps_the_view_even_when_build_py_omits_the_short",
         "test_kit_material_is_stamped_and_renders_its_colour",
         "test_kit_lights_stamp_both_engines_and_replace_the_old_rig",
+        "test_lights_off_removes_only_this_scenes_style_lights",
         "test_ink_lines_add_no_geometry_and_exclude_set_surfaces",
         "test_match_engine_reads_the_engine_and_never_writes_it",
         "test_render_still_matches_the_engine_it_renders_with",

@@ -264,6 +264,19 @@ def test_kit_lights_stamp_both_engines_and_replace_the_old_rig():
     assert look.lights(sc, (0, 0, 0), 1.0, kind="sun")["kind"] == "sun"
 
 
+def test_lights_off_removes_only_this_scenes_style_lights():
+    sc = _tiny("eevee")
+    look.kit_lights(sc, (0, 0, 0), 1.0, 2.0)
+    mine = bpy.data.objects.new("My lamp", bpy.data.lights.new("My lamp", "POINT"))
+    sc.collection.objects.link(mine)
+    keep = look.kit_lights(sc, (0, 0, 0), 1.0, 2.0)["lights"][0]
+    look.lights_off(sc, keep=[keep.name])
+    assert sorted(o.name for o in sc.objects if o.type == "LIGHT") == sorted(["My lamp", keep.name])
+    assert look.lights_off(sc) == []
+    assert [o.name for o in sc.objects if o.type == "LIGHT"] == ["My lamp"]
+    assert sorted(lt.name for lt in bpy.data.lights) == ["My lamp"]  # their light data went too
+
+
 def _vertex_counts(sc) -> dict:
     dg = bpy.context.evaluated_depsgraph_get()
     dg.update()

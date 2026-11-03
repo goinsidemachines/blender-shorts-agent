@@ -46,8 +46,8 @@ def _build(engine: str, style: str | None = "toy", room: bool = True):
 
 
 def _probe(scene, obj_name: str, engine: str, side: str = "lit", percent: int = 10, half: int = 2) -> np.ndarray:
-    """The median sRGB (0..1) of a (2 half + 1) square patch (5x5) rendered at `percent` at the projected centre of the probe object's face whose normal is most
-    square to the Key (or Sun) light (`side="dark"`: most turned away from it), among the faces that face the camera.
+    """The median sRGB (0..1) of a (2 half + 1) square patch (5x5) rendered at `percent` at the projected centre of
+    the probe object's face whose normal is most square to the Key (or Sun) light (`side="dark"`: most turned away from it), among the faces that face the camera.
     With no light (blueprint) the face most square to the camera."""
     from bpy_extras.object_utils import world_to_camera_view
 

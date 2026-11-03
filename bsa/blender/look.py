@@ -602,6 +602,20 @@ def stamp(mat) -> dict | None:
 _RIG_NAMES = ("Key", "Fill", "Rim", "Top", "Sun")
 
 
+def lights_off(scene, keep=()) -> list:
+    """Remove this scene's style lights ("<scene> Key/Fill/Rim/Top/Sun") and their unused light data, but those
+    named in `keep`; the user's own lights stay. Returns []."""
+    keep = set(keep)
+    for name in _RIG_NAMES:
+        old = bpy.data.objects.get(f"{scene.name} {name}")
+        if old is not None and old.type == "LIGHT" and old.name not in keep:
+            data = old.data
+            bpy.data.objects.remove(old)
+            if data is not None and data.users == 0:
+                bpy.data.lights.remove(data)
+    return []
+
+
 def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool = False, sun: bool = False,
                sun_angle_deg: float = SUN_ANGLE_DEG, cycles_scale: float = 1.0, rig=RIG) -> dict:  # fmt: skip
     """A brand style's lights: the `lights` rig (suns with `sun=True`; with `sun=False` as `lights` picks by size:
@@ -625,14 +639,7 @@ def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool 
         if out["kind"] == "sun":
             for obj in out["lights"]:
                 obj.data.angle = math.radians(sun_angle_deg)
-    keep = {o.name for o in out["lights"]}
-    for name in _RIG_NAMES:
-        old = bpy.data.objects.get(f"{scene.name} {name}")
-        if old is not None and old.name not in keep:
-            data = old.data
-            bpy.data.objects.remove(old)
-            if data is not None and data.users == 0:
-                bpy.data.lights.remove(data)
+    lights_off(scene, keep=[o.name for o in out["lights"]])
     engine = _engine(scene)
     for obj in out["lights"]:
         e = float(obj.data.energy)
