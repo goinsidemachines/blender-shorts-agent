@@ -181,3 +181,16 @@ def test_a_kit_short_with_more_labels_than_a_kit_draws_is_an_error():
     assert f"a brand kit draws at most {MAX_LABELS} per shot" in errs[0]
     assert kit.errors({"brand": KIT}, short(MAX_LABELS)) == []
     assert kit.errors({}, short(MAX_LABELS + 1)) == [] and kit.errors({"brand": {"mode": "brand"}}, short(9)) == []
+
+
+def test_low_contrast_text_or_highlight_on_the_card_is_a_problem():
+    """Under 3:1 (WCAG large text) the card text is hard to read: settings check and CLI validate say so."""
+    from tests.kitfix import DARK
+
+    assert not [p for p in kit.problems({"brand": KIT}) if "contrast" in p]
+    dark = kit.problems({"brand": DARK})  # #2E7D6B on #262B31 is 2.9:1
+    assert len([p for p in dark if "contrast" in p]) == 1 and "brand.palette.highlight" in dark[0], dark
+    assert "lighter highlight" in dark[0]
+    pale = {**KIT, "palette": {**KIT["palette"], "text": "#DDDDDD"}}
+    assert any("brand.palette.text #DDDDDD" in p and "darker text" in p for p in kit.problems({"brand": pale}))
+    assert kit.problems({"brand": {**pale, "style": None}}) == []  # no kit: nothing to report

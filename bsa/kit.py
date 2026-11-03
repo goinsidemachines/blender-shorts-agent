@@ -318,8 +318,32 @@ def problems(settings: dict, short=None) -> list[str]:
         if isinstance(cat, str) and cat.strip() and cat.strip().lower() not in merged["categories"]:
             out.append(f"shot {s.id} category {cat!r} is not in your kit's categories ({', '.join(names) or 'none'}): "
                        "it shows in the accent colour")  # fmt: skip
+    out += contrast_problems(merged["palette"])
     note = logo_missing(merged.get("logo"))
     return out + [note] if note else out
+
+
+MIN_CONTRAST = 3.0  # WCAG 2.x for large text: the cards' text is 30 px and up
+
+
+def contrast_problems(palette: dict) -> list[str]:
+    """A warning for the text or highlight colour on the card colour under MIN_CONTRAST (hard to read)."""
+    from bsa.image_checks import contrast_ratio
+    from bsa.overlays import hex_colour
+
+    card = hex_colour(palette.get("card"))
+    out = []
+    for role in ("text", "highlight"):
+        colour = hex_colour(palette.get(role))
+        if card is None or colour is None:
+            continue
+        ratio = contrast_ratio(colour, card)
+        if ratio < MIN_CONTRAST:
+            out.append(f"brand.palette.{role} {palette[role]} on the card colour {palette['card']} has a contrast of "
+                       f"{ratio:.1f}:1, under {MIN_CONTRAST:g}:1, so card text is hard to read: pick a "
+                       f"{'lighter' if contrast_ratio(card, (0, 0, 0)) < contrast_ratio(card, (1, 1, 1)) else 'darker'}"
+                       f" {role} or another card colour")  # fmt: skip
+    return out
 
 
 def errors(settings: dict, short=None, short_dir=None) -> list[str]:
