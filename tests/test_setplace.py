@@ -90,7 +90,8 @@ def test_floor_candidates_never_sit_in_the_subject_footprint():
                         assert not inside, (slug, c)
                         assert FLOOR[0] <= c.x <= FLOOR[2] and FLOOR[1] <= c.y <= FLOOR[3]
                         assert c.z == 0
-                        assert c.y >= y0 - gy - r or c.x <= x0 - gx - r or c.x >= x1 + gx + r  # behind or beside
+                        beside = c.y >= y0 - gy - r or c.x <= x0 - gx - r or c.x >= x1 + gx + r  # behind or beside
+                        assert beside or set_name in setplace.FRONT_SETS  # graph's tools may lie in front too
                     elif c.prop.zone == "wall":
                         assert c.y == FLOOR[3] and c.z > 0
                     else:
@@ -330,3 +331,13 @@ def test_reusable_asks_the_storyboard_for_its_current_version(tmp_path, monkeypa
     monkeypatch.setattr(snapshot, "stage_version", broken)
     entry, why = setplace.reusable(sdir, "Main", "workbench", 1.0)
     assert entry is None and "disk gone" in why
+
+
+def test_graph_tools_may_lie_in_front_of_the_subject():
+    # The approved graph sample has the ruler and set square on the paper in front of the lever.
+    def ahead(set_name):
+        return [c for tries in setplace.candidates(set_name, "lever", "Main", 1.0, FOOT, FLOOR) for c in tries
+                if c.prop.zone == "floor" and c.y < FOOT[1]]  # fmt: skip
+
+    assert ahead("graph")
+    assert not ahead("workbench") and not ahead("outdoor")  # tools on the bench ends, trees to the sides and back

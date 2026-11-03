@@ -32,9 +32,10 @@ from bsa.layout import H, Rect, W
 GROW = 0.10  # the floor and walls are the view's footprint plus this share (half each side)
 FAR_CLAMP = 30.0  # a view ray that never meets the floor (or meets it far off) is cut at this many subject sizes
 PROVISIONAL = 6.0  # `base` makes a floor this many subject sizes square, until `dress` sizes it to the view
-WALL_GAP = {"workbench": 0.25, "graph": 0.35, "studio": 0.6}  # the wall's distance behind the subject, x its size
+WALL_GAP = {"workbench": 0.25, "graph": 1.0, "studio": 0.6}  # the wall's distance behind the subject, x its size
 CYC_RADIUS = 0.8  # the studio's sweep radius, as a share of its wall gap
-BENCH_T = 0.06  # the bench top's thickness, x the subject's size
+BENCH_T = 0.035  # the bench top's thickness, x the subject's size
+BENCH_FRONT = 0.2  # the bench top's front edge stands this far in front of the subject, x its size (a strip)
 HILLS = {"near": (1.0, 0.35), "far": (2.5, 0.6)}  # distance behind the subject and height, x its size
 SAMPLE_EVERY = 3  # dress looks at every 3rd frame of each shot, and its first and last
 WALL_EPS = 0.002  # a wall prop stands this far off the board (no faces on the board's plane)
@@ -158,8 +159,14 @@ def _pattern_scale(set_name: str, size: float) -> float:
 
 
 def _wood_scale(size: float) -> float:
-    """The bench top's object scale: the grain a few planks wide whatever the subject's size."""
-    return max(1.0, size / 2.0)
+    """The bench top's object scale: a fine grain, a few planks across the subject whatever its size."""
+    return max(0.5, size / 8.0)
+
+
+def _catcher(scene, kit) -> bool:
+    """The studio sweep is a Cycles shadow catcher (the paper backdrop with shadows on it) except in the line styles,
+    whose cel shadows the sweep draws itself."""
+    return str(scene.get("bsa_style") or kit.style) not in looks.LINE_STYLES
 
 
 # --- the sets' surfaces -------------------------------------------------------------------------------------------
@@ -224,7 +231,7 @@ def _surfaces(scene, kit, set_name: str, size: float, lay: dict) -> list:
             f.smooth = True
         bm.normal_update()
         sweep_obj = _object(scene, col, f"{name} floor", bm, [sweep], "floor")
-        sweep_obj.is_shadow_catcher = True  # Cycles shows the paper backdrop with the shadows on it (EEVEE ignores it)
+        sweep_obj.is_shadow_catcher = _catcher(scene, kit)  # Cycles only: EEVEE ignores it
         made.append(sweep_obj)
     elif set_name == "outdoor":
         ground, _ = _material(scene, "ground", cols["ground"])
@@ -287,6 +294,9 @@ def refresh_world(scene, kit, warnings: list | None = None) -> None:
     sl = looks.TABLE[style]
     warnings = [] if warnings is None else warnings
     if set_name == "studio":
+        sweep = bpy.data.objects.get(f"{scene.name} set floor")
+        if sweep is not None:
+            sweep.is_shadow_catcher = _catcher(scene, kit)
         styles.paper_backdrop(scene, kit, style, sl, warnings)
         look.match_engine(scene)
         return
@@ -358,9 +368,21 @@ def base(scene, kit, set_name: str | None, size: float) -> dict:
     surface with its top at z = 0 (a workbench's bench top, graph paper, the ground, the studio's floor), its walls
     and backdrop, provisionally PROVISIONAL x size square (`dress` sizes them to the cameras' view), in the kit's set
     colours, tagged set:floor / set:wall / set:backdrop; stamps scene["bsa_set"] and makes the world
-    (`refresh_world`). A set already there is cleared first. Without a kit, or with no set (None or "none"),
-    nothing at all: {}. Returns {"set", "objects": [names]}."""
-    if kit is None or set_name in (None, "none"):
+    (`refresh_world`). A set already there is cleared first. Without a kit nothing at all: {}. With no set (None or
+    "none") {}, and a set already there is taken away (`clear`) and the style's paper backdrop put back. Returns
+    {"set", "objects": [names]}."""
+    if kit is None:
+        return {}
+    if set_name in (None, "none"):
+        if "bsa_set" in scene:
+            clear(scene)
+            if "bsa_style_args" in scene:
+                _restyle(scene, kit)
+            else:
+                from bsa.blender import styles
+
+                styles.paper_backdrop(scene, kit, kit.style, looks.TABLE[kit.style], [])
+                look.match_engine(scene)
         return {}
     if set_name not in setplace.SETS:
         raise ValueError(f"unknown set {set_name!r}: use one of {', '.join(setplace.SETS)} or none")
@@ -494,14 +516,20 @@ def _sized(set_name: str, size: float, views: list, subject) -> dict:
         wall_y = gaps["far"]
     else:
         wall_y = min(sub_far + WALL_GAP[set_name] * size, far)
-    pts = [p for poly in polys for p in _clip_y(poly, wall_y)]
+    front = -math.inf
+    if set_name == "workbench" and subject:  # a bench is a strip from just in front of the subject to the wall
+        front = subject[1] - BENCH_FRONT * size
+    cut = [c for c in (_clip_y(poly, wall_y) for poly in polys) if c]
+    if front > -math.inf:  # and in front: the same cut, mirrored
+        cut = [[(x, -y) for x, y in _clip_y([(x, -y) for x, y in c], -front)] for c in cut]
+    pts = [p for c in cut for p in c]
     plane = [q for v in views for q in v.at_plane_y(wall_y, reach)]
     if not pts:  # a close-up: the views meet the wall before the floor, so the floor is a strip at the wall's foot
         xs = [q[0] for q in plane] or ([subject[0], subject[2]] if subject else [0.0])
         pts = [(min(xs), wall_y - 0.01 * size), (max(xs), wall_y)]
     x0, x1 = _grow(min(p[0] for p in pts), max(p[0] for p in pts))
     y0, y1 = _grow(min(p[1] for p in pts), max(p[1] for p in pts))
-    y1 = min(y1, wall_y)
+    y0, y1 = max(y0, front), min(y1, wall_y)
     wall_h = max([q[1] for q in plane] + [0.0])
     wall_h = max(wall_h * (1 + GROW / 2), 0.5 * size)
     wx = (min([q[0] for q in plane] + [x0]), max([q[0] for q in plane] + [x1]))

@@ -23,5 +23,8 @@ def test_sets_in_blender(blender_run, bsa_home):
         "test_sets_and_styles_never_change_the_engine",
         "test_clear_takes_the_set_away",
         "test_storyboard_version_can_be_worked_out_in_blender",
+        "test_toon_set_floors_match_between_engines",
+        "test_a_sample_framing_gets_a_dressed_set",
+        "test_set_none_takes_a_set_away",
     ):
         assert f"PASS {name}" in result.stdout

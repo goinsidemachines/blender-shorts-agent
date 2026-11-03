@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 HERE = Path(__file__).resolve().parent
@@ -130,9 +131,9 @@ def test_each_set_puts_its_floor_top_at_zero_and_tags_it():
                 sets.dress(sc, kit, short, tl, None)
 
 
-def _footprint(sc, frames, size, wall_y):
-    """The views' footprint on z = 0 over `frames` (far rays cut at 30 x size), cut at the wall: computed here from
-    the camera's own view frame, not from sets."""
+def _footprint(sc, frames, size, wall_y, front=None):
+    """The views' footprint on z = 0 over `frames` (far rays cut at 30 x size), cut at the wall (and, for a bench,
+    in front at `front`): computed here from the camera's own view frame, not from sets."""
     xs, ys = [], []
     reach = sets.FAR_CLAMP * size
     for f in frames:
@@ -144,10 +145,27 @@ def _footprint(sc, frames, size, wall_y):
         for corner in cam.data.view_frame(scene=sc):
             d = (mw @ corner - o).normalized()
             quad.append(sets._ground_point(o, d, reach))
-        for x, y in sets._clip_y(quad, wall_y):
+        cut = sets._clip_y(quad, wall_y)
+        if front is not None:
+            cut = [(x, -y) for x, y in sets._clip_y([(x, -y) for x, y in cut], -front)]
+        for x, y in cut:
             xs.append(x)
             ys.append(y)
     return min(xs), min(ys), max(xs), max(ys)
+
+
+def _subject_front(sc, frames) -> float:
+    """The nearest y of the demo's rendered meshes over `frames`."""
+    dg = bpy.context.evaluated_depsgraph_get()
+    ys = []
+    for f in frames:
+        sc.frame_set(f)
+        dg.update()
+        for o in sc.objects:
+            if o.type == "MESH" and not o.hide_render and not bake.is_set(o):
+                ev = o.evaluated_get(dg)
+                ys += [(ev.matrix_world @ Vector(c)).y for c in ev.bound_box]
+    return min(ys)
 
 
 def test_floor_is_sized_to_the_camera_view_never_larger():
@@ -161,7 +179,11 @@ def test_floor_is_sized_to_the_camera_view_never_larger():
         if name != "studio":  # the studio's sweep is as wide as the view where it rises into its wall
             assert abs(lo[0] - x0) < 1e-4 and abs(hi[0] - x1) < 1e-4, (name, lo, hi, got)
         frames = _shot_frames(tl, "s1", sets.SAMPLE_EVERY)
-        fx0, fy0, fx1, fy1 = _footprint(sc, frames, 3.6, y1)
+        front = None
+        if name == "workbench":  # the bench is a strip: from just in front of the subject (as it moves) to the wall
+            front = _subject_front(sc, frames) - sets.BENCH_FRONT * 3.6
+            assert abs(y0 - front) < 1e-4, (y0, front)
+        fx0, fy0, fx1, fy1 = _footprint(sc, frames, 3.6, y1, front)
         print(f"FOOTPRINT {name} view {fx0:.2f} {fy0:.2f} {fx1:.2f} {fy1:.2f} floor {lo[0]:.2f} {lo[1]:.2f} "
               f"{hi[0]:.2f} {hi[1]:.2f}")  # fmt: skip
         assert abs(hi[1] - y1) < 1e-4, name  # the mesh is the floor dress reports (float32 vertices)
@@ -184,7 +206,7 @@ def _clear_check(sc, kit, short, tl, frames):
     span = next(s for s in tl.shots if s.id == shot.id)
     texts = setplace.text_rects(short, tl, shot, span, kit, font, frames)
     props = [o for o in sc.objects if bake.set_role(o) == "prop"]
-    subject = [o for o in sc.objects if o.type == "MESH" and not bake.is_set(o)]
+    subject = [o for o in sc.objects if o.type == "MESH" and not o.hide_render and not bake.is_set(o)]
     dg = bpy.context.evaluated_depsgraph_get()
     hits = []
     for f in frames:
@@ -379,3 +401,67 @@ def test_storyboard_version_can_be_worked_out_in_blender():
     setplace.save_scene(sdir, "Scene", {"set": "workbench", "floor": [0, 0, 1, 1], "props": [], "dropped": []})
     entry, why = setplace.reusable(sdir, "Scene", "workbench", 3.6)
     assert entry is None and why, why
+
+
+def _floor_colour(sc, point, engine: str, tag: str) -> np.ndarray:
+    """The median sRGB of a 5x5 patch round the world `point` in a 25% render."""
+    from bpy_extras.object_utils import world_to_camera_view
+
+    png = OUT / f"{tag}_{engine}.png"
+    render_still(sc, 1, png, preset=PRESET, percent=25, engine=engine, file_format="PNG")
+    img = read_png(png)[..., :3].astype(np.float64) / 255.0
+    h, w = img.shape[:2]
+    uv = world_to_camera_view(sc, sc.camera, Vector(point))
+    x, y = round(uv.x * w - 0.5), round((1.0 - uv.y) * h - 0.5)
+    return np.median(img[y - 2 : y + 3, x - 2 : x + 3].reshape(-1, 3), axis=0)
+
+
+def test_toon_set_floors_match_between_engines():
+    """The toon dark step of a set surface is never brighter than its colour in any channel, so Cycles' cel (which can
+    only add light over the step) shows a saturated wood or grass floor as EEVEE does."""
+    for name in ("workbench", "outdoor"):
+        got = {}
+        for engine in ("eevee", "cycles"):
+            sc, kit, _short, _tl, built, _ = _build(name, engine=engine, style="toon")
+            styles.apply(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
+            got[engine] = _floor_colour(sc, (-2.4, -2.0, 0.0), engine, f"toon_floor_{name}")
+        de = colour.delta_e(got["eevee"], got["cycles"])
+        print(f"TOON FLOOR {name} {colour.srgb_to_hex(got['eevee'])} {colour.srgb_to_hex(got['cycles'])} dE {de:.2f}")
+        assert de <= 2, (name, de)
+
+
+def _sample_framing(sc) -> None:
+    """The approved samples' framing: the lever alone (the demo's stand and gears hidden), about 60% of the frame's
+    width, seen from about 16 degrees above."""
+    for name in ("StandBase", "StandPlate", "GearBig", "GearSmall", "Axle0", "Axle1"):
+        bpy.data.objects[name].hide_render = True
+    cam = sc.camera
+    cam.data.shift_y = 0.0
+    cam.location = (0.15, -8.0, 3.0)
+    cam.rotation_euler = (Vector((0.15, 0.0, 0.6)) - cam.location).to_track_quat("-Z", "Y").to_euler()
+
+
+def test_a_sample_framing_gets_a_dressed_set():
+    """At the framing the approved samples use, the workbench keeps tools and bench-end objects and the graph set
+    keeps its tools: a normal short gets a dressed set, not an empty one."""
+    for name, floor_least, least in (("workbench", 2, 4), ("graph", 2, 2)):
+        sc, kit, short, tl, *_ = _build(name)
+        _sample_framing(sc)
+        got = sets.dress(sc, kit, short, tl, None)
+        floor = [n for n in got["kept"] if next(p for p in setplace.props(name, 3.6) if p.name == n).zone == "floor"]
+        print(f"SAMPLE {name} kept {got['kept']} dropped {got['dropped']}")
+        assert len(floor) >= floor_least and len(got["kept"]) >= least, (name, got)
+        _props, hits = _clear_check(sc, kit, short, tl, _shot_frames(tl, "s1"))
+        assert not hits, (name, hits)
+
+
+def test_set_none_takes_a_set_away():
+    for styled in (False, True):
+        sc, kit, short, tl, built, _ = _build("workbench")
+        sets.dress(sc, kit, short, tl, None)
+        if styled:
+            styles.apply(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
+        assert sets.base(sc, kit, "none", 3.6) == {}
+        assert not [o for o in sc.objects if bake.is_set(o)] and "bsa_set" not in sc
+        assert sc.world.get("bsa_backdrop") == "paper" and colour.flat_backdrop(sc.world) is True
+        _no_dot_names()

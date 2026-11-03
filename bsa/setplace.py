@@ -22,11 +22,15 @@ from bsa.review import decisions, store
 
 SETS = ("workbench", "graph", "outdoor", "studio")
 SETS_JSON = "sets.json"  # <short>/source/sets.json
-TRIES = 12  # spots tried per prop before it is dropped
+TRIES = 32  # spots tried per prop before it is dropped (a framed subject leaves narrow room beside it)
 SUBJECT_MARGIN_PX = 40  # a prop keeps this far off the subject's projected box
 FOOTPRINT_GROW = 0.10  # floor props keep out of the subject's footprint grown by this share of its size, each side
 OTHER_PROP = "against another prop"
 NO_ROOM = "no room for it in the set"
+FRONT_SETS = ("graph",)  # sets whose floor props may also lie in front of the subject (the approved graph sample)
+FRONT_TURN = 0.3  # radians: a prop in front lies at most this far off across the view
+FRONT_DEPTH = 0.6  # how deep the band in front is, x the subject's footprint (just in front, not by the camera)
+SKY_BAND = (1.05, 1.6)  # a sky prop's height, x the subject's size: low enough to sit in the frame's upper third
 DIMS_TOLERANCE = 1e-3  # a saved prop whose size is further than this share off the prop's size now is placed again
 
 
@@ -89,9 +93,9 @@ def props(set_name: str, size_m: float) -> list[Prop]:
         ]
     if set_name == "graph":
         return [
-            Prop("ruler", "ruler", "floor", _dims(0.50 * s, 0.05 * s, 0.006 * s)),
-            Prop("pencil", "pencil", "floor", _dims(0.30 * s, 0.012 * s, 0.012 * s)),
-            Prop("set square", "set_square", "floor", _dims(0.25 * s, 0.18 * s, 0.006 * s)),
+            Prop("ruler", "ruler", "floor", _dims(0.32 * s, 0.035 * s, 0.006 * s)),
+            Prop("pencil", "pencil", "floor", _dims(0.20 * s, 0.012 * s, 0.012 * s)),
+            Prop("set square", "set_square", "floor", _dims(0.18 * s, 0.13 * s, 0.006 * s)),
         ]
     if set_name == "outdoor":
         t, c = size_m * 0.4, size_m * 0.6
@@ -106,9 +110,10 @@ def rng(slug: str, set_name: str, scene: str) -> random.Random:
     return random.Random(seed)
 
 
-def _floor_regions(p: Prop, footprint, floor) -> list[tuple[float, float, float, float]]:
+def _floor_regions(p: Prop, footprint, floor, front: bool = False) -> list[tuple[float, float, float, float]]:
     """Where a floor prop's centre may go: beside the subject (left, right, from its front edge back) and behind
-    it, inside the floor, its whole base outside the footprint grown by FOOTPRINT_GROW."""
+    it, and with `front` (FRONT_SETS: a ruler lies in front of what it measures) in front of it too, inside the floor,
+    its whole base outside the footprint grown by FOOTPRINT_GROW."""
     x0, y0, x1, y1 = footprint
     fx0, fy0, fx1, fy1 = floor
     gx, gy = (x1 - x0) * FOOTPRINT_GROW, (y1 - y0) * FOOTPRINT_GROW
@@ -120,6 +125,10 @@ def _floor_regions(p: Prop, footprint, floor) -> list[tuple[float, float, float,
         (max(lo_x, x1 + gx + r), side_y0, hi_x, hi_y),  # right
         (lo_x, max(lo_y, y1 + gy + r), hi_x, hi_y),  # behind
     ]
+    if front:
+        near = y0 - gy - r
+        depth = FRONT_DEPTH * max(x1 - x0, y1 - y0)
+        regions.append((lo_x, max(lo_y, near - depth), hi_x, min(hi_y, near)))  # just in front
     return [g for g in regions if g[2] > g[0] and g[3] > g[1]]
 
 
@@ -147,10 +156,11 @@ def candidates(set_name: str, slug: str, scene: str, size_m: float, footprint, f
         tries: list[Candidate] = []
         half_w = p.dims[0] / 2
         if p.zone == "floor":
-            regions = _floor_regions(p, footprint, floor)
+            regions = _floor_regions(p, footprint, floor, set_name in FRONT_SETS)
             for _ in range(TRIES if regions else 0):
                 x, y, z = _floor_spot(p, regions, r)
-                tries.append(Candidate(p, x, y, z, r.uniform(-math.pi, math.pi)))
+                turn = FRONT_TURN if y < footprint[1] else math.pi  # in front: lying across the view, as a ruler is
+                tries.append(Candidate(p, x, y, z, r.uniform(-turn, turn)))
         elif p.zone == "wall" and fx1 - fx0 > p.dims[0]:
             z_lo = max(p.dims[2] / 2 + 0.02 * s, 0.35 * s)
             for _ in range(TRIES):
@@ -158,7 +168,7 @@ def candidates(set_name: str, slug: str, scene: str, size_m: float, footprint, f
                 tries.append(Candidate(p, x, fy1, z, r.uniform(-0.35, 0.35)))
         elif p.zone == "sky" and fx1 - fx0 > p.dims[0]:
             for _ in range(TRIES):
-                x, z = r.uniform(fx0 + half_w, fx1 - half_w), r.uniform(1.3 * size_m, 2.5 * size_m)
+                x, z = r.uniform(fx0 + half_w, fx1 - half_w), r.uniform(*(k * size_m for k in SKY_BAND))
                 tries.append(Candidate(p, x, fy1, z, 0.0))
         out.append(tries)
     return out

@@ -307,7 +307,7 @@ def _cel(mat, lin, shadow, alpha: float | None = None, pattern: str | None = Non
     if pattern is not None:
         shade, _ = look._PATTERN_NODES[pattern](nt, nt.nodes.new("ShaderNodeTexCoord"), lin)
         ratio = look._vmath(nt, "MULTIPLY")
-        ratio.inputs[1].default_value = [s / max(c, 1e-6) for s, c in zip(shadow, lin)]
+        ratio.inputs[1].default_value = [min(s / max(c, 1e-6), 1.0) for s, c in zip(shadow, lin)]
         nt.links.new(shade, ratio.inputs[0])
         step = ratio.outputs["Vector"]
     diffuse = nt.nodes.new("ShaderNodeBsdfDiffuse")
@@ -355,6 +355,13 @@ def _heat(kit: Kit) -> str:
     return kit.categories.get("heat") or DEFAULT_CODE["heat"]
 
 
+def _set_step(hex_: str, kit: Kit) -> list[float]:
+    """A set surface's toon dark step (linear): the colour stepped toward the heat colour (TOON_SET_STEP), each
+    channel no brighter than the colour's own. Cycles' cel can only add light over the step, so a step brighter than
+    the colour in a channel (a saturated wood or grass toward a blue heat) would tint the lit side in Cycles alone."""
+    return [min(s, c) for s, c in zip(_lin(looks.shadow_of(hex_, _heat(kit), TOON_SET_STEP)), _lin(hex_))]
+
+
 def toon(kit: Kit) -> Style:
     """Cel shading: every part flat in its kit colour where the single sun reaches and a fixed dark step
     (looks.shadow_of: x 0.68, 15% toward the ink) where it does not, a material output per engine (`_cel`). Ink parts
@@ -366,7 +373,7 @@ def toon(kit: Kit) -> Style:
     def material(mat, stamp, ctx, key):
         hex_ = looks.part_colour("toon", stamp["colour"], ctx.kit, key)
         if ctx.scenery(mat):
-            _cel(mat, _lin(hex_), _lin(looks.shadow_of(hex_, _heat(ctx.kit), TOON_SET_STEP)), pattern=stamp["pattern"])
+            _cel(mat, _lin(hex_), _set_step(hex_, ctx.kit), pattern=stamp["pattern"])
             return
         kind = stamp["kind"]
         if kind == "emissive":
@@ -385,9 +392,10 @@ def toon(kit: Kit) -> Style:
 
 def _grid_paper(mat, paper) -> None:
     """The sampler's blueprint grid paper: flat emission of `paper` (linear) with lines 10% toward white every 25 cm
-    (width 0.035 of a cell) and 22% toward white every metre (0.012), in object space on all three axes."""
+    (width 0.035 of a cell) and 22% toward white every metre (0.012), in world space on all three axes (a set surface
+    held at a pattern scale keeps the same grid as the rest)."""
     nt = _reset(mat)
-    coords = nt.nodes.new("ShaderNodeTexCoord")
+    coords = nt.nodes.new("ShaderNodeNewGeometry")
     masks = []
     for every, width in BLUEPRINT_GRID:
         shift = look._vmath(nt, "ADD")
@@ -396,7 +404,7 @@ def _grid_paper(mat, paper) -> None:
         scale.inputs["Scale"].default_value = every
         frac = look._vmath(nt, "FRACTION")
         sep = nt.nodes.new("ShaderNodeSeparateXYZ")
-        nt.links.new(coords.outputs["Object"], shift.inputs[0])
+        nt.links.new(coords.outputs["Position"], shift.inputs[0])
         nt.links.new(shift.outputs["Vector"], scale.inputs[0])
         nt.links.new(scale.outputs["Vector"], frac.inputs[0])
         nt.links.new(frac.outputs["Vector"], sep.inputs["Vector"])
