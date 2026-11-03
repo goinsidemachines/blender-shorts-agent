@@ -53,6 +53,19 @@ def test_middle_left_when_zoom_cannot_clear_the_top_band():
     assert all(c.rect.x == 48 for c in lay.cards)
 
 
+def test_bottom_band_when_the_hero_is_high():
+    lay = thumbs.vertical(TEXT, Rect(300, 260, 480, 500), STYLE)
+    assert lay.placement == "bottom band" and lay.covered <= 0.02 and thumbs.covered(lay.cards, lay.hero) <= 0.02
+    assert thumbs.COVERS_SUBJECT not in lay.warnings
+    assert max(c.rect.bottom for c in lay.cards) == 1536 and all(_in_safe(c) for c in lay.cards)
+
+
+def test_neither_band_fits_a_hero_filling_most_of_the_frame():
+    lay = thumbs.vertical(TEXT, Rect(100, 150, 880, 1600), STYLE)
+    assert lay.warnings == [thumbs.COVERS_SUBJECT] and lay.covered > 0.02
+    assert lay.covered == thumbs.covered(lay.cards, lay.hero)
+
+
 def test_fallback_order_then_the_warning():
     lay = thumbs.vertical(TEXT, Rect(0, 0, 1080, 1920), STYLE)
     assert lay.placement == "smaller title" and lay.warnings == [thumbs.COVERS_SUBJECT]
@@ -96,7 +109,8 @@ def test_crop_sets_the_window():
     assert s.x <= 100 and s.y <= 200 and s.right >= 700 and s.bottom >= 1000
     assert abs(s.w / s.h - 9 / 16) < 1e-6
     lay = thumbs.landscape(TEXT, Rect(400, 900, 300, 400), STYLE, crop=(300, 500, 500, 700))
-    assert lay.src.w == 432 and abs(lay.src.x + lay.src.w / 2 - 400) < 1e-6 and abs(lay.src.y + lay.src.h / 2 - 600) < 1e-6
+    assert lay.src.w == 432
+    assert abs(lay.src.x + lay.src.w / 2 - 400) < 1e-6 and abs(lay.src.y + lay.src.h / 2 - 600) < 1e-6
 
 
 def test_long_title_line_shrinks_but_not_below_the_minimum():
@@ -147,9 +161,17 @@ def test_sample_frames_and_fill():
 def test_flagged_frames(tmp_path):
     (tmp_path / "review").mkdir()
     assert thumbs.flagged_frames(tmp_path, "final") == set()
-    rows = [{"frame": 12, "redo_frames": [40, 41]}, {"frame": None}, {"check": "x"}]
-    (tmp_path / "review" / "frame-checks-final.json").write_text(json.dumps({"findings": rows}), encoding="utf-8")
-    assert thumbs.flagged_frames(tmp_path, "final") == {12, 40, 41}
+    rows = [  # as BLENDER frame-check writes them: a Finding plus its shot, and the redo for frame findings
+        {"check": "flicker", "severity": "error", "obj": None, "frame": 41, "message": "flicker", "shot": "s02",
+         "redo_frames": [40, 41, 42], "redo": 'BLENDER render "x" --preset final --shot s02 --frames 40-42'},
+        {"check": "stuck_frame", "severity": "warning", "obj": None, "frame": 12, "message": "stuck", "shot": "s01",
+         "redo_frames": [12], "redo": "..."},
+        {"check": "shading", "severity": "warning", "obj": "Lid", "frame": None, "message": "dark", "shot": "s03"},
+    ]  # fmt: skip
+    data = {"errors": 1, "warnings": 2, "redo_all": "...", "findings": rows}
+    (tmp_path / "review" / "frame-checks-final.json").write_text(json.dumps(data), encoding="utf-8")
+    assert thumbs.flagged_frames(tmp_path, "final") == {12, 40, 41, 42}
+    assert thumbs.flagged_frames(tmp_path, "preview") == set()
 
 
 def test_check_heroes_names_the_frame_range():
@@ -210,7 +232,19 @@ def test_layout_dict_is_json():
     assert json.loads(json.dumps(d)) == d
     assert d["dst"] == [576, 0, 704, 720] and d["panel"] == [0, 0, 576, 720] and d["size"] == [1280, 720]
     assert d["cards"][0]["kind"] == "title" and len(d["cards"][0]["rect"]) == 4
-    assert isinstance(d["cards"][0]["colour"], list)
+    assert isinstance(d["cards"][0]["colour"], list) and d["covered"] == 0
+    d = thumbs.layout_dict(thumbs.vertical(TEXT, Rect(0, 0, 1080, 1920), STYLE))
+    assert d["covered"] > 0.02 and d["warnings"] == [thumbs.COVERS_SUBJECT]
+
+
+def test_landscape_title_too_long_for_the_panel():
+    long = thumbs.ThumbText(("Why the zipper teeth never slip apart", "even under a heavy pull"), "How it works", None)
+    lay = thumbs.landscape(long, Rect(400, 900, 300, 400), STYLE)
+    assert lay.cards[0].size == thumbs.MIN_TITLE["1280x720"]
+    assert lay.warnings == [thumbs.TITLE_TOO_LONG]
+    assert thumbs.TITLE_TOO_LONG == "the title doesn't fit beside the subject: shorten it"
+    assert all(c.rect.right <= 576 for c in lay.cards)
+    assert thumbs.landscape(TEXT, Rect(400, 900, 300, 400), STYLE).warnings == []  # a short title fits
 
 
 def test_constants():

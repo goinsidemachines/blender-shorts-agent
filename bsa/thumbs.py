@@ -20,7 +20,7 @@ SIZES = {"1080x1920": VERTICAL, "1280x720": LANDSCAPE}
 V_SAFE = Rect(48, 115.2, 902.4, 1420.8)
 ZOOMS = (1.0, 1.05, 1.10, 1.15)
 COVER_LIMIT = 0.02  # text may cover at most this share of the hero box
-PLACEMENTS = ("top band", "middle-left", "smaller title")
+PLACEMENTS = ("top band", "bottom band", "middle-left", "smaller title")
 SMALLER = 0.8
 V_SIZES = {"title": 112, "kicker": 52, "fact": 44, "handle": 36}
 L_SIZES = {"title": 76, "kicker": 40, "handle": 30}
@@ -34,12 +34,16 @@ MIN_APART = 30
 COVERS_SUBJECT = "the title covers the subject"
 NO_HERO = "no subject box at this frame, so the centre 60 % of the frame is used"
 FROM_PREVIEW = "from the preview: remake after the final render"
+TITLE_TOO_LONG = "the title doesn't fit beside the subject: shorten it"
 
 _SRC_W, _SRC_H = VERTICAL  # the source frames are the short's 1080x1920 renders
-_HERO_AT = {"top band": (0.5, 0.62), "middle-left": (0.68, 0.5), "smaller title": (0.5, 0.62)}
+# Where the hero's centre goes in the zoomed window: away from the cards.
+_HERO_AT = {"top band": (0.5, 0.62), "bottom band": (0.5, 0.38), "middle-left": (0.68, 0.5),
+            "smaller title": (0.5, 0.62)}  # fmt: skip
 _MIDDLE_Y = 0.45 * 1920
 _L_DST = Rect(PANEL_W, 0, LANDSCAPE[0] - PANEL_W, LANDSCAPE[1])
 _L_X, _L_WRAP = 48, 480
+_L_MARGIN = 48  # the landscape stack keeps this far from the panel's top and bottom
 _WHY = ("the middle of the longest shot", "the hook shot's fullest frame",
         "the frame where the subject fills the most of the safe area")  # fmt: skip
 
@@ -165,6 +169,7 @@ class Layout:
     panel_colour: tuple | None
     backdrop: str | None
     warnings: list[str]
+    covered: float = 0.0  # the share of the hero box the cards cover
 
 
 def _area(r: Rect) -> float:
@@ -237,6 +242,8 @@ def _v_cards(text: ThumbText, style: ThumbStyle, placement: str) -> list[Card]:
     y = top
     if placement == "middle-left":
         y = max(min(_MIDDLE_Y - total / 2, V_SAFE.bottom - total), top)
+    elif placement == "bottom band":
+        y = max(V_SAFE.bottom - total, top)
     for c in stack:
         x = V_SAFE.x if placement == "middle-left" else V_SAFE.x + (V_SAFE.w - c.rect.w) / 2
         out.append(_moved(c, x, y))
@@ -297,7 +304,7 @@ def vertical(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None 
                 src = _place(hero.x + hero.w / 2, hero.y + hero.h / 2, _SRC_W / z, _SRC_H / z, ax, ay)
             box = _mapped(hero, src, dst)
             cover = covered(cards, box)
-            lay = Layout(VERTICAL, src, dst, box, cards, placement, None, None, None, [])
+            lay = Layout(VERTICAL, src, dst, box, cards, placement, None, None, None, [], cover)
             if cover <= COVER_LIMIT:
                 return lay
             tries.append((cover, len(tries), lay))
@@ -314,15 +321,23 @@ def landscape(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None
     t_wrap = _L_WRAP - 2 * PAD["title"]
     p_wrap = _L_WRAP - 2 * PAD["pill"]
     t_size = _title_size(text.title, L_SIZES["title"], t_wrap, MIN_TITLE["1280x720"])
-    cards = [_card("title", "\n".join(text.title), t_size, PAD["title"], t_wrap, style.title, style.title_box)]
+    title = "\n".join(text.title)
+    cards = [_card("title", title, t_size, PAD["title"], t_wrap, style.title, style.title_box)]
     if text.kicker:
         cards.append(_card("kicker", text.kicker, L_SIZES["kicker"], PAD["pill"], p_wrap, style.kicker,
                            style.kicker_box))  # fmt: skip
     if style.handle_text:
         cards.append(_card("handle", style.handle_text, L_SIZES["handle"], PAD["pill"], p_wrap, style.handle,
                            style.handle_box))  # fmt: skip
-    total = sum(c.rect.h for c in cards) + GAP * (len(cards) - 1)
-    y = max((LANDSCAPE[1] - total) / 2, 0)
+    room = LANDSCAPE[1] - 2 * _L_MARGIN
+
+    def total() -> float:
+        return sum(c.rect.h for c in cards) + GAP * (len(cards) - 1)
+
+    while total() > room and cards[0].size > MIN_TITLE["1280x720"]:  # a wrapped title gets smaller first
+        cards[0] = _card("title", title, cards[0].size - 1, PAD["title"], t_wrap, style.title, style.title_box)
+    warnings = [TITLE_TOO_LONG] if total() > room else []
+    y = max((LANDSCAPE[1] - total()) / 2, 0)
     placed = []
     for c in cards:
         placed.append(_moved(c, _L_X, y))
@@ -333,10 +348,10 @@ def landscape(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None
     src = _place(b.x + b.w / 2, b.y + b.h / 2, w, w / aspect)
     panel = Rect(0, 0, PANEL_W, LANDSCAPE[1])
     box = _mapped(hero, src, _L_DST)
-    lay = Layout(LANDSCAPE, src, _L_DST, box, placed, "left panel", panel, style.panel, backdrop, [])
-    if covered(placed, box) > COVER_LIMIT:  # cannot happen: the cards stay on the panel
-        lay.warnings.append(COVERS_SUBJECT)
-    return lay
+    cover = covered(placed, box)
+    if cover > COVER_LIMIT:  # cannot happen while the cards stay on the panel
+        warnings.append(COVERS_SUBJECT)
+    return Layout(LANDSCAPE, src, _L_DST, box, placed, "left panel", panel, style.panel, backdrop, warnings, cover)
 
 
 def _r(r: Rect | None) -> list | None:
@@ -361,6 +376,7 @@ def layout_dict(lay: Layout) -> dict:
         "panel_colour": None if lay.panel_colour is None else list(lay.panel_colour),
         "backdrop": lay.backdrop,
         "warnings": list(lay.warnings),
+        "covered": lay.covered,
     }
 
 
@@ -420,12 +436,15 @@ def pick_heroes(spans: list, flagged: set[int], fills: dict[int, float], hook: s
 
 
 def flagged_frames(sdir, run_key: str) -> set[int]:
-    """Every `frame` and `redo_frames` of the findings in review/frame-checks-<run_key>.json."""
+    """Every `frame` and `redo_frames` of the findings in review/frame-checks-<run_key>.json, as `BLENDER
+    frame-check` writes it: {"errors", "warnings", ["redo_all",] "findings": [{"check", "severity", "obj", "frame",
+    "message", "shot", ["redo_frames", "redo"]}]} (frames of the edited video; `frame` None for a finding without
+    one)."""
     try:
         data = json.loads((Path(sdir) / "review" / f"frame-checks-{run_key}.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return set()
-    rows = data.get("findings") if isinstance(data, dict) else data
+    rows = data.get("findings") if isinstance(data, dict) else None
     out: set[int] = set()
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
