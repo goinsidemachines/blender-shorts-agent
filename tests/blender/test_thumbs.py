@@ -1,3 +1,4 @@
+import platform
 import tempfile
 from pathlib import Path
 
@@ -71,3 +72,36 @@ def test_a_preview_frame_at_half_size_fills_the_same_layout():
     _source(src, 0.5)
     for lay in (thumbs.vertical(TEXT, HERO, STYLE), thumbs.landscape(TEXT, HERO, STYLE)):
         _check(lay, read_png(bsa.blender.thumbs.render(lay, src, tmp / f"half-{lay.size[0]}.png", None)))
+
+
+def _drawn_rows(px, card) -> tuple[int, int] | None:
+    """The first and last rows where the card's box colour shows, in the columns around the card's centre."""
+    box = np.array([round(v * 255) for v in card.box[:3]])
+    cx = int(card.rect.x + card.rect.w / 2)
+    cols = px[:, max(cx - 20, 0) : cx + 20, :3].astype(int)
+    rows = np.where((np.abs(cols - box).max(axis=2) <= 4).any(axis=1))[0]
+    return (int(rows.min()), int(rows.max()) + 1) if len(rows) else None
+
+
+def test_drawn_boxes_match_the_cards_in_the_fonts_used():
+    """A two-line title and a kicker, in Blender's own font and in the OS fallback font (Segoe UI here, taller than
+    the estimate the layout once used): each box is drawn where its card is, and the gap between them stays."""
+    from bsa import fonts
+
+    installed = next((name for name in fonts.FALLBACKS.get(platform.system(), fonts.FALLBACKS["Linux"])
+                      if fonts.find_font_file(name, fonts.font_dirs())), None)  # fmt: skip
+    tmp = Path(tempfile.mkdtemp())
+    src = tmp / "src.png"
+    _source(src)
+    for font in [None, *([installed] if installed else [])]:
+        style, _ = thumbs.with_font(thumbs.ThumbStyle(**{**STYLE.__dict__, "font": font}), TEXT)
+        for lay in (thumbs.vertical(TEXT, HERO, style), thumbs.landscape(TEXT, HERO, style)):
+            px = read_png(bsa.blender.thumbs.render(lay, src, tmp / f"f-{lay.size[0]}.png", style.font))
+            cards = [c for c in lay.cards if c.kind in ("title", "kicker")]
+            drawn = [_drawn_rows(px, c) for c in cards]
+            for c, d in zip(cards, drawn, strict=True):
+                assert d is not None and abs(d[0] - c.rect.y) <= 4 and abs(d[1] - c.rect.bottom) <= 4, (
+                    font, lay.size, c.kind, c.rect, d)
+            assert drawn[1][0] - drawn[0][1] >= thumbs.GAP - 4, (font, lay.size, drawn)
+    if installed is None:
+        print("SKIP the fallback font: none of bsa.fonts.FALLBACKS is installed")

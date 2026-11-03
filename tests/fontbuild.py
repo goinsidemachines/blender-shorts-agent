@@ -59,12 +59,30 @@ def _fvar(axes: list[tuple], instances: list[tuple]) -> bytes:
     return out
 
 
+def _metric_tables(weight: int, upm: int, box: tuple[int, int], hhea: tuple[int, int, int],
+                   typo: tuple[int, int, int], use_typo: bool) -> dict[str, bytes]:  # fmt: skip
+    """head (unitsPerEm, yMin, yMax), hhea (ascender, descender, lineGap) and a full OS/2 (fsSelection, typo)."""
+    head = bytearray(54)
+    struct.pack_into(">H", head, 18, upm)
+    struct.pack_into(">hh", head, 38, box[0], 0)
+    struct.pack_into(">h", head, 42, box[1])
+    hh = bytearray(36)
+    struct.pack_into(">hhh", hh, 4, *hhea)
+    os2 = bytearray(_os2(weight))
+    struct.pack_into(">H", os2, 62, 0x80 if use_typo else 0)
+    struct.pack_into(">hhh", os2, 68, *typo)
+    return {"head": bytes(head), "hhea": bytes(hh), "OS/2": bytes(os2)}
+
+
 def build_font(text: str = "", family: str = "Testa", subfamily: str = "Regular", weight: int = 400,
-               cmap_format: int = 4, axes=None, instances=None, extra_names=None) -> bytes:
-    """A font whose cmap covers exactly the characters of `text` (plus space)."""
+               cmap_format: int = 4, axes=None, instances=None, extra_names=None, metrics=None) -> bytes:
+    """A font whose cmap covers exactly the characters of `text` (plus space). `metrics`: keyword arguments of
+    _metric_tables (upm, box (yMin, yMax), hhea, typo, use_typo) to add head, hhea and a full OS/2."""
     cps = sorted({ord(c) for c in text} | {0x20})
     names = {1: family, 2: subfamily, **(extra_names or {})}
     tables = {"cmap": _cmap(cps, cmap_format), "name": _name(names), "OS/2": _os2(weight)}
+    if metrics:
+        tables.update(_metric_tables(weight, **metrics))
     if axes:
         tables["fvar"] = _fvar(axes, instances or [])
     tags = sorted(tables)

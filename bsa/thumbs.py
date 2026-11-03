@@ -10,8 +10,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from bsa.fonts import BLENDER_BOX_H, BLENDER_LINE_H
 from bsa.layout import Rect, overlap_area
-from bsa.overlays import CHAR_W, LINE_H, est_lines, est_width
+from bsa.overlays import CHAR_W, est_lines, est_width
 
 VERTICAL = (1080, 1920)
 LANDSCAPE = (1280, 720)
@@ -116,6 +117,8 @@ class ThumbStyle:
     panel: tuple
     font: str | None = None
     handle_text: str | None = None
+    line_h: float = BLENDER_LINE_H  # the font's line height and first line's box, in em (bsa.fonts.line_metrics)
+    box_h: float = BLENDER_BOX_H
 
 
 def style_for(short, s: dict) -> ThumbStyle:
@@ -208,12 +211,15 @@ def _title_size(lines: tuple[str, ...], base: float, wrap: float, minimum: int) 
     return max(int(min(base, fit)), minimum)
 
 
-def _card(kind: str, text: str, size: int, pad: float, wrap: float, colour: tuple, box: tuple,
-          x: float = 0.0, y: float = 0.0) -> Card:  # fmt: skip
-    """A card at (x, y) with its text wrapped at `wrap` (the card is `wrap` + 2 * pad wide at most)."""
+def _card(style: ThumbStyle, kind: str, text: str, size: int, pad: float, wrap: float, x: float = 0.0,
+          y: float = 0.0) -> Card:  # fmt: skip
+    """A card at (x, y) in the style's colours for `kind`, its text wrapped at `wrap` (the card is `wrap` + 2 * pad
+    wide at most) and as tall as the sequencer draws its box in the style's font: the first line the font's
+    bounding box, each further line its line height (bsa.fonts.line_metrics)."""
     w = est_width(text, size, wrap)
-    h = est_lines(text, size, wrap) * size * LINE_H
-    return Card(kind, text, size, Rect(x, y, w + 2 * pad, h + 2 * pad), colour, box, pad)
+    h = (style.box_h + (est_lines(text, size, wrap) - 1) * style.line_h) * size
+    return Card(kind, text, size, Rect(x, y, w + 2 * pad, h + 2 * pad), getattr(style, kind),
+                getattr(style, kind + "_box"), pad)  # fmt: skip
 
 
 def _moved(c: Card, x: float, y: float) -> Card:
@@ -225,17 +231,15 @@ def _v_cards(text: ThumbText, style: ThumbStyle, placement: str) -> list[Card]:
     t_wrap = V_SAFE.w - 2 * PAD["title"]
     p_wrap = V_SAFE.w - 2 * PAD["pill"]
     t_size = _title_size(text.title, V_SIZES["title"] * k, t_wrap, MIN_TITLE["1080x1920"])
-    stack = [_card("title", "\n".join(text.title), t_size, PAD["title"], t_wrap, style.title, style.title_box)]
+    stack = [_card(style, "title", "\n".join(text.title), t_size, PAD["title"], t_wrap)]
     if text.kicker:
-        stack.append(_card("kicker", text.kicker, round(V_SIZES["kicker"] * k), PAD["pill"], p_wrap, style.kicker,
-                           style.kicker_box))  # fmt: skip
+        stack.append(_card(style, "kicker", text.kicker, round(V_SIZES["kicker"] * k), PAD["pill"], p_wrap))
     if text.fact:
-        stack.append(_card("fact", text.fact, round(V_SIZES["fact"] * k), PAD["pill"], p_wrap, style.fact,
-                           style.fact_box))  # fmt: skip
+        stack.append(_card(style, "fact", text.fact, round(V_SIZES["fact"] * k), PAD["pill"], p_wrap))
     out, top = [], V_SAFE.y
     if style.handle_text:
-        badge = _card("handle", style.handle_text, round(V_SIZES["handle"] * k), PAD["pill"], p_wrap, style.handle,
-                      style.handle_box, V_SAFE.x, V_SAFE.y)  # fmt: skip
+        badge = _card(style, "handle", style.handle_text, round(V_SIZES["handle"] * k), PAD["pill"], p_wrap,
+                      V_SAFE.x, V_SAFE.y)  # fmt: skip
         out.append(badge)
         top = badge.rect.bottom + GAP
     total = sum(c.rect.h for c in stack) + GAP * (len(stack) - 1)
@@ -322,20 +326,18 @@ def landscape(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None
     p_wrap = _L_WRAP - 2 * PAD["pill"]
     t_size = _title_size(text.title, L_SIZES["title"], t_wrap, MIN_TITLE["1280x720"])
     title = "\n".join(text.title)
-    cards = [_card("title", title, t_size, PAD["title"], t_wrap, style.title, style.title_box)]
+    cards = [_card(style, "title", title, t_size, PAD["title"], t_wrap)]
     if text.kicker:
-        cards.append(_card("kicker", text.kicker, L_SIZES["kicker"], PAD["pill"], p_wrap, style.kicker,
-                           style.kicker_box))  # fmt: skip
+        cards.append(_card(style, "kicker", text.kicker, L_SIZES["kicker"], PAD["pill"], p_wrap))
     if style.handle_text:
-        cards.append(_card("handle", style.handle_text, L_SIZES["handle"], PAD["pill"], p_wrap, style.handle,
-                           style.handle_box))  # fmt: skip
+        cards.append(_card(style, "handle", style.handle_text, L_SIZES["handle"], PAD["pill"], p_wrap))
     room = LANDSCAPE[1] - 2 * _L_MARGIN
 
     def total() -> float:
         return sum(c.rect.h for c in cards) + GAP * (len(cards) - 1)
 
     while total() > room and cards[0].size > MIN_TITLE["1280x720"]:  # a wrapped title gets smaller first
-        cards[0] = _card("title", title, cards[0].size - 1, PAD["title"], t_wrap, style.title, style.title_box)
+        cards[0] = _card(style, "title", title, cards[0].size - 1, PAD["title"], t_wrap)
     warnings = [TITLE_TOO_LONG] if total() > room else []
     y = max((LANDSCAPE[1] - total()) / 2, 0)
     placed = []
@@ -501,7 +503,9 @@ def put_candidates(sdir, rows: list[dict], only: int | None = None) -> dict:
             data["candidates"] = sorted(rows, key=lambda r: r["n"])
             data["chosen"] = None
         else:
-            new = next(r for r in rows if r["n"] == only)
+            new = next((r for r in rows if r["n"] == only), None)
+            if new is None:
+                raise ValueError(f"no candidate {only} among the rows to put: {[r.get('n') for r in rows]}")
             keep = [c for c in data["candidates"] if isinstance(c, dict) and c.get("n") != only]
             data["candidates"] = sorted([*keep, new], key=lambda r: r["n"])
             if _chosen_n(data["chosen"]) == only:
@@ -511,6 +515,35 @@ def put_candidates(sdir, rows: list[dict], only: int | None = None) -> dict:
     path = Path(sdir) / THUMBS_JSON
     path.parent.mkdir(parents=True, exist_ok=True)
     return store.update_json(path, _empty(), change, expect=dict)
+
+
+def with_font(style: ThumbStyle, text: ThumbText, cache_dirs: list[Path] | None = None, dirs: list[Path] | None = None,
+              system: str | None = None) -> tuple[ThumbStyle, list[str]]:  # fmt: skip
+    """The style with the font file the thumbnail's text is drawn in and that font's line metrics, so the layout
+    and the render use the same file: the style font (bsa.fonts.resolve: an installed fallback when it is missing),
+    or, when it lacks a character of the text, the first OS font that has them all (bsa.fonts.cover_font). Without a
+    style font, Blender's own font and its measured metrics. Also the notes on what is used instead."""
+    from dataclasses import replace
+
+    from bsa import fonts
+
+    if not style.font:
+        return style, []
+    path, _, note = fonts.resolve(style.font, dirs, system, cache_dirs)
+    notes = [note] if note else []
+    words = " ".join([*text.title, text.kicker or "", text.fact or "", style.handle_text or ""])
+    info = fonts.font_info_or_none(path) if path else None
+    missing = fonts.missing_chars(words, info) if info else []
+    if missing:
+        alt = fonts.cover_font(words, path, dirs, system)
+        chars = ", ".join(f"'{c}'" for c in missing)
+        if alt is not None:
+            notes.append(f"{info['family']} has no {chars}, so the thumbnail uses {fonts.family_of(alt)}")
+            path = alt
+        else:
+            notes.append(f"no installed font has {chars}; they show as boxes on the thumbnail")
+    line_h, box_h = (fonts.line_metrics(path) if path else None) or (BLENDER_LINE_H, BLENDER_BOX_H)
+    return replace(style, font=str(path) if path else None, line_h=line_h, box_h=box_h), notes
 
 
 def heroes_from_post(p: dict) -> list[Hero]:

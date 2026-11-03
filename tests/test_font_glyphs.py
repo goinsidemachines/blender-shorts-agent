@@ -186,3 +186,20 @@ def test_cli_fonts_reports_a_variable_font(tmp_path, bsa_home):
     assert "Light" in data["warning"] and "font:" in data["warning"]  # how to plan a static weight
     out = _cli("fonts", str(vf), "--text", "ab≈", env_home=bsa_home)
     assert json.loads(out.stdout)["missing_glyphs"] == ["≈"]
+
+
+def test_line_metrics_as_the_sequencer_draws_them(tmp_path):
+    """(line height, first line's box) in em: hhea's ascender - descender + lineGap, the head bounding box; OS/2's
+    typo metrics when the font asks for them (USE_TYPO_METRICS) or hhea has none."""
+    m = {"upm": 2000, "box": (-600, 2200), "hhea": (1800, -500, 100), "typo": (1500, -500, 0), "use_typo": False}
+    path = tmp_path / "m.ttf"
+    path.write_bytes(build_font("Hg", metrics=m))
+    assert fonts.line_metrics(path) == pytest.approx((1.2, 1.4))
+    path.write_bytes(build_font("Hg", metrics={**m, "use_typo": True}))
+    assert fonts.line_metrics(path) == pytest.approx((1.0, 1.4))
+    path.write_bytes(build_font("Hg", metrics={**m, "hhea": (0, 0, 0)}))
+    assert fonts.line_metrics(path) == pytest.approx((1.0, 1.4))
+    path.write_bytes(build_font("Hg"))  # no head table
+    assert fonts.line_metrics(path) is None
+    assert fonts.line_metrics(tmp_path / "missing.ttf") is None
+    assert (fonts.BLENDER_LINE_H, fonts.BLENDER_BOX_H) == (1.16, 1.41)

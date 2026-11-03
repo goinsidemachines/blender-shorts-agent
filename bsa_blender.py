@@ -1180,11 +1180,14 @@ def _only_hero(sdir: Path, n: int, named: list, p: dict):
         row = next((c for c in thumbs.load(sdir)["candidates"] if isinstance(c, dict) and c.get("n") == n), None)
     except StoreDamaged as exc:
         raise CliError(str(exc)) from exc
-    h = row.get("hero") if row else None
-    if not isinstance(h, dict):
+    if row is None:
         raise CliError(f"There is no candidate {n} yet: run BLENDER thumbs SHORT first")
+    h = row.get("hero")
+    if not (isinstance(h, dict) and isinstance(h.get("shot"), str) and isinstance(h.get("frame"), int)):
+        raise CliError(f"{thumbs.THUMBS_JSON} is damaged (candidate {n} has no hero shot and frame): name its frame "
+                       "with --hero SHOT@FRAME")  # fmt: skip
     crop = h.get("crop")
-    return thumbs.Hero(h["shot"], int(h["frame"]), tuple(crop) if crop else None, h.get("why") or "")
+    return thumbs.Hero(h["shot"], h["frame"], tuple(crop) if isinstance(crop, list) else None, h.get("why") or "")
 
 
 def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
@@ -1228,9 +1231,9 @@ def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
         if got is None:
             raise CliError(f"Render the short first: no frame {h.frame} of {h.shot} in frames/final or frames/preview")
         sources.append(got)
-    style = thumbs.style_for(short, s)
     caches = font_caches(sdir)
-    rows, notes = [], []
+    style, notes = thumbs.with_font(thumbs.style_for(short, s), text, caches)  # the layout measures the drawn font
+    rows = []
     for n, h, (png, preset) in zip(numbers, heroes, sources, strict=True):
         boxes = (api.boxes(sdir, short, tl_hash, h.shot, [h.frame]) or {}).get(h.frame) or []
         hero, warnings = thumbs.hero_box(boxes)
@@ -1244,7 +1247,7 @@ def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
                           ("1280x720", thumbs.landscape(text, hero, style, h.crop))):  # fmt: skip
             out = api.render(lay, png, sdir / files[size], style.font, caches, notes=notes)
             layouts[size] = thumbs.layout_dict(lay)
-            findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size)
+            findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size, busy=preset == "final")
             warnings += [w for w in lay.warnings if w not in warnings]
         rows.append({"n": n, "hero": {"shot": h.shot, "frame": h.frame, "crop": list(h.crop) if h.crop else None,
                                       "why": h.why},

@@ -612,11 +612,15 @@ def edge_share(lum: np.ndarray) -> float:
     return float(np.mean(_edges(lum)))
 
 
-def thumb_findings(px: np.ndarray, lay: dict, size_key: str) -> list[dict]:
+BUSY_SKIPPED = "busy background not measured on a preview frame"
+
+
+def thumb_findings(px: np.ndarray, lay: dict, size_key: str, busy: bool = True) -> list[dict]:
     """The checks on one made thumbnail (`px`, top row first; `lay` its bsa.thumbs.layout_dict): each card's text
     against its box as seen (an error under AA_LARGE), the title's cap height in the feed (a warning under
     MIN_CAP_PX), and how busy the frame is around the subject (the share of edges in the shown frame outside the
-    hero box and the cards; a warning over BUSY_LIMIT, else reported as "info")."""
+    hero box and the cards; a warning over BUSY_LIMIT, else reported as "info"). With `busy` False (a preview frame,
+    scaled up: resampling softens its edges) the busy check is an "info" row saying it was not measured."""
     rows = []
 
     def row(check: str, severity: str, message: str, value: float) -> None:
@@ -634,7 +638,9 @@ def thumb_findings(px: np.ndarray, lay: dict, size_key: str) -> list[dict]:
         if cap < MIN_CAP_PX:
             row("legibility", "warning", "the title is too small to read in the feed", cap)
     h, w = px.shape[:2]
-    if h >= 2 and w >= 2:
+    if not busy:
+        row("busy", "info", BUSY_SKIPPED, None)
+    elif h >= 2 and w >= 2:
         keep = np.zeros((h - 1, w - 1), bool)
         y0, y1, x0, x1 = _region(keep.shape, lay.get("dst") or [0, 0, w, h])
         keep[y0:y1, x0:x1] = True

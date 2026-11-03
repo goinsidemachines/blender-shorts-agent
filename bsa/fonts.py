@@ -290,6 +290,36 @@ def font_info_or_none(path, index: int = 0) -> dict | None:
         return None
 
 
+# How Blender's sequencer sizes a text strip's box (measured in Blender 5.2 for several fonts and sizes): the first
+# line is the font's bounding box tall ((head yMax - yMin) / unitsPerEm, times the size), each further line adds the
+# font's line height (FreeType's: (ascender - descender + lineGap) / unitsPerEm from hhea, or from OS/2's typo metrics
+# when the font sets USE_TYPO_METRICS or hhea has none). Blender's built-in font, measured: 1.16 and 1.41.
+BLENDER_LINE_H = 1.16
+BLENDER_BOX_H = 1.41
+
+
+def _s16(b: bytes, o: int) -> int:
+    return int.from_bytes(b[o : o + 2], "big", signed=True) if o + 2 <= len(b) else 0
+
+
+def line_metrics(path, index: int = 0) -> tuple[float, float] | None:
+    """(line height, first line's box height), in em, of a .ttf, .otf or .ttc font as the sequencer draws its text
+    (see BLENDER_LINE_H); None when the file can't be read as a font."""
+    try:
+        tables = _tables(Path(path).read_bytes(), index)
+        head, hhea, os2 = tables["head"], tables.get("hhea", b""), tables.get("OS/2", b"")
+        upm = _u16(head, 18)
+        if not upm:
+            return None
+        asc, desc, gap = _s16(hhea, 4), _s16(hhea, 6), _s16(hhea, 8)
+        if len(os2) >= 74 and ((_u16(os2, 62) & 0x80) or (asc == 0 and desc == 0)):
+            asc, desc, gap = _s16(os2, 68), _s16(os2, 70), _s16(os2, 72)
+        line, box = (asc - desc + gap) / upm, (_s16(head, 42) - _s16(head, 38)) / upm
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+    return (line, box) if line > 0 and box > 0 else None
+
+
 def covers(info: dict, ch: str) -> bool:
     """Whether the font has a glyph for character `ch`."""
     cp = ord(ch)

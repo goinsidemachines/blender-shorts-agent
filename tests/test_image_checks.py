@@ -630,3 +630,12 @@ def test_png_size_reads_the_header(tmp_path):
     (tmp_path / "c.png").write_bytes(b"not a png")
     with pytest.raises(ValueError):
         image_checks.png_size(tmp_path / "c.png")
+
+
+def test_busy_is_not_measured_when_asked_not_to():
+    from bsa import image_checks
+
+    px, lay = _thumb(busy=True, box_grey=0.1, title_size=112)
+    rows = image_checks.thumb_findings(px, lay, "1080x1920", busy=False)
+    assert rows == [{"check": "busy", "severity": "info", "size": "1080x1920",
+                     "message": "busy background not measured on a preview frame", "value": None}]  # fmt: skip

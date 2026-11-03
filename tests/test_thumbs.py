@@ -303,6 +303,9 @@ def test_put_candidates_replaces_or_remakes_one(tmp_path):
     assert [(c["n"], c["colour"]) for c in thumbs.load(tmp_path)["candidates"]] == [(1, "a"), (2, "b")]
     thumbs.put_candidates(tmp_path, [_row(4)], only=4)  # a new one goes in order
     assert [c["n"] for c in thumbs.load(tmp_path)["candidates"]] == [1, 2, 4]
+    with pytest.raises(ValueError, match="no candidate 5 among the rows"):
+        thumbs.put_candidates(tmp_path, [_row(4)], only=5)
+    assert [c["n"] for c in thumbs.load(tmp_path)["candidates"]] == [1, 2, 4]
 
 
 def test_remaking_the_chosen_candidate_clears_the_choice(tmp_path):
@@ -409,7 +412,10 @@ def test_heroes_from_post_and_source_frames(tmp_path):
 def test_thumbs_in_blender(blender_run):
     result = blender_run(Path(__file__).resolve().parent / "blender" / "test_thumbs.py", timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "PASS test_both_sizes_at_exact_pixels_with_the_title_and_hero_where_the_layout_said" in result.stdout
+    for name in ("test_both_sizes_at_exact_pixels_with_the_title_and_hero_where_the_layout_said",
+                 "test_a_preview_frame_at_half_size_fills_the_same_layout",
+                 "test_drawn_boxes_match_the_cards_in_the_fonts_used"):  # fmt: skip
+        assert f"PASS {name}" in result.stdout
 
 
 # --------------------------------------------------------------------------- BLENDER thumbs, Blender stubbed
@@ -505,6 +511,9 @@ def test_thumbs_named_heroes_make_candidates_in_both_sizes(tmp_path, monkeypatch
     one, two = out["candidates"]
     assert one["hero"] == {"shot": "s01", "frame": 15, "crop": None, "why": thumbs.WHY_FLAG}
     assert (one["source"], two["source"]) == ("final", "preview")
+    busy = [r for r in two["findings"] if r["check"] == "busy"]  # a preview frame: the busy check is skipped
+    assert [(r["severity"], r["message"], r["value"]) for r in busy] == [
+        ("info", "busy background not measured on a preview frame", None)] * 2
     assert one["files"] == thumbs.files_for(1) and set(one["layouts"]) == set(thumbs.SIZES)
     assert one["layouts"]["1080x1920"]["hero"] != two["layouts"]["1080x1920"]["hero"]
     assert thumbs.FROM_PREVIEW in two["warnings"] and thumbs.NO_HERO in two["warnings"]
@@ -595,6 +604,13 @@ def test_thumbs_only_remakes_one_and_clears_its_choice(tmp_path, monkeypatch):
     go, _ = _go(monkeypatch, sdir, "--only", "2", "--hero", "s03@75", "--hero", "s01@15")
     with pytest.raises(bsa_blender.CliError, match="one --hero"):
         go()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["candidates"][1]["hero"] = {"frame": 40}  # a damaged row: no shot
+    path.write_text(json.dumps(data), encoding="utf-8")
+    go, _ = _go(monkeypatch, sdir, "--only", "2")
+    with pytest.raises(bsa_blender.CliError, match=r"review/thumbs.json is damaged \(candidate 2 has no hero shot "
+                                                   r"and frame\)"):  # fmt: skip
+        go()
 
 
 def test_thumbs_all_again_drops_old_candidate_files(tmp_path, monkeypatch):
@@ -606,3 +622,60 @@ def test_thumbs_all_again_drops_old_candidate_files(tmp_path, monkeypatch):
     go, _ = _go(monkeypatch, sdir, "--hero", "s01@15")
     go()
     assert sorted(p.name for p in (sdir / thumbs.DIR).iterdir()) == ["1-1080x1920.png", "1-1280x720.png"]
+
+
+# --------------------------------------------------------------------------- cards as tall as the font draws them
+
+ASCII = "".join(map(chr, range(32, 127)))
+SEGOE_LIKE = (1.33, 1.709)  # a tall font: Segoe UI's line height and bounding box
+
+
+def _metrics(style, line_h, box_h):
+    return thumbs.ThumbStyle(**{**style.__dict__, "line_h": line_h, "box_h": box_h})
+
+
+def test_card_height_follows_the_font():
+    for line_h, box_h in ((thumbs.BLENDER_LINE_H, thumbs.BLENDER_BOX_H), SEGOE_LIKE):
+        lay = thumbs.vertical(TEXT, LOW_HERO, _metrics(STYLE, line_h, box_h))
+        title, kicker = lay.cards[0], lay.cards[1]
+        assert title.rect.h == pytest.approx((box_h + line_h) * title.size + 2 * thumbs.PAD["title"])  # two lines
+        assert kicker.rect.h == pytest.approx(box_h * kicker.size + 2 * thumbs.PAD["pill"])
+
+
+def _apart(a, b) -> float:
+    """The vertical clear space between two cards that share columns (inf when they don't)."""
+    if a.rect.right <= b.rect.x or b.rect.right <= a.rect.x:
+        return float("inf")
+    return max(b.rect.y - a.rect.bottom, a.rect.y - b.rect.bottom)
+
+
+def test_cards_in_one_layout_never_meet_and_keep_the_gap():
+    long = thumbs.ThumbText(("Why the zipper teeth never slip apart", "even under a heavy pull"), "How it works",
+                            "Teeth made to 0.01 mm")  # fmt: skip
+    for text in (TEXT, long, thumbs.ThumbText(("One",), None, None)):
+        for style in (STYLE, _with_handle("@someone"), _metrics(_with_handle("@me"), *SEGOE_LIKE)):
+            for hero in (LOW_HERO, Rect(300, 200, 400, 300), Rect(0, 0, 1080, 1920), Rect(400, 900, 300, 400)):
+                for lay in (thumbs.vertical(text, hero, style), thumbs.landscape(text, hero, style)):
+                    for i, a in enumerate(lay.cards):
+                        for b in lay.cards[i + 1 :]:
+                            assert _apart(a, b) >= thumbs.GAP - 1e-6, (lay.placement, a, b)
+
+
+def test_with_font_resolves_the_file_and_its_metrics(tmp_path):
+    from fontbuild import build_font
+
+    m = {"upm": 1000, "box": (-400, 1300), "hhea": (1000, -300, 0), "typo": (800, -200, 0), "use_typo": False}
+    main = tmp_path / "Brand.ttf"
+    main.write_bytes(build_font(ASCII, family="Brand", metrics=m))
+    branded = thumbs.ThumbStyle(**{**_with_handle("@me").__dict__, "font": str(main)})
+    style, notes = thumbs.with_font(branded, TEXT, dirs=[tmp_path], system="Linux")
+    assert (style.font, style.line_h, style.box_h, notes) == (str(main), 1.3, 1.7, [])
+    other = tmp_path / "DejaVuSans.ttf"  # the Linux fallback, with every glyph
+    other.write_bytes(build_font(ASCII + "É", family="DejaVu Sans",
+                                 metrics={**m, "hhea": (900, -300, 0)}))  # fmt: skip
+    accented = thumbs.ThumbText(("Éclair",), None, None)
+    style, notes = thumbs.with_font(thumbs.ThumbStyle(**{**STYLE.__dict__, "font": str(main)}), accented,
+                                    dirs=[tmp_path], system="Linux")  # fmt: skip
+    assert Path(style.font) == other and style.line_h == pytest.approx(1.2) and len(notes) == 1
+    assert "DejaVu Sans" in notes[0]
+    assert thumbs.with_font(STYLE, TEXT) == (STYLE, [])  # no style font: Blender's own, its measured metrics
