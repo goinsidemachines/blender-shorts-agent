@@ -153,6 +153,23 @@ Add a hard rule: no humans, no people, body parts, faces, silhouettes or stick f
 - **Honesty**: every number on screen or in the narration has a source; exaggerated or slowed motion carries a badge;
   myths are cut.
 
+## Your brand
+
+A **brand kit** is your colours, fonts, handle, end card, a look and a set, saved once and used by every short. Say
+"set up my brand" and the plugin shows a sample sheet of the kit before it saves anything.
+
+- **Seven styles**: realistic, toy, toon, clay, blueprint, paper and pencil, each built from your palette. With none
+  chosen, shorts look as they always did.
+- **Four sets** for the scene around the machine: workbench, graph, outdoor and studio (or none), picked per short or
+  fixed in the kit.
+- **See it first**: the storyboard page carries a look preview (three stills with your cards, plus the kit sheet), and
+  `style-sample` tiles any styles on any set.
+- **Your engine, your choice**: EEVEE or Cycles is always yours to pick; every style looks right in both. These
+  samples were rendered with EEVEE.
+
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/brand-styles.jpg" width="820" alt="The seven styles on a made-up example kit, studio set">
+<img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/brand-sets.jpg" width="820" alt="The toy style of the same made-up kit on the workbench, graph, outdoor and studio sets">
+
 ## Built for real machines
 
 The playbook has a physics chapter and helpers for mechanisms, structures, forces and motion: pendulums, contact
