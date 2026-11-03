@@ -227,6 +227,19 @@ def test_state_records_history_and_lists_it(srv):
     assert story["version"] == 2 and [h["version"] for h in story["history"]] == [1]
     assert get(srv, f"/files/01-pendulum/{story['history'][0]['files'][0]}?t={srv.token}").status == 200
 
+
+def test_state_writes_the_post_pack(srv):
+    pack = srv.sdir / "out" / "post-pack.md"
+    api(srv, "GET", "/api/01-pendulum/state")
+    assert "## Title\nWhy a pendulum keeps perfect time" in pack.read_text("utf-8")
+    p = srv.sdir / "source" / "short.json"
+    d = json.loads(p.read_text("utf-8"))
+    d["post"]["title"] = "New title"
+    p.write_text(json.dumps(d), "utf-8")
+    api(srv, "GET", "/api/01-pendulum/state")
+    assert "## Title\nNew title" in pack.read_text("utf-8")
+
+
 def test_decision_round_trip_and_version_mismatch(srv):
     r = api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "story", "version": 9, "decision": "approve"})
     assert r.status == 409 and "version 9" in body(r)["error"]

@@ -21,7 +21,7 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import quote
 
-from bsa import render_status
+from bsa import postpack, render_status
 from bsa.review import history, page, server, snapshot, stages, store
 
 SERVER_FILE = ".page-server.json"
@@ -249,6 +249,7 @@ def static_page(sdir: Path) -> Path:
     path = Path(sdir) / "review" / "short.html"
     path.parent.mkdir(parents=True, exist_ok=True)
     html = page.render(mode="static", snapshot=history.shown(Path(sdir), snapshot.build(Path(sdir))))
+    postpack.shown(Path(sdir))
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(html, encoding="utf-8")
     os.replace(tmp, path)

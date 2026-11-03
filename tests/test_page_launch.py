@@ -342,6 +342,12 @@ def test_static_page_records_history(tmp_path):
     assert story["version"] == 2 and [h["version"] for h in story["history"]] == [1]
     assert (sdir / "review" / "history" / "story" / "v1" / "lines.json").is_file()
 
+def test_static_page_writes_the_post_pack(tmp_path):
+    sdir = pagefix.make_short(tmp_path / "ws", "story")
+    launch.static_page(sdir)
+    assert (sdir / "out" / "post-pack.md").read_text("utf-8").startswith("# Post pack: ")
+
+
 # ---------------------------------------------------------------------------------------------------- CLI
 
 

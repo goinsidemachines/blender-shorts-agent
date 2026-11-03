@@ -952,6 +952,20 @@ def cmd_captions(args) -> dict:
         raise CliError(str(exc)) from exc
 
 
+def cmd_post(args) -> dict:
+    """Write out/post-pack.md: every post field and every output file in one place (written even with problems)."""
+    from bsa import post, postpack
+
+    if len(args.words) != 1:
+        raise CliError("usage: post SHORT")
+    sdir = short_dir(args.words[0])
+    short = load(sdir)
+    path, changed = postpack.write(sdir, short)
+    errors, warnings = post.problems(short, settings.load_settings())
+    return {"pack": str(path), "changed": changed, "fields": post.fields(short), "counts": post.counts(short),
+            "errors": errors, "warnings": warnings}  # fmt: skip
+
+
 def cmd_review(args) -> dict:
     """The one page at the story, storyboard or final stage (the separate review pages are retired)."""
     sdir = short_dir(args.short)
@@ -1281,6 +1295,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("captions", help="SHORT: write the final video's SRT, VTT and transcript beside it")
     sp.add_argument("short")
     sp.set_defaults(fn=cmd_captions)
+
+    sp = sub.add_parser("post", help="SHORT: write out/post-pack.md with every post field and file; lists problems")
+    sp.add_argument("words", nargs="+")
+    sp.set_defaults(fn=cmd_post)
 
     sp = sub.add_parser("narrate", help="SHORT [--line ID [--say TEXT]]: generate the narration (never blocks) and "
                         "re-time the short; --line re-takes that one line with the next seed")  # fmt: skip

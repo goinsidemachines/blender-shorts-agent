@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from bsa import feedback, jobstate, messages, render_status
+from bsa import feedback, jobstate, messages, postpack, render_status
 from bsa import settings as settings_mod
 from bsa.review import decisions, history, notes, page, snapshot, stages, store
 
@@ -431,6 +431,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _state(self, name: str, sdir: Path, _body) -> None:
         snap = history.shown(sdir, snapshot.build(sdir))  # served to a person: what it shows is kept
+        postpack.shown(sdir)  # the post pack follows what the page shows
         srv = self.server
         phone = srv.phone_url(name)  # the snapshot can't know the port: the phone link is added here
         if phone:
