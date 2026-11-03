@@ -26,5 +26,6 @@ def test_sets_in_blender(blender_run, bsa_home):
         "test_toon_set_floors_match_between_engines",
         "test_a_sample_framing_gets_a_dressed_set",
         "test_set_none_takes_a_set_away",
+        "test_outdoor_ground_keeps_its_colour_in_the_lit_styles",
     ):
         assert f"PASS {name}" in result.stdout

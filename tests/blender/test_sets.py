@@ -430,6 +430,29 @@ def test_toon_set_floors_match_between_engines():
         assert de <= 2, (name, de)
 
 
+def _hue(rgb) -> float:
+    _l, a, b = colour.srgb_to_lab(rgb)
+    return math.degrees(math.atan2(b, a))
+
+
+def test_outdoor_ground_keeps_its_colour_in_the_lit_styles():
+    """The outdoor sky is for camera rays only: what lights the set is near-neutral, so the grass under toy and clay
+    reads as the ground colour in both engines (not shifted toward the sky's blue), not teal. Toy is held to its room
+    limit too; clay's grass is paler than that (EEVEE about 12.5, Cycles 14.4) because the approved AgX look
+    desaturates a saturated green: under the Standard view the same grass is 2.2 off, so the hue is what clay pins."""
+    for style in ("toy", "clay"):
+        for engine in ("eevee", "cycles"):
+            sc, kit, _short, _tl, built, _ = _build("outdoor", engine=engine, style=style)
+            styles.apply(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
+            got = _floor_colour(sc, (-2.4, -2.0, 0.0), engine, f"outdoor_ground_{style}")
+            want = looks.lit_expect(style, colour.set_colours(kit)["ground"], kit, False)
+            de = colour.delta_e(want, got)
+            turn = abs(_hue(got) - _hue(colour.hex_to_srgb(want)))
+            print(f"GROUND {style} {engine} {colour.srgb_to_hex(got)} want {want} dE {de:.2f} hue {turn:.1f}")
+            assert style == "clay" or de <= looks.lit_limit(style, engine, room=True), (style, engine, de)
+            assert turn <= 10, (style, engine, turn)
+
+
 def _sample_framing(sc) -> None:
     """The approved samples' framing: the lever alone (the demo's stand and gears hidden), about 60% of the frame's
     width, seen from about 16 degrees above."""

@@ -40,6 +40,8 @@ HILLS = {"near": (1.0, 0.35), "far": (2.5, 0.6)}  # distance behind the subject 
 SAMPLE_EVERY = 3  # dress looks at every 3rd frame of each shot, and its first and last
 WALL_EPS = 0.002  # a wall prop stands this far off the board (no faces on the board's plane)
 CLOUD_WHITE = 0.75  # a cloud is the sky's horizon colour this far toward white
+SKY_LIGHT_WHITE = 0.6  # outdoor is lit by the sky's horizon colour this far toward white (near-neutral: the sky's
+# blue under the Standard view turned the grass teal); the gradient sky itself is for camera rays only
 
 SET_COLLECTION = "{} set"
 PROPS_COLLECTION = "{} set props"
@@ -280,8 +282,9 @@ def refresh_world(scene, kit, warnings: list | None = None) -> None:
     """The set's world for the style the scene shows (its `bsa_style`, else the kit's): the studio a paper_world
     in looks.backdrop (a flat backdrop: the stills' background check applies); workbench and graph a plain background
     of the wall colour; outdoor a sky for camera rays only (a gradient from the horizon colour to the top colour, by
-    the view direction's height) over a lighting background of the horizon colour. Blueprint and pencil, which draw
-    on paper, show their paper instead. The camera sees the colour at strength 1; what lights the scene is a separate
+    the view direction's height) over a near-neutral lighting background (the horizon colour SKY_LIGHT_WHITE
+    toward white). Blueprint and pencil, which draw on paper, show their paper instead. The camera sees the colour
+    at strength 1; what lights the scene is a separate
     Background (a Light Path "Is Camera Ray" mix) whose strength is stamped per engine (`world["bsa_strength"]`, the
     styles' rule) and matched to the engine the scene renders with. Workbench, graph and outdoor worlds are stamped
     `world["bsa_backdrop"] = "set"`: environments, no background check. Never sets the engine."""
@@ -322,7 +325,7 @@ def refresh_world(scene, kit, warnings: list | None = None) -> None:
         shown = lit_hex = looks.backdrop(style, kit)
         seen.inputs["Color"].default_value = _lin(shown)
     elif set_name == "outdoor":
-        lit_hex = cols["sky_horizon"]
+        lit_hex = colour.mix(cols["sky_horizon"], "#FFFFFF", SKY_LIGHT_WHITE)
         coords = nt.nodes.new("ShaderNodeTexCoord")
         sep = nt.nodes.new("ShaderNodeSeparateXYZ")
         up = nt.nodes.new("ShaderNodeMapRange")  # the view direction's height: 0 at the horizon, 1 well above it
