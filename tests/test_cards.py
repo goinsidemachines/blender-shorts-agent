@@ -1,7 +1,9 @@
 """Cards, pure: sizes from real font advances, the builders per card kind, the shapes as pixels and the cache key."""
 
 import os
+import re
 import string
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,6 +14,8 @@ from bsa.layout import safe_rect
 from tests.kitfix import KIT
 
 K = kit.kit_from(KIT)
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
 INK = (0x1B, 0x2A, 0x3A)
 
 
@@ -253,3 +257,20 @@ def test_a_very_wide_logo_is_scaled_to_the_safe_width(font, tmp_path):
     assert w == pytest.approx(safe_rect().w - 2 * side) and h == pytest.approx(w / 20)
     assert y == pytest.approx((cards.LOGO_H - h) / 2) and c.w <= safe_rect().w
     assert c.runs == ()  # no room left for the name
+
+
+@pytest.mark.blender
+def test_cards_in_blender(blender_run):
+    result = blender_run(HERE / "blender" / "test_cards.py", timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name in ("test_a_card_png_is_its_size_with_exact_kit_colours_and_transparent_corners",
+                 "test_card_text_is_drawn_inside_the_box", "test_the_logo_shows_on_the_logo_badge",
+                 "test_ensure_renders_once", "test_rendering_cards_leaves_every_engine_alone",
+                 "test_overlay_strips_are_placed_where_the_layout_said", "test_pointer_strip_reaches_the_anchor"):
+        assert f"PASS {name}" in result.stdout, result.stdout + result.stderr
+
+
+def test_no_kit_code_touches_the_render_engine():
+    for f in ("bsa/kit.py", "bsa/cards.py", "bsa/kitlayout.py", "bsa/blender/cards.py", "bsa/blender/edit.py",
+              "bsa/blender/thumbs.py", "bsa/blender/closing_card.py"):
+        assert not re.search(r"\.engine\s*=|render\.engine", (ROOT / f).read_text(encoding="utf-8")), f
