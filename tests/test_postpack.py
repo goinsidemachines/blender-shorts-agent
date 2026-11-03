@@ -217,3 +217,49 @@ def test_no_language_files_no_languages_item(tmp_path):
     sdir = pagefix.make_short(tmp_path, "done")
     _translated(sdir, es=True)
     assert "languages" not in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir))]
+
+
+def _closing_translated(sdir, closing_from):
+    p = sdir / "source" / "short.json"
+    d = json.loads(p.read_text("utf-8"))
+    en = {ln["id"]: ln["text"] for ln in d["lines"]}
+    d["captions_translations"] = {"es": {"lines": {k: f"es {k}" for k in en}, "closing": "Descubre mas.",
+                                         "from": {**en, "closing": closing_from}}}  # fmt: skip
+    p.write_text(json.dumps(d), "utf-8")
+
+
+def test_a_stale_closing_line_is_flagged_like_captions_skips_it(tmp_path):
+    from bsa import captions
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    s = {"website": "example.com", "closing": {"voice_line": "Find out more."}}
+    _closing_translated(sdir, "Visit us.")
+    (sdir / "out" / "pendulum.es.srt").write_text("1\n", "utf-8")
+    row = {r["key"]: r for r in postpack.files(sdir, _short(sdir), settings=s)}["srt-es"]
+    assert row["stale"] and row["why"] == postpack.OLD_ENGLISH
+    assert "old English" in postpack.markdown(sdir, _short(sdir), s)
+    assert "languages" not in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir), settings=s)]
+    assert "es" in captions.write_files(sdir, _short(sdir), s)["skipped"]
+    _closing_translated(sdir, "Find out more.")
+    row = {r["key"]: r for r in postpack.files(sdir, _short(sdir), settings=s)}["srt-es"]
+    assert not row["stale"] and "es" in captions.write_files(sdir, _short(sdir), s)["languages"]
+
+
+def test_a_language_file_says_which_reason_it_is_stale(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+
+    def row(fresh):
+        _translated(sdir, es=fresh)
+        (sdir / "out" / "pendulum.es.srt").write_text("1\n", "utf-8")
+        return {r["key"]: r for r in postpack.files(sdir, _short(sdir))}["srt-es"]
+
+    assert not row(True)["stale"]
+    only_english = row(False)
+    assert only_english["stale"] and only_english["why"] == postpack.OLD_ENGLISH
+    pagefix.record_edit(sdir, "final", stale=True)
+    both = row(False)
+    assert postpack.OLD_ENGLISH in both["why"] and "older timing" in both["why"]
+    only_timing = row(True)
+    assert only_timing["stale"] and "why" not in only_timing
+    md = postpack.markdown(sdir, _short(sdir))
+    assert "run the final edit again" in md

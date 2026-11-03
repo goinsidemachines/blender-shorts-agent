@@ -657,7 +657,7 @@ def _post(ctx: Ctx) -> dict | None:
         thumbnail = {"chosen": chosen, "file": {"file": out_file}}
     video, cap_state = postpack.video_info(ctx.sdir, short), captions.state(ctx.sdir, short)  # once per build
     content = {"fields": fields, "field_notes": field_notes, "thumbnail_problems": thumbnail_problems,
-               "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short, video, cap_state),
+               "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short, video, cap_state, ctx.settings),
                "checklist": [], "closing": _closing_card(ctx, short), "credits": _asset_rows(short.assets)}  # fmt: skip
     try:
         content["candidates"] = _candidates(ctx.sdir, thumbs.load(ctx.sdir))
@@ -669,7 +669,7 @@ def _post(ctx: Ctx) -> dict | None:
         ticks = {}
         content["checklist_problem"] = _plain(ctx.sdir, e)
     content["checklist"] = [{**item, "done": ticks.get(item["id"], False)}
-                            for item in postpack.checklist_items(ctx.sdir, short, video, cap_state)]  # fmt: skip
+                            for item in postpack.checklist_items(ctx.sdir, short, video, cap_state, ctx.settings)]  # fmt: skip
     return content
 
 

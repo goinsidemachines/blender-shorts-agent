@@ -19,6 +19,7 @@ NOT_YET = "(not written yet)"
 STALE_NOTE = " (made for an older timing: run the final edit again)"
 _CAPTION_KEYS = ("srt", "vtt", "transcript")
 CHECK_IDS = ("upload", "length", "thumbnail", "captions", "languages", "pin", "link")
+TIMING_TEXT = "made for an older timing: run the final edit again"
 OLD_ENGLISH = "Made for the old English: update the translation, then run CLI captions SHORT"
 
 
@@ -53,9 +54,22 @@ def video_info(sdir: Path, short) -> dict:
             "size": megabytes(nbytes) if nbytes is not None else None}  # fmt: skip
 
 
-def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None = None) -> list[dict]:
+def _settings(settings: dict | None) -> dict:
+    """The settings the closing voice line comes from: those given, else the user's (as `CLI captions` reads them)."""
+    if settings is not None:
+        return settings
+    try:
+        from bsa import settings as settings_mod
+
+        return settings_mod.load_settings()
+    except Exception:  # noqa: BLE001 - no settings: the closing line is then not checked
+        return {}
+
+
+def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None = None,
+          settings: dict | None = None) -> list[dict]:  # fmt: skip
     """The output files, one row each. A row's `path` is an absolute local path, also in the offline page's data.
-    `video` (video_info) and `cap_state` (captions.state) are read here when not given."""
+    `video` (video_info), `cap_state` (captions.state) and `settings` are read here when not given."""
     sdir = Path(sdir)
     video = video or video_info(sdir, short)
     cap = captions.paths(sdir, short)
@@ -68,7 +82,7 @@ def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None =
         ("vtt", "Captions (VTT)", f"out/{cap['vtt'].name}"),
         ("transcript", "Transcript", f"out/{cap['transcript'].name}"),
     ]
-    old = translations.stale(short)
+    old = translations.stale(short, _settings(settings))
     for lang in _languages(short):
         lp = captions.paths(sdir, short, lang)
         spec += [(f"srt-{lang}", f"Captions, {lang} (SRT)", f"out/{lp['srt'].name}", lang),
@@ -79,11 +93,12 @@ def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None =
         path = sdir / rel
         exists = path.is_file()
         late = bool(lang and lang[0] in old)  # translated for English that has since changed
+        timing = bool(exists and (key in _CAPTION_KEYS or lang) and stale)
         row = {"key": key, "label": label, "rel": rel, "path": str(path), "exists": exists,
                "size": _size(path.stat().st_size) if exists else None,
-               "stale": bool(exists and ((key in _CAPTION_KEYS or lang) and stale or late))}  # fmt: skip
-        if lang and exists and late:
-            row["why"] = OLD_ENGLISH
+               "stale": bool(timing or (exists and late))}  # fmt: skip
+        if lang and exists and late:  # both reasons: both said; only the timing: no `why` (the default text)
+            row["why"] = f"{OLD_ENGLISH}; also {TIMING_TEXT}" if timing else OLD_ENGLISH
         rows.append(row)
     return rows
 
@@ -106,7 +121,8 @@ def _from_an_earlier_make(sdir: Path) -> bool:
         return False
 
 
-def checklist_items(sdir: Path, short, video: dict | None = None, cap_state: dict | None = None) -> list[dict]:
+def checklist_items(sdir: Path, short, video: dict | None = None, cap_state: dict | None = None,
+                    settings: dict | None = None) -> list[dict]:  # fmt: skip
     """The before-you-post checklist, [{"id", "text"}] in CHECK_IDS order, built from what the plugin knows: the
     video's length and size, the chosen thumbnail, the caption file (only when cut for the current timing) and the
     pinned comment. Only the items that apply are listed. `video` and `cap_state` as for `files`."""
@@ -132,7 +148,7 @@ def checklist_items(sdir: Path, short, video: dict | None = None, cap_state: dic
     if srt.is_file() and not (cap_state or captions.state(sdir, short))["stale"]:
         items.append(("captions", (f"Captions: out/{srt.name}. Upload it in YouTube Studio → Subtitles, so the "
                                    "numbers come out right.")))  # fmt: skip
-    old = translations.stale(short)
+    old = translations.stale(short, _settings(settings))
     ready = [f"out/{captions.paths(sdir, short, lang)['srt'].name}" for lang in _languages(short)
              if captions.paths(sdir, short, lang)["srt"].is_file() and lang not in old]
     if ready and not (cap_state or captions.state(sdir, short))["stale"]:
@@ -159,7 +175,7 @@ def _joined(value, sep: str) -> str:
     return sep.join(items) or NOT_YET
 
 
-def markdown(sdir: Path, short) -> str:
+def markdown(sdir: Path, short, settings: dict | None = None) -> str:
     p = post.fields(short)
     sections = [
         ("Title", _text(p["title"])),
@@ -175,7 +191,7 @@ def markdown(sdir: Path, short) -> str:
         out += [f"## {name}", value, ""]
     out += ["## Files"]
     video = video_info(sdir, short)
-    for row in files(sdir, short, video):
+    for row in files(sdir, short, video, settings=settings):
         if not row["exists"] or row["key"] == "pack":
             continue
         line = f"- {row['label']}: {row['rel']}"
