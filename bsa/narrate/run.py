@@ -242,8 +242,11 @@ def retake_take(out_dir: Path, line_id: str) -> int:
     except OSError as exc:
         raise OSError(f"The take's next seed couldn't be saved ({exc}), so it was kept.") from exc
     for i in take["lines"]:
-        (out_dir / f"{i}.wav").unlink(missing_ok=True)
-    (out_dir / take["file"]).unlink(missing_ok=True)
+        if (out_dir / f"{i}.wav").resolve().parent == out_dir.resolve():
+            (out_dir / f"{i}.wav").unlink(missing_ok=True)
+    take_file = (out_dir / take["file"]).resolve()
+    if take_file.is_relative_to((out_dir / TAKES_DIR).resolve()):  # never a file outside the takes folder
+        take_file.unlink(missing_ok=True)
     forget_durations(out_dir, take["lines"])
     return seed
 
@@ -573,12 +576,27 @@ def check_line_ids(short: Short) -> None:
             raise ValueError(problem)
 
 
+def own_voice_dropped(settings: dict, short) -> str | None:
+    """The provider this short's own voice and speed were chosen for (its narrator's `voice_for`) when the settings'
+    narrator is another one now, so they are not used; None otherwise. A short with no `voice_for` (made before it
+    was recorded) keeps its voice and speed as before."""
+    own = getattr(short, "narrator", None)
+    if not isinstance(own, dict) or not own.get("voice_for") or not ("voice" in own or "speed" in own):
+        return None
+    meant = own["voice_for"]
+    return meant if meant != (settings.get("narrator") or {}).get("provider") else None
+
+
 def narrator_for(settings: dict, short) -> dict:
     """The narrator settings with this short's own choices (voice, speed, take_mode, lead_in) over them. The
     provider, command and label are never per short."""
     from bsa.short import NARRATOR_KEYS
 
-    own = getattr(short, "narrator", None) or {}
+    own = dict(getattr(short, "narrator", None) or {})
+    if own_voice_dropped(settings, short):  # its voice and speed were for another narrator: the settings' apply
+        own.pop("voice", None)
+        own.pop("speed", None)
+    own.pop("voice_for", None)
     out = dict(settings.get("narrator") or {})
     out.update({k: v for k, v in own.items() if k in NARRATOR_KEYS})
     out["take_mode"] = out.get("take_mode") or "line"
@@ -634,7 +652,8 @@ def _takes_record(short: Short, narrator: dict) -> dict:
         extra["take_mode"] = "paragraph"
     if float(narrator.get("lead_in") or 0.0) > 0:
         extra["lead_in"] = float(narrator["lead_in"])
-    return {**extra,
+    return {
+        **extra,
         "command": (narrator.get("command") or None) if narrator.get("provider") == "custom" else None,
         "provider": narrator.get("provider"),
         "voice": narrator.get("voice"),
@@ -656,7 +675,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     except (OSError, ValueError):
         had = None
     same_voice = isinstance(had, dict) and all(had.get(k) == want[k] for k in ("provider", "voice", "speed", "command"))
-    same_voice = same_voice and had.get("take_mode") == want.get("take_mode") and had.get("lead_in") == want.get("lead_in")
+    same_voice = same_voice and all(had.get(k) == want.get(k) for k in ("take_mode", "lead_in"))
     old_lines = had.get("lines", {}) if same_voice else {}
     removed = []
     waiting = {lid for lid in take_seeds(out_dir) if not (out_dir / f"{lid}.wav").is_file()}  # a re-take's line

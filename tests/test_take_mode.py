@@ -240,6 +240,10 @@ def test_take_flag_refusals(tmp_path):
     assert "line l01 was not spoken in a paragraph take: re-take it with --line alone" in refused(
         e, "narrate", e.short, "--line", "l01", "--take")
     assert _vo_bytes(e) == before  # nothing touched
+    short_json = (e.short / "source" / "short.json").read_bytes()
+    assert "--say and --take don't go together" in refused(e, "narrate", e.short, "--line", "l03", "--take",
+                                                           "--say", "Each swing is even.")  # fmt: skip
+    assert _vo_bytes(e) == before and (e.short / "source" / "short.json").read_bytes() == short_json
     e.cli("settings", "set", "narrator.take_mode", "line")
     assert "--take is for paragraph takes: narrator.take_mode is line" in refused(
         e, "narrate", e.short, "--line", "l01", "--take")

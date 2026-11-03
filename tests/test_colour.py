@@ -117,6 +117,15 @@ def test_simulate_keeps_grey():
         assert colour.delta_e("#808080", colour.simulate("#808080", kind)) < 1
 
 
+def test_cvd_check_skips_categories_with_an_invalid_hex():
+    from bsa import kit
+
+    for bad in ("#zzzzzz", "nope", "#12", 3, None):
+        with pytest.raises(ValueError):
+            colour.look_alike({"a": bad, "b": "#4A9A3B"})
+        assert kit.cvd_problems({"a": bad, "b": "#4A9A3B"}) == []  # the kit check names the bad colour itself
+
+
 def test_look_alike_finds_a_red_green_pair():
     found = colour.look_alike({"stop": "#D9483B", "go": "#4A9A3B"})
     assert len(found) == 1

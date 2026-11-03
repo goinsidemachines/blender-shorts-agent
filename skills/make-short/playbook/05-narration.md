@@ -87,10 +87,15 @@ retry and the closing line are spoken alone, like before.
 with the voice, not with the quiet.
 
 A short can have its own `narrator` in `short.json` (`voice`, `speed`, `take_mode`, `lead_in`) that wins over the
-settings for that short only. With neither set, narration is exactly as it was.
+settings for that short only. With neither set, narration is exactly as it was. `voice_for` names the narrator
+its `voice` and `speed` were chosen for (`new-short --like` records it): when the settings' narrator is a different
+one now, the short's own voice and speed are not used, the settings' are, and `narrate` says so in `notes`. A short
+with its own `voice` but no `voice_for` (made before it was recorded) keeps using its voice.
 
 The result says where each line's audio came from in `sources`: `take`, `line` (spoken alone) or `fallback` (its take
-failed, so it was spoken alone), and `fallbacks` gives the reason for each fallback line. The voice check on the
+failed or couldn't be cut there, so it was spoken alone), and `fallbacks` gives the reason for each fallback line.
+Without Whisper the cuts use character timing, and a line it can't cut safely is spoken alone and marked
+`fallback`. The voice check on the
 page shows the same on each row. Say a fallback in one line and check that line. The voice's own notes (for
 example, that `{take}` is missing from the command) show on the Narration stage of the page too.
 

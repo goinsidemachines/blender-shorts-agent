@@ -964,6 +964,15 @@ def cmd_narrate(args) -> dict:
             out["fallbacks"] = fallbacks
     if retaken:
         out["retake"] = retaken
+    from bsa.narrate.run import own_voice_dropped
+
+    meant = own_voice_dropped(s, short)
+    if meant:
+        names = settings._PROVIDER_NAMES
+        now = (s.get("narrator") or {}).get("provider")
+        now_name = names.get(now, now) if now not in (None, "none") else "no narrator"
+        out["notes"] = [(f"this short's own voice was chosen for {names.get(meant, meant)}, but you now use "
+                         f"{now_name}, so the voice from your settings was used")]  # fmt: skip
     log = sdir / "audio" / "vo" / custom.LOG_FILE
     if log.is_file():  # the user's own tool's output; its fallbacks and warnings would otherwise pass unseen
         out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))

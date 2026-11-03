@@ -241,8 +241,33 @@ def write_files(sdir: Path, short, s: dict) -> dict:
     _write(where["vtt"], to_vtt(cs, tl.fps))
     _write(where["transcript"], transcript(short, line))
     languages, skipped = _write_languages(sdir, short, s or {}, tl, last)
-    return {"srt": str(where["srt"]), "vtt": str(where["vtt"]), "transcript": str(where["transcript"]),
-            "cues": len(cs), "languages": languages, "skipped": skipped}  # fmt: skip
+    out = {"srt": str(where["srt"]), "vtt": str(where["vtt"]), "transcript": str(where["transcript"]),
+           "cues": len(cs), "languages": languages, "skipped": skipped}  # fmt: skip
+    old = left_over(sdir, short)
+    if old:  # the user's files: listed, never deleted
+        out["left_over"] = {lang: list(p.values()) for lang, p in old.items()}
+    return out
+
+
+def left_over(sdir: Path, short) -> dict[str, dict[str, str]]:
+    """{language: {"srt"/"vtt": path}} for subtitle files in out/ of a language no longer in captions_translations
+    (removed since they were written). They are left as they are."""
+    from bsa import translations
+
+    data = getattr(short, "captions_translations", None)
+    now = {str(k) for k in data} if isinstance(data, dict) else set()
+    out: dict[str, dict[str, str]] = {}
+    folder = Path(sdir) / "out"
+    if not folder.is_dir():
+        return out
+    for path in sorted(folder.iterdir()):
+        stem, dot, ext = path.name.rpartition(".")
+        if not dot or ext not in ("srt", "vtt") or not stem.startswith(f"{short.slug}.") or not path.is_file():
+            continue
+        lang = stem[len(short.slug) + 1:]
+        if lang not in now and translations.LANG.match(lang):
+            out.setdefault(lang, {})[ext] = str(path)
+    return out
 
 
 def _write_languages(sdir: Path, short, s: dict, tl, last: Cue | None) -> tuple[dict, dict]:
@@ -254,6 +279,11 @@ def _write_languages(sdir: Path, short, s: dict, tl, last: Cue | None) -> tuple[
     if not isinstance(data, dict):
         return {}, {}
     skipped = translations.skipped(short, s)
+    old = translations.stale(short, s)
+    for lang, why in skipped.items():  # say again which lines are stale, so they can be updated from this message
+        if why == translations.OLD_ENGLISH and old.get(lang):
+            skipped[lang] = (f"Made for the old English ({', '.join(old[lang])}): update the translation, then run "
+                             "CLI captions SHORT")  # fmt: skip
     written: dict[str, dict] = {}
     for lang in data:
         if str(lang) in skipped:

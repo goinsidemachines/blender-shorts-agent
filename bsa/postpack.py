@@ -21,6 +21,7 @@ _CAPTION_KEYS = ("srt", "vtt", "transcript")
 CHECK_IDS = ("upload", "length", "thumbnail", "captions", "languages", "pin", "link")
 TIMING_TEXT = "made for an older timing: run the final edit again"
 OLD_ENGLISH = translations.OLD_ENGLISH
+LANGUAGE_REMOVED = "Not current (language removed)"
 
 
 def clock(seconds: float) -> str:
@@ -87,6 +88,11 @@ def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None =
         lp = captions.paths(sdir, short, lang)
         spec += [(f"srt-{lang}", f"Captions, {lang} (SRT)", f"out/{lp['srt'].name}", lang),
                  (f"vtt-{lang}", f"Captions, {lang} (VTT)", f"out/{lp['vtt'].name}", lang)]  # fmt: skip
+    for lang, old in captions.left_over(sdir, short).items():  # a removed language's files: shown, not current
+        for ext in ("srt", "vtt"):
+            if ext in old:
+                spec.append((f"{ext}-{lang}", f"Captions, {lang} ({ext.upper()})", f"out/{Path(old[ext]).name}", lang))
+                skipped[lang] = LANGUAGE_REMOVED
     spec.append(("pack", "Post pack", PACK))
     rows = []
     for key, label, rel, *lang in spec:

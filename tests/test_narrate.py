@@ -1014,6 +1014,18 @@ def test_word_times_parses_the_runner_words(tmp_path, whisper_on):
     assert got == {"l01": [("hi", 0.1, 0.3), ("there", 0.4, 0.8)]}
 
 
+def test_word_times_survives_json_that_is_not_an_object_and_drops_a_take_with_a_timeless_word(tmp_path, whisper_on,
+                                                                                                monkeypatch):
+    for out in ("[1, 2]", '"text"', "3"):
+        monkeypatch.setattr(local, "_last_json", lambda stdout, out=out: json.loads(out))
+        assert local.word_times(lines("l01"), tmp_path, run=lambda cmd, out=out, **kw: completed(0, out)) is None
+    monkeypatch.undo()
+    monkeypatch.setattr(install, "installed", lambda: {local.WHISPER_MODEL: True})
+    words = {"l01": {"words": [["hi", 0.1, 0.3], ["there", 0.4, None]]}, "l02": {"words": [["ok", 0.0, 0.2]]}}
+    got = local.word_times(lines("l01", "l02"), tmp_path, run=lambda cmd, **kw: completed(0, json.dumps(words)))
+    assert got == {"l02": [("ok", 0.0, 0.2)]}
+
+
 def test_word_times_is_none_without_whisper_or_on_failure(tmp_path, monkeypatch):
     calls = []
 
@@ -1241,3 +1253,24 @@ def test_take_records_are_dropped_when_the_lines_regroup(tmp_path):
     regrouped = _two_take_short(hold=True)  # a hold on s1 now splits it into t01 = l01, l02 and t02 = l03, l04
     assert nrun.clear_stale_takes(vo, regrouped, narrator) == []  # the line takes themselves are still good
     assert nrun.take_records(vo) == [] and not (vo / nrun.TAKES_DIR / "t01.wav").exists()
+
+
+def test_retake_take_only_deletes_files_inside_the_takes_folder(tmp_path):
+    vo = tmp_path / "vo"
+    (vo / nrun.TAKES_DIR).mkdir(parents=True)
+    outside = tmp_path / "keep.wav"
+    outside.write_bytes(b"x")
+    for lid in ("l01", "l02"):
+        (vo / f"{lid}.wav").write_bytes(b"x")
+    record = {"provider": "kokoro", "lines": {"l01": "a", "l02": "b"},
+              "takes": [{"id": "t01", "lines": ["l01", "l02", "../keep"], "seed": 7, "file": "../keep.wav"}]}
+    (vo / nrun.RECORD_FILE).write_text(json.dumps(record), encoding="utf-8")
+    assert nrun.retake_take(vo, "l01") == 8
+    assert outside.is_file()  # named by the record, but outside the takes folder: kept
+    assert not (vo / "l01.wav").exists() and not (vo / "l02.wav").exists()
+    inside = vo / nrun.TAKES_DIR / "t01.wav"
+    inside.write_bytes(b"x")
+    record["takes"][0]["file"] = f"{nrun.TAKES_DIR}/t01.wav"
+    (vo / nrun.RECORD_FILE).write_text(json.dumps(record), encoding="utf-8")
+    nrun.retake_take(vo, "l02")
+    assert not inside.exists() and outside.is_file()

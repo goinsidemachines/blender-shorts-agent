@@ -50,6 +50,16 @@ ENUMS = {
 # narrator.lead_in: seconds of quiet before the voice starts in each take.
 LEAD_IN_RANGE_S = (0.0, 1.0)
 
+
+def lead_in_ok(seconds: float) -> bool:
+    """A lead-in in range (settings and a short's own narrator share this check)."""
+    return LEAD_IN_RANGE_S[0] <= seconds <= LEAD_IN_RANGE_S[1]
+
+
+def lead_in_error(value) -> str:
+    return f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to {LEAD_IN_RANGE_S[1]:g}, got {value!r}"
+
+
 # Settings that are true or false (JSON booleans on the command line).
 BOOLEANS = ("page.lan", "post_format_asked")
 
@@ -172,9 +182,8 @@ def check_value(path: str, value):
                 seconds = float(value)
             except (TypeError, ValueError):
                 pass
-        if seconds is None or not LEAD_IN_RANGE_S[0] <= seconds <= LEAD_IN_RANGE_S[1]:
-            raise ValueError(f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to "
-                             f"{LEAD_IN_RANGE_S[1]:g}, got {value!r}")  # fmt: skip
+        if seconds is None or not lead_in_ok(seconds):
+            raise ValueError(lead_in_error(value))
         return seconds
     if path in BOOLEANS:
         if not isinstance(value, bool):

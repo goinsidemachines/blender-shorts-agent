@@ -137,7 +137,8 @@ def test_like_copies_look_pace_closing_and_voice_only(tmp_path, monkeypatch, cap
     assert data["pace"] == {"shots": 3, "min_s": 4.0, "holds": 2}
     assert data["end_card"] == {"text": "Follow for more", "second": "example.org"}
     assert data["closing"] == {"seconds": 2.0}
-    assert data["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2}
+    assert data["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2,
+                                "voice_for": "kokoro"}
     assert data["like"]["short"] == other.name and data["like"]["at"].endswith("Z")
     assert data["like"]["copied"] == list(like.COPY_KEYS) == out["copied"]
     assert data["like"]["title"] == "Big Ben" and data["like"]["style_keys"] == like.style_keys(data["style"])
@@ -175,12 +176,13 @@ def test_like_copies_the_voice_only_for_the_same_provider(tmp_path):
     assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4} and "narrator" in copied
     assert _voice_notes(notes) == ["the voice wasn't copied: Big Ben used Kokoro, you now use ElevenLabs"]
     values, _, notes = like.copy_from(other, _SAME)
-    assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2}
+    assert values["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2,
+                                  "voice_for": "kokoro"}
     assert _voice_notes(notes) == []
     # narrated with the defaults: narrator.json has no take_mode / lead_in, so line and no lead-in
     # values equal to what the settings give a new short (line, no lead-in, speed 1.0) are not pinned
     plain = _rich(tmp_path / "b", record={"provider": "kokoro", "voice": "af_test", "speed": 1.0})
-    assert like.copy_from(plain, _SAME)[0]["narrator"] == {"voice": "af_test"}
+    assert like.copy_from(plain, _SAME)[0]["narrator"] == {"voice": "af_test", "voice_for": "kokoro"}
     # never narrated: take mode and lead-in from its own choices over the settings; no voice
     silent = _rich(tmp_path / "c")
     values, _, notes = like.copy_from(silent, _SAME)
@@ -281,3 +283,98 @@ def test_like_record_accepts_title_and_style_keys_and_checks_their_type():
     ok = {"short": "01-a", "copied": ["style"], "at": "2026-11-04T10:00:00Z"}
     assert _like_problems(ok) == [] and _like_problems({**ok, "title": "A", "style_keys": ["font"]}) == []
     assert _like_problems({**ok, "title": 3}) and _like_problems({**ok, "style_keys": "font"})
+
+
+def test_a_copied_voice_is_not_used_once_the_provider_changes(tmp_path, monkeypatch, capsys):
+    from bsa.narrate import run as nrun
+    from bsa.short import Line, Shot, load_short
+
+    ws = _cli_ws(tmp_path, monkeypatch, _SAME)
+    other = _rich(ws, record=_KOKORO)
+    assert bsa_cli.main(["new-short", "Eiffel Tower", "--like", other.name]) == 0
+    sdir = Path(json.loads(capsys.readouterr().out)["short"])
+    p = sdir / "source" / "short.json"
+    short = load_short(p)
+    assert short.narrator["voice_for"] == "kokoro" and short.narrator["voice"] == "af_test"
+    assert nrun.narrator_for({"narrator": {"provider": "kokoro", "voice": "x"}}, short)["voice"] == "af_test"
+    short.lines = [Line("l01", "It is tall.", "s01")]
+    short.shots = [Shot("s01", "Tower", "a tower", "tower")]
+    save_short(short, p)
+    jobstate.mark_done(sdir, "storyboard")
+    home = Path(os.environ["BSA_HOME"])
+    (home / "settings.json").write_text(json.dumps({"workspace": str(ws), "narrator": {
+        "provider": "elevenlabs", "voice": "el_settings", "speed": 1.0}}), encoding="utf-8")  # fmt: skip
+    used = {}
+
+    def fake_narrate(short_dir, short_, settings_):
+        used.update(nrun.narrator_for(settings_, short_))
+        return nrun.NarrationResult("captions-only", None, "no voice in this test")
+
+    monkeypatch.setattr(nrun, "narrate", fake_narrate)
+    monkeypatch.setattr(bsa_cli, "cmd_timeline", lambda args: {})
+    assert bsa_cli.main(["narrate", sdir.name]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert used["voice"] == "el_settings" and used["speed"] == 1.0 and "voice_for" not in used
+    assert used["take_mode"] == "paragraph" and used["lead_in"] == 0.4  # take mode and lead-in still the short's
+    assert out["notes"] == [("this short's own voice was chosen for Kokoro, but you now use ElevenLabs, so the voice "
+                             "from your settings was used")]  # fmt: skip
+
+
+def test_an_older_short_without_voice_for_keeps_its_voice():
+    from bsa.narrate import run as nrun
+
+    short = Short(slug="a", title="A", length_s=40, narrator={"voice": "own", "speed": 1.1})
+    got = nrun.narrator_for({"narrator": {"provider": "elevenlabs", "voice": "el"}}, short)
+    assert got["voice"] == "own" and got["speed"] == 1.1
+    assert nrun.own_voice_dropped({"narrator": {"provider": "elevenlabs"}}, short) is None
+    short.narrator = {"voice": "own", "voice_for": "kokoro"}
+    assert nrun.own_voice_dropped({"narrator": {"provider": "elevenlabs"}}, short) == "kokoro"
+    assert nrun.own_voice_dropped({"narrator": {"provider": "kokoro"}}, short) is None
+
+
+def test_voice_for_is_checked_by_validate():
+    from bsa.short import _narrator_problems
+
+    assert _narrator_problems({"voice": "v", "voice_for": "kokoro"}) == []
+    assert _narrator_problems({"voice_for": ""}) and _narrator_problems({"voice_for": 3})
+    assert _narrator_problems({"lead_in": 2}) == ["narrator.lead_in must be seconds from 0 to 1, got 2"]
+
+
+def test_a_style_value_the_kit_refuses_now_is_not_copied(tmp_path):
+    from bsa.short import load_short
+
+    other = _rich(tmp_path, record=_KOKORO)
+    p = other / "source" / "short.json"
+    short = load_short(p)
+    short.style = {"style": "toon", "set": "no-such-set", "palette": {"accent": "#E8B33A", "glow": "#FFFFFF"}}
+    save_short(short, p)
+    values, _, notes = like.copy_from(other, _SAME)
+    assert "set" not in values["style"] and "glow" not in values["style"].get("palette", {})
+    assert values["style"]["palette"] == {"accent": "#E8B33A"}
+    assert "Big Ben's set isn't valid in your kit now, so it wasn't copied" in notes
+    assert "Big Ben's palette.glow isn't valid in your kit now, so it wasn't copied" in notes
+
+
+def test_summary_says_a_damaged_state_and_a_voice_without_a_name(tmp_path):
+    sdir = _make(tmp_path, "Big Ben")
+    (sdir / "state.json").write_text("{nope", encoding="utf-8")
+    row = like.summary(sdir, {})
+    assert row["problem"] == "state.json damaged" and row["finished"] is False and row["title"] == "Big Ben"
+    _voice(sdir, voice=None)
+    assert like.summary(sdir, {})["narrator"] == "Kokoro"
+    _voice(sdir, voice="", speed="fast")
+    assert like.summary(sdir, {})["narrator"] == "Kokoro"
+
+
+def test_summary_with_a_malformed_edit_record_uses_the_short_length(tmp_path):
+    sdir = _make(tmp_path, "Big Ben", length=40)
+    for edit in ({"fps": 30}, {"frames": "x", "fps": 30}, {"frames": 10, "fps": 0}, "nope"):
+        (sdir / "engine_runs.json").unlink(missing_ok=True)
+        engine_runs.record_mp4(sdir, "final", engine_runs.EngineRun(None), sdir / "out" / "a.mp4",
+                               edit={"timeline_hash": "x", "fps": 30, "frames": 1290, "closing": None})
+        path = next(p for p in sdir.rglob("*.json") if "1290" in p.read_text("utf-8"))
+        data = json.loads(path.read_text("utf-8"))
+        data["final"]["edit"] = edit
+        path.write_text(json.dumps(data), "utf-8")
+        row = like.summary(sdir, {})
+        assert row["length_s"] == 40 and row["problem"] is None, edit

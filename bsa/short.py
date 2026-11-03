@@ -113,7 +113,8 @@ class Short:
     # approved engine stays the engine stage's own). Empty = the setting.
     render: dict = dc_field(default_factory=dict)
     # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in (never the
-    # provider or command). Empty = the settings.
+    # provider or command). Empty = the settings. "voice_for" names the provider its voice and speed were chosen for
+    # (new-short --like): under another provider they are not used. Without it (older shorts) they always apply.
     narrator: dict = dc_field(default_factory=dict)
     # Guidance for the storyboard copied from an earlier short (`new-short --like`): {"shots": count, "min_s": the
     # median shot length, "holds": shots with a hold}. Empty = none.
@@ -125,7 +126,7 @@ class Short:
     captions_translations: dict | None = None
 
 
-NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in")
+NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "voice_for")
 
 
 def _build(cls, data: dict):
@@ -387,7 +388,7 @@ def _render_problems(render) -> list[str]:
 
 
 def _narrator_problems(narrator) -> list[str]:
-    from bsa.settings import ENUMS, LEAD_IN_RANGE_S
+    from bsa.settings import ENUMS, lead_in_error, lead_in_ok
 
     if not isinstance(narrator, dict):
         return [f"narrator must be an object such as {{\"take_mode\": \"paragraph\"}}, got {narrator!r}"]
@@ -403,10 +404,11 @@ def _narrator_problems(narrator) -> list[str]:
         out.append(f"narrator.take_mode must be {' or '.join(ENUMS['narrator.take_mode'])}, got "
                    f"{narrator['take_mode']!r}")  # fmt: skip
     lead = narrator.get("lead_in")
-    if "lead_in" in narrator and (isinstance(lead, bool) or not isinstance(lead, (int, float))
-                                  or not LEAD_IN_RANGE_S[0] <= lead <= LEAD_IN_RANGE_S[1]):  # fmt: skip
-        out.append(f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to {LEAD_IN_RANGE_S[1]:g}, "
-                   f"got {lead!r}")  # fmt: skip
+    if "lead_in" in narrator and (isinstance(lead, bool) or not isinstance(lead, (int, float)) or not lead_in_ok(lead)):
+        out.append(lead_in_error(lead))
+    if "voice_for" in narrator and (not isinstance(narrator["voice_for"], str) or not narrator["voice_for"].strip()):
+        out.append(f"narrator.voice_for must name the narrator its voice was chosen for, such as \"kokoro\", got "
+                   f"{narrator['voice_for']!r}")  # fmt: skip
     return out
 
 

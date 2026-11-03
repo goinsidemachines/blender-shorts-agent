@@ -119,13 +119,15 @@ def word_times(lines, takes_dir: Path, run=None) -> dict[str, list[tuple[str, fl
         out: dict[str, list[tuple[str, float, float]]] = {}
         for i, v in _last_json(proc.stdout).items():
             try:
+                # A word without a time (Whisper can give an end of None) drops the whole take's words, never just
+                # that word: the cut then goes by characters for it rather than by timings with a gap in them.
                 out[i] = [(str(w[0]), float(w[1]), float(w[2])) for w in v["words"] if len(w) == 3]
                 if len(out[i]) != len(v["words"]):
                     del out[i]
             except (KeyError, TypeError, ValueError, IndexError):
                 out.pop(i, None)
         return out
-    except (NarrationError, OSError):
+    except (NarrationError, OSError, AttributeError):  # AttributeError: the JSON isn't an object of takes
         return None
 
 

@@ -23,7 +23,9 @@ def _label(record: dict) -> str:
     if provider == "custom":
         return "your voice tool"
     name = settings._PROVIDER_NAMES.get(provider, provider)
-    parts = [str(record["voice"])] if record.get("voice") else []
+    if not record.get("voice"):  # no voice on record: just the provider, never "Kokoro ()"
+        return str(name)
+    parts = [str(record["voice"])]
     try:
         parts.append(f"{float(record.get('speed') or 1.0):.1f}×")
     except (TypeError, ValueError):
@@ -40,23 +42,26 @@ def _edit_seconds(sdir: Path) -> float | None:
     return seconds if seconds > 0 else None
 
 
-def _finished(sdir: Path) -> bool:
+def _finished(sdir: Path) -> bool | None:
+    """True when the final stage is done; None when state.json is damaged (the list says so, never breaks)."""
     try:
         return "final" in jobstate.load_state(sdir)["stages"]
     except Exception:  # noqa: BLE001 - a damaged state never breaks the list
-        return False
+        return None
 
 
 def summary(sdir: Path, settings_: dict) -> dict:
     """One short's summary. A short.json that can't be read gives `problem` and None values; never raises."""
     sdir = Path(sdir)
     m = workspace._NUM.match(sdir.name)
+    finished = _finished(sdir)
     row = {"short": sdir.name, "number": int(m.group(1)) if m else None, "title": None, "style": None, "set": None,
-           "length_s": None, "narrator": "not narrated", "finished": _finished(sdir), "problem": None}  # fmt: skip
+           "length_s": None, "narrator": "not narrated", "finished": bool(finished),
+           "problem": None if finished is not None else "state.json damaged"}  # fmt: skip
     try:
         short = load_short(sdir / "source" / "short.json")
     except Exception as exc:  # noqa: BLE001
-        row["problem"] = f"short.json can't be read: {exc}"
+        row["problem"] = f"short.json can't be read: {exc}" + ("; state.json damaged" if finished is None else "")
         return row
     row["title"] = short.title
     k = kit.kit_for(settings_, short)
@@ -136,26 +141,35 @@ def _narrator_from(other_dir: Path, other, settings_: dict) -> tuple[dict, list[
     mine = narrate_run.narrator_for(settings_, _blank())
     mine["speed"] = float(mine.get("speed") or 1.0)
     mine["lead_in"] = float(mine["lead_in"])
-    return {k: v for k, v in theirs.items() if v != mine.get(k)}, notes
+    out = {k: v for k, v in theirs.items() if v != mine.get(k)}
+    if "voice" in out or "speed" in out:  # the narrator they belong to: under another one they are not used
+        out["voice_for"] = used
+    return out, notes
+
+
+class _Refused(Exception):
+    """A style value the current kit refuses (it is not copied)."""
 
 
 def _norm(path: str, value):
-    """A style value as the kit stores it (so "#e8b33a" equals "#E8B33A"); the value itself when the kit refuses it."""
+    """A style value as the kit stores it (so "#e8b33a" equals "#E8B33A"). _Refused when the kit refuses it now."""
     try:
         return kit.check(path, value, _must_exist=False)
-    except (ValueError, TypeError):
-        return value
+    except (ValueError, TypeError) as exc:
+        raise _Refused(path) from exc
 
 
 _SUB_KEYS = ("palette", "categories", "caption", "logo")
 
 
-def _style_from(style: dict, settings_: dict, look) -> dict:
-    """The other short's style keys (per sub-key for palette, categories, caption and logo) whose values differ from
-    what the user's brand gives a new short now. Equal ones are left out so the new short keeps following the brand."""
+def _style_from(style: dict, settings_: dict, look) -> tuple[dict, list[str]]:
+    """(the other short's style keys (per sub-key for palette, categories, caption and logo) whose values differ from
+    what the user's brand gives a new short now, the keys left out because the kit refuses their value now). Equal
+    ones are left out so the new short keeps following the brand."""
     base, _ = kit._merged(settings_, _blank(look))
     brand = settings.brand_for(settings_, _blank(look))
     out: dict = {}
+    refused: list[str] = []
     for key, value in style.items():
         if key not in kit._KIT_KEYS:  # prose and other keys: compared with the brand as written
             if brand.get(key) != value:
@@ -167,13 +181,20 @@ def _style_from(style: dict, settings_: dict, look) -> dict:
             sub = {}
             for k, v in value.items():
                 name = str(k).strip().lower() if key in ("palette", "categories") else k
-                if _norm(f"{key}.{k}", v) != cur.get(name):
-                    sub[k] = copy.deepcopy(v)
+                try:
+                    if _norm(f"{key}.{k}", v) != cur.get(name):
+                        sub[k] = copy.deepcopy(v)
+                except _Refused:
+                    refused.append(f"{key}.{k}")
             if sub:
                 out[key] = sub
-        elif _norm(key, value) != base.get(key):
-            out[key] = copy.deepcopy(value)
-    return out
+        else:
+            try:
+                if _norm(key, value) != base.get(key):
+                    out[key] = copy.deepcopy(value)
+            except _Refused:
+                refused.append(key)
+    return out, refused
 
 
 def copy_from(other: Path, settings_: dict) -> tuple[dict, list[str], list[str]]:
@@ -190,7 +211,8 @@ def copy_from(other: Path, settings_: dict) -> tuple[dict, list[str], list[str]]
     if short.look is not None and short.look != settings.look_mode(settings_, None):
         values["look"] = short.look
     if isinstance(short.style, dict) and short.style:
-        style = _style_from(short.style, settings_, values.get("look"))
+        style, refused = _style_from(short.style, settings_, values.get("look"))
+        notes += [f"{short.title}'s {key} isn't valid in your kit now, so it wasn't copied" for key in refused]
         if style:
             values["style"] = style
             if kit.kit_for(settings_, _blank(values.get("look"))) is None and kit.kit_for(settings_, short) is not None:

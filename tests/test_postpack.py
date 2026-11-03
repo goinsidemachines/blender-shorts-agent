@@ -293,3 +293,52 @@ def test_a_language_with_errors_is_flagged_everywhere_until_fixed(tmp_path):
     p.write_text(good, "utf-8")
     assert not {r["key"]: r for r in postpack.files(sdir, _short(sdir))}["srt-es"]["stale"]
     assert "languages" in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir))]
+
+
+def test_skipped_without_settings_reads_the_users_settings(tmp_path, monkeypatch):
+    from bsa import translations
+
+    s = {"website": "example.com", "closing": {"voice_line": "Find out more."}}
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps(s), "utf-8")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    sdir = pagefix.make_short(tmp_path, "done")
+    _closing_translated(sdir, "Find out more.")
+    assert translations.skipped(_short(sdir), s) == {}
+    assert translations.skipped(_short(sdir)) == {}  # a valid closing is not made to look wrong
+    _closing_translated(sdir, "Visit us.")
+    assert translations.skipped(_short(sdir)) == {"es": translations.OLD_ENGLISH}
+
+
+def test_a_removed_languages_files_are_left_and_said_not_current(tmp_path):
+    from bsa import captions
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    _translated(sdir, es=True, de=True)
+    captions.write_files(sdir, _short(sdir), {})
+    old = [sdir / "out" / "pendulum.de.srt", sdir / "out" / "pendulum.de.vtt"]
+    assert all(p.is_file() for p in old)
+    _translated(sdir, es=True)  # German removed
+    got = captions.write_files(sdir, _short(sdir), {})
+    assert got["left_over"] == {"de": [str(p) for p in old]} and set(got["languages"]) == {"es"}
+    assert all(p.is_file() for p in old)  # the user's files are never deleted
+    rows = {r["key"]: r for r in postpack.files(sdir, _short(sdir), settings={})}
+    for key in ("srt-de", "vtt-de"):
+        assert rows[key]["exists"] and rows[key]["stale"] and rows[key]["why"] == postpack.LANGUAGE_REMOVED
+    assert not rows["srt-es"]["stale"]
+    assert "Captions, de (SRT): out/pendulum.de.srt (Not current (language removed))" in postpack.markdown(
+        sdir, _short(sdir), {})
+    assert "pendulum.de.srt" not in {i["id"]: i["text"] for i in postpack.checklist_items(
+        sdir, _short(sdir), settings={})}.get("languages", "")
+    _translated(sdir, es=True, de=True)  # added back: current again, nothing left over
+    assert "left_over" not in captions.write_files(sdir, _short(sdir), {})
+
+
+def test_cli_captions_names_the_stale_lines_of_a_skipped_language(tmp_path):
+    from bsa import captions
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    _translated(sdir, de=False)
+    why = captions.write_files(sdir, _short(sdir), {})["skipped"]["de"]
+    assert why.startswith("Made for the old English (l01") and why.endswith("then run CLI captions SHORT")

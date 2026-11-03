@@ -269,7 +269,13 @@ def skipped(short, settings: dict | None = None) -> dict[str, str]:
     data = getattr(short, "captions_translations", None)
     if not isinstance(data, dict):
         return {}
-    settings = settings or {}
+    if settings is None:  # the user's settings, as `CLI captions` reads them: {} would make a valid closing look wrong
+        try:
+            from bsa import settings as settings_mod
+
+            settings = settings_mod.load_settings()
+        except Exception:  # noqa: BLE001 - no settings: the closing line is then not checked
+            settings = {}
     old = stale(short, settings)
     out: dict[str, str] = {}
     for lang, entry in data.items():
