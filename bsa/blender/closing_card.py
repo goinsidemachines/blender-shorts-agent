@@ -4,6 +4,8 @@ a card made from the brand (its background, font and accent colour) with "More a
 
 from __future__ import annotations
 
+import contextlib
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -83,11 +85,9 @@ def _text_rows(scene, cfg: dict, brand: dict, font_name: str | None, bg_png: Pat
     assert y < safe.bottom
 
 
-def _kit_rows(scene, cfg: dict, kit, card_dir: Path | None, bg_png: Path) -> None:
+def _kit_rows(scene, cfg: dict, kit, card_dir: Path | None, bg_png: Path, temp_dir: Path | None) -> None:
     """The kit's closing card: its background colour, then bsa.closing.kit_layout's cards as image strips (drawn into
-    `card_dir`, a temp folder without one)."""
-    import tempfile
-
+    `card_dir`, else `temp_dir`, make_card's temp folder)."""
     from bsa import cards, fonts
     from bsa.blender.cards import _at, _image, ensure
 
@@ -95,10 +95,8 @@ def _kit_rows(scene, cfg: dict, kit, card_dir: Path | None, bg_png: Path) -> Non
     _background(seq, _hex_colour(kit.palette["background"], 1.0), bg_png)
     caches = fonts.font_caches(Path(card_dir).parent) if card_dir is not None else fonts.font_caches()
     font, _ = cards.card_font_and_note(kit, caches)
-    if card_dir is None:
-        card_dir = Path(tempfile.mkdtemp(prefix="bsa-cards-"))
     for i, (spec, rect) in enumerate(kit_layout(cfg, kit, font)):
-        _image(seq, f"K_{spec.kind}", ensure(spec, card_dir), 2 + i, 1, 1, _at(spec, rect, (W, H)))
+        _image(seq, f"K_{spec.kind}", ensure(spec, card_dir or temp_dir), 2 + i, 1, 1, _at(spec, rect, (W, H)))
 
 
 def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = None, kit=None,
@@ -114,6 +112,7 @@ def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = Non
         bpy.data.scenes.remove(old)
     scene = bpy.data.scenes.new("ClosingCard")
     bg_png = out_png.with_name("closing-background.png")
+    stack = contextlib.ExitStack()  # a kit card's temp card folder, removed after the render
     try:
         r = scene.render
         r.resolution_x, r.resolution_y, r.resolution_percentage = W, H, 100
@@ -125,7 +124,9 @@ def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = Non
         if cfg.get("image"):
             seq.strips.new_image("Card", str(cfg["image"]), 1, 1, fit_method="FILL")
         elif kit is not None:
-            _kit_rows(scene, cfg, kit, card_dir, bg_png)
+            temp = None if card_dir is not None else Path(stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="bsa-cards-", ignore_cleanup_errors=True)))  # fmt: skip
+            _kit_rows(scene, cfg, kit, card_dir, bg_png, temp)
         else:
             _text_rows(scene, cfg, brand or {}, font_name, bg_png)
         if hasattr(r.image_settings, "media_type"):
@@ -139,6 +140,7 @@ def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = Non
     finally:
         bpy.data.scenes.remove(scene)
         bg_png.unlink(missing_ok=True)
+        stack.close()
     if not out_png.is_file() or out_png.stat().st_size == 0:
         raise RuntimeError(f"the closing card was not written to {out_png}")
     return out_png

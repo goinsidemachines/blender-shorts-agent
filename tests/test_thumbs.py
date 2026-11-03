@@ -418,7 +418,8 @@ def test_thumbs_in_blender(blender_run):
                  "test_drawn_boxes_match_the_cards_in_the_fonts_used",
                  "test_kit_thumbnail_draws_card_images_at_their_rects",
                  "test_kit_thumbnail_with_a_logo_draws_the_badge",
-                 "test_without_a_kit_no_card_images_are_made"):  # fmt: skip
+                 "test_without_a_kit_no_card_images_are_made",
+                 "test_kit_cards_without_a_card_dir_go_in_a_temp_folder_removed_after_the_render"):  # fmt: skip
         assert f"PASS {name}" in result.stdout
 
 

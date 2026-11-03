@@ -238,6 +238,9 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
             _follow(strip, points, span, cards, fixed, placed, (label_heroes or {}).get(shot.id), near)
 
 
+_TEMP_CARD_DIRS: list = []  # the edits' temp card folders without a short folder (tempfile.TemporaryDirectory)
+
+
 def _add_kit(short: Short, tl: Timeline, seq, k, sdir: Path | None, anchors: dict | None,
              label_heroes: dict | None) -> tuple[int, list[str], Path | None]:  # fmt: skip
     """The brand kit's cards as image strips where bsa.kitlayout puts them, drawn into `sdir`/cards (a temp folder
@@ -249,7 +252,11 @@ def _add_kit(short: Short, tl: Timeline, seq, k, sdir: Path | None, anchors: dic
 
     font, note = cards.card_font_and_note(k, font_caches(sdir))
     ov = kitlayout.build(short, tl, k, font, anchors, label_heroes)
-    cache_dir = Path(sdir) / "cards" if sdir is not None else Path(tempfile.mkdtemp(prefix="bsa-cards-"))
+    if sdir is not None:
+        cache_dir = Path(sdir) / "cards"
+    else:  # one temp folder per call, kept until Blender exits (the strips are encoded after this returns)
+        _TEMP_CARD_DIRS.append(tempfile.TemporaryDirectory(prefix="bsa-cards-", ignore_cleanup_errors=True))
+        cache_dir = Path(_TEMP_CARD_DIRS[-1].name)
     before = {s.name for s in seq.strips_all}
     add_overlay(seq, ov, cache_dir)
     placed = sum(1 for s in seq.strips_all if s.type == "IMAGE" and s.name not in before)

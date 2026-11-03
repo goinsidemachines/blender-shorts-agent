@@ -7,6 +7,7 @@ only builds the strips."""
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 from pathlib import Path
 
@@ -58,6 +59,12 @@ def render(lay: Layout, src_png: Path, out_png: Path, font_name: str | None, cac
     for downloaded weights). `notes`, when given, gets the font note and the glyph fallbacks. A brand kit's card (one
     with a `spec`) is its PNG from `card_dir` (drawn there when missing; a temp folder when None) as an image strip
     on the card's rect."""
+    with contextlib.ExitStack() as stack:  # the temp card folder, removed after the render
+        return _render(lay, src_png, out_png, font_name, cache_dirs, notes, card_dir, stack)
+
+
+def _render(lay: Layout, src_png: Path, out_png: Path, font_name: str | None, cache_dirs, notes, card_dir,
+            stack: contextlib.ExitStack) -> Path:  # fmt: skip
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     old = bpy.data.scenes.get(SCENE)
@@ -85,7 +92,8 @@ def render(lay: Layout, src_png: Path, out_png: Path, font_name: str | None, cac
         for i, card in enumerate(lay.cards):
             if card.spec is not None:
                 if card_dir is None:
-                    card_dir = Path(tempfile.mkdtemp(prefix="bsa-cards-"))
+                    card_dir = Path(stack.enter_context(
+                        tempfile.TemporaryDirectory(prefix="bsa-cards-", ignore_cleanup_errors=True)))  # fmt: skip
                 spec, size = card.spec, (card.spec.w, card.spec.h)
                 png = ensure(spec, card_dir)
                 s = _image(seq, f"K_{spec.kind}", png, 3 + i, strip_placement(Rect(0, 0, *size), card.rect, size,

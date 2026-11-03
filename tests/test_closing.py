@@ -168,7 +168,8 @@ def test_closing_card_in_blender(blender_run):
     result = blender_run(Path(__file__).resolve().parent / "blender" / "test_closing_card.py", timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
     for name in ("test_brand_card_from_the_website_alone", "test_user_image_fills_the_frame",
-                 "test_edit_ends_on_the_closing_card"):  # fmt: skip
+                 "test_edit_ends_on_the_closing_card",
+                 "test_kit_closing_card_without_a_card_dir_uses_a_temp_folder_removed_after_the_render"):  # fmt: skip
         assert f"PASS {name}" in result.stdout
 
 
@@ -258,7 +259,7 @@ def test_a_kit_closing_card_with_a_missing_logo_says_so_in_closing_json(tmp_path
     monkeypatch.setitem(sys.modules, "bsa.blender.pixels", SimpleNamespace(read_png=lambda p: np.zeros((4, 4, 4))))
     monkeypatch.setattr(closing, "zone_warnings", lambda rgba: [])
     (tmp_path / "stills").mkdir()
-    cfg, png, warnings = bsa_blender._closing_card(tmp_path, _short())
+    cfg, _, warnings = bsa_blender._closing_card(tmp_path, _short())
     assert made and made[0] is not None and cfg is not None
     want = kit.logo_missing(made[0].logo)
     assert want and warnings == [want]

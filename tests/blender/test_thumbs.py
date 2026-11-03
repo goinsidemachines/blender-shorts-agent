@@ -203,3 +203,18 @@ def test_without_a_kit_no_card_images_are_made():
     lay = thumbs.vertical(TEXT, HERO, STYLE)
     _check(lay, read_png(bsa.blender.thumbs.render(lay, src, tmp / "plain.png", None, card_dir=tmp / "cards")))
     assert not (tmp / "cards").exists()
+
+
+def test_kit_cards_without_a_card_dir_go_in_a_temp_folder_removed_after_the_render():
+    tmp = Path(tempfile.mkdtemp(prefix="bsa-kit-thumbs-tmp-"))
+    src = tmp / "src.png"
+    _source(src)
+    lay = thumbs.vertical(TEXT, HERO, _kit_style())
+    saved, tempfile.tempdir = tempfile.tempdir, str(tmp / "t")
+    (tmp / "t").mkdir()
+    try:
+        px = read_png(bsa.blender.thumbs.render(lay, src, tmp / "kit-temp.png", None))
+    finally:
+        tempfile.tempdir = saved
+    assert px.shape[:2] == (lay.size[1], lay.size[0])
+    assert not list((tmp / "t").iterdir())  # its one temp card folder is gone

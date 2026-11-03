@@ -87,3 +87,15 @@ def test_closing_card_without_a_kit_is_unchanged():
     assert not (tmp / "cards").exists()  # no card images drawn
     plain = read_png(closing_card.make_card(cfg, BRAND, tmp / "again.png"))
     assert np.array_equal(px, plain)
+
+
+def test_kit_closing_card_without_a_card_dir_uses_a_temp_folder_removed_after_the_render():
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "t").mkdir()
+    saved, tempfile.tempdir = tempfile.tempdir, str(tmp / "t")
+    try:
+        png = closing_card.make_card(closing.resolve({"website": "example.com"}), BRAND, tmp / "closing.png", kit=K)
+    finally:
+        tempfile.tempdir = saved
+    assert read_png(png).shape[:2] == (1920, 1080)
+    assert not list((tmp / "t").iterdir())

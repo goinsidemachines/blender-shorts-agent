@@ -775,3 +775,15 @@ def test_kit_end_card_uses_the_kits_font_unless_the_short_names_one():
     sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
     named = edit.find_font_file(short.style["font"], edit.font_dirs())
     assert all(Path(bpy.path.abspath(s.font.filepath)).name.lower() == named.name.lower() for s in _end_strips(sc))
+
+
+def test_kit_edit_without_a_short_folder_draws_its_cards_in_its_own_temp_folder():
+    """Each edit without a short folder gets one temp card folder, kept while Blender runs (the strips are encoded
+    after build_edit returns)."""
+    short, tl, frames, wav, out = _fixture()
+    n0 = len(edit._TEMP_CARD_DIRS)
+    for _ in range(2):
+        edit.build_edit(short, tl, frames, wav, out, {"handle": None, "brand": _kit()}, preset="preview")
+    made = edit._TEMP_CARD_DIRS[n0:]
+    assert len(made) == 2 and made[0].name != made[1].name
+    assert all(list(Path(d.name).glob("*.png")) for d in made)

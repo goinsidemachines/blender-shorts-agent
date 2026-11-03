@@ -43,6 +43,7 @@ def test_edit_in_blender(blender_run):
         "test_caption_draw_false_draws_no_captions_in_either_path",
         "test_a_pointer_crossing_the_title_card_passes_behind_it",
         "test_kit_end_card_uses_the_kits_font_unless_the_short_names_one",
+        "test_kit_edit_without_a_short_folder_draws_its_cards_in_its_own_temp_folder",
     ):
         assert f"PASS {name}" in result.stdout
 
