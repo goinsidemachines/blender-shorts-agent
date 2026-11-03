@@ -798,6 +798,9 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
     from bsa.short import save_short, validate
 
     line_id, say = getattr(args, "line", None), getattr(args, "say", None)
+    whole = bool(getattr(args, "take", False))
+    if whole and line_id is None:
+        raise CliError("--take needs --line: say which line's paragraph to re-take")
     if line_id is None:
         if say is not None:
             raise CliError("--say needs --line: say which line to re-take with these words.")
@@ -825,8 +828,18 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
     problem = nrun.retake_problem(sdir / "audio" / "vo", line_id)  # every refusal before anything is written
     if problem:
         raise CliError(problem)
+    take = None
+    if whole:
+        if nrun.narrator_for(s, short).get("take_mode") != "paragraph":
+            raise CliError("--take is for paragraph takes: narrator.take_mode is line")
+        if say is not None:
+            raise CliError("--say and --take don't go together: respell the line with --line --say, then re-take it.")
+        found = nrun.take_of(sdir / "audio" / "vo", line_id)
+        if found is None:
+            raise CliError(f"line {line_id} was not spoken in a paragraph take: re-take it with --line alone")
+        take = found["id"]
     try:
-        seed = nrun.retake(sdir / "audio" / "vo", line_id)
+        seed = (nrun.retake_take if whole else nrun.retake)(sdir / "audio" / "vo", line_id)
     except (ValueError, OSError) as exc:
         raise CliError(_one_line(exc)) from exc
     if edited is not None:
@@ -838,7 +851,7 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
         new = {ln.id: ln for ln in edited.lines}
         short.lines = edited.lines  # the run below speaks the new words
         voiced.lines = [new.get(ln.id, ln) for ln in voiced.lines]
-    return {"line": line_id, "seed": seed}
+    return {"line": line_id, "seed": seed, **({"take": take} if take else {})}
 
 
 def cmd_narrate(args) -> dict:
@@ -1367,6 +1380,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("short")
     sp.add_argument("--line", default=None, help="re-take this line only (a different reading)")
     sp.add_argument("--say", default=None, help="with --line: respell the line's spoken words first")
+    sp.add_argument("--take", action="store_true",
+                    help="with --line (paragraph take mode): re-speak the whole paragraph holding that line")  # fmt: skip
     sp.set_defaults(fn=cmd_narrate)
 
     sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE | list [MODEL] | test-custom")

@@ -214,6 +214,40 @@ def retake(out_dir: Path, line_id: str) -> int:
     return seed
 
 
+def take_of(out_dir: Path, line_id: str) -> dict | None:
+    """The paragraph take (narrator.json's `takes` entry) that holds the line; None when it was spoken on its own."""
+    return next((t for t in take_records(out_dir) if line_id in t["lines"]), None)
+
+
+def retake_take(out_dir: Path, line_id: str) -> int:
+    """Re-take the whole paragraph holding the line: save the take's next seed (and its lines' too, so no line is
+    ever spoken with an older one), then throw away every line of the take, the take itself and their durations, so
+    the next narration speaks the paragraph again with that seed. Returns the seed. Refuses (ValueError, touching
+    nothing) a line that isn't re-takeable or wasn't spoken in a paragraph take. Raises OSError, keeping the audio,
+    when the seed can't be saved."""
+    out_dir = Path(out_dir)
+    problem = retake_problem(out_dir, line_id)
+    if problem:
+        raise ValueError(problem)
+    take = take_of(out_dir, line_id)
+    if take is None:
+        raise ValueError(f"line {line_id} was not spoken in a paragraph take: re-take it with --line alone")
+    seeds = take_seeds(out_dir)
+    seed = max(take["seed"], *(seeds.get(i, FIRST_SEED) for i in take["lines"])) + 1
+    record = _read_record(out_dir)
+    record["seeds"] = {**seeds, **{i: seed for i in take["lines"]}}
+    record["takes"] = [{**t, "seed": seed} if t["id"] == take["id"] else t for t in take_records(out_dir)]
+    try:
+        _write_json(out_dir / RECORD_FILE, record)
+    except OSError as exc:
+        raise OSError(f"The take's next seed couldn't be saved ({exc}), so it was kept.") from exc
+    for i in take["lines"]:
+        (out_dir / f"{i}.wav").unlink(missing_ok=True)
+    (out_dir / take["file"]).unlink(missing_ok=True)
+    forget_durations(out_dir, take["lines"])
+    return seed
+
+
 def write_heard(out_dir: Path, lines, heard: dict | None, why_not: str | None) -> None:
     """heard.json: per line what the voice was asked to say (`text`), what Whisper heard (`said`) and the word error
     rate; `checked` false, with `why_not`, when the takes weren't checked."""
@@ -648,6 +682,8 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     kept_takes = [t for t in (take_records(out_dir) if same_voice else [])
                   if now.get(t["id"]) == t["lines"]
                   and all(old_lines.get(lid) == want["lines"][lid] for lid in t["lines"])]  # fmt: skip
+    # a take whose lines are all gone (each re-taken on its own, or the take re-taken) has nothing left to cut
+    kept_takes = [t for t in kept_takes if any((out_dir / f"{lid}.wav").is_file() for lid in t["lines"])]
     if want.get("take_mode") == "paragraph" and kept_takes:
         want["takes"] = kept_takes
     keep = {f"{t['id']}.wav" for t in kept_takes} if want.get("take_mode") == "paragraph" else set()

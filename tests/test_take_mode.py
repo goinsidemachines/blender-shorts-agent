@@ -35,7 +35,7 @@ for it in items:
     sentences = [s for s in re.split(r'(?<=[.!?])\\s+', it['text'].strip()) if s]
     frames = [0] * int(SR * 0.2)
     for k, s in enumerate(sentences):
-        f0 = 200 + 60 * k
+        f0 = 200 + 60 * k + 5 * (seed - 7)
         frames += [int(9000 * math.sin(2 * math.pi * f0 * i / SR)) for i in range(int(SR * 0.025 * len(s)))]
         if 'joined' not in s or k == len(sentences) - 1:
             frames += [0] * int(SR * 0.3)
@@ -84,6 +84,10 @@ class Env:
                               text=True, env=self.env, check=False)  # fmt: skip
         assert proc.returncode == 0, proc.stdout + proc.stderr
         return json.loads(proc.stdout)
+
+    def run_raw(self, *args):
+        return subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
+                              text=True, env=self.env, check=False)  # fmt: skip
 
     def calls(self) -> list[dict]:
         return [json.loads(x) for x in self.calls_file.read_text(encoding="utf-8").splitlines()]
@@ -166,3 +170,76 @@ def test_a_second_run_keeps_the_cut_takes_and_their_record(tmp_path):
 def test_line_mode_is_unchanged(tmp_path):
     for provider in ("local", "custom"):
         assert _run(tmp_path / provider, provider) == golden(provider)
+
+
+TWO_TAKES = [
+    "The pendulum swings out wide and then slowly comes back to where it started from before it goes again, over and over.",
+    "Gravity pulls it back down along the same arc every single time, no matter how far out it was first let go by hand.",
+    "Each swing takes about the same time as the one before it, even when the swings slowly grow a little smaller each time.",
+    "Only the length of its string can ever change how long a swing takes, and nothing else about it matters here at all.",
+]  # four lines of about 120 characters: two paragraph takes of two lines each
+
+
+def _vo_bytes(e):
+    return {p.name: p.read_bytes() for p in e.vo.glob("*.wav")}
+
+
+def test_retake_one_line_keeps_its_neighbours(tmp_path):
+    e = Env(tmp_path, texts=TWO_TAKES)
+    e.cli("narrate", e.short)
+    before = _vo_bytes(e)
+    e.calls_file.unlink()
+    out = e.cli("narrate", e.short, "--line", "l02")
+    assert out["status"] == "ok" and out["retake"] == {"line": "l02", "seed": 8}, out
+    after = _vo_bytes(e)
+    assert after["l02.wav"] != before["l02.wav"]  # a new reading, not the old audio
+    assert all(after[k] == before[k] for k in before if k != "l02.wav")  # the neighbours, byte for byte
+    calls = e.calls()
+    assert [(c["ids"], c["seed"], c["take"]) for c in calls] == [(["l02"], 8, "")]  # spoken alone
+    assert out["sources"]["l02"] == "line" and out["sources"]["l01"] == "take" and out["sources"]["l03"] == "take"
+    assert contract.check_take(e.vo / "l02.wav") == []
+
+
+def test_take_flag_respeaks_the_whole_paragraph_with_a_new_seed(tmp_path):
+    e = Env(tmp_path, texts=TWO_TAKES)
+    e.cli("narrate", e.short)
+    before = _vo_bytes(e)
+    e.calls_file.unlink()
+    out = e.cli("narrate", e.short, "--line", "l02", "--take")
+    assert out["retake"] == {"line": "l02", "seed": 8, "take": "t01"}, out
+    calls = e.calls()
+    assert [(c["seed"], c["texts"][0]) for c in calls] == [(8, takes.joined(takes.group(_short(TWO_TAKES).lines, _short(TWO_TAKES).shots)[0]))]
+    after = _vo_bytes(e)
+    assert after["l01.wav"] != before["l01.wav"] and after["l02.wav"] != before["l02.wav"]
+    assert after["l03.wav"] == before["l03.wav"] and after["l04.wav"] == before["l04.wav"]  # the other take
+    assert out["sources"] == {lid: "take" for lid in ("l01", "l02", "l03", "l04")}
+    record = json.loads((e.vo / nrun.RECORD_FILE).read_text(encoding="utf-8"))
+    assert {t["id"]: t["seed"] for t in record["takes"]} == {"t01": 8, "t02": 7}
+    assert nrun.take_of(e.vo, "l02")["id"] == "t01" and nrun.take_of(e.vo, "zz") is None
+    for lid in ("l01", "l02"):
+        assert contract.check_take(e.vo / f"{lid}.wav") == []
+    again = e.cli("narrate", e.short, "--line", "l01", "--take")  # and again: the next seed
+    assert again["retake"]["seed"] == 9
+
+
+def test_take_flag_refusals(tmp_path):
+    def refused(e, *args):
+        proc = e.run_raw(*args)
+        assert proc.returncode != 0
+        return proc.stdout + proc.stderr
+
+    e = Env(tmp_path, texts=TWO_TAKES)
+    e.cli("narrate", e.short)
+    before = _vo_bytes(e)
+    assert "--take needs --line: say which line's paragraph to re-take" in refused(e, "narrate", e.short, "--take")
+    # a line spoken alone has no paragraph take
+    record_path = e.vo / nrun.RECORD_FILE
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["takes"] = [t for t in record["takes"] if t["id"] != "t01"]
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    assert "line l01 was not spoken in a paragraph take: re-take it with --line alone" in refused(
+        e, "narrate", e.short, "--line", "l01", "--take")
+    assert _vo_bytes(e) == before  # nothing touched
+    e.cli("settings", "set", "narrator.take_mode", "line")
+    assert "--take is for paragraph takes: narrator.take_mode is line" in refused(
+        e, "narrate", e.short, "--line", "l01", "--take")

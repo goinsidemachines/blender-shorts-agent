@@ -235,3 +235,17 @@ def test_retake_saves_the_next_seed_before_throwing_the_take_away(tmp_path, monk
     with pytest.raises(OSError, match="can't save"):
         nrun.retake(vo, "l01")
     assert (vo / "l01.wav").is_file() and nrun.take_seeds(vo)["l01"] == 8  # no new seed: the take is kept
+
+
+def test_switching_take_mode_clears_the_take_files(voiced):
+    vo = voiced.short / "audio" / "vo"
+    for mode, other in (("paragraph", "line"), ("line", "paragraph")):
+        (vo / "takes").mkdir(exist_ok=True)
+        (vo / "takes" / "t01.wav").write_bytes(b"old take")
+        record = json.loads((vo / nrun.RECORD_FILE).read_text(encoding="utf-8"))
+        record["takes"] = [{"id": "t01", "lines": ["l01", "l02"], "seed": 7, "file": "takes/t01.wav"}]
+        (vo / nrun.RECORD_FILE).write_text(json.dumps(record), encoding="utf-8")
+        voiced.cli("settings", "set", "narrator.take_mode", mode)  # a different take mode than the takes were made in
+        voiced.cli("narrate", voiced.short)
+        assert not list((vo / "takes").glob("*.wav")), mode
+        assert "takes" not in json.loads((vo / nrun.RECORD_FILE).read_text(encoding="utf-8")), mode
