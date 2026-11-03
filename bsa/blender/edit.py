@@ -7,7 +7,6 @@ Text strip geometry: the VSE places text by a normalised anchor (0-1, origin bot
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -25,8 +24,10 @@ from bsa.fonts import (  # noqa: F401 - find_font_file, font_dirs re-exported
     resolve,
 )
 from bsa.layout import H, Rect, W, caption_rect, end_card_band, safe_rect
-from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-exported for callers of the edit
+from bsa.overlays import (  # noqa: F401 - the text sizes, estimates and colours are re-exported for callers
+    BADGE_COLOR,
     BADGE_SIZE,
+    BOX_COLOR,
     CAPTION_MARGIN,
     CAPTION_SIZE,
     CHAR_W,
@@ -36,6 +37,7 @@ from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-e
     NEAR_WRAP_PX,
     SMALL_MARGIN,
     STACK_GAP_PX,
+    caption_colours,
     caption_size,
     captions,
     corner_stack,
@@ -44,6 +46,7 @@ from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-e
 )
 from bsa.overlays import est_lines as _est_lines
 from bsa.overlays import est_width as _est_width
+from bsa.overlays import hex_colour as _hex_colour  # noqa: F401 - moved to overlays; closing_card imports it here
 from bsa.settings import end_card
 from bsa.short import Short, label_near, label_text
 from bsa.timeline import Timeline, end_card_start
@@ -51,8 +54,6 @@ from bsa.timeline import Timeline, end_card_start
 END_SIZE = 72
 END_LINE_SIZE = 44
 END_GAP_PX = 24  # clear space between the end-card line's box and the @handle box
-BOX_COLOR = (0.02, 0.025, 0.03, 0.55)
-BADGE_COLOR = (1.0, 0.8, 0.35, 1.0)
 
 CH_SOUND, CH_CAPTION, CH_BADGE, CH_LABEL, CH_END = 2, 10, 11, 12, 30
 
@@ -99,31 +100,6 @@ def font_used(scene) -> str:
 def font_note(scene) -> str | None:
     """Why the edit used another font than the style named (a missing font or weight), or None."""
     return scene.get(FONT_NOTE_PROP) or None
-
-
-def _hex_colour(value, alpha: float = 1.0):
-    """'#RRGGBB' or '#RRGGBBAA' as an RGBA tuple of 0..1 floats; None when it is not one. A colour the user gives
-    as 6 digits is opaque (alpha 1, the default); 8 digits keep their own alpha."""
-    text = str(value or "").strip().lstrip("#")
-    if not re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text):
-        return None
-    rgba = [int(text[i : i + 2], 16) / 255 for i in range(0, len(text), 2)]
-    return tuple(rgba) if len(rgba) == 4 else (*rgba, alpha)
-
-
-def caption_colours(short: Short, settings: dict) -> tuple[tuple, tuple]:
-    """(text, box) colours of the captions: `brand.caption` `color` and `box` from settings (not for a short with its
-    own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark see-through box
-    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#14161A80") keep their alpha."""
-    from bsa.settings import brand_for
-
-    cap = {}
-    for src in (brand_for(settings, short).get("caption"), short.style.get("caption")):
-        if isinstance(src, dict):
-            cap.update(src)
-    text = _hex_colour(cap.get("color") or cap.get("colour"), 1.0) or (1.0, 1.0, 1.0, 1.0)
-    box = _hex_colour(cap.get("box") or cap.get("box_color") or cap.get("box_colour"), 1.0) or BOX_COLOR
-    return text, box
 
 
 def glyph_fallbacks(scene) -> list[str]:

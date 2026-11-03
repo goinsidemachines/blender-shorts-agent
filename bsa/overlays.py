@@ -6,6 +6,7 @@ screen before anything renders. Pixels, origin at the top-left of the 1080x1920 
 from __future__ import annotations
 
 import math
+import re
 
 from bsa.layout import H, Rect, caption_rect, place_label, safe_rect
 
@@ -19,6 +20,33 @@ SMALL_MARGIN = 0.010
 STACK_GAP_PX = 12
 NEAR_GAP_PX = 16  # a near label's box sits this far above its object's top
 NEAR_WRAP_PX = 420  # near labels wrap narrower than the safe area
+BOX_COLOR = (0.02, 0.025, 0.03, 0.55)  # the captions' dark see-through box
+BADGE_COLOR = (1.0, 0.8, 0.35, 1.0)
+
+
+def hex_colour(value, alpha: float = 1.0):
+    """'#RRGGBB' or '#RRGGBBAA' as an RGBA tuple of 0..1 floats; None when it is not one. A colour the user gives
+    as 6 digits is opaque (alpha 1, the default); 8 digits keep their own alpha."""
+    text = str(value or "").strip().lstrip("#")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text):
+        return None
+    rgba = [int(text[i : i + 2], 16) / 255 for i in range(0, len(text), 2)]
+    return tuple(rgba) if len(rgba) == 4 else (*rgba, alpha)
+
+
+def caption_colours(short, settings: dict) -> tuple[tuple, tuple]:
+    """(text, box) colours of the captions: `brand.caption` `color` and `box` from settings (not for a short with its
+    own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark see-through box
+    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#14161A80") keep their alpha."""
+    from bsa.settings import brand_for
+
+    cap = {}
+    for src in (brand_for(settings, short).get("caption"), (short.style or {}).get("caption")):
+        if isinstance(src, dict):
+            cap.update(src)
+    text = hex_colour(cap.get("color") or cap.get("colour"), 1.0) or (1.0, 1.0, 1.0, 1.0)
+    box = hex_colour(cap.get("box") or cap.get("box_color") or cap.get("box_colour"), 1.0) or BOX_COLOR
+    return text, box
 
 
 def est_lines(text: str, size_px: float, wrap_px: float) -> int:

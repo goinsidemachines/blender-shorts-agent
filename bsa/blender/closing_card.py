@@ -9,24 +9,23 @@ from pathlib import Path
 import bpy
 
 from bsa.blender.edit import CAPTION_MARGIN, CHAR_W, LINE_H, _hex_colour, _load_font, _norm, _Texts
-from bsa.closing import COVERED_RIGHT, card_rows
+from bsa.closing import (  # noqa: F401 - the card colours moved to bsa.closing; re-exported here
+    ACCENT,
+    BACKGROUND,
+    COVERED_RIGHT,
+    DARK,
+    LIGHT,
+    card_rows,
+    on_colour,
+)
 from bsa.layout import H, W, safe_rect
 
-BACKGROUND = "#14161A"  # without a brand background
-ACCENT = "#FFC800"  # without a brand accent
-DARK, LIGHT = (0.08, 0.086, 0.1, 1.0), (1.0, 1.0, 1.0, 1.0)
 SIZES = {"lead": 56, "pill": 84, "handle": 52}
 GAP_PX = 36
 TOP_PX = 640  # the block's top: in the upper half, far from the covered bottom
 
 
-def _luma(rgba) -> float:
-    return 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
-
-
-def _on(rgba):
-    """Dark or white text, whichever reads better on `rgba`."""
-    return DARK if _luma(rgba) > 0.5 else LIGHT
+_on = on_colour
 
 
 def image_size(path: Path) -> tuple[int, int]:

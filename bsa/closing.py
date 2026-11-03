@@ -28,6 +28,14 @@ INFO_FILE = "closing.json"  # what made it and its warnings: <short>/stills/clos
 EDGE_LEVEL = 48  # a luminance step (0-255) between neighbouring pixels this big is an edge, as text has
 TEXT_EDGE_SHARE = 0.004  # a covered zone with more of its pixels on edges than this probably has text in it
 OWN_KEYS = ("image", "seconds", "voice_line", "website")
+BACKGROUND = "#14161A"  # the made card's background without a brand background
+ACCENT = "#FFC800"  # without a brand accent
+DARK, LIGHT = (0.08, 0.086, 0.1, 1.0), (1.0, 1.0, 1.0, 1.0)
+
+
+def on_colour(rgba) -> tuple:
+    """Dark or white text, whichever reads better on `rgba` (0..1 floats)."""
+    return DARK if 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2] > 0.5 else LIGHT
 
 
 def _text(value) -> str | None:

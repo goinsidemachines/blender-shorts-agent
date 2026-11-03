@@ -1,0 +1,439 @@
+"""Thumbnail layout and hero picking, pure (no bpy): where the hero frame is cut from, where it lands, and where the
+title, kicker, fact and @handle cards sit on the vertical (1080x1920) and landscape (1280x720) thumbnails, so the text
+keeps off the subject and out of the zones the platforms cover. `BLENDER thumbs` draws a Layout in the sequencer.
+Pixels, origin at the top-left."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from bsa.layout import Rect, overlap_area
+from bsa.overlays import CHAR_W, LINE_H, est_lines, est_width
+
+VERTICAL = (1080, 1920)
+LANDSCAPE = (1280, 720)
+SIZES = {"1080x1920": VERTICAL, "1280x720": LANDSCAPE}
+# Below the top 6 %, above the bottom 20 %, clear of the right 12 %, 48 px from the left.
+V_SAFE = Rect(48, 115.2, 902.4, 1420.8)
+ZOOMS = (1.0, 1.05, 1.10, 1.15)
+COVER_LIMIT = 0.02  # text may cover at most this share of the hero box
+PLACEMENTS = ("top band", "middle-left", "smaller title")
+SMALLER = 0.8
+V_SIZES = {"title": 112, "kicker": 52, "fact": 44, "handle": 36}
+L_SIZES = {"title": 76, "kicker": 40, "handle": 30}
+MIN_TITLE = {"1080x1920": 60, "1280x720": 72}
+PAD = {"title": 28, "pill": 18}
+GAP = 20
+PANEL_W = 576
+SAMPLE_EVERY = 5
+MIN_APART = 30
+
+COVERS_SUBJECT = "the title covers the subject"
+NO_HERO = "no subject box at this frame, so the centre 60 % of the frame is used"
+FROM_PREVIEW = "from the preview: remake after the final render"
+
+_SRC_W, _SRC_H = VERTICAL  # the source frames are the short's 1080x1920 renders
+_HERO_AT = {"top band": (0.5, 0.62), "middle-left": (0.68, 0.5), "smaller title": (0.5, 0.62)}
+_MIDDLE_Y = 0.45 * 1920
+_L_DST = Rect(PANEL_W, 0, LANDSCAPE[0] - PANEL_W, LANDSCAPE[1])
+_L_X, _L_WRAP = 48, 480
+_WHY = ("the middle of the longest shot", "the hook shot's fullest frame",
+        "the frame where the subject fills the most of the safe area")  # fmt: skip
+
+
+@dataclass(frozen=True)
+class ThumbText:
+    title: tuple[str, ...]
+    kicker: str | None
+    fact: str | None
+
+
+def _clean(value) -> str | None:
+    text = value.strip() if isinstance(value, str) else ""
+    return text or None
+
+
+def text_from_post(p: dict) -> ThumbText | None:
+    """The thumbnail text from a post block (bsa.post.fields), or None without a title."""
+    th = p.get("thumbnail") if isinstance(p, dict) else None
+    if not isinstance(th, dict):
+        return None
+    raw = th.get("title")
+    lines = raw.split("\n") if isinstance(raw, str) else raw
+    if not isinstance(lines, list):
+        return None
+    title = tuple(x.strip() for x in lines if isinstance(x, str) and x.strip())
+    if not title:
+        return None
+    return ThumbText(title, _clean(th.get("kicker")), _clean(th.get("fact")))
+
+
+@dataclass(frozen=True)
+class Hero:
+    shot: str
+    frame: int
+    crop: tuple | None = None
+    why: str = ""
+
+
+def parse_hero(spec: str) -> Hero:
+    """'s03@289' as Hero("s03", 289)."""
+    m = re.fullmatch(r"\s*([^@\s]+)@(\d+)\s*", str(spec))
+    if not m:
+        raise ValueError(f"hero {spec!r} must have the form SHOT@FRAME, like s03@289")
+    return Hero(m.group(1), int(m.group(2)))
+
+
+def check_heroes(heroes: list[Hero], spans: dict) -> list[str]:
+    """What is wrong with the heroes: a shot that is not in the short, a frame outside its shot."""
+    errors = []
+    for h in heroes:
+        span = spans.get(h.shot)
+        if span is None:
+            errors.append(f"no shot {h.shot!r} in short.json")
+        elif not span.f0 <= h.frame <= span.f1:
+            errors.append(f"{h.shot}@{h.frame} is not in shot {h.shot} (frames {span.f0} to {span.f1})")
+    return errors
+
+
+@dataclass(frozen=True)
+class ThumbStyle:
+    title: tuple
+    title_box: tuple
+    kicker: tuple
+    kicker_box: tuple
+    fact: tuple
+    fact_box: tuple
+    handle: tuple
+    handle_box: tuple
+    panel: tuple
+    font: str | None = None
+    handle_text: str | None = None
+
+
+def style_for(short, s: dict) -> ThumbStyle:
+    """The thumbnail's colours and font from the captions, the brand and the short's own style: the title in the
+    caption colours, the kicker on the palette's accent, the fact white on the caption box (less see-through), the
+    @handle in the badge colour, the landscape panel in the palette's background."""
+    from bsa.closing import ACCENT, BACKGROUND, on_colour
+    from bsa.overlays import BADGE_COLOR, BOX_COLOR, caption_colours, hex_colour
+    from bsa.settings import brand_for
+
+    s = s or {}
+    brand = brand_for(s, short)
+    own = getattr(short, "style", None) or {}
+    palette: dict = {}
+    for src in (brand.get("palette"), own.get("palette")):
+        if isinstance(src, dict):
+            palette.update(src)
+    text, box = caption_colours(short, s)
+    accent = hex_colour(palette.get("accent")) or hex_colour(ACCENT)
+    fact_box = (*BOX_COLOR[:3], 0.85)
+    font = str(own.get("font") or brand.get("font") or "").strip() or None
+    handle = str(s.get("handle") or "").strip().lstrip("@")
+    return ThumbStyle(
+        title=text, title_box=box, kicker=on_colour(accent), kicker_box=accent, fact=(1.0, 1.0, 1.0, 1.0),
+        fact_box=fact_box, handle=BADGE_COLOR, handle_box=fact_box,
+        panel=hex_colour(palette.get("background")) or hex_colour(BACKGROUND), font=font,
+        handle_text="@" + handle if handle else None,
+    )  # fmt: skip
+
+
+@dataclass
+class Card:
+    kind: str  # "title", "kicker", "fact" or "handle"
+    text: str
+    size: int
+    rect: Rect  # the card's box: the text plus `pad` on every side
+    colour: tuple
+    box: tuple
+    pad: float
+
+
+@dataclass
+class Layout:
+    size: tuple[int, int]
+    src: Rect  # the part of the source frame shown
+    dst: Rect  # where it lands in the thumbnail
+    hero: Rect  # the hero box in thumbnail pixels
+    cards: list[Card]
+    placement: str
+    panel: Rect | None
+    panel_colour: tuple | None
+    backdrop: str | None
+    warnings: list[str]
+
+
+def _area(r: Rect) -> float:
+    return max(r.w, 0) * max(r.h, 0)
+
+
+def _clip(r: Rect, frame: Rect) -> Rect:
+    x0, y0 = max(r.x, frame.x), max(r.y, frame.y)
+    x1, y1 = min(r.right, frame.right), min(r.bottom, frame.bottom)
+    return Rect(x0, y0, max(x1 - x0, 0), max(y1 - y0, 0))
+
+
+def hero_box(boxes: list, frame=VERTICAL) -> tuple[Rect, list[str]]:
+    """The union of the non-None [x0, y0, x1, y1] boxes, clipped to the frame; without any, the centre 60 % of the
+    frame and the NO_HERO warning."""
+    fw, fh = frame
+    good = [b for b in boxes or [] if isinstance(b, list | tuple) and len(b) == 4]
+    if good:
+        x0, y0 = max(min(b[0] for b in good), 0), max(min(b[1] for b in good), 0)
+        x1, y1 = min(max(b[2] for b in good), fw), min(max(b[3] for b in good), fh)
+        if x1 > x0 and y1 > y0:
+            return Rect(x0, y0, x1 - x0, y1 - y0), []
+    return Rect(fw * 0.2, fh * 0.2, fw * 0.6, fh * 0.6), [NO_HERO]
+
+
+def covered(cards: list[Card], hero: Rect) -> float:
+    """The cards' summed overlap with the hero box, as a share of its area (0 for an empty box)."""
+    area = _area(hero)
+    return sum(overlap_area(c.rect, hero) for c in cards) / area if area > 0 else 0.0
+
+
+def _title_size(lines: tuple[str, ...], base: float, wrap: float, minimum: int) -> int:
+    """The title size: `base`, shrunk so the widest line fits `wrap`, never below `minimum`."""
+    longest = max(len(x) for x in lines)
+    fit = wrap / (longest * CHAR_W) if longest else base
+    return max(int(min(base, fit)), minimum)
+
+
+def _card(kind: str, text: str, size: int, pad: float, wrap: float, colour: tuple, box: tuple,
+          x: float = 0.0, y: float = 0.0) -> Card:  # fmt: skip
+    """A card at (x, y) with its text wrapped at `wrap` (the card is `wrap` + 2 * pad wide at most)."""
+    w = est_width(text, size, wrap)
+    h = est_lines(text, size, wrap) * size * LINE_H
+    return Card(kind, text, size, Rect(x, y, w + 2 * pad, h + 2 * pad), colour, box, pad)
+
+
+def _moved(c: Card, x: float, y: float) -> Card:
+    return Card(c.kind, c.text, c.size, Rect(x, y, c.rect.w, c.rect.h), c.colour, c.box, c.pad)
+
+
+def _v_cards(text: ThumbText, style: ThumbStyle, placement: str) -> list[Card]:
+    k = SMALLER if placement == "smaller title" else 1.0
+    t_wrap = V_SAFE.w - 2 * PAD["title"]
+    p_wrap = V_SAFE.w - 2 * PAD["pill"]
+    t_size = _title_size(text.title, V_SIZES["title"] * k, t_wrap, MIN_TITLE["1080x1920"])
+    stack = [_card("title", "\n".join(text.title), t_size, PAD["title"], t_wrap, style.title, style.title_box)]
+    if text.kicker:
+        stack.append(_card("kicker", text.kicker, round(V_SIZES["kicker"] * k), PAD["pill"], p_wrap, style.kicker,
+                           style.kicker_box))  # fmt: skip
+    if text.fact:
+        stack.append(_card("fact", text.fact, round(V_SIZES["fact"] * k), PAD["pill"], p_wrap, style.fact,
+                           style.fact_box))  # fmt: skip
+    out, top = [], V_SAFE.y
+    if style.handle_text:
+        badge = _card("handle", style.handle_text, round(V_SIZES["handle"] * k), PAD["pill"], p_wrap, style.handle,
+                      style.handle_box, V_SAFE.x, V_SAFE.y)  # fmt: skip
+        out.append(badge)
+        top = badge.rect.bottom + GAP
+    total = sum(c.rect.h for c in stack) + GAP * (len(stack) - 1)
+    y = top
+    if placement == "middle-left":
+        y = max(min(_MIDDLE_Y - total / 2, V_SAFE.bottom - total), top)
+    for c in stack:
+        x = V_SAFE.x if placement == "middle-left" else V_SAFE.x + (V_SAFE.w - c.rect.w) / 2
+        out.append(_moved(c, x, y))
+        y += c.rect.h + GAP
+    return out
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return min(max(v, lo), hi)
+
+
+def _place(cx: float, cy: float, w: float, h: float, ax: float = 0.5, ay: float = 0.5) -> Rect:
+    """A w x h window with the point (cx, cy) at (ax, ay) of it, clamped inside the source frame."""
+    w, h = min(w, _SRC_W), min(h, _SRC_H)
+    return Rect(_clamp(cx - ax * w, 0, _SRC_W - w), _clamp(cy - ay * h, 0, _SRC_H - h), w, h)
+
+
+def _crop_rect(crop) -> Rect:
+    x0, y0, x1, y1 = (float(v) for v in crop)
+    return Rect(x0, y0, x1 - x0, y1 - y0)
+
+
+def _crop_window(crop, aspect: float) -> Rect:
+    """The crop grown to `aspect` (w / h) around its centre, clamped inside the source frame."""
+    c = _crop_rect(crop)
+    w, h = c.w, c.h
+    if h <= 0 or w / h > aspect:
+        h = w / aspect
+    else:
+        w = h * aspect
+    if w > _SRC_W:
+        w, h = _SRC_W, _SRC_W / aspect
+    if h > _SRC_H:
+        w, h = _SRC_H * aspect, _SRC_H
+    return _place(c.x + c.w / 2, c.y + c.h / 2, w, h)
+
+
+def _mapped(hero: Rect, src: Rect, dst: Rect) -> Rect:
+    """The hero box in thumbnail pixels, clipped to where the frame lands."""
+    s = dst.w / src.w
+    r = Rect(dst.x + (hero.x - src.x) * s, dst.y + (hero.y - src.y) * s, hero.w * s, hero.h * s)
+    return _clip(r, dst)
+
+
+def vertical(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None = None) -> Layout:
+    """The 1080x1920 thumbnail: the hero frame scaled to fill, zoomed up to 15 % so the cards (title, kicker, fact,
+    and the @handle badge top-left) clear the hero box. Placements in PLACEMENTS order, zooms in ZOOMS order inside
+    each; the first that covers at most COVER_LIMIT of the hero wins, else the least covered with COVERS_SUBJECT."""
+    dst = Rect(0, 0, *VERTICAL)
+    tries = []
+    for placement in PLACEMENTS:
+        cards = _v_cards(text, style, placement)
+        ax, ay = _HERO_AT[placement]
+        for z in (1.0,) if crop else ZOOMS:
+            if crop:
+                src = _crop_window(crop, VERTICAL[0] / VERTICAL[1])
+            else:
+                src = _place(hero.x + hero.w / 2, hero.y + hero.h / 2, _SRC_W / z, _SRC_H / z, ax, ay)
+            box = _mapped(hero, src, dst)
+            cover = covered(cards, box)
+            lay = Layout(VERTICAL, src, dst, box, cards, placement, None, None, None, [])
+            if cover <= COVER_LIMIT:
+                return lay
+            tries.append((cover, len(tries), lay))
+    best = min(tries, key=lambda t: t[:2])[2]
+    best.warnings.append(COVERS_SUBJECT)
+    return best
+
+
+def landscape(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None = None,
+              backdrop: str | None = None) -> Layout:  # fmt: skip
+    """The 1280x720 thumbnail: the hero cut out around its box (or the crop) on the right, the title, kicker and
+    @handle left-aligned on a panel in the palette's background on the left, the block centred vertically.
+    `backdrop` (an image to show instead of the plain panel) is only carried."""
+    t_wrap = _L_WRAP - 2 * PAD["title"]
+    p_wrap = _L_WRAP - 2 * PAD["pill"]
+    t_size = _title_size(text.title, L_SIZES["title"], t_wrap, MIN_TITLE["1280x720"])
+    cards = [_card("title", "\n".join(text.title), t_size, PAD["title"], t_wrap, style.title, style.title_box)]
+    if text.kicker:
+        cards.append(_card("kicker", text.kicker, L_SIZES["kicker"], PAD["pill"], p_wrap, style.kicker,
+                           style.kicker_box))  # fmt: skip
+    if style.handle_text:
+        cards.append(_card("handle", style.handle_text, L_SIZES["handle"], PAD["pill"], p_wrap, style.handle,
+                           style.handle_box))  # fmt: skip
+    total = sum(c.rect.h for c in cards) + GAP * (len(cards) - 1)
+    y = max((LANDSCAPE[1] - total) / 2, 0)
+    placed = []
+    for c in cards:
+        placed.append(_moved(c, _L_X, y))
+        y += c.rect.h + GAP
+    b = _crop_rect(crop) if crop else hero
+    aspect = _L_DST.w / _L_DST.h
+    w = _clamp(max(b.w, b.h * aspect) * 1.25, 432, _SRC_W)
+    src = _place(b.x + b.w / 2, b.y + b.h / 2, w, w / aspect)
+    panel = Rect(0, 0, PANEL_W, LANDSCAPE[1])
+    box = _mapped(hero, src, _L_DST)
+    lay = Layout(LANDSCAPE, src, _L_DST, box, placed, "left panel", panel, style.panel, backdrop, [])
+    if covered(placed, box) > COVER_LIMIT:  # cannot happen: the cards stay on the panel
+        lay.warnings.append(COVERS_SUBJECT)
+    return lay
+
+
+def _r(r: Rect | None) -> list | None:
+    return None if r is None else [r.x, r.y, r.w, r.h]
+
+
+def _card_dict(c: Card) -> dict:
+    return {"kind": c.kind, "text": c.text, "size": c.size, "rect": _r(c.rect), "colour": list(c.colour),
+            "box": list(c.box), "pad": c.pad}  # fmt: skip
+
+
+def layout_dict(lay: Layout) -> dict:
+    """A Layout as JSON: Rects as [x, y, w, h], colours as lists."""
+    return {
+        "size": list(lay.size),
+        "src": _r(lay.src),
+        "dst": _r(lay.dst),
+        "hero": _r(lay.hero),
+        "cards": [_card_dict(c) for c in lay.cards],
+        "placement": lay.placement,
+        "panel": _r(lay.panel),
+        "panel_colour": None if lay.panel_colour is None else list(lay.panel_colour),
+        "backdrop": lay.backdrop,
+        "warnings": list(lay.warnings),
+    }
+
+
+def sample_frames(f0: int, f1: int, every: int = SAMPLE_EVERY) -> list[int]:
+    """f0, every `every`th frame after it, and f1."""
+    out = list(range(f0, f1 + 1, max(int(every), 1)))
+    if out and out[-1] != f1:
+        out.append(f1)
+    return out
+
+
+def fill(box: Rect | None) -> float:
+    """How much of the vertical safe box the subject box fills (0 to 1)."""
+    return 0.0 if box is None else overlap_area(box, V_SAFE) / _area(V_SAFE)
+
+
+def _middle(span, flagged: set[int]) -> int | None:
+    mid = (span.f0 + span.f1) // 2
+    good = [f for f in range(span.f0, span.f1 + 1) if f not in flagged]
+    return min(good, key=lambda f: (abs(f - mid), f)) if good else None
+
+
+def _fullest(spans: list, flagged: set[int], fills: dict) -> tuple | None:
+    """(span, frame) of the sampled unflagged frame with the largest fill (ties: the earliest), or None."""
+    best = None
+    for span in spans:
+        for f in sample_frames(span.f0, span.f1):
+            if f in flagged or f not in fills:
+                continue
+            if best is None or fills[f] > best[0] or (fills[f] == best[0] and f < best[2]):
+                best = (fills[f], span, f)
+    return None if best is None else (best[1], best[2])
+
+
+def pick_heroes(spans: list, flagged: set[int], fills: dict[int, float], hook: str) -> list[Hero]:
+    """Up to three hero frames, each with its reason: the middle of the longest shot, the hook shot's fullest
+    frame, the frame where the subject fills the most of the safe area (in a shot not used yet when there is one).
+    Flagged frames are never picked; a pick within MIN_APART frames of an earlier one is dropped."""
+    picks: list[Hero] = []
+
+    def add(shot: str, frame: int | None, why: str) -> None:
+        if frame is not None and all(abs(frame - p.frame) >= MIN_APART for p in picks):
+            picks.append(Hero(shot, frame, None, why))
+
+    if spans:
+        longest = max(enumerate(spans), key=lambda t: (t[1].f1 - t[1].f0, t[0]))[1]
+        add(longest.id, _middle(longest, flagged), _WHY[0])
+    hook_span = next((s for s in spans if s.id == hook), None)
+    if hook_span is not None:
+        got = _fullest([hook_span], flagged, fills)
+        add(hook_span.id, got[1] if got else _middle(hook_span, flagged), _WHY[1])
+    used = {p.shot for p in picks}
+    got = _fullest([s for s in spans if s.id not in used], flagged, fills) or _fullest(spans, flagged, fills)
+    if got:
+        add(got[0].id, got[1], _WHY[2])
+    return picks
+
+
+def flagged_frames(sdir, run_key: str) -> set[int]:
+    """Every `frame` and `redo_frames` of the findings in review/frame-checks-<run_key>.json."""
+    try:
+        data = json.loads((Path(sdir) / "review" / f"frame-checks-{run_key}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    rows = data.get("findings") if isinstance(data, dict) else data
+    out: set[int] = set()
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        f = row.get("frame")
+        if isinstance(f, int) and not isinstance(f, bool):
+            out.add(f)
+        redo = row.get("redo_frames")
+        if isinstance(redo, list):
+            out.update(x for x in redo if isinstance(x, int) and not isinstance(x, bool))
+    return out
