@@ -48,7 +48,7 @@ class Shot:
     # [[from_s, to_s], ...] as for hold. The framing checks (subject too small, an empty half) skip those frames.
     wide: bool | str | list = False
     # Brand-kit cards (bsa.cards; only drawn with a kit): a title card (one line, 1-2 lines, or {"lines": [...],
-    # "highlight": index of the line in the accent colour}), a category tag, a step tag [n, of] and value bars
+    # "highlight": index of the line drawn bigger in palette.highlight}), a category tag, a step tag [n, of] and value bars
     # {"items": [{"label", "value", "text"?, "category"?}], "verdict"?, "max"?}.
     title_card: str | list | dict | None = None
     category: str | None = None

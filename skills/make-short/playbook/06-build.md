@@ -220,8 +220,8 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
 
   ```python
   kit = bsa.kit.kit_for(bsa.settings.load_settings(), short)   # None without a kit
-  font = bsa.cards.card_font(kit)
-  top = bsa.kitlayout.top_band(short, shot, kit, font)         # None when the shot has no top cards
+  font = bsa.cards.card_font(kit, bsa.fonts.font_caches(short_dir)) if kit else None  # the edit's font
+  top = bsa.kitlayout.top_band(short, shot, kit, font) if kit else layout.top_cards_band(labels=2)  # None: no top cards
   camera.frame_objects(cam, [hero], top=top, shot=shot.id)
   ```
 
