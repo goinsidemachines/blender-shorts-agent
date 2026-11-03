@@ -20,6 +20,7 @@ from bsa.blender.stills import render_still
 from bsa.kit import kit_from
 from bsa.short import Short
 
+scene_mod.use_gpu = lambda: "NONE"  # Cycles on the CPU, as the plan pins tests: the same noise on every machine
 PRESET = "bsa test tiny"
 scene_mod.PRESETS[PRESET] = {"percent": 10, "cycles": {"samples": 32, "denoise": False}, "eevee": {"samples": 8}}
 OUT = Path(os.environ.get("BSA_STYLE_TEST_OUT") or tempfile.mkdtemp())
@@ -82,11 +83,11 @@ def _lit_check(room: bool) -> None:
             got[engine] = _probe(sc, built["probe"], engine)
             want = looks.lit_expect(style, SPARK, kit, key=False)
             de = colour.delta_e(want, got[engine])
-            limit = looks.ROOM_LIT_DELTA_E[style][engine] if room else looks.LIT_DELTA_E[style]
+            limit = looks.lit_limit(style, engine, room)
             print(f"LIT room={room} {style} {engine} {colour.srgb_to_hex(got[engine])} want {want} dE {de:.2f}")
             assert de <= limit, (room, style, engine, de, limit)
         between = colour.delta_e(got["eevee"], got["cycles"])
-        limit = looks.ROOM_ENGINE_DELTA_E[style] if room else looks.ENGINE_DELTA_E[style]
+        limit = looks.engine_limit(style, room)
         print(f"ENGINES room={room} {style} dE {between:.2f}")
         assert between <= limit, (room, style, between, limit)
 
@@ -252,7 +253,7 @@ def test_match_engine_follows_the_render_engine_not_the_build():
     assert sc.render.engine == before
     de = colour.delta_e(looks.lit_expect("toy", SPARK, kit, key=False), got)
     print(f"BUILT EEVEE RENDERED CYCLES dE {de:.2f}")
-    assert de <= looks.ROOM_LIT_DELTA_E["toy"]["cycles"]
+    assert de <= looks.lit_limit("toy", "cycles", room=True)
 
 
 def test_engine_is_never_changed_by_apply():

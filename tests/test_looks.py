@@ -51,6 +51,8 @@ def test_lit_expect_and_tolerances():
     assert looks.lit_expect("toy", "#3B8ED9", k, key=False) == "#3B8ED9"
     assert looks.lit_expect("blueprint", "#123456", k, key=True) != k.palette["accent"]
     assert set(looks.LIT_DELTA_E) == set(looks.ENGINE_DELTA_E) == set(kit.STYLES)
+    assert looks.lit_limit("toy", "cycles") == 17.3 and looks.lit_limit("clay", "eevee") == 12
+    assert looks.lit_limit("toy", "eevee", room=True) == 16.8 and looks.engine_limit("realistic", room=True) == 14.9
 
 
 def _lin_mix_to_white(hex_, t):
