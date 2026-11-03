@@ -139,7 +139,10 @@ class _Texts:
         return self.font
 
     def add(self, text, f0, f1, channel, size, loc, anchor, margin, color=(1, 1, 1, 1), bold=True, wrap_px=None,
-            box=BOX_COLOR):
+            box=BOX_COLOR, frame=(W, H)):
+        """A text strip. `loc` is normalised by `frame` (the render's size: the edit's by default) and the text
+        wraps at `wrap_px` (default: the safe width less the box), as a share of the frame's width. `margin` is the
+        strip's box_margin as given (Blender takes it as a share of the image width)."""
         s = self.strips.new_effect(f"T_{text[:18]}", "TEXT", channel, f0, length=f1 - f0 + 1)
         s.text = text
         font = self._font_for(text)
@@ -151,7 +154,7 @@ class _Texts:
         s.location = loc
         s.anchor_x, s.anchor_y = anchor
         s.alignment_x = anchor[0]
-        s.wrap_width = (wrap_px if wrap_px is not None else safe_rect().w - 2 * margin * H) / W
+        s.wrap_width = (wrap_px if wrap_px is not None else safe_rect().w - 2 * margin * H) / frame[0]
         s.use_shadow = False  # the box gives the contrast
         s.use_box = True
         s.box_color = box

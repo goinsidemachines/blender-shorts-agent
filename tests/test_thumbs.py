@@ -1,6 +1,8 @@
 import importlib.util
 import json
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 from bsa import closing, overlays, thumbs
@@ -265,3 +267,342 @@ def test_moved_colour_helpers_keep_their_old_names():
     assert closing_card._on is closing.on_colour and closing_card.BACKGROUND == closing.BACKGROUND
     assert closing_card.ACCENT == closing.ACCENT and (closing_card.DARK, closing_card.LIGHT) == (closing.DARK,
                                                                                                closing.LIGHT)
+
+
+# --------------------------------------------------------------------------- the candidates store
+
+
+def _row(n, colour=None):
+    return {"n": n, "hero": {"shot": "s01", "frame": 10 * n, "crop": None, "why": ""}, "source": "final",
+            "files": thumbs.files_for(n), "layouts": {}, "findings": [], "warnings": [], "colour": colour}  # fmt: skip
+
+
+def test_files_and_paths():
+    assert thumbs.THUMBS_JSON == "review/thumbs.json" and thumbs.DIR == "review/thumbs"
+    assert thumbs.files_for(2) == {"1080x1920": "review/thumbs/2-1080x1920.png",
+                                   "1280x720": "review/thumbs/2-1280x720.png"}  # fmt: skip
+
+
+def test_load_without_and_with_a_damaged_store(tmp_path):
+    from bsa.review.store import StoreDamaged
+
+    assert thumbs.load(tmp_path) == {"candidates": [], "chosen": None}
+    (tmp_path / "review").mkdir()
+    (tmp_path / "review" / "thumbs.json").write_text("{", encoding="utf-8")
+    with pytest.raises(StoreDamaged):
+        thumbs.load(tmp_path)
+
+
+def test_put_candidates_replaces_or_remakes_one(tmp_path):
+    thumbs.put_candidates(tmp_path, [_row(1), _row(2), _row(3)])
+    assert [c["n"] for c in thumbs.load(tmp_path)["candidates"]] == [1, 2, 3]
+    data = thumbs.put_candidates(tmp_path, [_row(2, "new")], only=2)
+    assert [(c["n"], c["colour"]) for c in data["candidates"]] == [(1, None), (2, "new"), (3, None)]
+    assert thumbs.load(tmp_path) == data
+    thumbs.put_candidates(tmp_path, [_row(1, "a"), _row(2, "b")])  # all again: two now
+    assert [(c["n"], c["colour"]) for c in thumbs.load(tmp_path)["candidates"]] == [(1, "a"), (2, "b")]
+    thumbs.put_candidates(tmp_path, [_row(4)], only=4)  # a new one goes in order
+    assert [c["n"] for c in thumbs.load(tmp_path)["candidates"]] == [1, 2, 4]
+
+
+def test_remaking_the_chosen_candidate_clears_the_choice(tmp_path):
+    import pagefix
+
+    sdir = pagefix.make_short(tmp_path, "story")
+    pagefix.write_thumbs(sdir, 2)
+    path = sdir / thumbs.THUMBS_JSON
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["chosen"] = {"n": 2, "files": {"1080x1920": "out/thumbnail-1080x1920.png"}}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    (sdir / "out").mkdir(exist_ok=True)
+    for size in thumbs.SIZES:
+        (sdir / "out" / f"thumbnail-{size}.png").write_bytes(b"png")
+    row2 = thumbs.load(sdir)["candidates"][1]
+    thumbs.put_candidates(sdir, [_row(1)], only=1)  # another one: the choice stays
+    assert thumbs.load(sdir)["chosen"]["n"] == 2
+    thumbs.put_candidates(sdir, [row2], only=2)
+    assert thumbs.load(sdir)["chosen"] is None and (sdir / "out" / "thumbnail-1080x1920.png").is_file()
+
+
+def test_write_thumbs_fixture(tmp_path):
+    import pagefix
+
+    from bsa import image_checks
+
+    sdir = pagefix.make_short(tmp_path, "story")
+    pagefix.write_thumbs(sdir, 2)
+    data = thumbs.load(sdir)
+    assert [c["n"] for c in data["candidates"]] == [1, 2] and data["chosen"] is None
+    c2 = data["candidates"][1]
+    assert c2["hero"]["shot"] == "s02" and c2["hero"]["frame"] == 30 and c2["source"] == "final"
+    assert set(c2["layouts"]) == set(thumbs.SIZES) and c2["layouts"]["1280x720"]["size"] == [1280, 720]
+    assert image_checks.png_size(sdir / c2["files"]["1080x1920"]) == (1080, 1920)
+    assert image_checks.png_size(sdir / c2["files"]["1280x720"]) == (1280, 720)
+
+
+# --------------------------------------------------------------------------- how the sequencer draws a layout
+
+
+def _maps(p, point):
+    """Where an image pixel (x, y from the bottom-left) lands in the frame (from the bottom-left), the way the
+    sequencer places an image strip: centred at its own size, `origin` the pivot, scaled, then offset."""
+    (iw, ih), (fw, fh) = p["in_size"], p["frame"]
+    px, py = p["origin"][0] * iw, p["origin"][1] * ih
+    return (px + p["offset_x"] + (fw - iw) / 2 + p["scale_x"] * (point[0] - px),
+            py + p["offset_y"] + (fh - ih) / 2 + p["scale_y"] * (point[1] - py))  # fmt: skip
+
+
+@pytest.mark.parametrize("in_size", [(1080, 1920), (540, 960)])
+def test_strip_placement_maps_the_source_rect_onto_the_destination(in_size):
+    for lay in (thumbs.vertical(TEXT, LOW_HERO, STYLE), thumbs.landscape(TEXT, LOW_HERO, STYLE)):
+        p = thumbs.strip_placement(lay.src, lay.dst, in_size, lay.size)
+        k = in_size[0] / 1080
+        fh = lay.size[1]
+        x0, y0 = lay.src.x * k, in_size[1] - lay.src.bottom * k  # the source rect's corners, from the bottom-left
+        x1, y1 = lay.src.right * k, in_size[1] - lay.src.y * k
+        assert _maps(p, (x0, y0)) == pytest.approx((lay.dst.x, fh - lay.dst.bottom))
+        assert _maps(p, (x1, y1)) == pytest.approx((lay.dst.right, fh - lay.dst.y))
+        c = p["crop"]  # whole pixels, never more than the source rect leaves out
+        assert all(isinstance(v, int) and v >= 0 for v in c.values())
+        assert c["left"] <= x0 and c["bottom"] <= y0 and in_size[0] - c["right"] >= x1 - 1e-6
+        assert in_size[1] - c["top"] >= y1 - 1e-6
+
+
+def test_card_strips_place_each_card_in_its_box():
+    lay = thumbs.vertical(TEXT, LOW_HERO, _with_handle("@me"))
+    strips = thumbs.card_strips(lay)
+    assert [s["kind"] for s in strips] == [c.kind for c in lay.cards]
+    title = next(s for s in strips if s["kind"] == "title")
+    card = next(c for c in lay.cards if c.kind == "title")
+    assert title["anchor"] == ("CENTER", "TOP")  # a band: centred
+    assert title["loc"] == pytest.approx(((card.rect.x + card.rect.w / 2) / 1080, 1 - (card.rect.y + card.pad) / 1920))
+    assert title["margin"] == pytest.approx(card.pad / 1080) and title["wrap_px"] == pytest.approx(thumbs.V_SAFE.w - 56)
+    assert title["use_box"] and title["text"] == "Two rows,\none pull" and title["size"] == card.size
+    handle = next(s for s in strips if s["kind"] == "handle")
+    assert handle["anchor"] == ("LEFT", "TOP") and handle["loc"][0] == pytest.approx((48 + thumbs.PAD["pill"]) / 1080)
+    land = thumbs.card_strips(thumbs.landscape(TEXT, LOW_HERO, STYLE))
+    assert all(s["anchor"] == ("LEFT", "TOP") for s in land)
+    assert land[0]["loc"][0] == pytest.approx((48 + thumbs.PAD["title"]) / 1280)
+    clear = thumbs.ThumbStyle(**{**STYLE.__dict__, "title_box": (0.0, 0.0, 0.0, 0.0)})
+    assert not thumbs.card_strips(thumbs.vertical(TEXT, LOW_HERO, clear))[0]["use_box"]
+
+
+def test_heroes_from_post_and_source_frames(tmp_path):
+    th = {"title": "x", "heroes": [{"shot": "s01", "frame": 12, "crop": [0, 0, 540, 960]}, {"shot": "s02", "frame": 40}]}
+    hs = thumbs.heroes_from_post({"thumbnail": th})
+    assert hs == [thumbs.Hero("s01", 12, (0, 0, 540, 960), thumbs.WHY_POST), thumbs.Hero("s02", 40, None, thumbs.WHY_POST)]
+    assert thumbs.heroes_from_post({"thumbnail": None}) == [] and thumbs.heroes_from_post({}) == []
+    assert thumbs.source_frame(tmp_path, "s01", 12) is None
+    import pagefix
+
+    pagefix.write_png(tmp_path / "frames" / "preview" / "s01" / "0012.png", np.zeros((4, 4, 3), np.uint8))
+    assert thumbs.source_frame(tmp_path, "s01", 12) == (tmp_path / "frames" / "preview" / "s01" / "0012.png", "preview")
+    pagefix.write_png(tmp_path / "frames" / "final" / "s01" / "0012.png", np.zeros((4, 4, 3), np.uint8))
+    assert thumbs.source_frame(tmp_path, "s01", 12) == (tmp_path / "frames" / "final" / "s01" / "0012.png", "final")
+    assert thumbs.flag_key(tmp_path) == "preview"
+    (tmp_path / "review").mkdir()
+    (tmp_path / "review" / "frame-checks-final.json").write_text("{}", encoding="utf-8")
+    assert thumbs.flag_key(tmp_path) == "final"
+
+
+@pytest.mark.blender
+def test_thumbs_in_blender(blender_run):
+    result = blender_run(Path(__file__).resolve().parent / "blender" / "test_thumbs.py", timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS test_both_sizes_at_exact_pixels_with_the_title_and_hero_where_the_layout_said" in result.stdout
+
+
+# --------------------------------------------------------------------------- BLENDER thumbs, Blender stubbed
+
+NO_TEXT = "Write the thumbnail text first: short.json post.thumbnail title (one or two lines)"
+TH = {"title": ["Why it", "keeps time"], "kicker": "Pendulums"}
+
+
+def _thumb_short(tmp_path, thumbnail=None):
+    """A pendulum short with a 90-frame timeline (s01 1-30, s02 31-60, s03 61-90) and the given post.thumbnail."""
+    import pagefix
+
+    sdir = pagefix.make_short(tmp_path, "story")
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if thumbnail is not None:
+        data["post"]["thumbnail"] = thumbnail
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    pagefix.write_timeline(sdir, frames=90)
+    return sdir
+
+
+def _frame(sdir, preset, shot, frame):
+    import pagefix
+
+    pagefix.write_png(sdir / "frames" / preset / shot / f"{frame:04d}.png", np.full((4, 4, 3), 99, np.uint8))
+
+
+def _tl(sdir):
+    from bsa.timeline import Card, Span, Timeline
+
+    data = json.loads((sdir / "source" / "timeline.json").read_text(encoding="utf-8"))
+    return Timeline(data["fps"], data["n_frames"], [Span(**s) for s in data["shots"]],
+                    [Span(**s) for s in data["lines"]], [Card(**c) for c in data["cards"]])  # fmt: skip
+
+
+def _go(monkeypatch, sdir, *argv, boxes=None):
+    """bsa_blender._cmd_thumbs with Blender stubbed: render writes a flat PNG of the layout's size, read_png reads
+    it back, and the .blend's hero boxes are `boxes` ({shot: {frame: [box, ...]}}; None: no .blend)."""
+    import types
+
+    import pagefix
+
+    import bsa_blender
+    from bsa import image_checks, settings
+
+    monkeypatch.setattr(bsa_blender, "_timeline", lambda sdir_, short: (_tl(sdir), "h" * 16))
+    monkeypatch.setattr(settings, "load_settings", lambda: {"handle": "me"})
+    calls = {"render": [], "boxes": []}
+
+    def render(lay, src, out, font, cache_dirs=None, notes=None):
+        calls["render"].append((lay, Path(src), Path(out), font))
+        pagefix.write_png(out, np.full((lay.size[1], lay.size[0], 3), 128, np.uint8))
+        return Path(out)
+
+    def hero_boxes(sdir_, short, tl_hash, shot, frames):
+        calls["boxes"].append((shot, list(frames)))
+        if boxes is None:
+            return None
+        return {f: (boxes.get(shot) or {}).get(f, []) for f in frames}
+
+    api = types.SimpleNamespace(render=render, read_png=image_checks.read_png, boxes=hero_boxes)
+    args = bsa_blender.build_parser().parse_args(["thumbs", "pendulum", *argv])
+    short = bsa_blender._load(sdir)
+    return (lambda: bsa_blender._cmd_thumbs(args, sdir, short, api)), calls
+
+
+def test_thumbs_needs_the_thumbnail_text_and_a_good_post(tmp_path, monkeypatch):
+    import re
+
+    import bsa_blender
+
+    sdir = _thumb_short(tmp_path)
+    go, _ = _go(monkeypatch, sdir)
+    with pytest.raises(bsa_blender.CliError, match="^" + re.escape(NO_TEXT) + "$"):
+        go()
+    sdir = _thumb_short(tmp_path / "b", {"title": ["a", "b", "c"]})
+    go, _ = _go(monkeypatch, sdir)
+    with pytest.raises(bsa_blender.CliError, match="one or two non-empty lines"):
+        go()
+
+
+def test_thumbs_named_heroes_make_candidates_in_both_sizes(tmp_path, monkeypatch):
+    from bsa import image_checks
+
+    sdir = _thumb_short(tmp_path, TH)
+    _frame(sdir, "final", "s01", 15)
+    _frame(sdir, "preview", "s03", 70)
+    go, calls = _go(monkeypatch, sdir, "--hero", "s01@15", "--hero", "s03@70",
+                    boxes={"s01": {15: [[300, 900, 700, 1300]]}})  # fmt: skip
+    out = go()
+    assert out["thumbs"] == "review/thumbs.json" and [c["n"] for c in out["candidates"]] == [1, 2]
+    one, two = out["candidates"]
+    assert one["hero"] == {"shot": "s01", "frame": 15, "crop": None, "why": thumbs.WHY_FLAG}
+    assert (one["source"], two["source"]) == ("final", "preview")
+    assert one["files"] == thumbs.files_for(1) and set(one["layouts"]) == set(thumbs.SIZES)
+    assert one["layouts"]["1080x1920"]["hero"] != two["layouts"]["1080x1920"]["hero"]
+    assert thumbs.FROM_PREVIEW in two["warnings"] and thumbs.NO_HERO in two["warnings"]
+    assert thumbs.FROM_PREVIEW not in one["warnings"] and thumbs.NO_HERO not in one["warnings"]
+    assert "busy" in {r["check"] for r in one["findings"]}
+    assert all(r["size"] in thumbs.SIZES for r in one["findings"])
+    for c in out["candidates"]:
+        for size, rel in c["files"].items():
+            assert image_checks.png_size(sdir / rel) == thumbs.SIZES[size]
+    assert [(src.parent.parent.name, src.name) for _, src, _, _ in calls["render"]] == [
+        ("final", "0015.png"), ("final", "0015.png"), ("preview", "0070.png"), ("preview", "0070.png")]
+    assert f"candidate 2: {thumbs.FROM_PREVIEW}" in out["warnings"]
+    assert thumbs.load(sdir)["candidates"] == out["candidates"]
+
+
+def test_thumbs_refuses_bad_heroes_and_missing_frames(tmp_path, monkeypatch):
+    import bsa_blender
+
+    sdir = _thumb_short(tmp_path, TH)
+    for argv, match in ((["--hero", "s01@99"], r"s01@99 is not in shot s01 \(frames 1 to 30\)"),
+                        (["--hero", "s09@1"], "no shot 's09'"), (["--hero", "nope"], "SHOT@FRAME"),
+                        (["--hero", "s01@1", "--hero", "s01@2", "--hero", "s02@40", "--hero", "s03@70"], "at most 3"),
+                        (["--hero", "s02@40"], (r"^Render the short first: no frame 40 of s02 in frames/final or "
+                                                r"frames/preview$"))):  # fmt: skip
+        go, calls = _go(monkeypatch, sdir, *argv)
+        with pytest.raises(bsa_blender.CliError, match=match):
+            go()
+        assert calls["render"] == []
+    assert not (sdir / thumbs.THUMBS_JSON).exists()
+
+
+def test_thumbs_heroes_from_short_json_and_a_flagged_frame(tmp_path, monkeypatch):
+    sdir = _thumb_short(tmp_path, {**TH, "heroes": [{"shot": "s02", "frame": 41, "crop": [0, 0, 540, 960]}]})
+    _frame(sdir, "final", "s02", 41)
+    (sdir / "review" / "frame-checks-final.json").write_text(json.dumps(
+        {"findings": [{"check": "flicker", "severity": "warning", "frame": 41, "redo_frames": [40, 41, 42]}]}),
+        encoding="utf-8")  # fmt: skip
+    go, _ = _go(monkeypatch, sdir)
+    (c,) = go()["candidates"]
+    assert c["hero"] == {"shot": "s02", "frame": 41, "crop": [0, 0, 540, 960], "why": thumbs.WHY_POST}
+    assert "frame-check flagged frame 41 of s02" in c["warnings"]
+
+
+def test_thumbs_picks_heroes_without_names(tmp_path, monkeypatch):
+    sdir = _thumb_short(tmp_path, TH)
+    for shot, frames in (("s01", range(1, 31)), ("s02", range(31, 61)), ("s03", range(61, 91))):
+        for f in frames:
+            _frame(sdir, "preview", shot, f)
+    (sdir / "review" / "frame-checks-preview.json").write_text(json.dumps({"findings": [{"frame": 15}]}),
+                                                               encoding="utf-8")  # fmt: skip
+    go, calls = _go(monkeypatch, sdir, boxes={"s03": {86: [[100, 200, 1000, 1500]]}, "s01": {1: [[500, 500, 600, 600]]}})
+    out = go()
+    # the longest shot (all are 30 frames long: the last wins) at its middle; the hook shot (s01) at its fullest
+    # sample; the fullest frame elsewhere (s03@86) is too near the first pick
+    assert [(c["hero"]["shot"], c["hero"]["frame"]) for c in out["candidates"]] == [("s03", 75), ("s01", 1)]
+    assert ("s02", [31, 36, 41, 46, 51, 56, 60]) in calls["boxes"]  # sampled every 5th frame from the .blend
+    assert [c["hero"]["why"] for c in out["candidates"]] == ["the middle of the longest shot",
+                                                             "the hook shot's fullest frame"]  # fmt: skip
+    (sdir / "review" / "frame-checks-preview.json").write_text(json.dumps({"findings": [{"frame": 75}]}),
+                                                               encoding="utf-8")  # fmt: skip
+    go, _ = _go(monkeypatch, sdir, boxes={"s03": {86: [[100, 200, 1000, 1500]]}, "s01": {1: [[500, 500, 600, 600]]}})
+    assert go()["candidates"][0]["hero"]["frame"] == 74  # a flagged frame is never picked
+
+
+def test_thumbs_only_remakes_one_and_clears_its_choice(tmp_path, monkeypatch):
+    import pagefix
+
+    import bsa_blender
+
+    sdir = _thumb_short(tmp_path, TH)
+    go, _ = _go(monkeypatch, sdir, "--only", "3")
+    with pytest.raises(bsa_blender.CliError, match="^There is no candidate 3 yet: run BLENDER thumbs SHORT first$"):
+        go()
+    pagefix.write_thumbs(sdir, 2)
+    path = sdir / thumbs.THUMBS_JSON
+    data = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**data, "chosen": {"n": 1}}), encoding="utf-8")
+    _frame(sdir, "final", "s01", 15)  # candidate 1's own hero: s01@15 (the fixture's)
+    go, _ = _go(monkeypatch, sdir, "--only", "1")
+    out = go()
+    assert [c["n"] for c in out["candidates"]] == [1] and out["candidates"][0]["hero"]["frame"] == 15
+    store = thumbs.load(sdir)
+    assert [c["n"] for c in store["candidates"]] == [1, 2] and store["chosen"] is None
+    assert store["candidates"][1]["hero"]["shot"] == "s02"  # candidate 2 untouched
+    _frame(sdir, "final", "s03", 75)
+    go, _ = _go(monkeypatch, sdir, "--only", "2", "--hero", "s03@75")
+    assert go()["candidates"][0]["hero"]["frame"] == 75
+    go, _ = _go(monkeypatch, sdir, "--only", "2", "--hero", "s03@75", "--hero", "s01@15")
+    with pytest.raises(bsa_blender.CliError, match="one --hero"):
+        go()
+
+
+def test_thumbs_all_again_drops_old_candidate_files(tmp_path, monkeypatch):
+    import pagefix
+
+    sdir = _thumb_short(tmp_path, TH)
+    pagefix.write_thumbs(sdir, 3)
+    _frame(sdir, "final", "s01", 15)
+    go, _ = _go(monkeypatch, sdir, "--hero", "s01@15")
+    go()
+    assert sorted(p.name for p in (sdir / thumbs.DIR).iterdir()) == ["1-1080x1920.png", "1-1280x720.png"]

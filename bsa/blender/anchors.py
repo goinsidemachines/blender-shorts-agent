@@ -91,17 +91,34 @@ def hero_boxes(scene, names: list[str], f0: int, f1: int) -> dict:
     return out
 
 
+def hero_boxes_at(scene, names: list[str], frames: list[int]) -> dict[int, list[list[float] | None]]:
+    """{frame: [[x0, y0, x1, y1] or None per name]} through the scene's camera at each of `frames` (the thumbnail's
+    hero box at its frame, and the picker's samples). scene.frame_current is restored."""
+    out: dict[int, list] = {}
+
+    def one(frame, cam, dg):
+        out[frame] = [screen_box(scene, cam, scene.objects[n], dg) for n in names]
+
+    _at_frames(scene, frames, one)
+    return out
+
+
 def _each_frame(scene, f0: int, f1: int, fn) -> None:
+    _at_frames(scene, range(f0, f1 + 1), lambda _frame, cam, dg: fn(cam, dg))
+
+
+def _at_frames(scene, frames, fn) -> None:
+    """fn(frame, evaluated camera, depsgraph) at each frame, in order."""
     depsgraph = _depsgraph(scene)
     original = scene.frame_current
     try:
-        for frame in range(f0, f1 + 1):
+        for frame in frames:
             scene.frame_set(frame)
             depsgraph.update()  # a scene that is not the context scene is not evaluated by frame_set alone
             cam = scene.camera  # markers may switch the camera during a shot
             if cam is None:
                 raise ValueError(f"scene {scene.name!r} has no camera at frame {frame}")
-            fn(cam.evaluated_get(depsgraph), depsgraph)
+            fn(frame, cam.evaluated_get(depsgraph), depsgraph)
     finally:
         scene.frame_set(original)
 

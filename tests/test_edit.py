@@ -43,5 +43,6 @@ def test_anchors_in_blender(blender_run):
     assert result.returncode == 0, result.stdout + result.stderr
     for name in ("test_projects_the_top_of_a_known_object", "test_follows_a_moving_object_per_frame",
                  "test_missing_object_and_behind_the_camera", "test_follows_a_camera_switched_by_markers",
-                 "test_hero_boxes_of_the_shots_heroes", "test_scenery_boxes_are_the_other_meshes_on_screen"):  # fmt: skip
+                 "test_hero_boxes_of_the_shots_heroes", "test_scenery_boxes_are_the_other_meshes_on_screen",
+                 "test_hero_boxes_at_given_frames"):  # fmt: skip
         assert f"PASS {name}" in result.stdout

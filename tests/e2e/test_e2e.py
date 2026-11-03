@@ -147,6 +147,25 @@ def test_script_mode_end_to_end(tmp_path):
     assert probe["has_audio"] is True
     assert p.cli("state", "pendulum")["next"] == "final"
 
+    # ---- thumbnails from the preview frames, both sizes at their real pixels
+    sjson = short / "source" / "short.json"
+    original = sjson.read_bytes()
+    data = json.loads(original)
+    data["post"]["thumbnail"] = {"title": ["Why it", "keeps time"], "kicker": "Pendulums"}
+    sjson.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    s01_mid, s03_mid = ((s["f0"] + s["f1"]) // 2 for s in timeline["shots"] if s["id"] in ("s01", "s03"))
+    thumbs_out = p.blender_cmd("thumbs", "pendulum", "--hero", f"s01@{s01_mid}", "--hero", f"s03@{s03_mid}",
+                               blend=blend)  # fmt: skip
+    sjson.write_bytes(original)  # the rest of the run is on the sample as it was
+    assert thumbs_out["thumbs"] == "review/thumbs.json"
+    assert [c["n"] for c in thumbs_out["candidates"]] == [1, 2]
+    assert all(c["source"] == "preview" for c in thumbs_out["candidates"])
+    from bsa import image_checks
+
+    for c in thumbs_out["candidates"]:
+        assert image_checks.png_size(short / c["files"]["1080x1920"]) == (1080, 1920)
+        assert image_checks.png_size(short / c["files"]["1280x720"]) == (1280, 720)
+
     # ---- only what changed renders again
     cache = short / "blend" / "short.fingerprints.json"
     before = json.loads(cache.read_text(encoding="utf-8"))["shots"]

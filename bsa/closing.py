@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bsa.image_checks import EDGE_LEVEL, edge_share  # noqa: F401 - EDGE_LEVEL moved there; kept importable here
 from bsa.layout import H, W
 
 LINE_ID = "closing"  # the closing line's take: audio/vo/closing.wav, made with the story's lines
@@ -25,7 +26,6 @@ COVERED_BOTTOM = 0.18  # YouTube's title, channel and description cover the bott
 COVERED_RIGHT = 0.12  # and its like / comment / share buttons the right ~12%
 CARD_FILE = "closing.png"  # the card as the video shows it: <short>/stills/closing.png
 INFO_FILE = "closing.json"  # what made it and its warnings: <short>/stills/closing.json
-EDGE_LEVEL = 48  # a luminance step (0-255) between neighbouring pixels this big is an edge, as text has
 TEXT_EDGE_SHARE = 0.004  # a covered zone with more of its pixels on edges than this probably has text in it
 OWN_KEYS = ("image", "seconds", "voice_line", "website")
 BACKGROUND = "#14161A"  # the made card's background without a brand background
@@ -191,11 +191,7 @@ def _luma(px: np.ndarray) -> np.ndarray:
 
 
 def _edge_share(lum: np.ndarray) -> float:
-    if lum.shape[0] < 2 or lum.shape[1] < 2:
-        return 0.0
-    gx = np.abs(np.diff(lum, axis=1))[:-1, :]
-    gy = np.abs(np.diff(lum, axis=0))[:, :-1]
-    return float(np.mean(np.maximum(gx, gy) > EDGE_LEVEL))
+    return edge_share(lum)
 
 
 def zone_warnings(px: np.ndarray) -> list[str]:

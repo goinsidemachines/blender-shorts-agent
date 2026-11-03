@@ -91,6 +91,16 @@ def test_hero_boxes_of_the_shots_heroes():
     assert abs(y0 - (1 - max(c.y for c in corners)) * H) < 0.5 and abs(y1 - (1 - min(c.y for c in corners)) * H) < 0.5
 
 
+def test_hero_boxes_at_given_frames():
+    sc, _, ball = _scene()
+    bake.keyframe_series(ball, "location", 0, [0.2 * i for i in range(10)])
+    sc.frame_set(2)
+    out = anchors.hero_boxes_at(sc, ["Ball"], [7, 3])
+    assert sorted(out) == [3, 7] and len(out[3]) == 1 and sc.frame_current == 2
+    assert out[3][0] == anchors.hero_boxes(sc, ["Ball"], 3, 3)["boxes"]["Ball"][0]
+    assert out[7][0][0] > out[3][0][0]  # it moved right
+
+
 def test_scenery_boxes_are_the_other_meshes_on_screen():
     """Every rendered mesh that is no hero, on screen and smaller than a backdrop: what the end card keeps off after
     the heroes (a cradle's top rails)."""

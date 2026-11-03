@@ -456,3 +456,132 @@ def flagged_frames(sdir, run_key: str) -> set[int]:
         if isinstance(redo, list):
             out.update(x for x in redo if isinstance(x, int) and not isinstance(x, bool))
     return out
+
+
+# --------------------------------------------------------------------------- the candidates and their files
+
+THUMBS_JSON = "review/thumbs.json"
+DIR = "review/thumbs"
+WHY_POST = "named in short.json"
+WHY_FLAG = "named with --hero"
+
+
+def files_for(n: int) -> dict[str, str]:
+    """{size: the candidate's PNG, relative to the short's folder}."""
+    return {size: f"{DIR}/{n}-{size}.png" for size in SIZES}
+
+
+def _empty() -> dict:
+    return {"candidates": [], "chosen": None}
+
+
+def load(sdir) -> dict:
+    """review/thumbs.json: {"candidates": [rows], "chosen": None or the chosen candidate}; empty when missing.
+    Raises bsa.review.store.StoreDamaged when it is damaged."""
+    from bsa.review import store
+
+    data = store.read_json(Path(sdir) / THUMBS_JSON, _empty(), expect=dict)
+    return {**_empty(), **data}
+
+
+def _chosen_n(chosen) -> int | None:
+    n = chosen.get("n") if isinstance(chosen, dict) else chosen
+    return n if isinstance(n, int) and not isinstance(n, bool) else None
+
+
+def put_candidates(sdir, rows: list[dict], only: int | None = None) -> dict:
+    """Write the candidates into review/thumbs.json (under its lock): all of them, or with `only` just row `only`
+    (taken from `rows`, put in order). Remaking the chosen candidate (or all of them) clears `chosen`: its files in
+    out/ stay, but they are no longer this candidate's. Returns the new store."""
+    from bsa.review import store
+
+    def change(data: dict) -> dict:
+        data = {**_empty(), **data}
+        if only is None:  # every candidate made again, the chosen one too
+            data["candidates"] = sorted(rows, key=lambda r: r["n"])
+            data["chosen"] = None
+        else:
+            new = next(r for r in rows if r["n"] == only)
+            keep = [c for c in data["candidates"] if isinstance(c, dict) and c.get("n") != only]
+            data["candidates"] = sorted([*keep, new], key=lambda r: r["n"])
+            if _chosen_n(data["chosen"]) == only:
+                data["chosen"] = None
+        return data
+
+    path = Path(sdir) / THUMBS_JSON
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return store.update_json(path, _empty(), change, expect=dict)
+
+
+def heroes_from_post(p: dict) -> list[Hero]:
+    """The heroes short.json post.thumbnail names (bsa.post.fields), in order."""
+    th = p.get("thumbnail") if isinstance(p, dict) else None
+    out = []
+    for h in (th.get("heroes") if isinstance(th, dict) else None) or []:
+        if isinstance(h, dict) and isinstance(h.get("shot"), str) and isinstance(h.get("frame"), int):
+            crop = h.get("crop")
+            out.append(Hero(h["shot"], h["frame"], tuple(crop) if isinstance(crop, list | tuple) else None, WHY_POST))
+    return out
+
+
+def source_frame(sdir, shot: str, frame: int) -> tuple[Path, str] | None:
+    """(the frame's PNG, "final" or "preview"): the final render's when there is one, else the preview's."""
+    for preset in ("final", "preview"):
+        png = Path(sdir) / "frames" / preset / shot / f"{frame:04d}.png"
+        if png.is_file() and png.stat().st_size > 0:
+            return png, preset
+    return None
+
+
+def flag_key(sdir) -> str:
+    """Which frame checks flag frames for the hero picker: the final's when it has been checked, else the preview's."""
+    return "final" if (Path(sdir) / "review" / "frame-checks-final.json").is_file() else "preview"
+
+
+# --------------------------------------------------------------------------- how the sequencer draws a Layout
+
+_CENTRED = ("top band", "bottom band", "smaller title")
+
+
+def strip_placement(src: Rect, dst: Rect, in_size: tuple[int, int], frame: tuple[int, int],
+                    src_frame: tuple[int, int] = VERTICAL) -> dict:  # fmt: skip
+    """The transform and crop of an image strip (fit "ORIGINAL": centred at its own size) that shows `src` (pixels of
+    a `src_frame` sized frame, origin top-left) of an image `in_size` big on `dst` of a `frame` sized render.
+
+    The sequencer maps an image pixel p (from the bottom-left) to pivot + offset + (frame - in_size) / 2 + scale *
+    (p - pivot), the pivot being origin * in_size; the crop (whole pixels from each side) only hides, never moves. The
+    crop keeps the whole source rect (it rounds outwards), so no seam shows at the edges."""
+    import math
+
+    iw, ih = in_size
+    fw, fh = frame
+    kx, ky = iw / src_frame[0], ih / src_frame[1]
+    x0, x1 = src.x * kx, src.right * kx
+    y0, y1 = ih - src.bottom * ky, ih - src.y * ky  # from the bottom
+    sx, sy = dst.w / (x1 - x0), dst.h / (y1 - y0)
+    dx0, dy0 = dst.x, fh - dst.bottom
+    crop = {"left": max(math.floor(x0 + 1e-6), 0), "right": max(math.floor(iw - x1 + 1e-6), 0),
+            "bottom": max(math.floor(y0 + 1e-6), 0), "top": max(math.floor(ih - y1 + 1e-6), 0)}  # fmt: skip
+    return {"in_size": (iw, ih), "frame": (fw, fh), "origin": (0.0, 0.0), "scale_x": sx, "scale_y": sy,
+            "offset_x": dx0 - sx * x0 - (fw - iw) / 2, "offset_y": dy0 - sy * y0 - (fh - ih) / 2,
+            "crop": crop}  # fmt: skip
+
+
+def card_strips(lay: Layout) -> list[dict]:
+    """One text strip per card, for edit._Texts.add: text, size, location (normalised by the thumbnail's size,
+    from the bottom-left) and anchor, box margin (the card's pad as a share of the thumbnail's width: Blender sizes
+    a text strip's box margin by the image width, checked in Blender 5.2), wrap width in px, colours, and whether
+    it has a box (only one that shows: alpha > 0). Cards of a band are centred on their box, the rest are left
+    aligned in it; the text wraps where the layout wrapped it."""
+    fw, fh = lay.size
+    wrap = V_SAFE.w if tuple(lay.size) == VERTICAL else _L_WRAP
+    out = []
+    for c in lay.cards:
+        centred = lay.placement in _CENTRED and c.kind != "handle"
+        x = c.rect.x + c.rect.w / 2 if centred else c.rect.x + c.pad
+        y = c.rect.y + c.pad
+        out.append({"kind": c.kind, "text": c.text, "size": c.size, "loc": (x / fw, 1.0 - y / fh),
+                    "anchor": ("CENTER" if centred else "LEFT", "TOP"), "margin": c.pad / fw,
+                    "wrap_px": wrap - 2 * c.pad, "colour": tuple(c.colour), "box": tuple(c.box),
+                    "use_box": len(c.box) < 4 or c.box[3] > 0, "bold": c.kind != "fact"})  # fmt: skip
+    return out

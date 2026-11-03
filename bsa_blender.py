@@ -1118,6 +1118,153 @@ def cmd_closing(args) -> dict:
     return {**out, "warnings": warnings} if warnings else out
 
 
+THUMB_TEXT_FIRST = "Write the thumbnail text first: short.json post.thumbnail title (one or two lines)"
+MAX_HEROES = 3
+
+
+def cmd_thumbs(args) -> dict:
+    """Thumbnail candidates in both sizes, into review/thumbs/ and review/thumbs.json, with the checks on each."""
+    import types
+
+    from bsa.blender import thumbs as blender_thumbs
+    from bsa.blender.pixels import read_png
+
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    api = types.SimpleNamespace(render=blender_thumbs.render, read_png=read_png, boxes=_thumb_boxes)
+    return _cmd_thumbs(args, sdir, short, api)
+
+
+def _thumb_boxes(sdir: Path, short, tl_hash: str, shot_id: str, frames: list[int]) -> dict | None:
+    """{frame: [the screen box of each of the shot's heroes, or None]} from blend/short.blend; None without it."""
+    if not _blend(sdir).is_file():
+        return None
+    from bsa.blender.anchors import hero_boxes_at, heroes
+
+    _, scene = _scene(_open_blend(sdir), short, shot_id, tl_hash)
+    try:
+        return hero_boxes_at(scene, heroes(scene, shot_id), frames)
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+
+
+def _picked_heroes(sdir: Path, short, tl, tl_hash: str, flagged: set[int], api) -> list:
+    """The picker's heroes (bsa.thumbs.pick_heroes), with how full each sampled frame is from the .blend."""
+    from bsa import thumbs
+
+    fills: dict[int, float] = {}
+    for span in tl.shots:
+        got = api.boxes(sdir, short, tl_hash, span.id, thumbs.sample_frames(span.f0, span.f1))
+        if got is None:  # no .blend: the picker goes by the shots alone
+            break
+        for frame, boxes in got.items():
+            box, warnings = thumbs.hero_box(boxes)
+            if not warnings:
+                fills[frame] = thumbs.fill(box)
+    return thumbs.pick_heroes(list(tl.shots), flagged, fills, short.shots[0].id)
+
+
+def _only_hero(sdir: Path, n: int, named: list, p: dict):
+    """The hero `--only N` remakes candidate N from: --hero, else short.json's Nth hero, else candidate N's own."""
+    from bsa import thumbs
+    from bsa.review.store import StoreDamaged
+
+    if len(named) > 1:
+        raise CliError("--only remakes one candidate: give it one --hero at most")
+    if named:
+        return named[0]
+    listed = thumbs.heroes_from_post(p)
+    if len(listed) >= n:
+        return listed[n - 1]
+    try:
+        row = next((c for c in thumbs.load(sdir)["candidates"] if isinstance(c, dict) and c.get("n") == n), None)
+    except StoreDamaged as exc:
+        raise CliError(str(exc)) from exc
+    h = row.get("hero") if row else None
+    if not isinstance(h, dict):
+        raise CliError(f"There is no candidate {n} yet: run BLENDER thumbs SHORT first")
+    crop = h.get("crop")
+    return thumbs.Hero(h["shot"], int(h["frame"]), tuple(crop) if crop else None, h.get("why") or "")
+
+
+def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
+    """`api`: render (bsa.blender.thumbs.render), read_png (pixels, top row first) and boxes (_thumb_boxes), so the
+    command's plumbing runs without Blender in the tests."""
+    from bsa import image_checks, post, thumbs
+    from bsa.fonts import font_caches
+    from bsa.review.store import StoreDamaged
+
+    s = settings.load_settings()
+    errors, _ = post.problems(short, s)
+    if errors:
+        raise CliError("fix short.json post first: " + "; ".join(errors))
+    p = post.fields(short)
+    text = thumbs.text_from_post(p)
+    if text is None:
+        raise CliError(THUMB_TEXT_FIRST)
+    tl, tl_hash = _timeline(sdir, short)
+    try:
+        named = [replace(thumbs.parse_hero(h), why=thumbs.WHY_FLAG) for h in args.hero or []]
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+    if len(named) > MAX_HEROES:
+        raise CliError(f"{len(named)} --hero given: at most {MAX_HEROES} candidates")
+    if args.only is not None and args.only < 1:
+        raise CliError("--only takes a candidate number from 1")
+    flagged = thumbs.flagged_frames(sdir, thumbs.flag_key(sdir))
+    if args.only is not None:
+        heroes, numbers = [_only_hero(sdir, args.only, named, p)], [args.only]
+    else:
+        heroes = named or thumbs.heroes_from_post(p) or _picked_heroes(sdir, short, tl, tl_hash, flagged, api)
+        numbers = list(range(1, len(heroes) + 1))
+    wrong = thumbs.check_heroes(heroes, {span.id: span for span in tl.shots})
+    if wrong:
+        raise CliError("; ".join(wrong))
+    if not heroes:
+        raise CliError("no frame to make a thumbnail from: name one with --hero SHOT@FRAME")
+    sources = []
+    for h in heroes:  # every refusal before anything is made
+        got = thumbs.source_frame(sdir, h.shot, h.frame)
+        if got is None:
+            raise CliError(f"Render the short first: no frame {h.frame} of {h.shot} in frames/final or frames/preview")
+        sources.append(got)
+    style = thumbs.style_for(short, s)
+    caches = font_caches(sdir)
+    rows, notes = [], []
+    for n, h, (png, preset) in zip(numbers, heroes, sources, strict=True):
+        boxes = (api.boxes(sdir, short, tl_hash, h.shot, [h.frame]) or {}).get(h.frame) or []
+        hero, warnings = thumbs.hero_box(boxes)
+        if preset == "preview":
+            warnings.append(thumbs.FROM_PREVIEW)
+        if h.frame in flagged:
+            warnings.append(f"frame-check flagged frame {h.frame} of {h.shot}")
+        files = thumbs.files_for(n)
+        layouts, findings = {}, []
+        for size, lay in (("1080x1920", thumbs.vertical(text, hero, style, h.crop)),
+                          ("1280x720", thumbs.landscape(text, hero, style, h.crop))):  # fmt: skip
+            out = api.render(lay, png, sdir / files[size], style.font, caches, notes=notes)
+            layouts[size] = thumbs.layout_dict(lay)
+            findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size)
+            warnings += [w for w in lay.warnings if w not in warnings]
+        rows.append({"n": n, "hero": {"shot": h.shot, "frame": h.frame, "crop": list(h.crop) if h.crop else None,
+                                      "why": h.why},
+                     "source": preset, "files": files, "layouts": layouts, "findings": findings,
+                     "warnings": warnings})  # fmt: skip
+    try:
+        thumbs.put_candidates(sdir, rows, only=args.only)
+    except StoreDamaged as exc:
+        raise CliError(str(exc)) from exc
+    if args.only is None:  # all made again: the files of candidates no longer there go
+        keep = {(sdir / rel).name for r in rows for rel in r["files"].values()}
+        for old in (sdir / thumbs.DIR).glob("*.png"):
+            if old.name not in keep:
+                old.unlink(missing_ok=True)
+    said = [f"candidate {r['n']}: {w}" for r in rows for w in r["warnings"]]
+    said += [f"candidate {r['n']}, {f['size']}: {f['message']}" for r in rows for f in r["findings"]
+             if f["severity"] != "info"]  # fmt: skip
+    return {"candidates": rows, "thumbs": thumbs.THUMBS_JSON, "warnings": said + list(dict.fromkeys(notes))}
+
+
 def _label_heroes(sdir: Path, fps: dict, tl_hash: str, need) -> dict:
     """{shot: {"f0", "boxes"}}: the heroes on screen in each shot with a near label, from anchors.json (current, as
     the anchors the labels use). Near labels keep off them; {} (labels placed as before) when none are recorded."""
@@ -1563,6 +1710,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("closing", help="make the closing card (stills/closing.png) and say what the short ends on")
     sp.add_argument("short")
     sp.set_defaults(fn=cmd_closing)
+
+    sp = sub.add_parser("thumbs", help="thumbnail candidates in both sizes, checked, into review/thumbs.json")
+    sp.add_argument("short")
+    sp.add_argument("--hero", action="append", metavar="SHOT@FRAME",
+                    help="a frame to make a candidate from (up to 3); else short.json's, else picked")
+    sp.add_argument("--only", type=int, metavar="N", help="make candidate N again, the others stay")
+    sp.set_defaults(fn=cmd_thumbs)
 
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")
