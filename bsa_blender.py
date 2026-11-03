@@ -251,10 +251,15 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
         aspect = closing.aspect_warning(*closing_card.image_size(Path(cfg["image"])))
         if aspect:
             warnings.append(aspect)
+    from bsa import kit as kit_mod
+
     brand = settings.brand_for(s, short)
-    closing_card.make_card(cfg, brand, png, short.style.get("font") or brand.get("font"))
+    k = kit_mod.kit_for(s, short) if not cfg["image"] else None  # the user's own image is never restyled
+    closing_card.make_card(cfg, brand, png, short.style.get("font") or brand.get("font"), kit=k,
+                           card_dir=sdir / "cards")  # fmt: skip
     warnings += closing.zone_warnings(read_png(png))
-    info.write_text(json.dumps({**cfg, "warnings": warnings}, indent=2, ensure_ascii=False), encoding="utf-8")
+    made = {"kit": True} if k is not None else {}
+    info.write_text(json.dumps({**cfg, **made, "warnings": warnings}, indent=2, ensure_ascii=False), encoding="utf-8")
     return cfg, png, warnings
 
 

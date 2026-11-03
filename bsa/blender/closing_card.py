@@ -14,15 +14,16 @@ from bsa.closing import (  # noqa: F401 - the card colours moved to bsa.closing;
     BACKGROUND,
     COVERED_RIGHT,
     DARK,
+    GAP_PX,
     LIGHT,
+    TOP_PX,
     card_rows,
+    kit_layout,
     on_colour,
 )
 from bsa.layout import H, W, safe_rect
 
 SIZES = {"lead": 56, "pill": 84, "handle": 52}
-GAP_PX = 36
-TOP_PX = 640  # the block's top: in the upper half, far from the covered bottom
 
 
 _on = on_colour
@@ -82,9 +83,30 @@ def _text_rows(scene, cfg: dict, brand: dict, font_name: str | None, bg_png: Pat
     assert y < safe.bottom
 
 
-def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = None) -> Path:
+def _kit_rows(scene, cfg: dict, kit, card_dir: Path | None, bg_png: Path) -> None:
+    """The kit's closing card: its background colour, then bsa.closing.kit_layout's cards as image strips (drawn into
+    `card_dir`, a temp folder without one)."""
+    import tempfile
+
+    from bsa import cards, fonts
+    from bsa.blender.cards import _at, _image, ensure
+
+    seq = scene.sequence_editor
+    _background(seq, _hex_colour(kit.palette["background"], 1.0), bg_png)
+    caches = fonts.font_caches(Path(card_dir).parent) if card_dir is not None else fonts.font_caches()
+    font, _ = cards.card_font_and_note(kit, caches)
+    if card_dir is None:
+        card_dir = Path(tempfile.mkdtemp(prefix="bsa-cards-"))
+    for i, (spec, rect) in enumerate(kit_layout(cfg, kit, font)):
+        _image(seq, f"K_{spec.kind}", ensure(spec, card_dir), 2 + i, 1, 1, _at(spec, rect, (W, H)))
+
+
+def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = None, kit=None,
+              card_dir: Path | None = None) -> Path:  # fmt: skip
     """Render the closing card to `out_png` (PNG, 1080x1920, RGB): `cfg` from bsa.closing.resolve, with an "image"
-    that exists or None; `brand` the settings' brand for this short (bsa.settings.brand_for)."""
+    that exists or None; `brand` the settings' brand for this short (bsa.settings.brand_for). With a brand `kit`
+    (bsa.kit.kit_for) and no image, the card is the kit's: its background and cards (cached in `card_dir`); the
+    user's own image is never restyled."""
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     old = bpy.data.scenes.get("ClosingCard")
@@ -102,6 +124,8 @@ def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = Non
         seq = scene.sequence_editor_create()
         if cfg.get("image"):
             seq.strips.new_image("Card", str(cfg["image"]), 1, 1, fit_method="FILL")
+        elif kit is not None:
+            _kit_rows(scene, cfg, kit, card_dir, bg_png)
         else:
             _text_rows(scene, cfg, brand or {}, font_name, bg_png)
         if hasattr(r.image_settings, "media_type"):

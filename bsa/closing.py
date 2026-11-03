@@ -30,6 +30,9 @@ TEXT_EDGE_SHARE = 0.004  # a covered zone with more of its pixels on edges than 
 OWN_KEYS = ("image", "seconds", "voice_line", "website")
 BACKGROUND = "#14161A"  # the made card's background without a brand background
 ACCENT = "#FFC800"  # without a brand accent
+GAP_PX = 36  # between the made card's rows
+TOP_PX = 640  # the rows' top: in the upper half, far from the covered bottom
+KIT_TEXT_PAD = 8  # the kit's plain-text card's padding round its text
 DARK, LIGHT = (0.08, 0.086, 0.1, 1.0), (1.0, 1.0, 1.0, 1.0)
 
 
@@ -173,6 +176,58 @@ def card_rows(cfg: dict) -> list[tuple[str, str]]:
     if rows and cfg.get("handle"):
         rows.append(("@" + cfg["handle"], "handle"))
     return rows
+
+
+def kit_layout(cfg: dict, kit, font) -> list[tuple]:
+    """The made card's rows as the kit's cards, top to bottom from TOP_PX, GAP_PX apart, each centred on the frame
+    and no wider than the clear part of the frame: [(CardSpec, Rect)]. The logo badge first (when the kit has a
+    readable logo), then as card_rows says: "More at" as plain text (the text colour, no box), the website as a pill
+    on the accent (text that reads on it, shrunk to fit one line) and the @handle as a label pill."""
+    from bsa import cards
+    from bsa.layout import Rect
+    from bsa.overlays import hex_colour
+
+    maxw = 2 * (W * (1 - COVERED_RIGHT) - W / 2) - 40
+    room = maxw - 2 * cards.PILL_PAD[0]
+    specs = []
+    if kit.logo:
+        badge = cards.logo_badge(kit, font, kit.logo.get("name"))
+        if badge is not None and badge.w > maxw:  # too wide with its name: the logo alone
+            badge = cards.logo_badge(kit, font, None)
+        if badge is not None and badge.w <= maxw:
+            specs.append(badge)
+    for text, kind in card_rows(cfg):
+        if kind == "lead":
+            specs.append(_plain_text(kit, text, font, cards.SIZES["lead"], maxw))
+            continue
+        pill_kind, fill, colour = (("category", kit.palette["accent"],
+                                    cards._hex_of(on_colour(hex_colour(kit.palette["accent"]))))
+                                   if kind == "pill" else ("label", None, None))  # fmt: skip
+        used, _ = cards.font_for(text, font)
+        size = cards._fit(text, cards.SIZES["website" if kind == "pill" else "handle"], used, room)
+        while True:
+            spec = cards.pill(kit, pill_kind, text, font, fill=fill, colour=colour, wrap=room, size=size)
+            if spec.w <= maxw or size <= 1:
+                break
+            size -= 1
+        specs.append(spec)
+    rows, y = [], float(TOP_PX)
+    for spec in specs:
+        rows.append((spec, Rect(W / 2 - spec.w / 2, y, spec.w, spec.h)))
+        y += spec.h + GAP_PX
+    return rows
+
+
+def _plain_text(kit, text: str, font, size: int, maxw: float):
+    """A card of plain text in the kit's text colour: no fill, no outline, no shadow; `size` shrunk to fit `maxw`."""
+    from bsa import cards
+
+    used, _ = cards.font_for(text, font)
+    size = cards._fit(text, size, used, maxw - 2 * KIT_TEXT_PAD)
+    w = math.ceil(cards.measure(text, size, used)) + 2 * KIT_TEXT_PAD
+    h = math.ceil(cards.text_height(1, size, used))
+    run = cards.Run(text, size, kit.palette["text"], w / 2, h / 2, "CENTER")
+    return cards.CardSpec("text", w, h, h, None, None, 0, 0, 0.0, (run,), str(used) if used else None)
 
 
 def places(cfg: dict | None) -> list[tuple[str, str]]:
