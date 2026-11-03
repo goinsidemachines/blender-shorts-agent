@@ -76,6 +76,37 @@ def finding_id(f: ReviewFinding) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
+def where_text(f: ReviewFinding) -> str:
+    """Where a finding is, in words: "shot s02 · frame 12"."""
+    shots = f.shots
+    parts = [
+        f"shot{'s' if len(shots) > 1 else ''} {', '.join(shots)}" if shots else "",
+        f"scene {f.scene}" if f.scene else "",
+        str(f.obj) if f.obj else "",
+        f"frame {f.frame}" if f.frame is not None else "",
+    ]
+    return " · ".join(x for x in parts if x)
+
+
+def resolve_finding(sdir: Path, fid: str) -> dict | None:
+    """The finding whose id is `fid`, from review/checks.json then every review/frame-checks-*.json (all runs, side
+    runs too): {check, severity, message, where, redo}; None when no check reports it any more."""
+    review = Path(sdir) / "review"
+    for path in [review / "checks.json", *sorted(review.glob("frame-checks-*.json"), key=lambda p: p.name)]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for row in data.get("findings") or []:
+            f = ReviewFinding.from_row(row)
+            if f is not None and finding_id(f) == fid:
+                return {"check": f.check, "severity": f.severity, "message": f.message, "where": where_text(f),
+                        "redo": f.redo}
+    return None
+
+
 FINDINGS_FILES = ("checks.json", "frame-checks-final.json", "frame-checks-preview.json")
 
 

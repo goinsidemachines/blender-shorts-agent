@@ -439,6 +439,20 @@ def _page_note(args, sdir: Path) -> dict:
 NOTES_AFTER_CHANGES_S = 5.0  # how long `page wait` waits for the notes a "changes" answer sends (a second write)
 
 
+def _with_findings(sdir: Path, notes: list[dict]) -> list[dict]:
+    """Each note on a finding gains that finding's row ("finding"), or "gone": True when no check reports it."""
+    from bsa.review import pages
+
+    out = []
+    for n in notes:
+        target = n.get("target")
+        if isinstance(target, dict) and target.get("kind") == "finding":
+            row = pages.resolve_finding(sdir, str(target.get("id")))
+            n = {**n, "gone": True} if row is None else {**n, "finding": row}
+        out.append(n)
+    return out
+
+
 def _page_wait(args, sdir: Path) -> dict:
     """Wait until the stage has something for Claude: an answer to apply (applied here), sent notes (this stage's,
     or newly sent on any stage), or an answer applied elsewhere since the wait began (`page decide --by chat`), which
@@ -472,7 +486,7 @@ def _page_wait(args, sdir: Path) -> dict:
         return [n for n in sent_notes() if n["stage"] == stage or n["id"] not in old_sent]
 
     def result(version, entry, sent, *, applied=None, timed_out=False, repaired=()) -> dict:
-        return {"stage": stage, "version": version, "decision": entry, "notes": sent,
+        return {"stage": stage, "version": version, "decision": entry, "notes": _with_findings(sdir, sent),
                 "note_stages": sorted({n["stage"] for n in sent}),
                 "applied": entry is not None if applied is None else applied,
                 "by": entry["by"] if entry else None, "timed_out": timed_out, "superseded": superseded,
@@ -524,7 +538,8 @@ def _page_notes(args, sdir: Path) -> dict:
         raise CliError(str(exc)) from exc
     snap = snapshot.build(sdir)
     keys = ("id", "stage", "target", "text", "status", "by")
-    return {"notes": [{k: n.get(k) for k in keys} for n in found if stage in (None, n["stage"])],
+    shown = [{k: n.get(k) for k in keys} for n in found if stage in (None, n["stage"])]
+    return {"notes": _with_findings(sdir, shown),
             "decisions": [{k: d.get(k) for k in ("id", "stage", "version", "decision")} for d in waiting
                           if stage in (None, d["stage"])],
             "superseded": superseded, "repaired": [d["id"] for d in repaired],

@@ -380,15 +380,7 @@ def _render(ctx: Ctx) -> dict | None:
 finding_id = pages.finding_id  # moved to pages (track.py needs it); kept here for older callers
 
 
-def _where(f: pages.ReviewFinding) -> str:
-    shots = f.shots
-    parts = [
-        f"shot{'s' if len(shots) > 1 else ''} {', '.join(shots)}" if shots else "",
-        f"scene {f.scene}" if f.scene else "",
-        str(f.obj) if f.obj else "",
-        f"frame {f.frame}" if f.frame is not None else "",
-    ]
-    return " · ".join(x for x in parts if x)
+_where = pages.where_text
 
 
 def _final_writing(ctx: Ctx) -> bool:

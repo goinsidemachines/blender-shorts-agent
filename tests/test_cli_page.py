@@ -412,3 +412,50 @@ def test_wait_wakes_on_notes_newly_sent_on_any_stage(home, pendulum, monkeypatch
     out = got[0]
     assert [n["id"] for n in out["notes"]] == [new["id"]] and out["note_stages"] == ["storyboard"]
     assert out["timed_out"] is False and out["applied"] is False
+
+
+ROW = {"check": "flicker", "severity": "warning", "message": "frame 12 flickers", "frame": 12, "shot": "s02",
+       "redo": "BLENDER render SHORT --preset final --shot s02 --frames 11-13"}
+
+
+def _write_checks(short, name, rows):
+    review = short / "review"
+    review.mkdir(exist_ok=True)
+    (review / name).write_text(json.dumps({"findings": rows}), encoding="utf-8")
+
+
+def _finding_note(short, stage="final"):
+    from bsa.review import pages
+
+    fid = pages.finding_id(pages.ReviewFinding.from_row(ROW))
+    notes.add(short, stage, {"kind": "finding", "id": fid, "version": 1}, "fix this", "page")
+    notes.send_stage(short, stage)
+
+
+def test_page_notes_name_the_finding_a_note_is_on(home, pendulum):
+    _write_checks(pendulum, "frame-checks-final.json", [ROW])
+    _finding_note(pendulum)
+    out = ok(run(home, "page", "notes", "pendulum"))
+    assert out["notes"][0]["finding"] == {"check": "flicker", "severity": "warning", "message": "frame 12 flickers",
+                                         "where": "shot s02 · frame 12", "redo": ROW["redo"]}
+    assert "gone" not in out["notes"][0]
+
+
+def test_a_finding_note_whose_finding_is_gone_says_so(home, pendulum):
+    _finding_note(pendulum)
+    note = ok(run(home, "page", "notes", "pendulum"))["notes"][0]
+    assert note["gone"] is True and "finding" not in note
+
+
+def test_render_run_finding_notes_resolve_from_that_runs_frame_checks(home, pendulum):
+    _write_checks(pendulum, "frame-checks-preview-eevee.json", [ROW])
+    _finding_note(pendulum, "render")
+    note = ok(run(home, "page", "notes", "pendulum"))["notes"][0]
+    assert note["finding"]["check"] == "flicker" and "gone" not in note
+
+
+def test_page_wait_notes_name_their_finding_too(home, pendulum):
+    _write_checks(pendulum, "frame-checks-final.json", [ROW])
+    _finding_note(pendulum)
+    out = ok(run(home, "page", "wait", "pendulum", "--stage", "final", "--timeout", "5"))
+    assert out["notes"][0]["finding"]["where"] == "shot s02 · frame 12"

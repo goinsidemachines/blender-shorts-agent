@@ -159,10 +159,11 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
        number in a shot's label needs a fact cited by a line of the same shot. Once the story is approved, a
        reworded line changes it: ask the user first. Once narrated, run `CLI narrate SHORT` in the background
        (only the changed line's take is remade) and rebuild as for a re-take.
-     - **A `finding` note** (from "+ Note on finding" on Final) is about one finding of the checks
-       (`review/checks.json` or `review/frame-checks-final.json`; its `id` is a short hash, the page shows which
-       finding). Open that finding's `redo` command when it has one (it renders the flagged frames again), or else
-       the shot it names; fix what it says, then rebuild as usual.
+     - **A `finding` note** (from "+ Note on finding" on Final, or on a Render run) is about one finding of the
+       checks. `CLI page notes SHORT` gives the note its `"finding"` (check, severity, message, where, redo): act on
+       that row, using its `redo` when it has one (it renders the flagged frames again), else the shot in `where`;
+       fix what it says, then rebuild as usual. `"gone": true` means the checks no longer report it: reply that it
+       is gone (`done`) after a quick look.
    - **Before and after:** Story, Storyboard and Final keep the last 3 versions the user saw, and the page offers
      "Compare with version N" (a word diff of the lines, the frames side by side, or the two videos). Nothing to
      run for it: a note left while comparing is about the version shown now unless its text says otherwise.

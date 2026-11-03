@@ -298,3 +298,8 @@ def test_stale_timeline_means_edit_again():
 def test_post_chapter_names_the_final_review_tools():
     t = _flat(_read("playbook/09-post.md"))
     assert "timeline" in t and "Facts behind every line" in t and "Compare with version N" in t
+
+
+def test_finding_notes_are_read_from_their_finding_row():
+    t = _flat(_read("SKILL.md"))
+    assert '"finding"' in t and '"gone": true' in t
