@@ -198,14 +198,20 @@ def _grow(r: Rect, m: float) -> Rect:
     return Rect(r.x - m, r.y - m, r.w + 2 * m, r.h + 2 * m)
 
 
+# How a warning names each kind of text box (overlays.shot_boxes and kitlayout.shot_rects kinds); others by name.
+TEXT_NAMES = {"near": "near label", "covered": "strip the Shorts player covers", "stacked": "label",
+              "category": "category tag", "step": "step tag"}  # fmt: skip
+
+
 def collision(prop: Rect, subjects: list[Rect], texts: list[tuple[str, Rect]], margin: float) -> str | None:
     """Why a prop's projected rect may not be there: "over the subject" when it meets any subject rect grown by
-    `margin`, else "over the <kind>" for the first text rect it meets, else None. Meeting is a positive overlap."""
+    `margin`, else "over the <kind>" (TEXT_NAMES) for the first text rect it meets, else None.
+    Meeting is a positive overlap."""
     if any(overlap_area(prop, _grow(s, margin)) > 0 for s in subjects):
         return "over the subject"
     for kind, r in texts:
         if overlap_area(prop, r) > 0:
-            return f"over the {kind}"
+            return f"over the {TEXT_NAMES.get(kind, kind)}"
     return None
 
 

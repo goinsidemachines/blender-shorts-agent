@@ -106,9 +106,20 @@ def test_collision_names_subject_then_texts():
     assert setplace.collision(Rect(600 + m - 1, 900, 30, 30), subj, texts, m) == "over the subject"  # in the margin
     assert setplace.collision(Rect(600 + m + 1, 900, 30, 30), subj, texts, m) is None
     assert setplace.collision(Rect(100, 1350, 50, 50), subj, texts, m) == "over the caption"
-    assert setplace.collision(Rect(1000, 300, 40, 40), subj, texts, m) == "over the covered"
+    assert setplace.collision(Rect(1000, 300, 40, 40), subj, texts, m) == "over the strip the Shorts player covers"
     assert setplace.collision(Rect(100, 300, 40, 40), subj, texts, m) is None
     assert setplace.collision(Rect(100, 300, 40, 40), [], [], m) is None
+
+
+def test_collision_names_each_text_kind_readably():
+    r = Rect(0, 0, 10, 10)
+    want = {"near": "over the near label", "covered": "over the strip the Shorts player covers",
+            "caption": "over the caption", "badge": "over the badge", "label": "over the label",
+            "stacked": "over the label", "measure": "over the measure", "title": "over the title",
+            "bars": "over the bars", "logo": "over the logo", "category": "over the category tag",
+            "step": "over the step tag"}  # fmt: skip
+    for kind, why in want.items():
+        assert setplace.collision(r, [], [(kind, r)], 0) == why, kind
 
 
 def test_covered_rects_are_the_bottom_and_right_strips():
