@@ -35,5 +35,3 @@ def test_the_caption_file_is_served_as_text_vtt(view, live_server):
     reply = p.request.get(url)
     assert reply.ok and reply.headers["content-type"].startswith("text/vtt")
     assert reply.text().startswith("WEBVTT")
-
-

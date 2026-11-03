@@ -1067,7 +1067,7 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
 
         try:
             out["captions"] = captions.write_files(sdir, short, settings.load_settings())
-        except (captions.Stale, OSError) as exc:
+        except Exception as exc:  # noqa: BLE001 - auxiliary output: never lose the recorded MP4 result
             warnings.append(f"caption files not written: {exc}")
     return {**out, "warnings": warnings} if warnings else out
 

@@ -1,5 +1,6 @@
 """Caption files: SRT, VTT and the transcript, cue for cue with the captions the final video shows."""
 
+import itertools
 import json
 import math
 import wave
@@ -161,8 +162,6 @@ def test_cli_captions_refuses_a_stale_final(home, pendulum):  # noqa: F811
     assert not list((pendulum / "out").glob("*.vtt"))
 
 
-
-
 def _stubbed_edit(monkeypatch, sdir, tl_hash):
     """bsa_blender._cmd_edit with Blender's parts stubbed: it reaches the caption hook after recording the MP4."""
     import types
@@ -209,3 +208,20 @@ def test_a_final_edit_whose_timing_moved_warns_instead_of_writing_captions(tmp_p
     out = go()
     assert "captions" not in out and out["warnings"][0].startswith("caption files not written: ")
     assert "older timing" in out["warnings"][0] and not list((sdir / "out").glob("*.vtt"))
+
+
+def test_a_card_too_short_for_its_groups_keeps_all_its_text_without_overlap():
+    text = "a" * 40 + " " + "b" * 40 + " " + "c" * 40  # wraps to 3 lines
+    cs = captions.cues([Card("Before.", "l01", 1, 30), Card(text, "l02", 31, 31), Card("After.", "l03", 32, 62)], 30)
+    mid = [c for c in cs if c.lines == text.split(" ")]  # one cue holding all the text
+    assert len(mid) == 1 and len(cs) == 3
+    assert cs[0].f0 == 1 and cs[-1].f1 == 62 and all(a.f1 + 1 == b.f0 for a, b in itertools.pairwise(cs))
+
+
+def test_a_malformed_timeline_warns_instead_of_losing_the_edit_result(tmp_path, monkeypatch):
+    sdir = pagefix.make_short(tmp_path, "story")
+    data = pagefix.write_timeline(sdir)
+    go = _stubbed_edit(monkeypatch, sdir, captions.timeline.timeline_hash(data))
+    monkeypatch.setattr(captions, "write_files", lambda *a, **k: (_ for _ in ()).throw(KeyError("cards")))
+    out = go()
+    assert out["mp4"] and "captions" not in out and out["warnings"] == ["caption files not written: 'cards'"]

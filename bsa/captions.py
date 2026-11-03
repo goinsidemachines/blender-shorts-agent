@@ -58,7 +58,9 @@ def _text(cue: Cue) -> str:
 
 def _share(lines: list[str], f0: int, f1: int) -> list[Cue]:
     """A card's lines in groups of MAX_LINES, its frames shared in proportion to characters (each group at least one
-    frame, contiguous). With fewer frames than groups the groups are merged until each has a frame."""
+    frame, contiguous). The one exception to MAX_LINES: a card with fewer frames than groups (a 1-frame card that wraps
+    to 3 lines) has its groups merged until each has a frame, so its cue may hold more than MAX_LINES lines; no text
+    is dropped and the cues stay contiguous without overlap."""
     groups = [lines[i : i + MAX_LINES] for i in range(0, len(lines), MAX_LINES)]
     n = f1 - f0 + 1
     if n < len(groups):
