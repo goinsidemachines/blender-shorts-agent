@@ -1,6 +1,20 @@
+from dataclasses import replace
 from pathlib import Path
 
-from bsa.short import Fact, Line, Short, Shot, load_short, save_short, validate
+from bsa.short import (
+    Fact,
+    Line,
+    Short,
+    Shot,
+    bar_text,
+    category_text,
+    label_kind,
+    load_short,
+    save_short,
+    step_text,
+    title_lines,
+    validate,
+)
 
 SAMPLE = Path(__file__).parent / "e2e" / "pendulum" / "source" / "short.json"
 
@@ -138,3 +152,46 @@ def test_line_fact_flags_codes():
     assert line_fact_flags(Line("l01", "No digits", "s01", ["f1"]), {"f1"}) == []
     assert line_fact_flags(Line("l01", "In 1999", "s01", ["x", "f1"]), {"f1"}) == [("unknown_fact", "x")]
     assert line_fact_flags(Line("l01", "In 1999", "s01", ["x"]), {"f1"}) == [("unknown_fact", "x"), ("number_without_fact", None)]
+
+
+def test_card_fields_validate():
+    ok = Shot("s1", "t", "p", "sc", title_card={"lines": ["How a lever", "lifts more"], "highlight": 1},
+              category="spark", step=[2, 4], labels=[{"text": "Pivot", "kind": "measure"}])
+    assert validate(_short(shots=[ok], lines=[Line("l01", "Plain words.", "s1", [])])) == []
+    bars = {"items": [{"label": "a", "value": 1}]}
+    for bad, msg in (({"title_card": ["a", "b", "c"]}, "title_card"), ({"step": [5, 4]}, "step"),
+                     ({"bars": bars}, "bars"), ({"labels": [{"text": "x", "kind": "arrow"}]}, "kind"),
+                     ({"title_card": {"lines": ["a"], "highlight": 1}}, "title_card"),
+                     ({"category": " "}, "category"),
+                     ({"bars": {"items": [*bars["items"], {"label": "b", "value": -1}]}}, "bars")):
+        shots = [replace(ok, **bad)]
+        errors = validate(_short(shots=shots, lines=[Line("l01", "Plain words.", "s1", [])]))
+        assert any(msg in e and "s1" in e for e in errors), (bad, errors)
+
+
+def test_numbers_on_cards_need_a_fact():
+    def errors(cited, **kw):
+        ln = Line("l01", "Plain words.", "s1", ["f1"] if cited else [])
+        return validate(_short(shots=[Shot("s1", "t", "p", "sc", **kw)], lines=[ln]))
+
+    assert any("title card" in e and "no line in the shot cites a fact" in e for e in errors(False, title_card="Lifts 3x"))
+    assert errors(True, title_card="Lifts 3x") == []
+    bars = {"items": [{"label": "a", "value": 1}, {"label": "b", "value": 3}]}
+    assert any("value bars" in e and "contains a number but no line in the shot cites a fact" in e
+               for e in errors(False, bars=bars))
+    assert errors(True, bars=bars) == []
+    assert errors(False, step=[2, 4], title_card="Lifts a lot") == []  # the step tag's digits are exempt
+
+
+def test_title_lines_and_step_text():
+    def sh(**kw):
+        return Shot("s1", "t", "p", "sc", **kw)
+
+    assert title_lines(sh(title_card="One")) == (("One",), None)
+    assert title_lines(sh(title_card=["a", "b"])) == (("a", "b"), None)
+    assert title_lines(sh(title_card={"lines": ["a", "b"], "highlight": 1})) == (("a", "b"), 1)
+    assert title_lines(sh()) == ((), None)
+    assert step_text(sh(step=[2, 4])) == "Step 2 of 4" and step_text(sh()) is None
+    assert category_text("spark") == "Spark" and category_text("fluid flow") == "Fluid flow"
+    assert label_kind({"text": "x", "kind": "measure"}) == "measure" and label_kind("x") == "label"
+    assert bar_text({"label": "a", "value": 2.5}) == "2.5" and bar_text({"label": "a", "value": 3, "text": "3 kg"}) == "3 kg"

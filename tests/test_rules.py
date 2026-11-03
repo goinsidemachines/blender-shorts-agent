@@ -320,3 +320,26 @@ def test_hard_rules_read_the_post_and_thumbnail_text(short):
     places = rules._places(short)
     assert ("post thumbnail title", "Two rows, one pull") in places
     assert ("post title", short.post["title"]) in places
+
+
+def test_card_text_is_read_by_the_word_rules_and_the_text_rule(short):
+    sh = short.shots[0]
+    sh.title_card = ["A man lifts", "the bob"]
+    sh.category = "force"
+    sh.bars = {"items": [{"label": "hand", "value": 1}, {"label": "b", "value": 2}], "verdict": "Faces win"}
+    _, warnings = rules.problems(short, _s(NO_PEOPLE))
+    text = " ".join(warnings)
+    assert "shot s01 title card" in text and "'man'" in text and "'hand'" in text and "'faces'" in text
+    _, warnings = rules.problems(short, _s({"id": "r9", "text": "No text", "kind": "no_text_on_screen_except_captions"}))
+    assert any("shot s01 has a title card, category, step or value bars: remove them" in w for w in warnings)
+
+
+def test_own_logo_with_no_brand_logos_asks(short, tmp_path):
+    from tests.kitfix import KIT
+
+    rule = {"id": "r8", "text": "No logos", "kind": "no_brand_logos"}
+    s = _s(rule)
+    assert not any("logo badge" in w for w in rules.problems(short, s)[1])
+    s["brand"] = {**KIT, "logo": {"file": str(tmp_path / "logo.png")}}
+    assert any("your logo badge shows a logo on every short: ask the user whether their own logo is allowed" in w
+               for w in rules.problems(short, s)[1])

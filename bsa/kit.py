@@ -299,14 +299,26 @@ def problems(settings: dict, short=None) -> list[str]:
     """What kit_for left out of the stored kit, and a logo file that is gone."""
     try:
         merged, out = _merged(settings, short)
+        shots = [s for s in getattr(short, "shots", None) or []]
     except Exception:  # noqa: BLE001
         return []
-    if merged["style"] is None:  # no kit: shorts render as today, so nothing new is reported
-        return []
+    if merged["style"] is None:  # no kit: shorts render as today, so only the kit-only fields are reported
+        return [f"shot {s.id} has a title card, category, step or value bars, which only show with a brand kit "
+                "(brand.style): set one up or remove them" for s in shots if _has_card_fields(s)]  # fmt: skip
+    names = sorted(merged["categories"])
+    for s in shots:
+        cat = getattr(s, "category", None)
+        if isinstance(cat, str) and cat.strip() and cat.strip().lower() not in merged["categories"]:
+            out.append(f"shot {s.id} category {cat!r} is not in your kit's categories ({', '.join(names) or 'none'}): "
+                       "it shows in the accent colour")  # fmt: skip
     logo = merged.get("logo")
     if logo and not Path(logo["file"]).is_file():
         out.append(f"your logo file {logo['file']} is missing, so no logo badge is drawn: set brand.logo.file again")
     return out
+
+
+def _has_card_fields(shot) -> bool:
+    return any(getattr(shot, k, None) for k in ("title_card", "category", "step", "bars"))
 
 
 def advice(settings: dict) -> list[str]:

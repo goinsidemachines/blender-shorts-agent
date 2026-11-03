@@ -138,3 +138,20 @@ def test_kit_from_is_strict():
 def test_kit_values_are_not_the_owners():
     banned = {"#F3F2EE", "#202326", "#FF6B00", "#B34700", "#FFC800", "#00A86B", "#0072CE", "#C9D3DD"}
     assert banned.isdisjoint({*kit.DEFAULT_CODE.values(), *kit.PLAIN["palette"].values()})
+
+
+def _short_with(category=None, **kw):
+    from bsa.short import Shot
+
+    return Short(slug="t", title="T", length_s=10, shots=[Shot("s1", "a", "p", "S", category=category, **kw)])
+
+
+def test_kit_field_warnings():
+    text = " ".join(kit.problems({"brand": KIT}, _short_with("heat")))
+    assert "shot s1 category 'heat' is not in your kit's categories (flow, grip, spark)" in text
+    assert "it shows in the accent colour" in text
+    assert kit.problems({"brand": KIT}, _short_with("Spark")) == []
+    none = " ".join(kit.problems({"brand": {"mode": "brand"}}, _short_with("spark")))
+    assert "shot s1 has a title card, category, step or value bars, which only show with a brand kit" in none
+    assert kit.problems({"brand": {"mode": "brand"}}, _short_with()) == []
+    assert "only show with a brand kit" in " ".join(kit.problems({}, _short_with(step=[1, 2])))

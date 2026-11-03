@@ -459,11 +459,21 @@ def cover_font(text: str, main, dirs: list[Path] | None = None, system: str | No
 def text_items(short, settings: dict) -> list[tuple[str, str]]:
     """(where, text) for everything the edit draws: captions (each line), labels, badges (upper case, as drawn) and
     the end card (its line and the @handle) when there is a handle."""
-    from bsa.short import label_text
+    from bsa import kit
+    from bsa.short import bar_items, bar_text, bar_verdict, category_text, label_text, step_text, title_lines
 
     items = [(f"line {ln.id}", ln.text) for ln in short.lines]
     for s in short.shots:
         items += [(f"shot {s.id} label", label_text(lb)) for lb in s.labels]
+        items += [(f"shot {s.id} title card", line) for line in title_lines(s)[0]]
+        if isinstance(s.category, str) and s.category.strip():
+            items.append((f"shot {s.id} category", category_text(s.category)))
+        if step_text(s):
+            items.append((f"shot {s.id} step", step_text(s)))
+        for item in bar_items(s):
+            items += [(f"shot {s.id} value bar", t) for t in (str(item.get("label") or ""), bar_text(item)) if t]
+        if bar_verdict(s):
+            items.append((f"shot {s.id} verdict", bar_verdict(s)))
         if s.badge:
             items.append((f"shot {s.id} badge", s.badge.upper()))
     handle = str(settings.get("handle") or "").strip().lstrip("@")
@@ -472,6 +482,10 @@ def text_items(short, settings: dict) -> list[tuple[str, str]]:
         if line:
             items.append(("end card", line))
         items.append(("end card", "@" + handle))
+    own = kit.kit_for(settings, short)
+    name = str((own.logo or {}).get("name") or "").strip() if own is not None else ""
+    if name:
+        items.append(("logo badge", name))
     return items
 
 
@@ -502,6 +516,11 @@ def glyph_warnings(short, settings: dict, dirs: list[Path] | None = None, system
     variable font (the wrong weight in Blender), and every character of the captions, labels, badges and end card it
     has no glyph for, with the font the edit draws that text in instead."""
     name = str((short.style or {}).get("font") or "").strip()
+    if not name:
+        from bsa import kit
+
+        own = kit.kit_for(settings, short)
+        name = str(own.font or "").strip() if own is not None else ""
     if not name:
         return []
     dirs = font_dirs() if dirs is None else dirs

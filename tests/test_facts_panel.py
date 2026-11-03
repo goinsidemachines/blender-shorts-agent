@@ -79,3 +79,13 @@ def test_final_version_ignores_the_story_words_the_panel_follows(tmp_path):
     ctx = snapshot.load_ctx(sdir, {})
     assert snapshot.BUILDERS["final"](ctx)["facts_panel"]["flagged"] is True
     assert snapshot.stage_version(sdir, "final", ctx) == before
+
+
+def test_card_numbers_are_checked_against_the_shots_facts():
+    s = short_with(fact_claim="It lifts 3 times more", line_text="Plain.")
+    s.shots[0].title_card = ["Lifts 3x", "not 7"]
+    s.shots[0].bars = {"items": [{"label": "Bar", "value": 3}, {"label": "Cup", "value": 1, "text": "1 kg"}],
+                       "verdict": "Bar wins"}
+    rows = {(r["where"], r["number"]): r["ok"] for r in facts.panel(s)["on_screen"]}
+    assert rows[("shot s01 title card", "3")] is True and rows[("shot s01 title card", "7")] is False
+    assert ("shot s01 value bar", "1") in rows

@@ -250,12 +250,20 @@ def _places(short) -> list[tuple[str, str]]:
     out = []
     for ln in short.lines:
         out.append((f"line {ln.id}", " ".join(x for x in (ln.text, ln.say) if isinstance(x, str))))
-    from bsa.short import label_text
+    from bsa.short import bar_items, bar_text, bar_verdict, category_text, label_text, title_lines
 
     for sh in short.shots:  # each text on its own, so a warning quotes the one label it is in
         out.append((f"shot {sh.id} title", sh.title))
         out.append((f"shot {sh.id} picture", sh.picture))
         out += [(f"shot {sh.id} label", label_text(lb)) for lb in sh.labels]
+        out += [(f"shot {sh.id} title card", line) for line in title_lines(sh)[0]]
+        if isinstance(sh.category, str) and sh.category.strip():
+            out.append((f"shot {sh.id} category", category_text(sh.category)))
+        for item in bar_items(sh):
+            out.append((f"shot {sh.id} value bar", str(item.get("label") or "")))
+            out.append((f"shot {sh.id} value bar", bar_text(item)))
+        if bar_verdict(sh):
+            out.append((f"shot {sh.id} verdict", bar_verdict(sh)))
         if sh.badge:
             out.append((f"shot {sh.id} badge", sh.badge))
     for fx in short.sfx:
@@ -377,10 +385,20 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
                           f"(the rule makes it {kind.sound})")  # fmt: skip
         if kind.words:
             warnings += _word_warnings(r, kind, places, _skip(rc.get(r.get("id")), kind.words))
+        if r.get("kind") == "no_brand_logos":
+            from bsa import kit
+
+            own = kit.kit_for(s, short)
+            if own is not None and own.logo:
+                warnings.append(f"hard rule {describe(r)}: your logo badge shows a logo on every short: ask the user "
+                                "whether their own logo is allowed")  # fmt: skip
         if r.get("kind") == "no_text_on_screen_except_captions":
             for sh in short.shots:
                 if sh.labels:
                     warnings.append(f"hard rule {describe(r)}: shot {sh.id} has on-screen labels: remove them")
+                if sh.title_card or sh.category or sh.step or sh.bars:
+                    warnings.append(f"hard rule {describe(r)}: shot {sh.id} has a title card, category, step or "
+                                    "value bars: remove them")  # fmt: skip
                 if sh.badge:
                     warnings.append(f"hard rule {describe(r)}: shot {sh.id} has a badge ({sh.badge!r}): ask the user "
                                     "(say it in the narration instead, or show the motion true to life)")  # fmt: skip

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, fields
 from dataclasses import field as dc_field
@@ -46,6 +47,13 @@ class Shot:
     # A deliberately wide or off-centre framing: true, a reason ("establishing shot of the whole bridge") or
     # [[from_s, to_s], ...] as for hold. The framing checks (subject too small, an empty half) skip those frames.
     wide: bool | str | list = False
+    # Brand-kit cards (bsa.cards; only drawn with a kit): a title card (one line, 1-2 lines, or {"lines": [...],
+    # "highlight": index of the line in the accent colour}), a category tag, a step tag [n, of] and value bars
+    # {"items": [{"label", "value", "text"?, "category"?}], "verdict"?, "max"?}.
+    title_card: str | list | dict | None = None
+    category: str | None = None
+    step: list | None = None
+    bars: dict | None = None
 
 
 @dataclass
@@ -154,6 +162,11 @@ def label_near(label) -> str | None:
     return str(label.get("near") or "").strip() or None
 
 
+def label_kind(label) -> str:
+    """"measure" for a label object with "kind": "measure" (a measure label), else "label"."""
+    return "measure" if isinstance(label, dict) and label.get("kind") == "measure" else "label"
+
+
 def _label_problem(label) -> str | None:
     if isinstance(label, str):
         return None if label.strip() else "is empty"
@@ -161,8 +174,122 @@ def _label_problem(label) -> str | None:
         return f"must be text or an object with text and near, got {label!r}"
     if not isinstance(label.get("text"), str) or not label["text"].strip():
         return f"{label!r} needs a non-empty text"
-    if not isinstance(label.get("near"), str) or not label["near"].strip():
+    if label.get("kind") not in (None, "measure"):
+        return f"{label!r} has an unknown kind: the only kind is \"measure\""
+    near = label.get("near")
+    if near is None and label.get("kind") == "measure":
+        return None  # a measure label without near is stacked
+    if not isinstance(near, str) or not near.strip():
         return f"{label!r} needs near: the name of the object it sits next to"
+    return None
+
+
+def _clean_lines(value) -> tuple[str, ...]:
+    return tuple(v.strip() for v in value if isinstance(v, str) and v.strip()) if isinstance(value, list) else ()
+
+
+def title_lines(shot) -> tuple[tuple[str, ...], int | None]:
+    """(the title card's lines, the index of the highlighted one or None). ((), None) without a title card."""
+    card = getattr(shot, "title_card", None)
+    if isinstance(card, str):
+        return ((card.strip(),) if card.strip() else ()), None
+    if isinstance(card, list):
+        return _clean_lines(card), None
+    if isinstance(card, dict):
+        lines = _clean_lines(card.get("lines"))
+        hl = card.get("highlight")
+        return lines, (hl if isinstance(hl, int) and not isinstance(hl, bool) and 0 <= hl < len(lines) else None)
+    return (), None
+
+
+def _step_ok(step) -> bool:
+    return (isinstance(step, list) and len(step) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in step)
+            and 1 <= step[0] <= step[1] <= 20)  # fmt: skip
+
+
+def step_text(shot) -> str | None:
+    """"Step 2 of 4" for a shot with step [2, 4], else None."""
+    step = getattr(shot, "step", None)
+    return f"Step {step[0]} of {step[1]}" if _step_ok(step) else None
+
+
+def category_text(name) -> str:
+    """The category as shown on its tag: first letter upper case."""
+    text = str(name or "").strip()
+    return text[:1].upper() + text[1:]
+
+
+def bar_text(item) -> str:
+    """The words on a value bar: its `text`, else its value (3.0 -> "3")."""
+    if not isinstance(item, dict):
+        return ""
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    value = item.get("value")
+    return f"{value:g}" if isinstance(value, int | float) and not isinstance(value, bool) else ""
+
+
+def bar_items(shot) -> list[dict]:
+    """The shot's value bars, [] without any (or when they are not a list of objects)."""
+    bars = getattr(shot, "bars", None)
+    items = bars.get("items") if isinstance(bars, dict) else None
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def bar_verdict(shot) -> str:
+    bars = getattr(shot, "bars", None)
+    v = bars.get("verdict") if isinstance(bars, dict) else None
+    return v.strip() if isinstance(v, str) else ""
+
+
+def _number(v) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _title_card_problem(card) -> str | None:
+    bad = "title_card must be text, 1-2 lines of text, or {\"lines\": [1-2 lines], \"highlight\": 0 or 1}"
+    if isinstance(card, str):
+        return None if card.strip() else f"{bad}; it is empty"
+    lines = card
+    if isinstance(card, dict):
+        extra = sorted(set(card) - {"lines", "highlight"})
+        if extra:
+            return f"title_card has unknown keys {extra}: use lines and highlight"
+        lines = card.get("lines")
+    if (not isinstance(lines, list) or not 1 <= len(lines) <= 2
+            or not all(isinstance(x, str) and x.strip() for x in lines)):  # fmt: skip
+        return f"{bad}, got {card!r}"
+    hl = card.get("highlight") if isinstance(card, dict) else None
+    if hl is not None and (not isinstance(hl, int) or isinstance(hl, bool) or not 0 <= hl < len(lines)):
+        return f"title_card highlight must be the index of a line (0 to {len(lines) - 1}), got {hl!r}"
+    return None
+
+
+def _bars_problem(bars) -> str | None:
+    if not isinstance(bars, dict):
+        return f"bars must be {{\"items\": [2-4 bars], \"verdict\": text, \"max\": number}}, got {bars!r}"
+    extra = sorted(set(bars) - {"items", "verdict", "max"})
+    if extra:
+        return f"bars has unknown keys {extra}: use items, verdict and max"
+    items = bars.get("items")
+    if not isinstance(items, list) or not 2 <= len(items) <= 4:
+        return "bars needs items: a list of 2 to 4 bars"
+    for it in items:
+        if not (isinstance(it, dict) and isinstance(it.get("label"), str) and it["label"].strip()
+                and _number(it.get("value")) and it["value"] >= 0):  # fmt: skip
+            return f"bars item {it!r} needs a label (text) and a value (a number, 0 or more)"
+        extra = sorted(set(it) - {"label", "value", "text", "category"})
+        if extra:
+            return f"bars item {it['label']!r} has unknown keys {extra}: use label, value, text and category"
+        for key in ("text", "category"):
+            if key in it and (not isinstance(it[key], str) or not it[key].strip()):
+                return f"bars item {it['label']!r} {key} must be text, got {it[key]!r}"
+    if "verdict" in bars and (not isinstance(bars["verdict"], str) or not bars["verdict"].strip()):
+        return f"bars verdict must be text, got {bars['verdict']!r}"
+    if "max" in bars and not (_number(bars["max"]) and bars["max"] > 0):
+        return f"bars max must be a number above 0, got {bars['max']!r}"
     return None
 
 
@@ -245,6 +372,31 @@ def _render_problems(render) -> list[str]:
     return out
 
 
+def _card_problems(s: Shot, cited: bool) -> list[str]:
+    """Problems of a shot's title card, category, step and value bars (all optional)."""
+    out = []
+    if s.title_card is not None:
+        problem = _title_card_problem(s.title_card)
+        if problem:
+            out.append(f"shot {s.id} {problem}")
+        else:
+            for text in title_lines(s)[0]:
+                if _has_digit(text) and not cited:
+                    out.append(f"shot {s.id} title card {text!r} contains a number but no line in the shot cites a fact")
+    if s.category is not None and (not isinstance(s.category, str) or not s.category.strip()):
+        out.append(f"shot {s.id} category must be a name (non-empty text), got {s.category!r}")
+    if s.step is not None and not _step_ok(s.step):
+        out.append(f"shot {s.id} step must be [n, of] whole numbers with 1 <= n <= of <= 20, got {s.step!r}")
+    if s.bars is not None:
+        problem = _bars_problem(s.bars)
+        if problem:
+            out.append(f"shot {s.id} {problem}")
+        elif not cited:
+            names = ", ".join(str(i["label"]) for i in s.bars["items"])
+            out.append(f"shot {s.id} value bars ({names}) contains a number but no line in the shot cites a fact")
+    return out
+
+
 def validate(short: Short) -> list[str]:
     """Return a list of human-readable problems; empty means the spec is sound."""
     errors: list[str] = []
@@ -293,6 +445,7 @@ def validate(short: Short) -> list[str]:
             text = label_text(label)
             if _has_digit(text) and not cited_by_shot.get(s.id):
                 errors.append(f"shot {s.id} label {text!r} contains a number but no line in the shot cites a fact")
+        errors += _card_problems(s, cited_by_shot.get(s.id, False))
         if not 0 <= s.still_at <= 1:
             errors.append(f"shot {s.id} still_at must be between 0 and 1")
         if _hold_problem(s.hold):

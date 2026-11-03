@@ -65,3 +65,18 @@ def test_cli_fonts(tmp_path):
         data = json.loads(subprocess.run([sys.executable, str(cli), "fonts", "Segoe UI"], capture_output=True,
                                          text=True, check=True).stdout)  # fmt: skip
         assert data["installed"] is True and data["file"].lower().endswith("segoeui.ttf")
+
+
+def test_text_items_include_card_text():
+    from bsa.short import Line, Short, Shot
+    from tests.kitfix import KIT
+
+    sh = Shot("s1", "t", "p", "S", title_card=["Push", "lift"], category="spark", step=[2, 4],
+              bars={"items": [{"label": "Bar", "value": 2, "text": "2 kg"}, {"label": "Cup", "value": 1}],
+                    "verdict": "Bar wins"})  # fmt: skip
+    short = Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Hi", "s1")], shots=[sh])
+    items = fonts.text_items(short, {"handle": "", "brand": {**KIT, "logo": {"file": "x.png", "name": "Acme"}}})
+    for item in (("shot s1 title card", "Push"), ("shot s1 title card", "lift"), ("shot s1 category", "Spark"),
+                 ("shot s1 step", "Step 2 of 4"), ("shot s1 value bar", "Bar"), ("shot s1 value bar", "2 kg"),
+                 ("shot s1 value bar", "1"), ("shot s1 verdict", "Bar wins"), ("logo badge", "Acme")):
+        assert item in items, item

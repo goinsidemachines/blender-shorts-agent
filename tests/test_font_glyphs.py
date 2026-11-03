@@ -203,3 +203,15 @@ def test_line_metrics_as_the_sequencer_draws_them(tmp_path):
     assert fonts.line_metrics(path) is None
     assert fonts.line_metrics(tmp_path / "missing.ttf") is None
     assert (fonts.BLENDER_LINE_H, fonts.BLENDER_BOX_H) == (1.16, 1.41)
+
+
+def test_glyph_warnings_cover_card_text_in_the_kit_font(tmp_path):
+    from tests.kitfix import KIT
+
+    main = _write(tmp_path, "Brand.ttf", build_font("Push lift"))
+    short = Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Push", "s1")],
+                  shots=[Shot("s1", "a", "p", "S", title_card="Push → lift")])  # fmt: skip
+    settings = {"handle": "", "end_card": "", "brand": {**KIT, "font": str(main)}}
+    text = " | ".join(fonts.glyph_warnings(short, settings, [tmp_path / "fonts"], system="Windows"))
+    assert "shot s1 title card" in text and "'→'" in text
+    assert fonts.glyph_warnings(short, {"handle": "", "end_card": ""}, [tmp_path / "fonts"], system="Windows") == []

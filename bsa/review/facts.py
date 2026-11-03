@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-from bsa.short import Short, label_text, line_fact_flags
+from bsa.short import Short, bar_items, bar_text, bar_verdict, label_text, line_fact_flags, title_lines
 
 FLAG_WORDS = {
     "number_without_fact": "Has a number but cites no fact",
@@ -66,5 +66,10 @@ def panel(short: Short) -> dict:
         for label in shot.labels:
             text = label_text(label)
             on_screen += [_row(f"shot {shot.id} label", text, n, cited_in_shot.get(shot.id, [])) for n in numbers(text)]
+        cards = [(f"shot {shot.id} title card", t) for t in title_lines(shot)[0]]
+        cards += [(f"shot {shot.id} value bar", t) for it in bar_items(shot) for t in (str(it.get("label") or ""), bar_text(it))]
+        cards += [(f"shot {shot.id} verdict", bar_verdict(shot))] if bar_verdict(shot) else []
+        for where, text in cards:
+            on_screen += [_row(where, text, n, cited_in_shot.get(shot.id, [])) for n in numbers(text)]
     flagged = flagged or any(not r["ok"] for r in on_screen)
     return {"lines": lines, "on_screen": on_screen, "flagged": flagged}
