@@ -46,11 +46,14 @@ def _build(engine: str, style: str | None = "toy", room: bool = True):
 
 
 def _probe(scene, obj_name: str, engine: str, side: str = "lit", percent: int = 10, half: int = 2) -> np.ndarray:
-    """The median sRGB (0..1) of a (2 half + 1) square patch (5x5) rendered at `percent` at the projected centre of
-    the probe object's face whose normal is most square to the Key (or Sun) light (`side="dark"`: most turned away from it), among the faces that face the camera.
-    With no light (blueprint) the face most square to the camera."""
-    from bpy_extras.object_utils import world_to_camera_view
+    """The median sRGB (0..1) of the `_patch` (5x5 by default)."""
+    return np.median(_patch(scene, obj_name, engine, side, percent, half), axis=0)
 
+
+def _patch(scene, obj_name: str, engine: str, side: str = "lit", percent: int = 10, half: int = 2) -> np.ndarray:
+    """The pixels of a (2 half + 1) square patch rendered at `percent` at the projected centre of the probe object's
+    face whose normal is most square to the Key (or Sun) light (`side="dark"`: most turned away from it), among the
+    faces that face the camera. With no light (blueprint) the face most square to the camera."""
     scene.view_layers[0].update()
     obj = bpy.data.objects[obj_name]
     light = bpy.data.objects.get(f"{scene.name} Key") or bpy.data.objects.get(f"{scene.name} Sun")
@@ -71,24 +74,44 @@ def _probe(scene, obj_name: str, engine: str, side: str = "lit", percent: int = 
         lit = normal.dot(toward) * (1 if side == "lit" else -1)
         if best is None or lit > best[0]:
             best = (lit, centre)
-    png = OUT / f"{scene.get('bsa_style')}_{engine}_{obj_name}_{side}.png"
-    render_still(scene, scene.frame_current, png, preset=PRESET, percent=percent, engine=engine, file_format="PNG")
+    return _patch_at(scene, best[1], engine, f"{obj_name}_{side}", percent, half)
+
+
+def _patch_at(scene, point, engine: str, tag: str, percent: int = 10, half: int = 2) -> np.ndarray:
+    """The sRGB (0..1) pixels, (2 half + 1)^2 x 3, of a square patch round the world `point`, rendered at `percent`
+    (only a border round the patch is rendered, so a big percentage stays quick)."""
+    from bpy_extras.object_utils import world_to_camera_view
+
+    uv = world_to_camera_view(scene, scene.camera, Vector(point))
+    r = scene.render
+    w, h = r.resolution_x * percent // 100, r.resolution_y * percent // 100
+    pad_x, pad_y = (half + 8) / w, (half + 8) / h
+    r.use_border, r.use_crop_to_border = True, False
+    r.border_min_x, r.border_max_x = max(uv.x - pad_x, 0.0), min(uv.x + pad_x, 1.0)
+    r.border_min_y, r.border_max_y = max(uv.y - pad_y, 0.0), min(uv.y + pad_y, 1.0)
+    png = OUT / f"{scene.get('bsa_style')}_{engine}_{tag}.png"
+    try:
+        render_still(scene, scene.frame_current, png, preset=PRESET, percent=percent, engine=engine, file_format="PNG")
+    finally:
+        r.use_border = False
     img = read_png(png)[..., :3].astype(np.float64) / 255.0
     h, w = img.shape[:2]
-    uv = world_to_camera_view(scene, cam, best[1])
     x, y = round(uv.x * w - 0.5), round((1.0 - uv.y) * h - 0.5)
-    patch = img[max(y - half, 0) : y + half + 1, max(x - half, 0) : x + half + 1].reshape(-1, 3)
-    return np.median(patch, axis=0)
+    return img[max(y - half, 0) : y + half + 1, max(x - half, 0) : x + half + 1].reshape(-1, 3)
 
 
-def _lit_check(room: bool) -> None:
-    """The probe (the crate, the demo's key part) on its lit face: blueprint shows key parts in the accent colour."""
-    for style in ("realistic", "toy", "clay", "toon", "blueprint"):
+LIT_STYLES = ("realistic", "toy", "clay", "toon", "blueprint", "paper", "pencil")
+KEYED = ("blueprint", "pencil")  # the styles that colour only key parts: the probe is the key part
+
+
+def _lit_check(room: bool, names=LIT_STYLES) -> None:
+    """The probe (the crate, the demo's key part) on its lit face: blueprint and pencil show key parts in colour."""
+    for style in names:
         got = {}
         for engine in ("eevee", "cycles"):
             sc, kit, built, _ = _build(engine, style, room=room)
             got[engine] = _probe(sc, built["probe"], engine)
-            want = looks.lit_expect(style, SPARK, kit, key=style == "blueprint")
+            want = looks.lit_expect(style, SPARK, kit, key=style in KEYED)
             de = colour.delta_e(want, got[engine])
             limit = looks.lit_limit(style, engine, room)
             print(f"LIT room={room} {style} {engine} {colour.srgb_to_hex(got[engine])} want {want} dE {de:.2f}")
@@ -379,12 +402,193 @@ def _state(sc) -> dict:
 
 
 def test_style_switches_leave_no_trace():
-    """toy -> toon -> blueprint -> realistic ends as realistic applied once: Freestyle, bounces, lights, materials."""
+    """toy -> paper -> pencil -> toon -> blueprint -> realistic ends as realistic applied once: Freestyle, bounces,
+    lights, materials, line styles."""
     _build("eevee", "realistic")
     once = _state(bpy.context.scene)
     sc, kit, _built, _ = _build("eevee", "toy")
-    for name in ("toon", "blueprint", "realistic"):
+    for name in ("paper", "pencil", "toon", "blueprint", "realistic"):
         styles.reapply(sc, kit, name)
     after = _state(sc)
     for key in once:
         assert after[key] == once[key], (key, after[key], once[key])
+
+
+def _world_verts(sc) -> dict:
+    """Every mesh's evaluated vertex positions in world space (modifiers applied)."""
+    deps = bpy.context.evaluated_depsgraph_get()
+    deps.update()
+    out = {}
+    for obj in sc.objects:
+        if obj.type == "MESH":
+            ev = obj.evaluated_get(deps)
+            co = np.empty(len(ev.data.vertices) * 3)
+            ev.data.vertices.foreach_get("co", co)
+            m = np.array(ev.matrix_world)
+            out[obj.name] = co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+    return out
+
+
+def test_paper_moves_no_surface():
+    """Paper's crumple is in the shader: it adds no Subdivision, Triangulate or Displace, and with its chamfer (the
+    style bevel every bevelled style has) left out every part's evaluated vertices are exactly where they were
+    unstyled, so overlap and floating findings can't change. The chamfer itself only cuts corners: no part grows."""
+    sc, kit, built, _ = _build("eevee", None)
+    before = _world_verts(sc)
+    styles.apply(sc, kit, style="paper", **{k: built[k] for k in ("target", "size", "key")})
+    added = {m.type for o in sc.objects for m in o.modifiers}
+    assert added <= {"BEVEL"}, added
+    bevelled = [o for o in sc.objects if o.modifiers.get(styles.BEVEL)]
+    assert bevelled and all(o.modifiers[styles.BEVEL].segments == 1 for o in bevelled)
+    with_chamfer = _world_verts(sc)
+    for obj in bevelled:
+        lo, hi = before[obj.name].min(axis=0), before[obj.name].max(axis=0)
+        got = with_chamfer[obj.name]
+        assert (got >= lo - 1e-5).all() and (got <= hi + 1e-5).all(), obj.name
+        obj.modifiers[styles.BEVEL].show_viewport = False
+    after = _world_verts(sc)
+    assert after.keys() == before.keys()
+    for name, co in before.items():
+        assert after[name].shape == co.shape and np.array_equal(after[name], co), name
+
+
+def test_paper_facets_and_pencil_hatching_read_object_space():
+    sc, kit, built, _ = _build("eevee", "paper")
+    crate = bpy.data.materials["Crate"]
+    voronoi = next(n for n in crate.node_tree.nodes if n.type == "TEX_VORONOI")
+    assert voronoi.inputs["Vector"].links[0].from_socket.name == "Object"
+    assert abs(voronoi.inputs["Randomness"].default_value - 1.0) < 1e-6
+    assert abs(voronoi.inputs["Scale"].default_value - 4 / 0.62) < 1e-3  # 4 cells across the crate's 0.62 m
+    assert _outputs(crate) == ["ALL"]
+    styles.reapply(sc, kit, "pencil")
+    assert _outputs(crate) == ["CYCLES", "EEVEE"]
+    waves = [n for n in crate.node_tree.nodes if n.type == "TEX_WAVE"]
+    assert len(waves) == 2  # one hatch per engine's branch
+    for wave in waves:
+        mapping = wave.inputs["Vector"].links[0].from_node
+        assert mapping.type == "MAPPING"
+        assert mapping.inputs["Vector"].links[0].from_socket.name == "Object"
+        assert abs(math.degrees(mapping.inputs["Rotation"].default_value[2]) - 40) < 1e-4
+        assert abs(wave.inputs["Scale"].default_value - 60 / built["size"]) < 1e-4
+
+
+def test_pencil_hatching_is_fixed_to_the_object():
+    """The crate's shadowed (hatched) side, rendered, then again after a move; the patch round the face's centre
+    must match (mean ΔE <= 2). Two moves: the crate 0.3 m sideways with the camera following (a hatch in world space
+    slides across the face), and the frame panned 9 px by lens shift, the crate moving on screen (a hatch in screen
+    space stays put while the face moves under it). Each move is checked to catch its wrong hatch: rewired to world
+    position, then to window coordinates, the same move changes the patch far more (over 5 times, and over ΔE 1)."""
+    from mathutils import Matrix
+
+    sc, _kit, built, _ = _build("eevee", "pencil")
+    crate = bpy.data.objects[built["probe"]]
+    crate.rotation_euler.z = math.radians(-37)  # its shadowed side broad on screen, as in the toon shadow test
+    shift = Matrix.Translation((0.3, 0.0, 0.0))
+    pan = 9 / sc.render.resolution_x
+
+    def carry(sign):
+        for obj in (crate, sc.camera):
+            obj.matrix_world = (shift if sign > 0 else shift.inverted()) @ obj.matrix_world
+
+    def lens(sign):
+        sc.camera.data.shift_x += sign * pan
+
+    def mean_de(move, tag):
+        first = _patch(sc, crate.name, "eevee", side="dark", percent=100, half=8)
+        move(1)
+        second = _patch(sc, crate.name, "eevee", side="dark", percent=100, half=8)
+        move(-1)
+        de = float(np.mean([colour.delta_e(x, y) for x, y in zip(first, second)]))
+        print(f"HATCH {tag} dE {de:.2f}")
+        return de, first
+
+    def rewire(output):
+        mat = crate.material_slots[0].material
+        nt = mat.node_tree
+        for mapping in [n for n in nt.nodes if n.type == "MAPPING"]:
+            src = nt.nodes.new("ShaderNodeNewGeometry") if output == "Position" else nt.nodes.new("ShaderNodeTexCoord")
+            nt.links.new(src.outputs[output], mapping.inputs["Vector"])
+
+    carried, patch = mean_de(carry, "object space, carried")
+    spread = float(np.std(patch.mean(axis=1)))
+    print(f"HATCH spread {spread:.4f}")
+    assert spread > 0.01, spread  # the patch is hatched: lines, not a flat grey
+    assert carried <= 2, carried
+    panned, _ = mean_de(lens, "object space, panned")
+    assert panned <= 2, panned
+    rewire("Position")  # the wrong hatches, each caught by its move: far over what the object-space hatch moved
+    wrong = mean_de(carry, "world space, carried")[0]
+    assert wrong > max(1.0, 5 * carried), (wrong, carried)
+    rewire("Window")
+    wrong = mean_de(lens, "window space, panned")[0]
+    assert wrong > max(1.0, 5 * panned), (wrong, panned)
+
+
+def _cast_shadow_point(sc):
+    """A point on the wall well inside the stand plate's cast shadow (10 cm round it shadowed too) that the camera
+    sees: points near the plate's right edge carried along the sun's rays onto the wall, the first that qualifies."""
+    sun = bpy.data.objects[f"{sc.name} Sun"]
+    to_sun = (sun.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    wall_y = bpy.data.objects["Wall"].matrix_world.translation.y - 0.001
+    deps = bpy.context.evaluated_depsgraph_get()
+    cam = sc.camera.matrix_world.translation
+
+    def shadowed(point):
+        return sc.ray_cast(deps, point + to_sun * 0.01, to_sun)[0]
+
+    def seen(point):
+        hit, loc, *_ = sc.ray_cast(deps, cam, (point - cam).normalized())
+        return hit and (loc - point).length < 0.01
+
+    for x in (1.4, 1.3, 1.2, 1.1, 1.0):
+        for z in (1.6, 1.9, 1.3, 2.2):
+            on_plate = Vector((x, 1.72, z))
+            point = on_plate - to_sun * ((on_plate.y - wall_y) / to_sun.y)
+            near = [point + Vector((dx, 0.0, dz)) for dx in (-0.1, 0.0, 0.1) for dz in (-0.1, 0.0, 0.1)]
+            if all(shadowed(p) and seen(p) for p in near):
+                return point
+    raise AssertionError("no point on the wall is in the plate's shadow and seen by the camera")
+
+
+def test_pencil_cycles_shadow_is_hatched_or_noted():
+    """In Cycles the wall in the stand plate's cast shadow is hatched as in EEVEE (more spread than the sampler's
+    plain grey shadow), or the fallback to the plain shadow is recorded."""
+    assert styles.PENCIL_CYCLES_SHADOW in ("hatched", "plain")
+    if styles.PENCIL_CYCLES_SHADOW == "plain":
+        return
+    spread = {}
+    for mode in ("plain", "hatched"):
+        styles.PENCIL_CYCLES_SHADOW = mode
+        try:
+            sc, *_ = _build("cycles", "pencil")
+        finally:
+            styles.PENCIL_CYCLES_SHADOW = "hatched"
+        patch = _patch_at(sc, _cast_shadow_point(sc), "cycles", f"shadow_{mode}", percent=100, half=8)
+        spread[mode] = float(np.var(patch.mean(axis=1)))
+    print(f"SHADOW pencil cycles variance {spread}")
+    assert spread["hatched"] > 20 * spread["plain"] and spread["hatched"] > 1e-4, spread
+
+
+def test_pencil_lines_are_sketchy_and_reapplied_once():
+    sc, kit, built, _ = _build("eevee", "pencil")
+    assert _linesets(sc) == [["bsa ink", "bsa pencil"]]
+    fs = sc.view_layers[0].freestyle_settings
+    assert not fs.linesets["bsa ink"].show_render and fs.linesets["bsa pencil"].show_render
+    style = fs.linesets["bsa pencil"].linestyle
+    assert style.chaining == "SKETCHY" and style.rounds == 3 and abs(style.alpha - 0.85) < 1e-6
+    want = colour.srgb_to_linear(colour.hex_to_srgb("#34343A"))
+    assert all(abs(a - b) < 1e-4 for a, b in zip(style.color, want))
+    assert [m.type for m in style.thickness_modifiers] == ["ALONG_STROKE"]
+    noise, stretch = style.geometry_modifiers
+    assert (noise.type, noise.frequency, round(noise.amplitude, 4)) == ("PERLIN_NOISE_1D", 8, 1.6)
+    assert (stretch.type, stretch.backbone_length) == ("BACKBONE_STRETCHER", 6)
+    once = _counts(sc)
+    styles.apply(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
+    assert _counts(sc) == once
+    style = sc.view_layers[0].freestyle_settings.linesets["bsa pencil"].linestyle  # made again, as blueprint's is
+    assert len(style.geometry_modifiers) == 2 and len(style.thickness_modifiers) == 1
+    assert once["lights"] == 1 and bpy.data.objects.get(f"{sc.name} Sun") is not None
+    styles.reapply(sc, kit, "toon")
+    assert _linesets(sc) == [["bsa ink"]] and sc.view_layers[0].freestyle_settings.linesets["bsa ink"].show_render
+    assert "bsa pencil" not in bpy.data.linestyles
+    _no_dot_names()

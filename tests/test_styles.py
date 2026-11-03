@@ -53,5 +53,10 @@ def test_styles_in_blender(blender_run, bsa_home):
         "test_blueprint_needs_no_lights",
         "test_blueprint_without_a_key_warns",
         "test_style_switches_leave_no_trace",
+        "test_paper_moves_no_surface",
+        "test_paper_facets_and_pencil_hatching_read_object_space",
+        "test_pencil_hatching_is_fixed_to_the_object",
+        "test_pencil_cycles_shadow_is_hatched_or_noted",
+        "test_pencil_lines_are_sketchy_and_reapplied_once",
     ):
         assert f"PASS {name}" in result.stdout

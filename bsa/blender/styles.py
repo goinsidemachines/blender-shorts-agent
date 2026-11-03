@@ -1,6 +1,6 @@
 """Brand styles: one function per style returning a `Style` (its numbers from bsa.looks, how it rebuilds a kit
-material, any lines of its own), and `apply` / `reapply`, which restyle a built scene in place: view, kit materials,
-bevels, lights, world, ink lines, then the stamped values matched to the engine the scene renders with. Applying
+material, any lines of its own), and `apply` / `reapply`, which restyle a built scene in place: view, lights, kit
+materials, bevels, world, ink lines, then the stamped values matched to the engine the scene renders with. Applying
 again (the same style or another) leaves the scene as one application would: the same lights, modifiers, materials
 and linesets, no ".001" names. Nothing here sets the render engine: that is always the user's choice."""
 
@@ -35,6 +35,23 @@ BLUEPRINT_GRID = ((4.0, 0.035), (1.0, 0.012))  # (lines per metre, line width as
 BLUEPRINT_GRID_SHIFT = 0.0371  # the sampler's offset, so no grid line runs exactly along a face at a whole metre
 HIDDEN_LINESET = "bsa hidden"
 BLUEPRINT_HIDDEN_COLOUR, BLUEPRINT_HIDDEN_ALPHA, BLUEPRINT_DASH = (0.85, 0.9, 1.0), 0.45, (5, 4)
+PAPER_ROUGHNESS, PAPER_SPECULAR = 0.95, 0.15
+PAPER_CELLS, PAPER_TILT = 4.0, 0.35  # Voronoi cells across a part's longest side; how far a cell tilts the normal
+PAPER_GRAIN = (160.0, 8.0, 0.18, 0.004)  # noise scale, detail; bump strength, distance
+PAPER_FIBRE = (6.0, 2.0, 0.12)  # noise scale, detail; multiply factor
+PENCIL_RAMP = ((0.05, 0.45), (0.55, 1.0))  # (light value, grey): the sampler's soft grey shading
+PENCIL_HATCH_FROM = (0.42, 0.08)  # light values where the hatch starts and is full strength
+PENCIL_LINE_AT, PENCIL_HATCH_GREY = 0.72, (0.38, 0.38, 0.40)  # the wave over this is a line, drawn in this grey
+PENCIL_HATCH_DEG, PENCIL_LINES = 40.0, 60.0  # hatch angle about Z; wave scale x the subject's size in metres
+PENCIL_GRAIN = (300.0, 4.0, 0.08)  # noise scale, detail; multiply factor
+PENCIL_AMBIENT, PENCIL_SHADOW = 0.25, 0.62  # Cycles' light value with no sun; the share a cast shadow keeps
+PENCIL_LINESET = "bsa pencil"
+# The sampler's along-stroke curve set the width outright (0.4 to 2 px on its 960-tall frame, its lines 1.8 px); here
+# it scales the ink's width by those over 1.8, which at pencil's 3.5 px on a 1920-tall frame is the sampler's width.
+PENCIL_SAMPLER_WIDTH = 1.8
+# How pencil's Cycles cast shadows read: "hatched" (lit areas cancel a hatch only shadows keep) or "plain" (the
+# sampler's grey shadow), the fallback if hatched shadows ever miss ENGINE_DELTA_E["pencil"].
+PENCIL_CYCLES_SHADOW = "hatched"
 
 
 @dataclass
@@ -437,15 +454,290 @@ def _blueprint_lines(ctx: Ctx) -> None:
         style.dash1, style.gap1 = BLUEPRINT_DASH
 
 
-def _later(name: str):
-    def make(kit: Kit) -> Style:
-        raise NotImplementedError(f"the {name} style is not built yet")
+def _multiply(nt, factor: float, a, b):
+    """A MULTIPLY colour Mix at `factor` of `a` and `b` (each an output socket or a linear colour); returns its
+    result socket."""
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.blend_type = "MULTIPLY"
+    socks = {s.identifier: s for s in mix.inputs}
+    socks["Factor_Float"].default_value = factor
+    for ident, value in (("A_Color", a), ("B_Color", b)):
+        if isinstance(value, bpy.types.NodeSocket):
+            nt.links.new(value, socks[ident])
+        else:
+            socks[ident].default_value = (*value, 1.0)
+    return next(s for s in mix.outputs if s.identifier == "Result_Color")
 
-    return make
+
+def _noise(nt, scale: float, detail: float):
+    node = nt.nodes.new("ShaderNodeTexNoise")
+    node.inputs["Scale"].default_value = scale
+    node.inputs["Detail"].default_value = detail
+    return node
 
 
-STYLES: dict[str, Callable[[Kit], Style]] = {name: _later(name) for name in STYLE_NAMES}
-STYLES.update({"realistic": realistic, "toy": toy, "clay": clay, "toon": toon, "blueprint": blueprint})
+def _cell_side(scene, mat) -> float:
+    """The side the paper's facets divide, in object space: each part using `mat` has its longest side, and the
+    shortest of those is taken, so every part gets at least PAPER_CELLS cells across. 1 m when no part uses it."""
+    sides = []
+    for obj, slot in _slots(scene):
+        if slot.material == mat and obj.type == "MESH":
+            box = np.array([tuple(c) for c in obj.bound_box])
+            sides.append(float(max(box.max(axis=0) - box.min(axis=0))))
+    sides = [s for s in sides if s > 1e-6]
+    return min(sides) if sides else 1.0
+
+
+def _paper(mat, lin, pattern, cells: float | None) -> None:
+    """The sampler's paper: a rough, low-specular Principled whose colour (or pattern) is multiplied 12% by a fibre
+    noise (scale 6) and bumped by a fine grain (scale 160, strength 0.18, distance 0.004); with `cells` (cells per
+    metre), crumpled in the shader: an object-space Voronoi's cell colour, centred and scaled by PAPER_TILT, tilts
+    the normal per cell, so each cell shades as a flat facet and no surface moves."""
+    nt, bsdf = _principled(mat)
+    shade = _shade(nt, bsdf, lin, pattern, bump=False)
+    _set(bsdf, "Roughness", PAPER_ROUGHNESS)
+    _set(bsdf, "Specular IOR Level", PAPER_SPECULAR)
+    _set(bsdf, "Metallic", 0.0)
+    fibre = _noise(nt, *PAPER_FIBRE[:2])
+    nt.links.new(_multiply(nt, PAPER_FIBRE[2], shade or lin, fibre.outputs["Color"]), bsdf.inputs["Base Color"])
+    bump = nt.nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = PAPER_GRAIN[2]
+    bump.inputs["Distance"].default_value = PAPER_GRAIN[3]
+    nt.links.new(_noise(nt, *PAPER_GRAIN[:2]).outputs["Fac"], bump.inputs["Height"])
+    nt.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    if cells is None:
+        return
+    coords = nt.nodes.new("ShaderNodeTexCoord")
+    cell = nt.nodes.new("ShaderNodeTexVoronoi")
+    cell.inputs["Scale"].default_value = cells
+    cell.inputs["Randomness"].default_value = 1.0
+    nt.links.new(coords.outputs["Object"], cell.inputs["Vector"])
+    centred = look._vmath(nt, "SUBTRACT")
+    centred.inputs[1].default_value = (0.5, 0.5, 0.5)
+    tilt = look._vmath(nt, "SCALE")
+    tilt.inputs["Scale"].default_value = PAPER_TILT
+    facet = look._vmath(nt, "ADD")
+    unit = look._vmath(nt, "NORMALIZE")
+    geometry = nt.nodes.new("ShaderNodeNewGeometry")
+    nt.links.new(cell.outputs["Color"], centred.inputs[0])
+    nt.links.new(centred.outputs["Vector"], tilt.inputs[0])
+    nt.links.new(tilt.outputs["Vector"], facet.inputs[0])
+    nt.links.new(geometry.outputs["Normal"], facet.inputs[1])
+    nt.links.new(facet.outputs["Vector"], unit.inputs[0])
+    nt.links.new(unit.outputs["Vector"], bump.inputs["Normal"])
+
+
+def paper(kit: Kit) -> Style:
+    """Folded paper: parts in their colour 12% toward white (looks.part_colour), crumpled in the shader into flat
+    tilted facets (`_paper`: PAPER_CELLS cells across a part's longest side, `_cell_side`), rough with a fine grain
+    and a fibre tint, one material for both engines; a 1-segment chamfer, a single sun. Set surfaces are uncrumpled
+    paper in their own colour; glass, water and glowing parts as look makes them."""
+
+    def material(mat, stamp, ctx, key):
+        if ctx.scenery(mat):
+            _paper(mat, _lin(stamp["colour"]), stamp["pattern"], None)
+            return
+        hex_ = looks.part_colour("paper", stamp["colour"], ctx.kit, key)
+        if _common(mat, stamp, hex_, ctx):
+            return
+        _paper(mat, _lin(hex_), stamp["pattern"], PAPER_CELLS / _cell_side(ctx.scene, mat))
+
+    return Style("paper", looks.TABLE["paper"], material)
+
+
+def _to_sun(scene):
+    """The unit direction toward this scene's style sun ("<scene> Sun"; straight up when there is none)."""
+    from mathutils import Vector
+
+    sun = bpy.data.objects.get(f"{scene.name} Sun")
+    if sun is None or sun.type != "LIGHT":
+        return Vector((0.0, 0.0, 1.0))
+    return (sun.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+
+
+def _light_eevee(nt):
+    """EEVEE's light value: a white Diffuse BSDF read back as grey (Shader to RGB -> RGB to BW)."""
+    diffuse = nt.nodes.new("ShaderNodeBsdfDiffuse")
+    to_rgb = nt.nodes.new("ShaderNodeShaderToRGB")
+    grey = nt.nodes.new("ShaderNodeRGBToBW")
+    nt.links.new(diffuse.outputs["BSDF"], to_rgb.inputs["Shader"])
+    nt.links.new(to_rgb.outputs["Color"], grey.inputs["Color"])
+    return grey.outputs["Val"]
+
+
+def _light_cycles(nt, to_sun):
+    """Cycles' light value (no Shader to RGB there): max(dot(normal, `to_sun`), 0) x 3/pi + PENCIL_AMBIENT, what
+    EEVEE's reads on a lit surface, without cast shadows (the Toon BSDF in `_pencil` brings those)."""
+    geometry = nt.nodes.new("ShaderNodeNewGeometry")
+    dot = look._vmath(nt, "DOT_PRODUCT")
+    dot.inputs[1].default_value = tuple(to_sun)
+    nt.links.new(geometry.outputs["Normal"], dot.inputs[0])
+    lit = look._math(nt, "MAXIMUM", 0.0)
+    nt.links.new(dot.outputs["Value"], lit.inputs[0])
+    value = look._math(nt, "MULTIPLY_ADD", 3.0 / math.pi)
+    value.inputs[2].default_value = PENCIL_AMBIENT
+    nt.links.new(lit.outputs["Value"], value.inputs[0])
+    return value.outputs["Value"]
+
+
+def _hatch_strength(value: float) -> float:
+    """The sampler's Map Range (0.42 -> 0, 0.08 -> 1, clamped) for a constant light value."""
+    lo, hi = PENCIL_HATCH_FROM
+    return min(max((lo - value) / (lo - hi), 0.0), 1.0)
+
+
+def _pencil_branch(nt, light, base, size: float, floor: float | None = None):
+    """The sampler's pencil shading for one engine's light value `light` (a socket): a grey ramp (0.05 -> 0.45,
+    0.55 -> white), hatch lines (an object-space wave, PENCIL_HATCH_DEG about Z, PENCIL_LINES / `size` scale, where it
+    is over 0.72) drawn PENCIL_HATCH_GREY as strongly as the surface is dark, multiplied by `base`, and an 8% paper
+    grain. Returns (that colour, None), or with `floor` (that colour, the same with the hatch at least `floor`
+    strong) as sockets."""
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    dark, light_ = ramp.color_ramp.elements
+    (dark.position, low), (light_.position, high) = PENCIL_RAMP
+    dark.color, light_.color = (low, low, low, 1.0), (high, high, high, 1.0)
+    nt.links.new(light, ramp.inputs["Fac"])
+    coords = nt.nodes.new("ShaderNodeTexCoord")
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    mapping.inputs["Rotation"].default_value = (0.0, 0.0, math.radians(PENCIL_HATCH_DEG))
+    wave = nt.nodes.new("ShaderNodeTexWave")
+    wave.wave_profile = "SIN"
+    wave.inputs["Scale"].default_value = PENCIL_LINES / max(size, 1e-3)
+    wave.inputs["Distortion"].default_value = 0.6
+    wave.inputs["Detail"].default_value = 1.0
+    nt.links.new(coords.outputs["Object"], mapping.inputs["Vector"])
+    nt.links.new(mapping.outputs["Vector"], wave.inputs["Vector"])
+    line = look._math(nt, "GREATER_THAN", PENCIL_LINE_AT)
+    nt.links.new(wave.outputs["Fac"], line.inputs[0])
+    strength = nt.nodes.new("ShaderNodeMapRange")
+    for name, value in zip(("From Min", "From Max", "To Min", "To Max"), (*PENCIL_HATCH_FROM, 0.0, 1.0)):
+        strength.inputs[name].default_value = value
+    nt.links.new(light, strength.inputs["Value"])
+    grain = _noise(nt, *PENCIL_GRAIN[:2])
+
+    def shade(hatch):
+        amount = look._math(nt, "MULTIPLY")
+        nt.links.new(line.outputs["Value"], amount.inputs[0])
+        nt.links.new(hatch, amount.inputs[1])
+        drawn = look._mix_rgba(nt, amount.outputs["Value"], (1.0, 1.0, 1.0), PENCIL_HATCH_GREY)
+        nt.links.new(ramp.outputs["Color"], next(s for s in drawn.node.inputs if s.identifier == "A_Color"))
+        return _multiply(nt, PENCIL_GRAIN[2], _multiply(nt, 1.0, base, drawn), grain.outputs["Color"])
+
+    if floor is None:
+        return shade(strength.outputs["Result"]), None
+    stronger = look._math(nt, "MAXIMUM", floor)
+    nt.links.new(strength.outputs["Result"], stronger.inputs[0])
+    return shade(strength.outputs["Result"]), shade(stronger.outputs["Value"])
+
+
+def _pencil(mat, base, ctx: Ctx, alpha: float | None = None) -> None:
+    """The sampler's pencil material in `base` (linear), a material output per engine. EEVEE: `_pencil_branch` on
+    the Diffuse light value, as Emission. Cycles: on `_light_cycles`; cast shadows come from a Toon BSDF (Size
+    looks.PENCIL_TOON_SIZE, under the calibrated sun) over an emission at PENCIL_SHADOW x the camera ray: with
+    PENCIL_CYCLES_SHADOW "hatched" the emission is the colour hatched at least as an unlit surface is and the toon
+    adds what lifts it back to the unhatched colour (unhatched - PENCIL_SHADOW x hatched), so lit areas show the
+    plain colour and cast shadows keep the hatch; "plain" is the sampler's grey shadow (toon of 0.38 x colour). The
+    emission glows for camera rays only, as toon's flat step does. `alpha`: seen through at that alpha."""
+    nt = _reset(mat)
+    shown, _ = _pencil_branch(nt, _light_eevee(nt), base, ctx.size)
+    eevee = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(shown, eevee.inputs["Color"])
+    floor = _hatch_strength(PENCIL_AMBIENT) if PENCIL_CYCLES_SHADOW == "hatched" else None
+    plain, hatched = _pencil_branch(nt, _light_cycles(nt, _to_sun(ctx.scene)), base, ctx.size, floor)
+    hatched = hatched or plain
+    glow = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(hatched, glow.inputs["Color"])
+    path = nt.nodes.new("ShaderNodeLightPath")
+    camera_only = look._math(nt, "MULTIPLY", PENCIL_SHADOW)
+    nt.links.new(path.outputs["Is Camera Ray"], camera_only.inputs[0])
+    nt.links.new(camera_only.outputs["Value"], glow.inputs["Strength"])
+    if hasattr(getattr(mat, "cycles", None), "emission_sampling"):
+        mat.cycles.emission_sampling = "NONE"
+    lift = look._vmath(nt, "SCALE")
+    lift.inputs["Scale"].default_value = PENCIL_SHADOW
+    nt.links.new(hatched, lift.inputs[0])
+    rest = look._vmath(nt, "SUBTRACT")
+    nt.links.new(plain, rest.inputs[0])
+    nt.links.new(lift.outputs["Vector"], rest.inputs[1])
+    toon_bsdf = nt.nodes.new("ShaderNodeBsdfToon")
+    toon_bsdf.component = "DIFFUSE"
+    toon_bsdf.inputs["Size"].default_value = looks.PENCIL_TOON_SIZE
+    toon_bsdf.inputs["Smooth"].default_value = 0.0
+    nt.links.new(rest.outputs["Vector"], toon_bsdf.inputs["Color"])
+    add = nt.nodes.new("ShaderNodeAddShader")
+    nt.links.new(glow.outputs["Emission"], add.inputs[0])
+    nt.links.new(toon_bsdf.outputs["BSDF"], add.inputs[1])
+    shaders = [eevee.outputs["Emission"], add.outputs["Shader"]]
+    if alpha is not None:
+        shaders = [_see_through(mat, nt, s, alpha) for s in shaders]
+    _outputs(nt, *shaders)
+
+
+def pencil(kit: Kit) -> Style:
+    """A pencil sketch on cream paper (`_pencil`): grey shading and object-space hatching, colour only on key parts
+    (the accent 25% toward white), other parts the paper 50% toward white, set surfaces the paper (looks.backdrop);
+    glass and water seen through at look.WATER_ALPHA. A single sun; sketchy graphite lines (`_pencil_lines`)."""
+
+    def material(mat, stamp, ctx, key):
+        if ctx.scenery(mat):
+            _pencil(mat, _lin(looks.backdrop("pencil", ctx.kit)), ctx)
+            return
+        alpha = look.WATER_ALPHA if stamp["kind"] in ("glass", "toy_water") else None
+        _pencil(mat, _lin(looks.part_colour("pencil", stamp["colour"], ctx.kit, key)), ctx, alpha)
+
+    return Style("pencil", looks.TABLE["pencil"], material, lines=_pencil_lines)
+
+
+def _pencil_lines(ctx: Ctx) -> None:
+    """The sampler's sketchy graphite: lineset "bsa pencil" drawing what the ink lineset would (which then does not
+    render), its own line style "bsa pencil" in the ink's colour and width, chained SKETCHY (3 rounds) at alpha 0.85,
+    thicker mid-stroke (an along-stroke curve 0.2 -> 1 -> 0.3 between 0.4 and 2, over PENCIL_SAMPLER_WIDTH, times
+    the ink's width), wobbled by Perlin noise (frequency 8, amplitude 1.6) and stretched at the ends (backbone 6)."""
+    for layer in ctx.scene.view_layers:
+        fs = layer.freestyle_settings
+        ink = fs.linesets.get(look.INK_LINESET)
+        if ink is None:
+            continue
+        pen = fs.linesets.get(PENCIL_LINESET) or fs.linesets.new(PENCIL_LINESET)
+        for attr in ("select_by_visibility", "visibility", "select_by_edge_types", "select_silhouette",
+                     "select_border", "select_external_contour", "select_crease", "select_by_collection",
+                     "collection", "collection_negation"):  # fmt: skip
+            setattr(pen, attr, getattr(ink, attr))
+        pen.show_render = True
+        ink.show_render = False
+        if pen.linestyle is None or pen.linestyle.name != PENCIL_LINESET:
+            old = pen.linestyle
+            pen.linestyle = bpy.data.linestyles.get(PENCIL_LINESET) or bpy.data.linestyles.new(PENCIL_LINESET)
+            if old is not None and old.users == 0:
+                bpy.data.linestyles.remove(old)
+        style = pen.linestyle
+        style.color = ink.linestyle.color
+        style.thickness = ink.linestyle.thickness
+        style.chaining = "SKETCHY"
+        style.rounds = 3
+        style.alpha = 0.85
+        style.thickness_position = "CENTER"
+        for mod in list(style.thickness_modifiers):
+            style.thickness_modifiers.remove(mod)
+        for mod in list(style.geometry_modifiers):
+            style.geometry_modifiers.remove(mod)
+        along = style.thickness_modifiers.new("Along", "ALONG_STROKE")
+        along.mapping = "CURVE"
+        along.blend = "MULTIPLY"  # of the ink's width (line_px), so a kit's outline_px still sets it
+        along.value_min, along.value_max = (v / PENCIL_SAMPLER_WIDTH for v in (0.4, 2.0))
+        points = along.curve.curves[0].points
+        points[0].location, points[1].location = (0.0, 0.2), (1.0, 0.3)
+        points.new(0.5, 1.0)
+        along.curve.update()
+        noise = style.geometry_modifiers.new("Noise", "PERLIN_NOISE_1D")
+        noise.frequency, noise.amplitude, noise.octaves = 8, 1.6, 2
+        style.geometry_modifiers.new("Stretch", "BACKBONE_STRETCHER").backbone_length = 6
+
+
+_BUILT = {"realistic": realistic, "toy": toy, "clay": clay, "toon": toon, "blueprint": blueprint, "paper": paper,
+          "pencil": pencil}  # fmt: skip
+STYLES: dict[str, Callable[[Kit], Style]] = {name: _BUILT[name] for name in STYLE_NAMES}  # bsa.kit's order
 
 
 # --- apply --------------------------------------------------------------------------------------------------------
@@ -657,9 +949,9 @@ def _extra_lines_off(scene) -> None:
 
 
 def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=(), style: str | None = None) -> dict:
-    """Restyle the built `scene` in `kit`'s style (or `style`): the view, every kit_material material (rebuilt in
-    place), style bevels, the lights (aimed at `target`, an object, its name or a point, for a subject `size`
-    metres across; the key parts' names in `key`), the world, ink lines, then the values for the engine the scene
+    """Restyle the built `scene` in `kit`'s style (or `style`): the view, the lights (aimed at `target`, an object,
+    its name or a point, for a subject `size` metres across; the key parts' names in `key`), every kit_material
+    material (rebuilt in place), style bevels, the world, ink lines, then the values for the engine the scene
     renders with. Without a kit nothing is touched: {"style": None}. Returns {"style", "view", "lights", "restyled",
     "kept", "lines", "warnings"}."""
     if kit is None:
@@ -679,9 +971,7 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
     scene["bsa_style"] = name
     ctx = Ctx(scene=scene, kit=kit, style=name, size=size, target=aim, key=key)
     view = _view(scene, name, sl, warnings)
-    restyled, kept = _materials(scene, st, ctx)
-    _bevels(scene, sl)
-    if sl.strength > 0:
+    if sl.strength > 0:  # the lights first: pencil's Cycles material reads the sun's direction
         lit = look.kit_lights(scene, aim, size, sl.strength, single_sun=sl.single_sun,
                               sun=scene.get("bsa_set") == "outdoor", sun_angle_deg=sl.sun_angle_deg,
                               cycles_scale=sl.cycles_trim, rig=looks.RIGS.get(name, look.RIG))  # fmt: skip
@@ -691,6 +981,10 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
         for obj in lit["lights"]:
             e = float(obj["bsa_energy"]["eevee"])
             obj["bsa_energy"] = {"eevee": e, "cycles": looks.cycles_energy(name, e, size)}
+    for layer in scene.view_layers:  # the lights' world matrices up to date for the materials that read them
+        layer.update()
+    restyled, kept = _materials(scene, st, ctx)
+    _bevels(scene, sl)
     _bounces(scene, sl)
     _world(scene, kit, name, sl, warnings)
     _extra_lines_off(scene)
