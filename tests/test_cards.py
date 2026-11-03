@@ -29,12 +29,22 @@ def font(tmp_path):
 
 def test_measure_wrap_and_height_use_the_font(font):
     assert cards.measure("ABAB", 40, font) == pytest.approx(80)
-    assert cards.measure("ABAB", 40, None) == pytest.approx(4 * 40 * cards.CHAR_W)
+    assert cards.BLENDER_CHAR_W == 0.60  # Blender 5.2's own font: monospaced, measured in Blender
+    assert cards.measure("ABAB", 40, None) == pytest.approx(4 * 40 * 0.60)
     assert cards.wrap("aa bb cc", 10, font, 25) == ["aa bb", "cc"]  # "aa bb" is 5 chars = 25 px
     assert cards.wrap("aa " + "x" * 10 + " bb", 10, font, 25) == ["aa", "x" * 10, "bb"]  # a long word on its own
     assert cards.text_height(1, 40, font) == pytest.approx(1.2 * 40)
     assert cards.text_height(3, 40, font) == pytest.approx((1.2 + 2 * 1.0) * 40)
     assert cards.text_height(2, 10, None) == pytest.approx((fonts.BLENDER_BOX_H + fonts.BLENDER_LINE_H) * 10)
+
+
+def test_a_font_without_readable_widths_and_blenders_font_metrics(tmp_path, font):
+    junk = tmp_path / "junk.ttf"
+    junk.write_bytes(b"not a font")
+    assert cards.measure("abc", 10, junk) == pytest.approx(3 * 10 * cards.BLENDER_CHAR_W)
+    assert cards.metrics(None) == (fonts.BLENDER_LINE_H, fonts.BLENDER_BOX_H)
+    assert cards.metrics(font) == pytest.approx((1.0, 1.2))
+    assert cards.text_drop(None) == cards.BLENDER_TEXT_DROP == 0.045 and cards.text_drop(font) == 0.0
 
 
 def test_a_pill_is_its_text_plus_padding(font):
@@ -213,7 +223,7 @@ def test_cache_key_changes_with_text_kit_and_font_file(font, tmp_path):
     st = font.stat()
     os.utime(font, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
     assert cards.cache_key(a) != before
-    assert cards.CARD_VERSION == 1
+    assert cards.CARD_VERSION == 2
 
 
 def test_card_font_falls_back_to_an_os_font(monkeypatch, tmp_path):
@@ -266,11 +276,14 @@ def test_cards_in_blender(blender_run):
     for name in ("test_a_card_png_is_its_size_with_exact_kit_colours_and_transparent_corners",
                  "test_card_text_is_drawn_inside_the_box", "test_the_logo_shows_on_the_logo_badge",
                  "test_ensure_renders_once", "test_rendering_cards_leaves_every_engine_alone",
-                 "test_overlay_strips_are_placed_where_the_layout_said", "test_pointer_strip_reaches_the_anchor"):
+                 "test_overlay_strips_are_placed_where_the_layout_said", "test_pointer_strip_reaches_the_anchor",
+                 "test_blenders_own_font_fits_its_padding_and_is_centred",
+                 "test_a_tracked_card_without_a_track_is_left_out",
+                 "test_a_scene_named_card_is_left_alone"):
         assert f"PASS {name}" in result.stdout, result.stdout + result.stderr
 
 
 def test_no_kit_code_touches_the_render_engine():
-    for f in ("bsa/kit.py", "bsa/cards.py", "bsa/kitlayout.py", "bsa/blender/cards.py", "bsa/blender/edit.py",
-              "bsa/blender/thumbs.py", "bsa/blender/closing_card.py"):
+    for f in ("bsa/kit.py", "bsa/cards.py", "bsa/kitlayout.py", "bsa/thumbs.py", "bsa/closing.py", "bsa/overlays.py",
+              "bsa/blender/cards.py", "bsa/blender/edit.py", "bsa/blender/thumbs.py", "bsa/blender/closing_card.py"):
         assert not re.search(r"\.engine\s*=|render\.engine", (ROOT / f).read_text(encoding="utf-8")), f

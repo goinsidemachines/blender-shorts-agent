@@ -21,9 +21,9 @@ import numpy as np
 from bsa import fonts
 from bsa.closing import on_colour
 from bsa.layout import safe_rect
-from bsa.overlays import CHAR_W, NEAR_WRAP_PX, hex_colour
+from bsa.overlays import NEAR_WRAP_PX, hex_colour
 
-CARD_VERSION = 1  # in every cache key: bump when the drawing changes
+CARD_VERSION = 2  # in every cache key: bump when the drawing changes
 
 SIZES = {"badge": 30, "category": 34, "step": 34, "label": 40, "measure": 40, "logo_name": 36, "title": 90,
          "title_highlight": 120, "bar": 34, "verdict": 36, "lead": 56, "website": 84, "handle": 52, "thumb_fact": 44,
@@ -43,6 +43,11 @@ PROGRESS_H = 26
 POINTER_DOT = 22
 PILL_KINDS = ("badge", "category", "step", "label", "measure")
 _RING_PX = 2  # the ink ring round a part label's dot
+# Blender's own font (no font file), measured in Blender 5.2: monospaced, every advance 0.600 em; its text box (the
+# font's bounding box, fonts.BLENDER_BOX_H) has 0.185 em above the cap tops but 0.275 em under the descenders, so
+# its text is drawn BLENDER_TEXT_DROP em lower to centre the ink (cap tops to descenders) in the box.
+BLENDER_CHAR_W = 0.60
+BLENDER_TEXT_DROP = 0.045
 
 
 @dataclass(frozen=True)
@@ -98,10 +103,10 @@ def card_font(kit, cache_dirs=None) -> Path | None:
 
 
 def measure(text: str, size: float, font) -> float:
-    """The width of `text` at `size` px in `font` (its advance widths), or estimated with CHAR_W for Blender's own
-    font or a font whose widths can't be read."""
+    """The width of `text` at `size` px in `font` (its advance widths); for Blender's own font (None) and a font whose
+    widths can't be read, BLENDER_CHAR_W per character (exact for Blender's own font, a guess for the other)."""
     em = fonts.advance_em(font, text) if font else None
-    return (em if em is not None else len(text) * CHAR_W) * size
+    return (em if em is not None else len(text) * BLENDER_CHAR_W) * size
 
 
 def wrap(text: str, size: float, font, width: float) -> list[str]:
@@ -139,14 +144,21 @@ def _lines(text: str, size: float, font, width: float) -> list[str]:
     return _break(wrap(text, size, font, width), size, font, width)
 
 
-def _metrics(font) -> tuple[float, float]:
+def metrics(font) -> tuple[float, float]:
+    """(line height, first line's box height) in em, as the sequencer draws `font` (Blender's own for None)."""
     m = fonts.line_metrics(font) if font else None
     return m if m is not None else (fonts.BLENDER_LINE_H, fonts.BLENDER_BOX_H)
 
 
+def text_drop(font) -> float:
+    """How far below its box centre (in em) a line is drawn so its ink is centred: BLENDER_TEXT_DROP for Blender's
+    own font, 0 for a font file (centred on its bounding box: Segoe UI's ink is within 0.01 em of it)."""
+    return 0.0 if font else BLENDER_TEXT_DROP
+
+
 def text_height(n_lines: int, size: float, font) -> float:
     """How tall the sequencer draws `n_lines` of text at `size` px: the first line's box, then a line height each."""
-    line_h, box_h = _metrics(font)
+    line_h, box_h = metrics(font)
     return (box_h + (n_lines - 1) * line_h) * size
 
 
@@ -183,7 +195,7 @@ def _hex_of(rgba) -> str:
 
 def _stack(sizes: list[int], font) -> tuple[float, list[float]]:
     """(total height, each line's centre from the top) for lines of `sizes` stacked as the sequencer spaces them."""
-    line_h, box_h = _metrics(font)
+    line_h, box_h = metrics(font)
     ys, y = [], box_h * sizes[0] / 2
     for i, s in enumerate(sizes):
         if i:

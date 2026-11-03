@@ -55,7 +55,8 @@ def test_a_card_png_is_its_size_with_exact_kit_colours_and_transparent_corners()
     y, x = spec.box_h // 2, 8 + K.outline_px
     assert _close(px[y, x, :3], (255, 255, 255), 1) and px[y, x, 3] == 255, px[y, x]  # fill, left of the text
     assert _close(px[spec.h - 2, spec.w // 2, :3], INK, 1), px[spec.h - 2, spec.w // 2]  # the shadow
-    assert bpy.data.scenes.get("Card") is None and not [p for p in TMP.iterdir() if p.name != "c.png"]
+    assert not [s for s in bpy.data.scenes if s.name.startswith("Card")]
+    assert not [p for p in TMP.iterdir() if p.name != "c.png"]
 
 
 def test_card_text_is_drawn_inside_the_box():
@@ -232,3 +233,44 @@ def test_pointer_strip_reaches_the_anchor():
         x, y = round(x), round(y)
         assert ink[0][max(0, y - 6) : y + 7, max(0, x - 6) : x + 7].any(), (x, y)
     assert not ink[1].any()  # frame 3: the anchor is under the card, no line and no dot
+
+
+def _text_ink(spec, px) -> np.ndarray:
+    """The pixels the card's text drew: where the render differs from the shapes alone."""
+    return np.abs(px.astype(int) - cards.shape_rgba(spec).astype(int)).max(axis=2) > 24
+
+
+def test_blenders_own_font_fits_its_padding_and_is_centred():
+    """Blender's own font (font None): long text stays inside the design padding (2 px for side bearings and
+    antialiasing) and the ink, cap tops to descenders, is centred in the box within 3 px."""
+    for spec in (cards.pill(K, "label", "Pivot gear, the part that gets the push", None),
+                 cards.title(K, ("Push the long end", "and lift the heavy load"), 1, None, 1000)):  # fmt: skip
+        assert spec.font is None
+        px = read_png(bsa.blender.cards.render(spec, TMP / f"none-{spec.kind}.png"))
+        ys, xs = np.where(_text_ink(spec, px))
+        pad = cards.PILL_PAD[0] if spec.kind == "label" else cards.CARD_PAD
+        assert xs.min() >= pad - 2 and xs.max() < spec.w - pad + 2, (spec.kind, xs.min(), xs.max(), spec.w, pad)
+        above, below = ys.min(), spec.box_h - (ys.max() + 1)
+        assert abs(above - below) <= 3, (spec.kind, above, below)
+
+
+def test_a_tracked_card_without_a_track_is_left_out():
+    scene = _edit_scene("CardsEmpty")
+    try:
+        seq = scene.sequence_editor_create()
+        pill = cards.pill(K, "label", "Gear", FONT)
+        empty = kitlayout.Placed(pill, 1, 3, kitlayout.CH["near"], track={}, text="Gear", near="Gear")
+        bsa.blender.cards.add_overlay(seq, kitlayout.KitOverlay([empty], [], None, []), TMP / "empty-cache")
+        assert len(seq.strips_all) == 0
+    finally:
+        bpy.data.scenes.remove(scene)
+
+
+def test_a_scene_named_card_is_left_alone():
+    mine = bpy.data.scenes.new("Card")  # the user's own scene of that name
+    try:
+        bsa.blender.cards.render(cards.pill(K, "label", "Gear", FONT), TMP / "named.png")
+        assert bpy.data.scenes.get("Card") == mine
+        assert not [s for s in bpy.data.scenes if s.name.startswith("Card-")]  # the drawing scene is gone
+    finally:
+        bpy.data.scenes.remove(mine)

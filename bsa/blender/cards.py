@@ -60,8 +60,8 @@ def _image(seq, name: str, png: Path, channel: int, f0: int, f1: int, place: dic
 def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec) -> None:
     """A text strip for one line: its box (the first line's box height, as cards sized it) centred on run.y, its
     x the middle (CENTER) or the left edge (LEFT) of the text. No box, no shadow, no wrapping."""
-    _, box_h = cards._metrics(spec.font)  # the line metrics cards sized the card with
-    top = run.y - box_h * run.size / 2
+    _, box_h = cards.metrics(spec.font)  # the line metrics cards sized the card with
+    top = run.y - box_h * run.size / 2 + cards.text_drop(spec.font) * run.size
     s = seq.strips.new_effect(f"T_{run.text[:18]}", "TEXT", channel, 1, length=1)
     s.text = run.text
     if font is not None:
@@ -80,16 +80,13 @@ def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec) -> None:
 
 def render(spec: CardSpec, out_png: Path) -> Path:
     """Draw `spec` as a `spec.w` x `spec.h` 8-bit RGBA PNG at `out_png` (written to a temp name, then moved in), in a
-    one-frame sequencer scene "Card" that is removed afterwards."""
+    one-frame sequencer scene "Card-<tag>" that is removed afterwards."""
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     tag = uuid.uuid4().hex[:12]
     shape_png = out_png.with_name(f".{out_png.stem}-{tag}-shape.png")
     tmp_png = out_png.with_name(f".{out_png.stem}-{tag}.tmp.png")
-    old = bpy.data.scenes.get(SCENE)
-    if old is not None:
-        bpy.data.scenes.remove(old)
-    scene = bpy.data.scenes.new(SCENE)
+    scene = bpy.data.scenes.new(f"{SCENE}-{tag}")  # its own name: a scene the user named "Card" is left alone
     try:
         r = scene.render
         r.resolution_x, r.resolution_y, r.resolution_percentage = spec.w, spec.h, 100
@@ -153,6 +150,8 @@ def add_overlay(seq, ov: KitOverlay, cache_dir: Path, frame=(W, H)) -> None:
     the card) with their dots, and the progress bar (track, fill cropped frame by frame, then the track's outline
     again over the fill)."""
     for p in ov.cards:
+        if p.track is not None and not p.track:  # a near card with no frame to show on
+            continue
         png = ensure(p.spec, cache_dir)
         if p.track is None:
             _image(seq, f"K_{p.spec.kind}", png, p.channel, p.f0, p.f1, _at(p.spec, p.at, frame))
