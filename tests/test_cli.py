@@ -1780,3 +1780,12 @@ def test_settings_set_kit_numbers_and_check(home):
     assert ok(run(home, "settings", "check"))["problems"] == []
     (home / "settings.json").write_text(json.dumps({"brand": {"style": "toon", "outline_px": "thick"}}), "utf-8")
     assert any("brand.outline_px" in p for p in ok(run(home, "settings", "check"))["problems"])
+
+
+def test_validate_shows_kit_problems_only_with_a_style(home, pendulum):
+    path = home / "settings.json"
+    base = json.loads(path.read_text("utf-8"))
+    path.write_text(json.dumps({**base, "brand": {"outline_px": "thick"}}), "utf-8")
+    assert not any("brand.outline_px" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
+    path.write_text(json.dumps({**base, "brand": {"style": "toon", "outline_px": "thick"}}), "utf-8")
+    assert any("brand.outline_px" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])

@@ -301,6 +301,8 @@ def problems(settings: dict, short=None) -> list[str]:
         merged, out = _merged(settings, short)
     except Exception:  # noqa: BLE001
         return []
+    if merged["style"] is None:  # no kit: shorts render as today, so nothing new is reported
+        return []
     logo = merged.get("logo")
     if logo and not Path(logo["file"]).is_file():
         out.append(f"your logo file {logo['file']} is missing, so no logo badge is drawn: set brand.logo.file again")

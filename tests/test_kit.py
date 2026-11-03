@@ -60,10 +60,13 @@ def test_whole_brand_object_is_checked_key_by_key():
     assert out["palette"]["accent"] == "#7A4CE0" and out["mode"] == "brand" and out["categories"]["spark"]
 
 
-def test_no_style_no_kit(bsa_home):
+def test_no_style_no_kit():
     s = {"brand": {**KIT}}
     del s["brand"]["style"]
     assert kit.kit_for(s) is None
+    s["brand"]["palette"] = {**KIT["palette"], "force": "red"}
+    s["brand"]["outline_px"] = "thick"
+    assert kit.problems(s) == []
 
 
 def test_kit_for_merges_plain_brand_and_short():
