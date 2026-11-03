@@ -376,7 +376,7 @@ RIG = (
 )
 
 
-def lights(scene, target, size: float, strength: float = 3.0, kind: str | None = None) -> dict:
+def lights(scene, target, size: float, strength: float = 3.0, kind: str | None = None, rig=RIG) -> dict:
     """Light the subject at `target` (a point, or an object: the centre of its bounding box) that is `size` metres
     across (its largest dimension) with a key, a fill and a rim light, placed around the scene camera's view (from
     -Y looking +Y when there is no camera). Subjects larger than SUN_ABOVE_M get sun lamps: a sun has no falloff, so
@@ -385,7 +385,8 @@ def lights(scene, target, size: float, strength: float = 3.0, kind: str | None =
     lights the subject as a sun of `strength` (W/m2) would. Calling it again moves and updates the same three lights
     ("<scene> Key", "<scene> Fill", "<scene> Rim"). `kind="sun"` lights a subject of any size with suns. Returns
     {"kind": "sun" or "area", "distance": metres from the target (None for suns), "lights": [the three light
-    objects]}."""
+    objects]}. `rig` replaces RIG (same shape: name, degrees around, degrees up, share of the key, colour), e.g. a
+    brand style's own lights."""
     if kind not in (None, "sun"):
         raise ValueError(f"unknown light kind {kind!r}: use None (chosen by size) or 'sun'")
     centre, back = _aim(scene, target)
@@ -393,7 +394,7 @@ def lights(scene, target, size: float, strength: float = 3.0, kind: str | None =
     sun = size > SUN_ABOVE_M or kind == "sun"
     distance = None if sun else AREA_DISTANCE * size
     made = []
-    for name, around, up, share, colour in RIG:
+    for name, around, up, share, colour in rig:
         direction = _direction(back, around, up)
         obj = _light_object(scene, f"{scene.name} {name}", "SUN" if sun else "AREA")
         data = obj.data
@@ -598,19 +599,20 @@ def stamp(mat) -> dict | None:
     return {"kind": str(raw["kind"]), "colour": str(raw["colour"]), "pattern": str(raw["pattern"]) or None}
 
 
-_RIG_NAMES = ("Key", "Fill", "Rim", "Sun")
+_RIG_NAMES = ("Key", "Fill", "Rim", "Top", "Sun")
 
 
 def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool = False, sun: bool = False,
-               sun_angle_deg: float = SUN_ANGLE_DEG, cycles_scale: float = 1.0) -> dict:  # fmt: skip
+               sun_angle_deg: float = SUN_ANGLE_DEG, cycles_scale: float = 1.0, rig=RIG) -> dict:  # fmt: skip
     """A brand style's lights: the `lights` rig (suns with `sun=True`; with `sun=False` as `lights` picks by size:
     the area rig, suns over SUN_ABOVE_M; each sun `sun_angle_deg` across), or with `single_sun` one white sun
-    "<scene> Sun" from the key's direction, `sun_angle_deg` across, of `strength`. This scene's other "<scene> Key/Fill/Rim/Sun" lights are removed. Each light is stamped
+    "<scene> Sun" from the key's direction, `sun_angle_deg` across, of `strength`. This scene's other "<scene> Key/Fill/Rim/Top/Sun" lights are removed. Each light is stamped
     `light["bsa_energy"] = {"eevee": e, "cycles": e * cycles_scale}` and set for the scene's engine now (match_engine
-    sets it again for the engine a render uses). Returns {"kind", "distance", "lights"} as `lights` does."""
+    sets it again for the engine a render uses). `rig` (default RIG) is the style's own rig for `lights`; the
+    single sun comes from its first light's direction. Returns {"kind", "distance", "lights"} as `lights` does."""
     if single_sun:
         centre, back = _aim(scene, target)
-        _name, around, up, _share, _colour = RIG[0]
+        _name, around, up, _share, _colour = rig[0]
         obj = _light_object(scene, f"{scene.name} Sun", "SUN")
         obj.data.color = (1.0, 1.0, 1.0)
         obj.data.energy = float(strength)
@@ -619,7 +621,7 @@ def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool 
         obj.rotation_euler = (centre - obj.location).to_track_quat("-Z", "Y").to_euler()
         out = {"kind": "sun", "distance": None, "lights": [obj]}
     else:
-        out = lights(scene, target, size, strength, kind="sun" if sun else None)
+        out = lights(scene, target, size, strength, kind="sun" if sun else None, rig=rig)
         if out["kind"] == "sun":
             for obj in out["lights"]:
                 obj.data.angle = math.radians(sun_angle_deg)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import bpy
 import numpy as np
+from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -29,13 +30,14 @@ def _kit(style: str):
     return kit_from({**KIT, "style": style})
 
 
-def _build(engine: str, style: str | None = "toy"):
-    """A fresh scene with the demo machine, styled with `style` (None: built, not styled)."""
+def _build(engine: str, style: str | None = "toy", room: bool = True):
+    """A fresh scene with the demo machine in its room (the floor and wall shorts are lit with), styled with `style`
+    (None: built, not styled)."""
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
     setup_scene(sc, Short(slug="t", title="T", length_s=1), engine, "still")
     kit = _kit(style or "toy")
-    built = demo.lever(sc, kit)
+    built = demo.lever(sc, kit, room=room)
     args = {k: built[k] for k in ("target", "size", "key")}
     result = styles.apply(sc, kit, **args) if style else None
     return sc, kit, built, result
@@ -52,13 +54,14 @@ def _probe(scene, obj_name: str, engine: str) -> np.ndarray:
     cam = scene.camera
     mw = obj.matrix_world
     rot = mw.to_3x3().inverted().transposed()
+    toward = (light.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()  # a light shines down its -Z
     best = None
     for poly in obj.data.polygons:
         centre = mw @ poly.center
         normal = (rot @ poly.normal).normalized()
         if normal.dot((cam.matrix_world.translation - centre).normalized()) <= 0.05:
             continue
-        lit = normal.dot((light.matrix_world.translation - centre).normalized())
+        lit = normal.dot(toward)
         if best is None or lit > best[0]:
             best = (lit, centre)
     png = OUT / f"{scene.get('bsa_style')}_{engine}_{obj_name}.png"
@@ -71,19 +74,70 @@ def _probe(scene, obj_name: str, engine: str) -> np.ndarray:
     return np.median(patch, axis=0)
 
 
-def test_lit_colour_matches_the_kit_in_both_engines():
+def _lit_check(room: bool) -> None:
     for style in ("realistic", "toy", "clay"):
         got = {}
         for engine in ("eevee", "cycles"):
-            sc, kit, built, _ = _build(engine, style)
+            sc, kit, built, _ = _build(engine, style, room=room)
             got[engine] = _probe(sc, built["probe"], engine)
             want = looks.lit_expect(style, SPARK, kit, key=False)
             de = colour.delta_e(want, got[engine])
-            print(f"LIT {style} {engine} {colour.srgb_to_hex(got[engine])} want {want} dE {de:.2f}")
-            assert de <= looks.LIT_DELTA_E[style], (style, engine, de)
+            limit = looks.ROOM_LIT_DELTA_E[style][engine] if room else looks.LIT_DELTA_E[style]
+            print(f"LIT room={room} {style} {engine} {colour.srgb_to_hex(got[engine])} want {want} dE {de:.2f}")
+            assert de <= limit, (room, style, engine, de, limit)
         between = colour.delta_e(got["eevee"], got["cycles"])
-        print(f"ENGINES {style} dE {between:.2f}")
-        assert between <= looks.ENGINE_DELTA_E[style], (style, between)
+        limit = looks.ROOM_ENGINE_DELTA_E[style] if room else looks.ENGINE_DELTA_E[style]
+        print(f"ENGINES room={room} {style} dE {between:.2f}")
+        assert between <= limit, (room, style, between, limit)
+
+
+def test_lit_colour_matches_the_kit_in_both_engines():
+    _lit_check(room=True)
+
+
+def test_lit_colour_matches_without_a_floor_too():
+    _lit_check(room=False)
+
+
+def _principled_of(mat):
+    return next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+
+
+def test_parts_take_the_style_whatever_their_kind_and_sets_stay_matte():
+    """A matte-kind part (the gears) is glossy toy plastic in toy and bumped clay in clay; a material only set
+    objects use (the room's floor and wall) is a matte Principled in every style."""
+    for style in ("toy", "clay", "realistic"):
+        _build("eevee", style)
+        gear = bpy.data.materials["GearBig"]
+        kinds = {n.bl_idname for n in gear.node_tree.nodes}
+        bsdf = _principled_of(gear)
+        if style == "toy":
+            assert (
+                "ShaderNodeLayerWeight" in kinds
+                and abs(bsdf.inputs["Coat Weight"].default_value - look.TOY_COAT) < 1e-6
+            )
+            assert abs(bsdf.inputs["Roughness"].default_value - look.TOY_ROUGHNESS) < 1e-6
+        if style == "clay":
+            assert "ShaderNodeBump" in kinds and abs(bsdf.inputs["Roughness"].default_value - 0.88) < 1e-6
+        for name in ("Floor", "Wall"):
+            floor = bpy.data.materials[name]
+            assert {n.bl_idname for n in floor.node_tree.nodes} == {
+                "ShaderNodeOutputMaterial",
+                "ShaderNodeBsdfPrincipled",
+            }, (style, name)
+            assert abs(_principled_of(floor).inputs["Roughness"].default_value - look.MATTE_ROUGHNESS) < 1e-6
+            assert not bpy.data.objects[name].modifiers
+
+
+def test_a_key_copy_goes_on_the_key_object_only():
+    sc, kit, _built, _ = _build("eevee", None)
+    crate = bpy.data.objects["Crate"]
+    twin = bpy.data.objects.new("Twin", crate.data)  # a linked duplicate: same mesh, same material slot
+    sc.collection.objects.link(twin)
+    twin.location = (2.5, 0, 0.4)
+    styles.apply(sc, kit, target="Lever", size=3.6, key=["Crate"])
+    assert crate.material_slots[0].material.name == "Crate key"
+    assert twin.material_slots[0].material.name == "Crate"
 
 
 def _counts(sc) -> dict:
@@ -123,7 +177,7 @@ def test_apply_twice_is_the_same_as_once():
     once = _counts(sc)
     again = styles.apply(sc, kit, **{k: built[k] for k in ("target", "size", "key")})
     assert _counts(sc) == once
-    assert once["style bevels"] > 0 and once["lights"] == 3
+    assert once["style bevels"] > 0 and once["lights"] == len(looks.RIGS["toy"])
     assert again["lights"] == first["lights"] and again["restyled"] == first["restyled"]
     _no_dot_names()
 
@@ -163,7 +217,10 @@ def test_reapply_switches_style_and_back():
     realistic = styles.reapply(sc, kit, "realistic")  # toy -> clay -> realistic: no stray lights, worlds, materials
     after = _counts(sc)
     assert realistic["style"] == "realistic"
-    for key in ("objects", "lights", "materials", "worlds", "style bevels", "linesets", "collections"):
+    rigs = len(looks.RIGS["realistic"]) - len(looks.RIGS["toy"])  # realistic has its own rig: no stray lights
+    assert after["lights"] == counts["lights"] + rigs and after["objects"] == counts["objects"] + rigs
+    assert sum(1 for o in sc.objects if o.type == "LIGHT") == len(looks.RIGS["realistic"])
+    for key in ("materials", "worlds", "style bevels", "linesets", "collections"):
         assert after[key] == counts[key], key
     _no_dot_names()
     try:
@@ -195,7 +252,7 @@ def test_match_engine_follows_the_render_engine_not_the_build():
     assert sc.render.engine == before
     de = colour.delta_e(looks.lit_expect("toy", SPARK, kit, key=False), got)
     print(f"BUILT EEVEE RENDERED CYCLES dE {de:.2f}")
-    assert de <= looks.LIT_DELTA_E["toy"]
+    assert de <= looks.ROOM_LIT_DELTA_E["toy"]["cycles"]
 
 
 def test_engine_is_never_changed_by_apply():

@@ -1,6 +1,6 @@
 """The demo machine every style is tested and sampled on: a lever on a fulcrum with a crate and a weight, and two
-meshing gears on a stand, made with kit materials in the kit's colours, and a 9:16 camera. No floor, lights or world:
-a style and a set add those."""
+meshing gears on a stand, made with kit materials in the kit's colours, and a 9:16 camera. No lights or world (a style and
+a set add those); a floor and back wall only when asked for (`lever(room=True)`)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from bsa.blender import bake, look
 
 MODULE = 0.09  # gear tooth size (metres)
 GEAR_ANGLE_DEG = 35.0  # the small gear sits this far above the big one's horizontal
+ROOM_M = 12.0  # the room grid size, as the style sampler makes its floor and wall
 
 
 def _object(scene, name: str, bm):
@@ -76,10 +77,24 @@ def _gear(scene, name, teeth, thick, loc, turn):
     return obj, pitch_r
 
 
-def lever(scene, kit) -> dict:
+def _room(scene, kit) -> None:
+    """The sampler's room: a floor at z = 0 (centred 2 m behind the machine) and a back wall 3 m behind it, matte
+    in the kit's background colour, tagged set:floor and set:wall (scenery: no bevel, no lines, a matte material)."""
+    for name, rotation, location in (("Floor", (0, 0, 0), (0, 2, 0)), ("Wall", (math.radians(90), 0, 0), (0, 3, 6))):
+        bm = bmesh.new()
+        bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=ROOM_M)
+        obj = _object(scene, name, bm)
+        obj.rotation_euler = rotation
+        obj.location = location
+        look.assign(obj, look.kit_material(name, "matte", kit.palette["background"]))
+        bake.tag(obj, f"set:{name.lower()}")
+
+
+def lever(scene, kit, room: bool = False) -> dict:
     """Build the demo machine in `scene` at z >= 0 with kit materials (crate "toy" in the kit's `spark` colour, lever
     `flow`, weight `grip`, gears, stand, fulcrum and axles matte) and `category:` tags, and a 9:16 camera (lens 50).
-    Returns {"target", "size", "key", "probe"} for styles.apply and the look tests."""
+    No lights or world; with `room` the sampler's floor and back wall too (`_room`), else no floor. Returns
+    {"target", "size", "key", "probe"} for styles.apply and the look tests."""
     mats = {
         "Crate": look.kit_material("Crate", "toy", kit.colour("spark")),
         "Lever": look.kit_material("Lever", "plastic", kit.colour("flow")),
@@ -125,4 +140,6 @@ def lever(scene, kit) -> dict:
     cam.location = (0.15, -6.3, 3.7)
     cam.rotation_euler = (Vector((0.15, 0.7, 1.15)) - cam.location).to_track_quat("-Z", "Y").to_euler()
     scene.camera = cam
+    if room:
+        _room(scene, kit)
     return {"target": "Lever", "size": 3.6, "key": ["Crate"], "probe": "Crate"}

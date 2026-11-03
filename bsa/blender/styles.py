@@ -39,6 +39,11 @@ class Ctx:
     size: float
     target: object
     key: frozenset[str]
+    set_only: frozenset[str] = frozenset()  # names of the materials used only on set objects (bake.is_set)
+
+    def scenery(self, mat) -> bool:
+        """True for a material only set objects use: the styles here make it a matte Principled."""
+        return mat.name in self.set_only
 
 
 @dataclass(frozen=True)
@@ -139,11 +144,15 @@ def _kit_principled(mat, kind: str, hex_: str, pattern, roughness: float) -> Non
                 pass
 
 
-def _common(mat, stamp: dict, hex_: str) -> bool:
-    """The kinds every style here makes the same way: glass, toy_water, emissive as look makes them; matte (what sets
-    are made of) a matte Principled. True when `mat` was made here."""
+def _common(mat, stamp: dict, hex_: str, ctx: Ctx) -> bool:
+    """What every style here makes the same way: a material only set objects use (floor, wall, props) is a matte
+    Principled of its colour, its pattern kept; glass, toy_water and emissive parts are made as look makes them. Every
+    other part, whatever its kind (matte too), gets the style's own material. True when `mat` was made here."""
+    if ctx.scenery(mat):
+        _kit_principled(mat, "matte", hex_, stamp["pattern"], look.MATTE_ROUGHNESS)
+        return True
     kind = stamp["kind"]
-    if kind in AS_LOOK or kind == "matte":
+    if kind in AS_LOOK:
         _kit_principled(mat, kind, hex_, stamp["pattern"], REALISTIC_ROUGHNESS[kind])
         return True
     return False
@@ -158,6 +167,8 @@ def realistic(kit: Kit) -> Style:
 
     def material(mat, stamp, ctx, key):
         hex_ = looks.part_colour("realistic", stamp["colour"], ctx.kit, key)
+        if _common(mat, stamp, hex_, ctx):
+            return
         _kit_principled(mat, stamp["kind"], hex_, stamp["pattern"], REALISTIC_ROUGHNESS[stamp["kind"]])
 
     return Style("realistic", looks.TABLE["realistic"], material)
@@ -169,7 +180,7 @@ def toy(kit: Kit) -> Style:
 
     def material(mat, stamp, ctx, key):
         hex_ = looks.part_colour("toy", stamp["colour"], ctx.kit, key)
-        if _common(mat, stamp, hex_):
+        if _common(mat, stamp, hex_, ctx):
             return
         nt, bsdf = _principled(mat)
         lin = _lin(hex_)
@@ -199,7 +210,7 @@ def clay(kit: Kit) -> Style:
 
     def material(mat, stamp, ctx, key):
         hex_ = looks.part_colour("clay", stamp["colour"], ctx.kit, key)
-        if _common(mat, stamp, hex_):
+        if _common(mat, stamp, hex_, ctx):
             return
         nt, bsdf = _principled(mat)
         _shade(nt, bsdf, _lin(hex_), stamp["pattern"], bump=False)
@@ -282,7 +293,7 @@ def _target(scene, target):
     return tuple(point), point
 
 
-def _brand(scene) -> dict:
+def _brand(scene, warnings: list) -> dict:
     """The brand settings that apply to this scene's short (none for a fresh one); {} when unreadable."""
     from types import SimpleNamespace
 
@@ -291,14 +302,15 @@ def _brand(scene) -> dict:
 
         short = SimpleNamespace(look=str(scene["bsa_look"])) if scene.get("bsa_look") else None
         return brand_for(load_settings(), short)
-    except Exception:  # noqa: BLE001 - a hand-edited settings file never stops a style
+    except Exception as exc:  # noqa: BLE001 - a hand-edited settings file never stops a style
+        warnings.append(f"the settings could not be read ({exc}), so brand.look and brand.exposure were not applied")
         return {}
 
 
 def _view(scene, name: str, sl: looks.StyleLook, warnings: list) -> str:
     vs = scene.view_settings
     vs.view_transform = sl.view
-    brand = _brand(scene)
+    brand = _brand(scene, warnings)
     if brand.get("exposure") is not None:
         vs.exposure = float(brand["exposure"])
     want = str(brand.get("look") or "").strip()
@@ -333,12 +345,14 @@ def _key_copies(scene, key: frozenset) -> None:
         if copy is None:
             copy = mat.copy()
             copy.name = f"{mat.name} key"
+        slot.link = "OBJECT"  # a linked duplicate's mesh is shared: the copy goes on this object only
         slot.material = copy
 
 
 def _materials(scene, st: Style, ctx: Ctx) -> tuple[int, list[str]]:
     _key_copies(scene, ctx.key)
     on_key: dict = {}
+    on_set: dict = {}
     kept: set[str] = set()
     for obj, slot in _slots(scene):
         mat = slot.material
@@ -346,6 +360,8 @@ def _materials(scene, st: Style, ctx: Ctx) -> tuple[int, list[str]]:
             kept.add(mat.name)
             continue
         on_key[mat] = on_key.get(mat, False) or obj.name in ctx.key
+        on_set[mat.name] = on_set.get(mat.name, True) and bake.is_set(obj)
+    ctx.set_only = frozenset(name for name, only in on_set.items() if only)
     for mat, key in on_key.items():
         st.material(mat, look.stamp(mat), ctx, key)
     return len(on_key), sorted(kept)
@@ -457,6 +473,8 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
     sl = st.look
     warnings: list[str] = []
     key = frozenset(str(k) for k in key)
+    for layer in scene.view_layers:  # world matrices up to date: the lights aim from the camera at the target
+        layer.update()
     aim, stored = _target(scene, target)
     size = float(size) if size is not None else _bounds(_kit_meshes(scene))[1]
     scene["bsa_style_args"] = {"target": stored, "size": size, "key": sorted(key)}
@@ -467,7 +485,7 @@ def apply(scene, kit: Kit | None, target=None, size: float | None = None, key=()
     _bevels(scene, sl)
     lit = look.kit_lights(scene, aim, size, sl.strength, single_sun=sl.single_sun,
                           sun=scene.get("bsa_set") == "outdoor", sun_angle_deg=sl.sun_angle_deg,
-                          cycles_scale=sl.cycles_trim)  # fmt: skip
+                          cycles_scale=sl.cycles_trim, rig=looks.RIGS.get(name, look.RIG))  # fmt: skip
     if name in ("toon", "pencil"):
         for obj in lit["lights"]:
             e = float(obj["bsa_energy"]["eevee"])

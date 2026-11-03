@@ -19,7 +19,7 @@ def test_toon_sun_energy_is_the_sampler_formula():
 
 
 def test_cycles_energy_trims_lit_styles_and_calibrates_toon():
-    assert looks.cycles_energy("clay", 10.0, 1.0) == pytest.approx(9.2)
+    assert looks.cycles_energy("clay", 10.0, 1.0) == pytest.approx(8.5)
     assert looks.cycles_energy("toon", 4.0, 1.0) == pytest.approx(looks.toon_sun_energy(0.874, 0.0, 0.92))
     assert looks.cycles_energy("pencil", 3.0, 1.0) == pytest.approx(looks.toon_sun_energy(0.95, 0.0, 0.915))
 

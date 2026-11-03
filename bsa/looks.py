@@ -37,15 +37,35 @@ class StyleLook:
 
 
 TABLE = {
-    "realistic": StyleLook("AgX", None, 3.4, 0.1, False, 12, 0.93, 0, 0.02, 2, None),
-    "toy": StyleLook("Standard", None, 3.6, 0.3, False, 12, 1.0, 0, 0.08, 5, None),
+    "realistic": StyleLook("AgX", "Medium High Contrast", 3.0, 0.35, False, 12, 0.83, 0, 0.02, 2, None),
+    "toy": StyleLook("Standard", None, 1.9, 0.42, False, 12, 0.97, 0, 0.08, 5, None),
     "toon": StyleLook("Standard", None, 4.0, 0.08, True, 0.5, 1.0, 4.0, 0, 0, 0),
-    "clay": StyleLook("AgX", "Medium High Contrast", 3.2, 0.3, False, 12, 0.92, 0, 0.12, 6, None),
+    "clay": StyleLook("AgX", "Medium High Contrast", 3.2, 0.3, False, 12, 0.85, 0, 0.12, 6, None),
     "blueprint": StyleLook("Standard", None, 0.0, 1.0, False, 0, 1.0, 3.0, 0, 0, None),
     "paper": StyleLook("Standard", None, 2.1, 0.45, True, 1.5, 0.9, 0, 0.04, 1, None),
     "pencil": StyleLook("Standard", None, 3.0, 0.25, True, 4.0, 1.0, 3.5, 0, 0, 0),
 }  # fmt: skip
 
+WHITE = (1.0, 1.0, 1.0)
+# Each style's light rig, from the style sampler's lights, as look.lights reads a rig: name, degrees around the subject
+# from the camera's side (look.lights' sense), degrees above the horizon, share of the key's strength, colour. A style
+# without one uses look.RIG. Toy's key is lower (20 degrees, the sampler's 40) and its overhead light gone: the sunlit
+# floor a set adds otherwise whitens the lit faces in Cycles far more than in EEVEE.
+RIGS = {
+    "realistic": (("Key", -36.0, 36.0, 1.0, WHITE), ("Fill", 48.0, 17.0, 0.29, WHITE),
+                  ("Rim", 150.0, 51.0, 0.69, WHITE)),
+    "toy": (("Key", -25.0, 20.0, 1.0, WHITE), ("Fill", 42.0, 15.0, 0.6, WHITE)),
+    "clay": (("Key", -36.0, 41.0, 1.0, (1.0, 0.95, 0.88)), ("Fill", 48.0, 17.0, 0.25, WHITE)),
+}  # fmt: skip
+
+# The lit-face checks run twice. Without a floor (the demo machine alone, lit by the world): LIT_DELTA_E and
+# ENGINE_DELTA_E, tight, pinning the materials' kit colours. In a room (the demo with the sampler's floor and wall,
+# what shorts ship with): ROOM_LIT_DELTA_E per engine and ROOM_ENGINE_DELTA_E, each the owner-approved sampler's own
+# measurement on its crate's lit face plus 3. Sampler measured (lit face vs its kit colour; EEVEE, Cycles, between):
+# realistic 14.9, 26.6, 11.9; toy 13.8, 17.5, 4.2; clay 5.9, 6.0, 4.2. Never raise these: tune the lights instead.
+ROOM_LIT_DELTA_E = {"realistic": {"eevee": 17.9, "cycles": 29.6}, "toy": {"eevee": 16.8, "cycles": 20.5},
+                    "clay": {"eevee": 8.9, "cycles": 9.0}}  # fmt: skip
+ROOM_ENGINE_DELTA_E = {"realistic": 14.9, "toy": 7.2, "clay": 7.2}
 LIT_DELTA_E = {"realistic": 15, "toy": 8, "toon": 2, "clay": 12, "blueprint": 6, "paper": 8, "pencil": 6}
 ENGINE_DELTA_E = {"realistic": 6, "toy": 6, "toon": 3, "clay": 6, "blueprint": 2, "paper": 6, "pencil": 4}
 

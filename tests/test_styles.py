@@ -36,6 +36,9 @@ def test_styles_in_blender(blender_run, bsa_home):
     assert result.returncode == 0, result.stdout + result.stderr
     for name in (
         "test_lit_colour_matches_the_kit_in_both_engines",
+        "test_lit_colour_matches_without_a_floor_too",
+        "test_parts_take_the_style_whatever_their_kind_and_sets_stay_matte",
+        "test_a_key_copy_goes_on_the_key_object_only",
         "test_without_a_kit_styles_change_nothing",
         "test_apply_twice_is_the_same_as_once",
         "test_reapply_switches_style_and_back",
