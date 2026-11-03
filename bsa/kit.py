@@ -181,6 +181,11 @@ def check(key: str, value, *, _must_exist: bool = True):
             if word not in LOGO_PLACES:
                 raise ValueError("brand.logo.place must be top-left or top-right")
             return word
+        if rest == "name":
+            text = value.strip() if isinstance(value, str) else ""
+            if not text or len(text) > 36:
+                raise ValueError(f"brand.logo.name must be text of 1 to 36 characters, got {value!r}")
+            return text
         return value
     return value
 
@@ -299,7 +304,7 @@ def problems(settings: dict, short=None) -> list[str]:
     """What kit_for left out of the stored kit, and a logo file that is gone."""
     try:
         merged, out = _merged(settings, short)
-        shots = [s for s in getattr(short, "shots", None) or []]
+        shots = list(getattr(short, "shots", None) or [])
     except Exception:  # noqa: BLE001
         return []
     if merged["style"] is None:  # no kit: shorts render as today, so only the kit-only fields are reported

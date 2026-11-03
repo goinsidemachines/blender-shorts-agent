@@ -155,3 +155,13 @@ def test_kit_field_warnings():
     assert "shot s1 has a title card, category, step or value bars, which only show with a brand kit" in none
     assert kit.problems({"brand": {"mode": "brand"}}, _short_with()) == []
     assert "only show with a brand kit" in " ".join(kit.problems({}, _short_with(step=[1, 2])))
+
+
+def test_logo_name_is_validated():
+    assert kit.check("logo.name", " Acme ") == "Acme"
+    assert kit.check("logo", {"name": "Acme"}, _must_exist=False) == {"name": "Acme"}
+    for bad in ("", "  ", "x" * 37, 5):
+        with pytest.raises(ValueError, match="brand.logo.name must be text of 1 to 36"):
+            kit.check("logo.name", bad)
+    with pytest.raises(ValueError, match="brand.logo.name"):
+        kit.check("logo", {"name": ""})
