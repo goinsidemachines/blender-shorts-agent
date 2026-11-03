@@ -9,6 +9,7 @@ from fontbuild import build_font
 
 from bsa import cards, kit, kitlayout, overlays
 from bsa.layout import CAPTION_LIFT_PX, SAFE, H, Rect, inside_safe, overlap_area, safe_rect
+from bsa.overlays import STACK_GAP_PX
 from bsa.short import Short, Shot
 from bsa.timeline import Card, Span, Timeline
 from tests.kitfix import KIT
@@ -268,7 +269,7 @@ def test_sample_has_one_of_each_card(font):
     assert next(p for p in ov.cards if p.spec.kind == "category").text == "Spark"
     assert next(p for p in ov.cards if p.spec.kind == "label").near == "Pivot"
     (ptr,) = ov.pointers
-    assert ptr.ends[1][1] == (520.0, 1000.0)
+    assert ptr.ends[1][1] == (1000.0, 700.0)
     p = ov.progress
     assert round(p.fill.w * (1 - p.f0 + 1) / (p.f1 - p.f0 + 1)) == round(p.fill.w * 0.4)
     no_cats = kitlayout.sample(kit.kit_from({**KIT, "categories": {}}), font)
@@ -279,6 +280,30 @@ def test_sample_with_a_logo_shows_it(tmp_path, font):
     logo = _png(tmp_path / "logo.png", 200, 100)
     ov = kitlayout.sample(kit.kit_from({**KIT, "logo": {"file": str(logo), "name": "Acme"}}), font)
     assert [p.spec.kind for p in ov.cards].count("logo") == 1
+
+
+def _sample_rects(ov):
+    rects = [(p.spec.kind, p.at if p.track is None else p.track[1]) for p in ov.cards]
+    if ov.progress is not None:
+        rects.append(("progress", ov.progress.at))
+    return rects
+
+
+@pytest.mark.parametrize("with_logo", [False, True])
+def test_no_two_sample_cards_overlap(tmp_path, font, with_logo):
+    extra = {"logo": {"file": str(_png(tmp_path / "logo.png", 200, 100)), "name": "Acme"}} if with_logo else {}
+    ov = kitlayout.sample(kit.kit_from({**KIT, **extra}), font)
+    rects = _sample_rects(ov)
+    assert ("logo" in [k for k, _ in rects]) == with_logo
+    s = safe_rect()
+    for kind, r in rects:
+        assert s.x - 1 <= r.x and r.right <= s.right + 1 and s.y - 1 <= r.y and r.bottom <= s.bottom + 1, (kind, r)
+    for i, (ka, a) in enumerate(rects):
+        for kb, b in rects[i + 1 :]:
+            assert overlap_area(a, b) == 0, (ka, a, kb, b)
+    bars = next(r for k, r in rects if k == "bars")
+    caption = next(r for k, r in rects if k == "caption")
+    assert caption.y - bars.bottom >= STACK_GAP_PX
 
 
 def test_a_card_in_a_cover_font_is_noted_once(monkeypatch, short, tl, anchors, font, tmp_path):
