@@ -10,6 +10,7 @@ they are spoken on their own instead.
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import re
 import wave
@@ -231,12 +232,23 @@ def _match(found, span, texts, ids, words, sr) -> tuple[list[tuple[int, int] | s
         # Sentence ends inside a line are boundaries too, so a pause after "…. Right." is never taken for a line break.
         lengths, kinds = _segments(texts)
         targets = _shares(span, lengths)
-        # Each line's expected stretch; a line break may land anywhere in the two lines it joins, a sentence end
-        # anywhere in its own line (in order, so neither can take a pause that belongs to the other).
+        # Each line's expected stretch; a line break may land anywhere in the two lines it joins, a sentence end in
+        # line k anywhere in lines k-1..k+1 (as wide, so a fast or slow line doesn't push it out of reach). In order,
+        # so neither can take a pause that belongs to the other.
         edges = [span[0], *expected(span, texts), span[1]]
-        lo = [edges[k] for k, _ in kinds]
-        hi = [edges[k + 2] if is_break else edges[k + 1] for k, is_break in kinds]
+        last = len(edges) - 1
+        lo = [edges[k] if is_break else edges[max(k - 1, 0)] for k, is_break in kinds]
+        hi = [edges[min(k + 2, last)] for k, _ in kinds]
         chosen = _assign(found, targets, lo, hi)
+        # Wrong audio on a line is worse than speaking it again: a line break whose pause could as well go to another
+        # boundary (forbidding it there leaves as many boundaries matched) is ambiguous, so it falls back.
+        total = sum(c is not None for c in chosen)
+        for b, (_, is_break) in enumerate(kinds):
+            if is_break and chosen[b] is not None:
+                lo2, hi2 = list(lo), list(hi)
+                lo2[b], hi2[b] = math.inf, -math.inf
+                if sum(c is not None for c in _assign(found, targets, lo2, hi2)) == total:
+                    chosen[b] = None
         for b, (k, is_break) in enumerate(kinds):
             if not is_break:
                 continue
@@ -276,7 +288,11 @@ def _bounds(rms: np.ndarray, win: int, pause: tuple[int, int], sr: int) -> tuple
     stay in the pause's silent core: windows quieter than the onset detector's threshold, or within FLOOR_MARGIN_DB
     of the pause's own quietest window (a mic's noise floor), with one window of margin at each end. The next line
     starts up to LEAD_S before the core's end (where its first sound begins) and the line before ends up to TAIL_S
-    after the core's start; in a short pause the next line's lead comes first and both meet there."""
+    after the core's start; in a short pause the next line's lead comes first and both meet there.
+
+    An onset within FLOOR_MARGIN_DB of the noise floor counts as silent: it is still kept whole (the next line takes
+    up to LEAD_S before the core's end, and all of a pause shorter than that), unless the silence before it is under
+    about one window."""
     ps, pe = pause
     lead, tail = round(LEAD_S * sr), round(TAIL_S * sr)
     inside = rms[ps // win : pe // win]

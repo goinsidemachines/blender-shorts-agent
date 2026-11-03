@@ -274,12 +274,47 @@ def test_cut_skips_a_sentence_pause_inside_a_line():
         assert right_ends <= pieces[1].end <= l03_starts, '"Right." must stay on l02'
         assert pieces[2].start <= l03_starts
 
-    # the same take with l02 and l03 run together: the sentence pause is not taken for the line break
+    # the same take with l02 and l03 run together: two pauses for three boundaries, and nothing tells which boundary
+    # lost its pause, so nothing is cut (never "Right." on l03, or l02's first sentence on l01)
     x = take(silence(0.2), tone(1.2, 200), silence(0.4), tone(1.0, 300), silence(0.4), tone(0.5, 320),
              tone(0.9, 400), silence(0.3))  # fmt: skip
     pieces = takes.cut(x, texts, ids)
-    assert pieces[0].start == 0 and pieces[0].end is not None
-    assert [(p.start, p.reason) for p in pieces[1:]] == [(None, "no clear pause between l02 and l03")] * 2
+    assert [(p.start, p.end) for p in pieces] == [(None, None)] * 3
+    assert [p.reason for p in pieces] == [
+        "no clear pause between l01 and l02",
+        "no clear pause between l02 and l03",
+        "no clear pause between l02 and l03",
+    ]
+
+
+def test_cut_finds_a_sentence_end_in_a_fast_line():
+    # four lines, sentences inside l01, l02 and l04, every pause present; l02 is spoken fast, so its sentence pause
+    # lies before l02's expected stretch: it is still matched as l02's sentence end, not as the l02/l03 break
+    texts = ["b" * 8 + ". " + "c" * 13, "b" * 16 + ". " + "c" * 4, "x" * 29, "b" * 26 + ". " + "c" * 50]
+    ids = ["l01", "l02", "l03", "l04"]
+    x = take(silence(0.2), tone(0.452, 200), silence(0.444), tone(1.166, 210), silence(0.399), tone(1.31, 220),
+             silence(0.502), tone(0.286, 230), silence(0.311), tone(2.181, 240), silence(0.305), tone(1.586, 260),
+             silence(0.595), tone(3.86, 270), silence(0.3))  # fmt: skip
+    gaps = [(2.262, 2.661), (4.759, 5.07), (7.251, 7.556)]
+    pieces = takes.cut(x, texts, ids)
+    assert all(p.reason is None for p in pieces)
+    covers(pieces, len(x))
+    for k, (g0, g1) in enumerate(gaps):
+        assert round(g0 * SR) <= pieces[k].end <= round(g1 * SR), f"break {k + 1} cut outside its gap"
+
+
+def test_cut_falls_back_when_a_missing_pause_makes_a_break_ambiguous():
+    # l01 runs straight into l02's first sentence ("Bbbbbbb."); l02's sentence pause and the l02/l03 pause are there.
+    # The first pause could be the l01/l02 break or l02's sentence end: never put l02's first sentence on l01.
+    texts = ["x" * 37, "b" * 7 + ". " + "c" * 27, "x" * 59]
+    ids = ["l01", "l02", "l03"]
+    x = take(silence(0.2), tone(1.99, 200), tone(0.433, 220), silence(0.595), tone(2.431, 230), silence(0.212),
+             tone(4.229, 240), silence(0.3))  # fmt: skip
+    pieces = takes.cut(x, texts, ids)
+    assert pieces[0].start is None and pieces[1].start is None
+    assert pieces[0].reason == "no clear pause between l01 and l02"
+    sentence_end = round((0.2 + 1.99 + 0.433 + 0.595) * SR)
+    assert all(p.start is None or p.start >= sentence_end for p in pieces)
 
 
 def test_cut_tolerates_a_line_spoken_slowly():
