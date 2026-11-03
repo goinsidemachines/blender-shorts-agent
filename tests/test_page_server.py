@@ -577,3 +577,17 @@ def test_thumbnail_route_chooses(srv):
     r = api(srv, "POST", "/api/01-pendulum/thumbnail", body={"choice": 7})
     assert r.status == 400 and body(r)["error"] == "There is no thumbnail candidate 7"
     assert thumbs.load(srv.sdir)["chosen"]["n"] == 1
+
+
+def test_checklist_route_ticks(srv):
+    from bsa.review import checklist
+
+    r = api(srv, "POST", "/api/01-pendulum/checklist", body={"id": "upload", "done": True})
+    assert r.status == 200 and body(r) == {"ticks": {"upload": True}}
+    for bad in ({"id": "nope", "done": True}, {"id": "upload", "done": 1}, {"id": "upload"}, {"id": 3, "done": True},
+                {"done": True}):  # fmt: skip
+        r = api(srv, "POST", "/api/01-pendulum/checklist", body=bad)
+        assert r.status == 400, bad
+    r = api(srv, "POST", "/api/01-pendulum/checklist", body={"id": "upload", "done": False}, token="wrong")
+    assert r.status == 403
+    assert checklist.load(srv.sdir) == {"upload": True}

@@ -5,8 +5,9 @@ the Host header (127.0.0.1:<port> or localhost:<port>, plus the LAN address with
 the page and its files, the X-BSA-Token header for the API, compared in constant time), and on POST a same-origin
 Origin when one is sent. Only a short's stills/, review/ and out/ are served, never anything outside them (symlinks
 included). It never runs commands; its only writes are notes, decisions, the versions a snapshot records, the
-plugin feedback's "reported" mark, out/post-pack.md when a snapshot is served, and a thumbnail choice (its two files
-copied to out/ and the choice recorded in review/thumbs.json and short.json, see bsa.thumbs.choose).
+plugin feedback's "reported" mark, out/post-pack.md when a snapshot is served, a thumbnail choice (its two files
+copied to out/ and the choice recorded in review/thumbs.json and short.json, see bsa.thumbs.choose) and a tick on the
+before-you-post checklist (review/checklist.json).
 A page Approve only records the decision; `page wait` applies it. With lan=True it binds every interface (_LAN_BIND,
 or the BSA_PAGE_BIND variable, which the tests set to 127.0.0.1) but still answers only a Host of 127.0.0.1,
 localhost or this machine's one LAN address, with the same token.
@@ -31,7 +32,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from bsa import feedback, jobstate, messages, postpack, render_status, thumbs
 from bsa import settings as settings_mod
-from bsa.review import decisions, history, notes, page, snapshot, stages, store
+from bsa.review import checklist, decisions, history, notes, page, snapshot, stages, store
 
 IDLE_S = 7200
 _LAN_BIND = "0.0.0.0"  # phone access: every interface (the Host check still admits only this machine's addresses)
@@ -355,6 +356,7 @@ class _Handler(BaseHTTPRequestHandler):
         raise _Refuse(404, "nothing here")
 
     def _page(self, sdir: Path) -> None:
+        postpack.shown(sdir)
         html = page.render(mode="server", snapshot=snapshot.build(sdir)).encode("utf-8")
         self._send(200, html, "text/html; charset=utf-8",
                    {"Content-Security-Policy": CSP, "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})  # fmt: skip
@@ -431,8 +433,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _state(self, name: str, sdir: Path, _body) -> None:
+        postpack.shown(sdir)  # the post pack follows the post, first: the snapshot lists it among the files
         snap = history.shown(sdir, snapshot.build(sdir))  # served to a person: what it shows is kept
-        postpack.shown(sdir)  # the post pack follows what the page shows
         srv = self.server
         phone = srv.phone_url(name)  # the snapshot can't know the port: the phone link is added here
         if phone:
@@ -528,6 +530,15 @@ class _Handler(BaseHTTPRequestHandler):
             raise ValueError("the choice must be a whole number: the candidate to use")  # noqa: TRY004 - a 400
         self._json(200, {"thumbnail": thumbs.choose(sdir, choice, "page")})
 
+    def _checklist(self, _name: str, sdir: Path, body: dict) -> None:
+        """A tick (or untick) on the Post stage's before-you-post checklist: {"id": item, "done": bool}."""
+        item, done = body.get("id"), body.get("done")
+        if not isinstance(item, str):
+            raise ValueError("the id must be the checklist item's id")  # noqa: TRY004 - a 400 for the client
+        if not isinstance(done, bool):
+            raise ValueError("done must be true or false")  # noqa: TRY004 - a 400 for the client
+        self._json(200, {"ticks": checklist.tick(sdir, item, done)})
+
     def _feedback_reported(self, _name: str, sdir: Path, body: dict) -> None:
         """The user copied the plugin feedback report or opened it on GitHub: mark those entries reported. Only
         while the panel is shown (the user said yes, and the setting is not `off`)."""
@@ -551,5 +562,6 @@ _API = {
     ("POST", "decision"): _Handler._decision,
     ("POST", "show"): _Handler._show,
     ("POST", "thumbnail"): _Handler._thumbnail,
+    ("POST", "checklist"): _Handler._checklist,
     ("POST", "feedback-reported"): _Handler._feedback_reported,
 }

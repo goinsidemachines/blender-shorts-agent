@@ -1,5 +1,8 @@
 """The Final stage's video carries the caption track, so the captions can be switched on while watching; the Post
-stage shows the thumbnail candidates to choose from."""
+stage shows the thumbnail candidates to choose from, the post text with its limits, the files to upload and the
+before-you-post checklist."""
+
+import json
 
 import pagefix
 import pytest
@@ -165,3 +168,119 @@ def test_a_remade_chosen_candidate_asks_to_pick_again(view, live_server):
     for btn in p.get_by_role("button", name="Use this one").all():
         expect(btn).to_have_attribute("aria-pressed", "false")
     assert_healthy(p)
+
+
+# --------------------------------------------------------------------------- fields, files, checklist
+
+
+def _set_post(sdir, **kw):
+    path = sdir / "source" / "short.json"
+    d = json.loads(path.read_text("utf-8"))
+    d["post"].update(kw)
+    path.write_text(json.dumps(d), "utf-8")
+
+
+def test_copy_buttons_and_limit_badges(view, live_server):
+    srv = live_server("post")
+    title = "Why does a pendulum keep such perfect time, even when it slows down?"
+    title = title + "!" * (70 - len(title))
+    assert len(title) == 70
+    _set_post(srv.sdir, title=title)
+    view.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    p = open_short(view, srv, stage="post")
+    stage = p.locator("#bsa-stage")
+    expect(stage.get_by_text("70 / 100", exact=True)).to_be_visible()
+    expect(stage.get_by_text("may be cut off in the feed")).to_be_visible()
+    expect(stage.get_by_text("Fits YouTube", exact=True)).to_be_visible()
+    expect(stage.get_by_text("Fits TikTok", exact=True)).to_be_visible()
+    assert stage.locator(".count").first.get_attribute("aria-live") == "off"
+    stage.get_by_role("button", name="Copy the title").click()
+    expect(p.get_by_text("Copied the title.").first).to_be_attached()
+    assert _until(lambda: p.evaluate("navigator.clipboard.readText()") == title)
+    headings = [h.strip() for h in stage.locator(".st-post h3").all_inner_texts()]
+    assert headings[:4] == ["Thumbnail", "Post text", "Files", "Before you post"]
+    assert_healthy(p)
+
+
+def test_a_title_over_the_limit_says_so_in_words(view, live_server):
+    srv = live_server("post")
+    _set_post(srv.sdir, title="T" * 101)
+    p = open_short(view, srv, stage="post")
+    stage = p.locator("#bsa-stage")
+    expect(stage.get_by_text("101 / 100", exact=True)).to_be_visible()
+    expect(stage.get_by_text("Over the limit", exact=True)).to_be_visible()
+    expect(stage.get_by_text("YouTube allows 100")).to_be_visible()
+    assert_healthy(p)
+    p.emulate_media(color_scheme="dark")  # the counts, notes and badges keep their contrast in the dark theme too
+    assert_healthy(p)
+
+
+def test_checklist_ticks_persist(view, live_server):
+    from bsa.review import checklist
+
+    srv = live_server("post")
+    p = open_short(view, srv, stage="post")
+    expect(p.get_by_role("heading", name="Before you post")).to_be_visible()
+    expect(p.get_by_text("from this computer. A copy sent through a phone app can be cut short.")).to_be_visible()
+    box = p.get_by_role("checkbox", name="After posting, tell Claude the link")
+    expect(box).not_to_be_checked()
+    box.check()
+    assert _until(lambda: checklist.load(srv.sdir) == {"link": True})
+    expect(box).to_be_checked()
+    p.reload()
+    p.locator("html[data-ready='1']").wait_for(state="attached")
+    expect(p.get_by_role("checkbox", name="After posting, tell Claude the link")).to_be_checked()
+    expect(p.get_by_text("Ticks aren't saved in the offline view.")).to_have_count(0)
+    assert checklist.load(srv.sdir) == {"link": True}
+    p.get_by_role("checkbox", name="After posting, tell Claude the link").uncheck()
+    assert _until(lambda: checklist.load(srv.sdir) == {"link": False})
+    assert_healthy(p)
+
+
+def test_files_have_copy_path_buttons(view, live_server):
+    srv = live_server("done")
+    mp4 = srv.sdir / "out" / "pendulum.mp4"
+    if not mp4.is_file():  # no ffmpeg: a stand-in file
+        mp4.write_bytes(bytes(2000))
+    captions.write_files(srv.sdir, load_short(srv.sdir / "source" / "short.json"), {})
+    view.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    p = open_short(view, srv, stage="post")
+    files = p.locator("section.post-files")
+    expect(files.get_by_text("out/pendulum.mp4", exact=True)).to_be_visible()
+    expect(files.get_by_text("out/pendulum.srt", exact=True)).to_be_visible()
+    expect(files.get_by_text("Made for an older timing: run the final edit again.")).to_have_count(0)
+    btn = files.get_by_role("button", name="Copy path").first
+    expect(btn).to_have_accessible_description("Video")
+    btn.click()
+    want = str(mp4)
+    assert _until(lambda: p.evaluate("navigator.clipboard.readText()") == want)
+    assert_healthy(p)
+
+
+def test_stale_caption_files_are_flagged(view, live_server):
+    srv = live_server("done")
+    mp4 = srv.sdir / "out" / "pendulum.mp4"
+    if not mp4.is_file():
+        mp4.write_bytes(bytes(2000))
+    captions.write_files(srv.sdir, load_short(srv.sdir / "source" / "short.json"), {})
+    pagefix.record_edit(srv.sdir, "final", stale=True)
+    p = open_short(view, srv, stage="post")
+    row = p.locator("li.file-row", has=p.get_by_text("Captions (SRT)", exact=True))
+    expect(row.get_by_text("Made for an older timing: run the final edit again.")).to_be_visible()
+    assert_healthy(p)
+
+
+def test_offline_checklist_boxes_work_but_are_not_saved(view, tmp_path, bsa_home):
+    from bsa.review import checklist, launch
+
+    sdir = pagefix.make_short(tmp_path / "ws", "post")
+    view.goto(launch.static_page(sdir).as_uri() + "#post")
+    view.locator("html[data-ready='1']").wait_for(state="attached")
+    expect(view.get_by_text("Ticks aren't saved in the offline view.")).to_be_visible()
+    box = view.get_by_role("checkbox", name="After posting, tell Claude the link")
+    box.check()
+    expect(box).to_be_checked()
+    view.get_by_role("button", name="Copy the title").click()  # a re-render keeps the tick in this tab
+    expect(box).to_be_checked()
+    assert checklist.load(sdir) == {}
+    assert_healthy(view)

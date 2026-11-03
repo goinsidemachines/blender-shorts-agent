@@ -734,17 +734,12 @@
     return ctx.el("div", { class: "st-post" },
       ctx.el("p", { class: "lead" }, "Ready to copy for YouTube Shorts, Reels or TikTok. You upload it yourself."),
       compareBlock(ctx, "post", content),
-      ctx.el("div", { class: "fields" }, (content.fields || []).map(function (f) {
-        var name = String(f.label || f.key).toLowerCase();
-        var text = String(f.text || "");
-        return ctx.el("div", { class: "field" },
-          ctx.el("div", { class: "field-head" }, ctx.el("h4", null, String(f.label || f.key)),
-            text ? ctx.el("button", { type: "button", class: "btn small", "data-k": "copy:" + f.key,
-              onclick: function () { ctx.copy(text, "the " + name); } }, "Copy the " + name) : null),
-          text ? ctx.el("pre", { class: "copytext" }, text) : ctx.el("p", { class: "muted" }, "Not written yet."),
-          ctx.noteButton("field", f.key, "+ Note on the " + name));
-      })),
-      BSA.post && BSA.post.thumbnails ? BSA.post.thumbnails(ctx, content) : null,
+      BSA.post ? [
+        BSA.post.thumbnails(ctx, content),
+        BSA.post.fields(ctx, content.fields || []),
+        BSA.post.files(ctx, content.files),
+        BSA.post.checklist(ctx, content.checklist, content.checklist_problem),
+      ] : null,
       closingInfo(ctx, content.closing),
       section(ctx, "Credits", credits.length ? table(ctx, "Asset credits", ["Name", "From", "Licence", "Size"], assetRows(credits))
         : ctx.el("p", { class: "muted" }, "No outside assets were used.")),

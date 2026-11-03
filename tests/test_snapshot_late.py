@@ -4,8 +4,8 @@ import json
 
 import pagefix
 
-from bsa import feedback, jobstate
-from bsa.review import decisions, snapshot
+from bsa import feedback, jobstate, post
+from bsa.review import checklist, decisions, snapshot
 
 
 def _stage(snap, sid):
@@ -120,10 +120,12 @@ def test_final_ack_shows_without_moving_the_version(tmp_path):
 def test_post_fields_closing_and_credits(tmp_path):
     sdir = pagefix.make_short(tmp_path, "post")
     c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
-    assert [f["key"] for f in c["fields"]] == ["title", "description", "hashtags"]
-    assert [f["label"] for f in c["fields"]] == ["Title", "Description", "Hashtags"]
+    assert [f["key"] for f in c["fields"]] == list(post.FIELDS)
+    assert [f["label"] for f in c["fields"]] == ["Title", "Description", "Hashtags", "Tags", "Pinned comment", "Link",
+                                                 "Related video"]  # fmt: skip
     assert c["fields"][0]["text"] == "Why a pendulum keeps perfect time"
     assert c["fields"][2]["text"] == "#physics #pendulum #blender #science"
+    assert [f["text"] for f in c["fields"][3:]] == ["", "", "", ""]
     assert c["closing"] is None and c["credits"] == []
 
 
@@ -168,6 +170,80 @@ def test_a_damaged_thumbs_store_is_a_problem_line_not_a_crash(tmp_path):
     assert row["content"]["candidates"] == []
     assert "thumbs.json is damaged" in row["content"]["thumbs_problem"]
     assert str(sdir) not in row["content"]["thumbs_problem"]
+
+
+def _set_post(sdir, **kw):
+    p = sdir / "source" / "short.json"
+    d = json.loads(p.read_text("utf-8"))
+    d["post"].update(kw)
+    p.write_text(json.dumps(d), "utf-8")
+
+
+def _field(c, key):
+    return next(f for f in c["fields"] if f["key"] == key)
+
+
+def test_post_fields_show_counts_notes_and_platform_badges(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    _set_post(sdir, title="T" * 70, description="d" * 2300, tags=["pendulum clock", "physics"],
+              related={"title": "How a lever works", "url": "https://example.com/lever"})  # fmt: skip
+    c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    title = _field(c, "title")
+    assert (title["count"], title["max"], title["warn_over"], title["state"]) == (70, 100, 60, "warn")
+    assert "may be cut off in the feed" in title["note"] and title["badges"] == []
+    desc = _field(c, "description")
+    assert desc["state"] == "warn" and desc["badges"] == ["YouTube"] and "too long for Instagram" in desc["note"]
+    hashtags = _field(c, "hashtags")
+    assert (hashtags["count"], hashtags["max"], hashtags["state"], hashtags["note"]) == (4, 6, "ok", None)
+    tags = _field(c, "tags")
+    assert tags["text"] == "pendulum clock, physics" and tags["count"] == post.tags_length(["pendulum clock", "physics"])
+    for key in ("link", "related"):
+        row = _field(c, key)
+        assert [row[k] for k in ("count", "max", "warn_over", "state")] == [None] * 4 and row["badges"] == []
+    assert _field(c, "related")["text"] == "How a lever works https://example.com/lever"
+    _set_post(sdir, title="T" * 101, link="http://example.com")
+    c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    assert _field(c, "title")["state"] == "over" and "YouTube allows 100" in _field(c, "title")["note"]
+    assert "must start with https://" in _field(c, "link")["note"]
+    assert set(_field(c, "description")) == {"key", "label", "text", "count", "max", "warn_over", "state", "note",
+                                             "badges"}  # fmt: skip
+
+
+def test_ticks_and_files_never_move_the_post_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    row = _stage(snapshot.build(sdir, settings={}), "post")
+    v = row["version"]
+    assert [i["id"] for i in row["content"]["checklist"]] == ["upload", "length", "link"]
+    assert not any(i["done"] for i in row["content"]["checklist"])
+    checklist.tick(sdir, "link", True)
+    (sdir / "out" / "pendulum.srt").write_text("1\n", "utf-8")
+    row = _stage(snapshot.build(sdir, settings={}), "post")
+    assert row["version"] == v
+    assert {i["id"]: i["done"] for i in row["content"]["checklist"]}["link"] is True
+    assert next(f for f in row["content"]["files"] if f["key"] == "srt")["exists"]
+
+
+def test_a_damaged_checklist_is_a_problem_line_not_a_crash(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    checklist.path(sdir).write_text("{", encoding="utf-8")
+    row = _stage(snapshot.build(sdir, settings={}), "post")
+    assert row["problem"] is None and not any(i["done"] for i in row["content"]["checklist"])
+    assert "checklist.json" in row["content"]["checklist_problem"]
+
+
+def test_stale_caption_files_are_flagged_on_the_page(tmp_path):
+    from bsa import captions
+    from bsa.short import load_short
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    captions.write_files(sdir, load_short(sdir / "source" / "short.json"), {})
+    content = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    row = next(f for f in content["files"] if f["key"] == "srt")
+    assert row["exists"] and not row["stale"]
+    pagefix.record_edit(sdir, "final", stale=True)
+    content = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    row = next(f for f in content["files"] if f["key"] == "srt")
+    assert row["exists"] and row["stale"]
 
 
 # --------------------------------------------------------------------------- feedback

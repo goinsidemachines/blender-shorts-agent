@@ -48,6 +48,7 @@
   let askedNotify = false;
   const pendingApprove = {}; // stage -> the version approved here, until the snapshot shows it
   const offlineNotes = []; // notes written in the offline view: they live only in this tab
+  const ticks = {}; // checklist ticks made here: offline they live only in this tab; live, until the snapshot has them
 
   // ------------------------------------------------------------------ DOM building (text only, never markup)
 
@@ -253,6 +254,12 @@
     for (const id of Object.keys(pendingApprove)) {
       const s = stageById(id);
       if (!s || s.waiting_for_claude || !s.needs_yes || s.version !== pendingApprove[id]) delete pendingApprove[id];
+    }
+    const ps = stageById("post");
+    const items = ps && ps.content && Array.isArray(ps.content.checklist) ? ps.content.checklist : [];
+    for (const id of Object.keys(ticks)) {
+      const it = items.find((x) => x.id === id);
+      if (!it || !!it.done === ticks[id]) delete ticks[id];
     }
     if (data.show) showStage(data.show, false);
     render();
@@ -558,6 +565,24 @@
     });
   }
 
+  // A tick on the before-you-post checklist. Live, it is saved (review/checklist.json) and shown as ticked until the
+  // snapshot agrees; a failed save unticks it again and says why. Offline, it lives only in this tab.
+  function tick(id, done) {
+    ticks[id] = !!done;
+    if (OFFLINE) return Promise.resolve(true);
+    return post("checklist", { id, done: !!done }).then(() => { schedule(0); return true; }, (e) => {
+      delete ticks[id];
+      notice = null;
+      actionError = e.message || String(e);
+      render();
+      return false;
+    });
+  }
+
+  function ticked(id, saved) {
+    return Object.prototype.hasOwnProperty.call(ticks, id) ? ticks[id] : !!saved;
+  }
+
   function makeCtx(s) {
     return {
       el, stage: s, version: s.version, offline: OFFLINE, fileUrl, copyButton,
@@ -568,6 +593,8 @@
       decide: (stage, decision, choice) => decide(stage, decision, choice),
       copy: (text, what) => copyPlain(text, what),
       chooseThumb: (n) => chooseThumb(n),
+      tick: (id, done) => tick(id, done),
+      ticked: (id, saved) => ticked(id, saved),
       feedback: (snap && snap.feedback) || null, // the plugin feedback panel's report, only once the user said yes
       feedbackShared: (ids, text) => feedbackShared(ids || [], text),
     };

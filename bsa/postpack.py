@@ -18,6 +18,7 @@ OUT_FILES = {"1080x1920": "out/thumbnail-1080x1920.png", "1280x720": "out/thumbn
 NOT_YET = "(not written yet)"
 STALE_NOTE = " (made for an older timing: run the final edit again)"
 _CAPTION_KEYS = ("srt", "vtt", "transcript")
+CHECK_IDS = ("upload", "length", "thumbnail", "captions", "pin", "link")
 
 
 def clock(seconds: float) -> str:
@@ -73,6 +74,37 @@ def files(sdir: Path, short, video: dict | None = None) -> list[dict]:
                      "size": _size(path.stat().st_size) if exists else None,
                      "stale": bool(key in _CAPTION_KEYS and exists and stale)})  # fmt: skip
     return rows
+
+
+def checklist_items(sdir: Path, short) -> list[dict]:
+    """The before-you-post checklist, [{"id", "text"}] in CHECK_IDS order, built from what the plugin knows: the
+    video's length and size, the chosen thumbnail, the caption file and the pinned comment. Only the items that
+    apply are listed."""
+    from bsa import thumbs
+
+    sdir = Path(sdir)
+    video = video_info(sdir, short)
+    p = post.fields(short)
+    about = ", ".join(x for x in (video["length"], video["size"]) if x)
+    sized = f" ({about})" if about else ""
+    items = [
+        ("upload", (f"Upload {video['rel']}{sized} from this computer. A copy sent through a phone app can be cut "
+                    "short.")),
+        ("length", f"After uploading, check the platform shows the full {video['length'] or 'video'}."),
+    ]  # fmt: skip
+    th = p["thumbnail"] if isinstance(p["thumbnail"], dict) else {}
+    if thumbs._chosen_n(th.get("chosen")) is not None:
+        items.append(("thumbnail", (f"Thumbnail: {OUT_FILES['1080x1920']} (Shorts and Reels: pick it as the cover "
+                                    f"frame where the app allows), {OUT_FILES['1280x720']} (YouTube custom "
+                                    "thumbnail).")))  # fmt: skip
+    srt = captions.paths(sdir, short)["srt"]
+    if srt.is_file():
+        items.append(("captions", (f"Captions: out/{srt.name}. Upload it in YouTube Studio → Subtitles, so the "
+                                   "numbers come out right.")))  # fmt: skip
+    if isinstance(p["pinned_comment"], str) and p["pinned_comment"].strip():
+        items.append(("pin", "Pin the first comment"))
+    items.append(("link", "After posting, tell Claude the link"))
+    return [{"id": i, "text": t} for i, t in items]
 
 
 def _text(value) -> str:

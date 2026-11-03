@@ -433,7 +433,45 @@ def _final(ctx: Ctx) -> dict | None:
     }
 
 
-POST_FIELDS = (("title", "Title"), ("description", "Description"), ("hashtags", "Hashtags"))
+# Where a post.problems line belongs: the first field whose words it starts with (the thumbnail's and posted's go to
+# none of the fields).
+_NOTE_PREFIXES = (("post pinned comment", "pinned_comment"), ("post title", "title"),
+                  ("post description", "description"), ("post hashtag", "hashtags"), ("post has ", "hashtags"),
+                  ("post tags", "tags"), ("post link", "link"), ("post related", "related"))  # fmt: skip
+
+
+def _field_text(key: str, value) -> str:
+    if key == "related":
+        if not isinstance(value, dict):
+            return ""
+        return " ".join(str(value[k]).strip() for k in ("title", "url") if value.get(k) and str(value[k]).strip())
+    if isinstance(value, list):
+        return (", " if key == "tags" else " ").join(str(v) for v in value)
+    return str(value or "")
+
+
+def _post_fields(short, settings: dict) -> list[dict]:
+    """One row per post field: its text, its count against the platform limit, its warning or error (note) and,
+    for the description, the platforms it fits."""
+    from bsa import post as post_mod
+
+    p = post_mod.fields(short)
+    counts = post_mod.counts(short)
+    errors, warnings = post_mod.problems(short, settings or {})
+    notes_of: dict[str, list[str]] = {}
+    for line in errors + warnings:  # errors first: the worse news leads
+        key = next((k for prefix, k in _NOTE_PREFIXES if line.startswith(prefix)), None)
+        if key:
+            notes_of.setdefault(key, []).append(line)
+    rows = []
+    for key in post_mod.FIELDS:
+        c = counts.get(key, {})
+        desc = p["description"] if key == "description" and isinstance(p["description"], str) else None
+        rows.append({"key": key, "label": post_mod.LABELS[key], "text": _field_text(key, p[key]),
+                     "count": c.get("count"), "max": c.get("max"), "warn_over": c.get("warn_over"),
+                     "state": c.get("state"), "note": "; ".join(notes_of[key]) if key in notes_of else None,
+                     "badges": post_mod.fits(desc) if desc is not None else []})  # fmt: skip
+    return rows
 
 
 def _texts(items) -> list[str]:
@@ -467,31 +505,37 @@ def _candidates(sdir: Path, data: dict) -> list[dict]:
 
 
 def _post(ctx: Ctx) -> dict | None:
-    """The post text to copy (a note on any field), the chosen thumbnail and the candidates to choose from, the
-    closing card and the asset credits. The thumbnail is versioned only once short.json records a choice and its
-    file is in out/; the candidates are not (see _UNVERSIONED): making them is not something to answer. A damaged
-    review/thumbs.json is a line (`thumbs_problem`), not a broken stage."""
+    """The post text to copy with its counts and notes (a note on any field), the chosen thumbnail and the
+    candidates to choose from, the files to upload, the before-you-post checklist, the closing card and the asset
+    credits. The thumbnail is versioned only once short.json records a choice and its file is in out/; the
+    candidates, files and checklist are not (see _UNVERSIONED): making them, or ticking a box, is not something to
+    answer. A damaged review/thumbs.json or review/checklist.json is a line (`thumbs_problem`,
+    `checklist_problem`), not a broken stage."""
     from bsa import postpack, thumbs
+    from bsa.review import checklist
 
     short = _short(ctx)
     post = short.post if isinstance(short.post, dict) else {}
-    fields = []
-    for key, label in POST_FIELDS:
-        value = post.get(key)
-        text = " ".join(str(v) for v in value) if isinstance(value, list) else str(value or "")
-        fields.append({"key": key, "label": label, "text": text})
+    fields = _post_fields(short, ctx.settings)
     th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
     chosen = thumbs._chosen_n(th.get("chosen"))
     out_file = postpack.OUT_FILES["1080x1920"]
     thumbnail = None
     if chosen is not None and (ctx.sdir / out_file).is_file():
         thumbnail = {"chosen": chosen, "file": {"file": out_file}}
-    content = {"fields": fields, "thumbnail": thumbnail, "candidates": [], "closing": _closing_card(ctx, short),
-               "credits": _asset_rows(short.assets)}  # fmt: skip
+    content = {"fields": fields, "thumbnail": thumbnail, "candidates": [], "files": postpack.files(ctx.sdir, short),
+               "checklist": [], "closing": _closing_card(ctx, short), "credits": _asset_rows(short.assets)}  # fmt: skip
     try:
         content["candidates"] = _candidates(ctx.sdir, thumbs.load(ctx.sdir))
     except store.StoreDamaged as e:
         content["thumbs_problem"] = _plain(ctx.sdir, e)
+    try:
+        ticks = checklist.load(ctx.sdir)
+    except store.StoreDamaged as e:
+        ticks = {}
+        content["checklist_problem"] = _plain(ctx.sdir, e)
+    content["checklist"] = [{**item, "done": ticks.get(item["id"], False)}
+                            for item in postpack.checklist_items(ctx.sdir, short)]  # fmt: skip
     return content
 
 
@@ -511,7 +555,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 # user approves, so it must not move the version they answered).
 _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
-                "post": ("candidates", "thumbs_problem")}
+                "post": ("candidates", "files", "checklist", "thumbs_problem", "checklist_problem")}
 
 
 def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:
