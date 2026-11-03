@@ -271,10 +271,32 @@
     return kids;
   }
 
+  var SOURCE_CHIPS = { take: "From a paragraph take", line: "Spoken on its own", fallback: "Spoken on its own" };
+
+  function sourceChip(ctx, row) {
+    var text = SOURCE_CHIPS[row.source];
+    if (!text) return null;
+    if (row.source === "fallback" && row.reason) text += ": " + String(row.reason);
+    return ctx.el("p", { class: "src-chip src-" + row.source }, text);
+  }
+
+  // What the user's own voice tool printed that needs a look (its warnings and fallbacks), with where the full log is.
+  function toolNotes(ctx, v) {
+    var notes = (v && v.log_notes) || [];
+    if (!notes.length) return null;
+    var el = ctx.el;
+    return el("section", { class: "voice-notes", "aria-labelledby": "voice-notes-h" },
+      el("h3", { id: "voice-notes-h" }, "Your voice tool said"),
+      el("ul", null, notes.map(function (n) { return el("li", null, String(n)); })),
+      v.log ? el("p", { class: "muted" }, "The full log is in ", el("code", null, String(v.log)), ".") : null);
+  }
+
   review.voice = function (ctx, v) {
     var el = ctx.el;
     var lines = (v && v.lines) || [];
     var out = [];
+    var notes = toolNotes(ctx, v);
+    if (notes) out.push(notes);
     if (v && v.why_not) out.push(el("p", { class: "note" }, String(v.why_not)));
     if (!lines.length) return el("div", { class: "voice" }, out);
     var rows = lines.map(function (row) {
@@ -286,7 +308,7 @@
       var heard = row.said === null || row.said === undefined || unheard ? null : String(row.said);
       var diff = row.diff ? diffCell(ctx, row) : [];
       return el("tr", { "data-line": String(row.id) },
-        el("td", null, el("strong", null, String(row.id)), el("br"), String(row.text)),
+        el("td", null, el("strong", null, String(row.id)), el("br"), String(row.text), sourceChip(ctx, row)),
         el("td", null, heard === null ? el("span", { class: "muted" }, unheard ? "Not heard yet" : row.ok === null ? "Not checked" : "") : heard),
         el("td", null, diff, verdict,
           ctx.noteButton("line", row.id, "Re-take: " + row.id, "Re-take this line")));

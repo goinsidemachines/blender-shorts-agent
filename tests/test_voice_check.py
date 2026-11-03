@@ -41,7 +41,7 @@ def test_voice_block_marks_failed_lines(tmp_path):
 
 def test_no_heard_file_is_not_narrated_yet(tmp_path):
     sdir = pagefix.make_short(tmp_path, "narration")
-    assert _block(sdir) == {"lines": [], "checked": False, "why_not": "Not narrated yet."}
+    assert _block(sdir) == {"lines": [], "checked": False, "why_not": "Not narrated yet.", "log_notes": [], "log": None}
     assert "voice" not in snapshot.build(sdir, settings={})["stages"][4]["content"]
 
 
@@ -108,7 +108,7 @@ def test_a_corrupt_heard_file_says_so(tmp_path):
     vo.mkdir(parents=True, exist_ok=True)
     (vo / run.HEARD_FILE).write_text("{not json", encoding="utf-8")
     b = _block(sdir)
-    assert b == {"lines": [], "checked": False, "why_not": "The voice check file can't be read."}
+    assert b == {"lines": [], "checked": False, "why_not": "The voice check file can't be read.", "log_notes": [], "log": None}
     (vo / run.HEARD_FILE).write_text("[1]", encoding="utf-8")
     assert _block(sdir)["why_not"] == "The voice check file can't be read."
 
@@ -171,3 +171,36 @@ def test_the_voice_check_retries_a_heard_file_being_replaced(tmp_path, monkeypat
     monkeypatch.setattr(Path, "read_bytes", flaky)
     monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: flaky(self).decode("utf-8"))
     assert _block(sdir)["lines"][0]["ok"] is True and len(denied) == 2
+
+
+def _record(sdir, sources, reasons=None, log=None):
+    vo = sdir / "audio" / "vo"
+    vo.mkdir(parents=True, exist_ok=True)
+    (vo / "narrator.json").write_text(json.dumps({"sources": sources, "reasons": reasons or {}}), encoding="utf-8")
+    if log is not None:
+        (vo / "narrator.log").write_text(log, encoding="utf-8")
+
+
+def test_rows_carry_the_source_and_the_log_notes(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork", "l02": "length sets the beat"})
+    plain = _block(sdir)
+    assert plain["log_notes"] == [] and plain["log"] is None
+    assert [(r["source"], r["reason"]) for r in plain["lines"]] == [(None, None)] * 4
+    _record(sdir, {"l01": "take", "l02": "line", "l03": "fallback"}, {"l03": "no pause between l02 and l03"},
+            log="=== run ===\nfine\n[x] warning: fell back\n")  # fmt: skip
+    b = _block(sdir)
+    rows = {r["id"]: r for r in b["lines"]}
+    assert (rows["l01"]["source"], rows["l01"]["reason"]) == ("take", None)
+    assert (rows["l02"]["source"], rows["l02"]["reason"]) == ("line", None)
+    assert (rows["l03"]["source"], rows["l03"]["reason"]) == ("fallback", "no pause between l02 and l03")
+    assert rows["l04"]["source"] is None
+    assert b["log_notes"] == ["[x] warning: fell back"] and b["log"] == "audio/vo/narrator.log"
+
+
+def test_the_log_notes_show_even_before_a_voice_check_exists(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    _record(sdir, {}, log="warning: slow\n")
+    b = _block(sdir)
+    assert b["lines"] == [] and b["why_not"] == "Not narrated yet."
+    assert b["log_notes"] == ["warning: slow"] and b["log"] == "audio/vo/narrator.log"

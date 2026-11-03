@@ -28,6 +28,7 @@ LOCAL_ENGINES = ("kokoro", "chatterbox", "chatterbox-turbo")
 HEARD_FILE = "heard.json"
 RECORD_FILE = "narrator.json"
 FIRST_SEED = 7
+SOURCES = ("take", "line", "fallback")  # where a line's audio came from: a paragraph take, its own, its own after a take failed
 WHISPER_MISSING = (
     "Whisper isn't installed, so the takes weren't checked. CLI voice plan whisper-small.en shows what it downloads."
 )
@@ -130,6 +131,41 @@ def _record_seeds(out_dir: Path, seeds: dict[str, int]) -> str | None:
     return None
 
 
+def line_sources(out_dir: Path) -> dict[str, dict]:
+    """{line id: {"source": "take" | "line" | "fallback", "reason": str | None}} from narrator.json, for the valid
+    entries only; {} when there is none."""
+    record = _read_record(out_dir)
+    sources, reasons = record.get("sources"), record.get("reasons")
+    if not isinstance(sources, dict):
+        return {}
+    reasons = reasons if isinstance(reasons, dict) else {}
+    found = {}
+    for lid, source in sources.items():
+        if source not in SOURCES:
+            continue
+        reason = reasons.get(lid)
+        found[str(lid)] = {"source": source, "reason": reason if isinstance(reason, str) and reason else None}
+    return found
+
+
+def record_sources(out_dir: Path, sources: dict[str, str], reasons: dict[str, str] | None = None) -> str | None:
+    """Record where each line's audio came from ({id: source}) and, for a fallback, why ({id: reason}); an id whose
+    new source is not "fallback" loses its old reason. Best-effort like _record_seeds: returns why it couldn't."""
+    record = _read_record(out_dir)
+    old = record.get("sources")
+    merged = {**(old if isinstance(old, dict) else {}), **sources}
+    old_reasons = record.get("reasons")
+    kept = {k: v for k, v in (old_reasons if isinstance(old_reasons, dict) else {}).items()
+            if k not in sources}  # fmt: skip
+    kept.update({k: v for k, v in (reasons or {}).items() if sources.get(k) == "fallback"})
+    record["sources"], record["reasons"] = merged, kept
+    try:
+        _write_json(Path(out_dir) / RECORD_FILE, record)
+    except OSError as exc:
+        return f"Where the lines' audio came from couldn't be saved ({exc})."
+    return None
+
+
 def retake_problem(out_dir: Path, line_id: str) -> str | None:
     """Why `line_id` can't be re-taken (None when it can); touches nothing."""
     out_dir = Path(out_dir)
@@ -219,6 +255,7 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
         durations.update(speak(lns, seed))
         used.update({ln.id: seed for ln in lns})
         notes.append(_record_seeds(out_dir, {ln.id: seed for ln in lns}))
+        notes.append(record_sources(out_dir, {ln.id: "line" for ln in lns}))
     heard, why_not = hear(short.lines) if check else (None, CHECK_OFF)
     still_bad: list[str] = []
     by_id = {ln.id: ln for ln in short.lines}
@@ -230,6 +267,7 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check) -> NarrationResult:
         for step in range(1, RETRIES + 1):
             durations.update(speak([by_id[lid]], base + step))
             notes.append(_record_seeds(out_dir, {lid: base + step}))
+            notes.append(record_sources(out_dir, {lid: "line"}))
             again = (hear([by_id[lid]])[0] or {}).get(lid)
             if again is not None:
                 heard[lid] = again
@@ -273,7 +311,9 @@ def _elevenlabs_checked(short: Short, narrator: dict, out_dir: Path, durations: 
     """ElevenLabs takes get the voice check too, once over every line: no retries, since each take costs credit."""
     heard, why_not = _hear(local, short.lines, out_dir) if narrator.get("verify", True) else (None, CHECK_OFF)
     write_heard(out_dir, short.lines, heard, why_not)
-    return NarrationResult("ok", durations, _unclear_message(_unclear(heard, [ln.id for ln in short.lines])))
+    note = record_sources(out_dir, {ln.id: "line" for ln in short.lines})
+    message = " ".join(m for m in (_unclear_message(_unclear(heard, [ln.id for ln in short.lines])), note) if m)
+    return NarrationResult("ok", durations, message or None)
 
 
 def check_line_ids(short: Short) -> None:
@@ -357,6 +397,11 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     had_seeds = take_seeds(out_dir) if same_voice else {}
     want["seeds"] = {lid: n for lid, n in had_seeds.items()
                      if old_lines.get(lid) == want["lines"].get(lid) or lid in waiting}  # fmt: skip
+    # a source belongs to a take that is still there (a re-take's line has none until it is spoken again)
+    had_sources = line_sources(out_dir) if same_voice else {}
+    want["sources"] = {lid: v["source"] for lid, v in had_sources.items()
+                       if old_lines.get(lid) == want["lines"].get(lid) and lid not in waiting}  # fmt: skip
+    want["reasons"] = {lid: v["reason"] for lid, v in had_sources.items() if lid in want["sources"] and v["reason"]}
     out_dir.mkdir(parents=True, exist_ok=True)
     record_path.write_text(json.dumps(want, indent=2, ensure_ascii=False), encoding="utf-8")
     return removed

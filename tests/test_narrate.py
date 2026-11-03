@@ -722,3 +722,68 @@ def test_seeds_that_cannot_be_saved_never_cost_the_voice(tmp_path, monkeypatch):
     res = nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=fake)
     assert res.status == "ok" and "seeds couldn't be saved" in res.message
     assert heard_json(tmp_path)["checked"] is True
+
+
+# --- where each line's audio came from ----------------------------------------------------------------------------
+
+
+def _all_line(*ids):
+    return {i: {"source": "line", "reason": None} for i in ids}
+
+
+def test_line_mode_records_line_as_every_source(tmp_path):
+    local_dir, el_dir = tmp_path / "local", tmp_path / "el"
+    nrun.narrate(local_dir, make_short("l01", "l02"), KOKORO, local=SimpleNamespace(generate=gen, verify=lambda *a: None))
+    assert nrun.line_sources(local_dir / "audio" / "vo") == _all_line("l01", "l02")
+
+    http = fake_http([pcm(1.0), pcm(1.0)])
+    settings = {"narrator": {"provider": "elevenlabs", "voice": "v", "speed": 1.0, "verify": False}}
+    el = lambda lns, voice, speed, out: elevenlabs.generate(lns, voice, speed, out, api_key=KEY, http=http)
+    nrun.narrate(el_dir, make_short("l01", "l02"), settings, elevenlabs=el)
+    assert nrun.line_sources(el_dir / "audio" / "vo") == _all_line("l01", "l02")
+
+
+def test_a_retried_line_still_records_line(tmp_path):
+    hear = lambda lns, out: {x.id: {"said": "mumble" if x.id == "l01" else "x", "wer": 0.9 if x.id == "l01" else 0.0}
+                             for x in lns}
+    nrun.narrate(tmp_path, make_short("l01"), KOKORO, local=SimpleNamespace(generate=gen, hear=hear))
+    assert nrun.line_sources(tmp_path / "audio" / "vo") == _all_line("l01")
+
+
+def test_sources_survive_a_resume_and_drop_with_a_stale_take(tmp_path):
+    vo = tmp_path / "audio" / "vo"
+    narrator = KOKORO["narrator"]
+    nrun.clear_stale_takes(vo, _take_short(), narrator)
+    fake = SimpleNamespace(generate=gen, verify=lambda lns, out: None)
+    nrun.narrate(tmp_path, _take_short(), KOKORO, local=fake)
+    assert nrun.clear_stale_takes(vo, _take_short(), narrator) == []  # a resume keeps the record
+    assert nrun.line_sources(vo) == _all_line("l01", "l02")
+    assert nrun.clear_stale_takes(vo, _take_short("Changed line."), narrator) == ["l01"]
+    assert nrun.line_sources(vo) == _all_line("l02")
+    assert nrun.clear_stale_takes(vo, _take_short("Changed line."), {**narrator, "voice": "af_heart"}) == ["l02"]  # another voice: every take goes
+    assert nrun.line_sources(vo) == {}
+
+
+def test_record_sources_merges_and_a_non_fallback_drops_the_reason(tmp_path):
+    assert nrun.record_sources(tmp_path, {"l01": "fallback", "l02": "take"}, {"l01": "no pause"}) is None
+    assert nrun.line_sources(tmp_path) == {"l01": {"source": "fallback", "reason": "no pause"},
+                                           "l02": {"source": "take", "reason": None}}  # fmt: skip
+    nrun.record_sources(tmp_path, {"l01": "line"})
+    assert nrun.line_sources(tmp_path)["l01"] == {"source": "line", "reason": None}
+    assert nrun.line_sources(tmp_path)["l02"]["source"] == "take"
+    assert nrun.SOURCES == ("take", "line", "fallback")
+
+
+def test_line_sources_ignores_invalid_entries(tmp_path):
+    assert nrun.line_sources(tmp_path) == {}
+    (tmp_path / "narrator.json").write_text(json.dumps({"sources": {"l01": "take", "l02": "weird", "l03": 5},
+                                                        "reasons": {"l01": "kept", "l02": "x", "l03": 1}}), encoding="utf-8")  # fmt: skip
+    assert nrun.line_sources(tmp_path) == {"l01": {"source": "take", "reason": "kept"}}
+
+
+def test_sources_that_cannot_be_saved_say_why_and_never_raise(tmp_path, monkeypatch):
+    def broken(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(nrun, "_write_json", broken)
+    assert "disk full" in nrun.record_sources(tmp_path, {"l01": "line"})

@@ -131,6 +131,14 @@ textarea { width: 100%; min-height: 96px; resize: vertical; font: inherit; font-
 .chip.sent { background: var(--soft); }
 .chip.done { background: var(--ok-soft); }
 .chip.declined { background: var(--warn-soft); }
+.src-chip { display: inline-block; margin: 6px 0 0; padding: 2px 10px; border-radius: var(--r-pill); font-size: 12px;
+  font-weight: 700; background: var(--chip); color: var(--fg); border: 1.5px solid var(--muted); }
+.src-chip.src-fallback { background: var(--warn-soft); }
+.voice-notes { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--r-sm); background: var(--warn-soft);
+  border: 1.5px solid var(--ink); }
+.voice-notes h3 { margin: 0 0 4px; font-size: 15px; }
+.voice-notes ul { margin: 0 0 6px; padding-left: 20px; }
+.voice-notes li, .voice-notes p { overflow-wrap: anywhere; }
 
 /* stage content shared by the stages */
 .lead { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
