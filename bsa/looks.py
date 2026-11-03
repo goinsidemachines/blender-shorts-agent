@@ -37,8 +37,8 @@ class StyleLook:
 
 
 TABLE = {
-    "realistic": StyleLook("AgX", None, 3.0, 0.35, False, 12, 0.93, 0, 0.02, 2, None),
-    "toy": StyleLook("Standard", None, 1.3, 0.6, False, 12, 0.83, 0, 0.08, 5, None),
+    "realistic": StyleLook("AgX", None, 3.4, 0.1, False, 12, 0.93, 0, 0.02, 2, None),
+    "toy": StyleLook("Standard", None, 3.6, 0.3, False, 12, 1.0, 0, 0.08, 5, None),
     "toon": StyleLook("Standard", None, 4.0, 0.08, True, 0.5, 1.0, 4.0, 0, 0, 0),
     "clay": StyleLook("AgX", "Medium High Contrast", 3.2, 0.3, False, 12, 0.92, 0, 0.12, 6, None),
     "blueprint": StyleLook("Standard", None, 0.0, 1.0, False, 0, 1.0, 3.0, 0, 0, None),
