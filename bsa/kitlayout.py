@@ -371,7 +371,7 @@ SAMPLE_BARS = {"items": [{"label": "Short arm", "value": 1}, {"label": "Long arm
 
 def sample(kit, font) -> KitOverlay:
     """One frame (frame 1) of a fixed made-up arrangement, to preview a kit: the logo (if set), a category tag (the
-    kit's first category, else "Force"), a badge, a step tag, a title card, a part label pointing at (1000, 700), a
+    kit's first category, else "Force"), a badge, a step tag, a title card, a part label pointing at (700, 400), a
     stacked measure, value bars, a caption and the progress bar at 40 %: its Progress runs f0 = 0 to f1 = 4, so at
     frame 1 the fill shows (1 - 0 + 1) / (4 - 0 + 1) = 2 / 5 of its width (no f0 >= 1 gives exactly 40 % at frame 1);
     every other card shows at frame 1."""
@@ -384,7 +384,7 @@ def sample(kit, font) -> KitOverlay:
                 labels=[{"text": "Pivot", "near": "Pivot"}, {"text": "1.4 m", "kind": "measure"}])  # fmt: skip
     short = Short(slug="sample", title="Sample", length_s=1, shots=[shot])
     tl = Timeline(30, 1, [Span("sample", 1, 1)], [], [Card("Your captions look like this.", "sample", 1, 1)])
-    anchors = {"sample": {"Pivot": {"f0": 1, "points": [[1000, 700]], "category": category}}}
+    anchors = {"sample": {"Pivot": {"f0": 1, "points": [[700, 400]], "category": category}}}
     ov = build(short, tl, kit, font, anchors)
     if ov.progress is not None:  # frame 1 of 0..4: 2 / 5 = 40 %
         ov.progress = replace(ov.progress, f0=0, f1=4)

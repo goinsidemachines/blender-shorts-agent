@@ -269,7 +269,7 @@ def test_sample_has_one_of_each_card(font):
     assert next(p for p in ov.cards if p.spec.kind == "category").text == "Spark"
     assert next(p for p in ov.cards if p.spec.kind == "label").near == "Pivot"
     (ptr,) = ov.pointers
-    assert ptr.ends[1][1] == (1000.0, 700.0)
+    assert ptr.ends[1][1] == (700.0, 400.0)
     p = ov.progress
     assert round(p.fill.w * (1 - p.f0 + 1) / (p.f1 - p.f0 + 1)) == round(p.fill.w * 0.4)
     no_cats = kitlayout.sample(kit.kit_from({**KIT, "categories": {}}), font)
@@ -304,6 +304,13 @@ def test_no_two_sample_cards_overlap(tmp_path, font, with_logo):
     bars = next(r for k, r in rects if k == "bars")
     caption = next(r for k, r in rects if k == "caption")
     assert caption.y - bars.bottom >= STACK_GAP_PX
+    for ptr in ov.pointers:  # the pointer line ends inside the safe area and passes over no other card
+        start, end = ptr.ends[1]
+        assert s.x <= end[0] <= s.right and s.y <= end[1] <= s.bottom, end
+        for i in range(101):
+            x, y = (start[0] + (end[0] - start[0]) * i / 100, start[1] + (end[1] - start[1]) * i / 100)
+            hit = [k for k, r in rects if k != "label" and r.x < x < r.right and r.y < y < r.bottom]
+            assert not hit, (hit, x, y)
 
 
 def test_a_card_in_a_cover_font_is_noted_once(monkeypatch, short, tl, anchors, font, tmp_path):

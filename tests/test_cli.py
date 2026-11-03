@@ -1901,3 +1901,38 @@ def test_anchors_record_each_near_objects_category_fresh_every_run(home, pendulu
     bob["bsa_tags"] = "category:spark"
     entry = bob_entry()
     assert ["Bob"] in projected and entry == {"f0": entry["f0"], "points": [[1, 2]], "category": "spark"}
+
+
+def test_kit_sample_command_paths(home, tmp_path, monkeypatch):
+    """BLENDER kit-sample: bad JSON, a non-object, an invalid kit and no kit set are plain errors; a good kit renders
+    (the renderer is faked here) and the settings file is never written."""
+    import types
+
+    import bsa_blender
+    from tests.kitfix import KIT
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    calls = []
+    fake = types.SimpleNamespace(render_sample=lambda k, out, cache: calls.append((k.style, out, cache)) or ["w"])
+    monkeypatch.setitem(sys.modules, "bsa.blender.cards", fake)
+    monkeypatch.setattr("bsa.blender.cards", fake, raising=False)
+    settings_file = home / "settings.json"
+    settings_file.write_text('{"brand": {"mode": "fresh"}}', encoding="utf-8")
+    before = settings_file.read_bytes()
+    out = tmp_path / "sheet.png"
+
+    def sample(kit_json):
+        return bsa_blender.cmd_kit_sample(types.SimpleNamespace(kit=kit_json, out=str(out)))
+
+    with pytest.raises(bsa_blender.CliError, match="--kit is not JSON"):
+        sample("{nope")
+    with pytest.raises(bsa_blender.CliError, match="must be a JSON object"):
+        sample("[1, 2]")
+    with pytest.raises(bsa_blender.CliError, match="accent"):
+        sample(json.dumps({**KIT, "palette": {**KIT["palette"], "accent": "orange"}}))
+    with pytest.raises(bsa_blender.CliError, match="no brand kit is set: brand.style is missing"):
+        sample(None)
+    assert calls == []
+    assert sample(json.dumps(KIT)) == {"png": str(out), "warnings": ["w"]}
+    assert calls == [("toon", out, home / "cards")]
+    assert settings_file.read_bytes() == before
