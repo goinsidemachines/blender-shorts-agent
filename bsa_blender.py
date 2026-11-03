@@ -1062,6 +1062,13 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         out.update(engine=side.engine, tag=side.tag)
     if end:
         out["closing"] = end["hold"]  # its "note" says when the voice line held the card past closing.seconds
+    if args.preset == "final" and not side.tag:  # the caption files, cue for cue with this video
+        from bsa import captions
+
+        try:
+            out["captions"] = captions.write_files(sdir, short, settings.load_settings())
+        except (captions.Stale, OSError) as exc:
+            warnings.append(f"caption files not written: {exc}")
     return {**out, "warnings": warnings} if warnings else out
 
 

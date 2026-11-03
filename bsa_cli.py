@@ -928,6 +928,18 @@ def _one_page(sdir: Path, stage: str, open_: bool) -> dict:
     return {"page": launch.page_url(info, sdir.name, stage), "stage": stage}
 
 
+def cmd_captions(args) -> dict:
+    """Write the final video's caption files (out/<slug>.srt, .vtt and -transcript.txt), cue for cue with its captions.
+    Refused unless the final video was cut from the current timing."""
+    from bsa import captions
+
+    sdir = short_dir(args.short)
+    try:
+        return captions.write_files(sdir, load(sdir), settings.load_settings())
+    except captions.Stale as exc:
+        raise CliError(str(exc)) from exc
+
+
 def cmd_review(args) -> dict:
     """The one page at the story, storyboard or final stage (the separate review pages are retired)."""
     sdir = short_dir(args.short)
@@ -1253,6 +1265,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=text)
         sp.add_argument("short")
         sp.set_defaults(fn=fn)
+
+    sp = sub.add_parser("captions", help="SHORT: write the final video's SRT, VTT and transcript beside it")
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_captions)
 
     sp = sub.add_parser("narrate", help="SHORT [--line ID [--say TEXT]]: generate the narration (never blocks) and "
                         "re-time the short; --line re-takes that one line with the next seed")  # fmt: skip

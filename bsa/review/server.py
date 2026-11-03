@@ -34,6 +34,7 @@ from bsa.review import decisions, history, notes, page, snapshot, stages, store
 
 IDLE_S = 7200
 _LAN_BIND = "0.0.0.0"  # phone access: every interface (the Host check still admits only this machine's addresses)
+mimetypes.add_type("text/vtt", ".vtt")  # a <track> is refused unless it is served as text/vtt
 BIND_ENV = "BSA_PAGE_BIND"  # overrides _LAN_BIND (tests bind 127.0.0.1 so nothing opens the developer's network)
 MAX_BODY = 16_384
 SEEN_WINDOW_S = 30

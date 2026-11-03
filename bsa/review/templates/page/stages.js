@@ -608,13 +608,16 @@
 
   var player = null; // {key, node}: the same video element across live updates, so playback is not reset
 
-  function video(ctx, ref) {
+  function video(ctx, ref, captions) {
     var url = ctx.fileUrl(ref, ctx.version); // the MP4 is rewritten under the same name for each version
-    var key = url + "#" + ctx.version;
+    var track = captions ? ctx.fileUrl(captions, ctx.version) : ""; // the caption file follows the final edit too
+    var key = url + "#" + ctx.version + "#" + track;
     if (player && player.key === key) return player.node;
     if (player) release(player.node);
     var node = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", src: url,
-      "aria-label": "The final video" }, "Your browser cannot play this video.");
+      "aria-label": "The final video" },
+      track ? ctx.el("track", { kind: "captions", label: "Captions", srclang: "en", default: true, src: track }) : null,
+      "Your browser cannot play this video.");
     player = { key: key, node: node };
     return node;
   }
@@ -680,7 +683,7 @@
 
   BSA.stages.final = function (content, ctx) {
     var size = typeof content.size_mb === "number" ? " · " + content.size_mb.toFixed(1) + " MB" : "";
-    var node = content.video ? video(ctx, content.video) : null;
+    var node = content.video ? video(ctx, content.video, content.captions) : null;
     var track = node ? timelineBlock(ctx, content.timeline, content.timeline_problem, node, "final", String) : null;
     return ctx.el("div", { class: "st-final" },
       node ? ctx.el("div", { class: "video-wrap" }, node,

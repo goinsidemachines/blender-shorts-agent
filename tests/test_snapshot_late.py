@@ -265,3 +265,26 @@ def test_final_says_when_its_timeline_cannot_be_read_without_moving_the_version(
     (sdir / "source" / "timeline.json").write_text("{", encoding="utf-8")
     row = _stage(snapshot.build(sdir, settings={}), "final")
     assert row["content"]["timeline"] is None and row["content"]["timeline_problem"] and row["version"] == v
+
+
+# --------------------------------------------------------------------------- caption track
+
+
+def test_final_has_a_caption_track_that_never_moves_its_version(tmp_path):
+    from bsa import captions
+    from bsa.short import load_short
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    mp4 = sdir / "out" / "pendulum.mp4"
+    if not mp4.is_file():  # no ffmpeg: a stand-in file is enough for the snapshot
+        mp4.write_bytes(bytes(2000))
+    short = load_short(sdir / "source" / "short.json")
+    before = _stage(snapshot.build(sdir, settings={}), "final")
+    assert before["content"]["captions"] is None
+    captions.write_files(sdir, short, {})
+    after = _stage(snapshot.build(sdir, settings={}), "final")
+    assert after["content"]["captions"] == {"file": "out/pendulum.vtt"}
+    assert after["version"] == before["version"]
+    pagefix.record_edit(sdir, "final", stale=True)  # the files are still there but out of step
+    assert (sdir / "out" / "pendulum.vtt").is_file()
+    assert _stage(snapshot.build(sdir, settings={}), "final")["content"]["captions"] is None

@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from bsa import captions, engine_runs, feedback, jobstate, messages, render_status, rules
 from bsa import closing as closing_mod
-from bsa import engine_runs, feedback, jobstate, messages, render_status, rules
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
 from bsa.narrate.run import HEARD_FILE
@@ -415,8 +415,11 @@ def _final(ctx: Ctx) -> dict | None:
             timeline = track.build(ctx.sdir, short, "final")
         except Exception as e:  # noqa: BLE001 - a bad timeline.json hides the timeline, not the video
             timeline_problem = _plain(ctx.sdir, e)
+    vtt = captions.paths(ctx.sdir, short)["vtt"]
+    has_captions = vtt.is_file() and not captions.state(ctx.sdir, short)["stale"]
     return {
         "video": {"file": f"out/{short.slug}.mp4"} if size is not None else None,
+        "captions": {"file": f"out/{short.slug}.vtt"} if has_captions else None,
         "writing": writing,
         "size_mb": round(size / 1_000_000, 1) if size is not None else None,
         "findings": rows,
@@ -460,7 +463,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
 _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
-                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem")}
+                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions")}
 
 
 def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:
