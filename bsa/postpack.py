@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from pathlib import Path
 
 from bsa import captions, engine_runs, post
@@ -25,8 +26,8 @@ def clock(seconds: float) -> str:
 
 
 def megabytes(n: int) -> str:
-    mb = n / 1_000_000
-    return f"{math.floor(mb + 0.5)} MB" if mb >= 10 else f"{math.floor(mb * 10 + 0.5) / 10:.1f} MB"
+    tenths = math.floor(n / 100_000 + 0.5)  # round first, then choose the format
+    return f"{math.floor(tenths / 10 + 0.5)} MB" if tenths >= 100 else f"{tenths / 10:.1f} MB"
 
 
 def _size(n: int) -> str:
@@ -50,12 +51,13 @@ def video_info(sdir: Path, short) -> dict:
             "size": megabytes(nbytes) if nbytes is not None else None}  # fmt: skip
 
 
-def files(sdir: Path, short) -> list[dict]:
+def files(sdir: Path, short, video: dict | None = None) -> list[dict]:
     sdir = Path(sdir)
+    video = video or video_info(sdir, short)
     cap = captions.paths(sdir, short)
     stale = captions.state(sdir, short)["stale"]
     spec = [
-        ("video", "Video", video_info(sdir, short)["rel"]),
+        ("video", "Video", video["rel"]),
         ("thumbnail_vertical", "Thumbnail, Shorts and Reels", OUT_FILES["1080x1920"]),
         ("thumbnail_landscape", "Thumbnail, YouTube", OUT_FILES["1280x720"]),
         ("srt", "Captions (SRT)", f"out/{cap['srt'].name}"),
@@ -105,7 +107,7 @@ def markdown(sdir: Path, short) -> str:
         out += [f"## {name}", value, ""]
     out += ["## Files"]
     video = video_info(sdir, short)
-    for row in files(sdir, short):
+    for row in files(sdir, short, video):
         if not row["exists"] or row["key"] == "pack":
             continue
         line = f"- {row['label']}: {row['rel']}"
@@ -126,7 +128,7 @@ def write(sdir: Path, short) -> tuple[Path, bool]:
     except OSError:
         pass
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
     return path, True

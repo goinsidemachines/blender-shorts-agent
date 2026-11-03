@@ -4,7 +4,6 @@ import json
 import os
 
 import pagefix
-from test_cli import home, ok, pendulum, run, workspace  # noqa: F401 - fixtures
 
 from bsa import postpack
 from bsa.review import snapshot
@@ -31,6 +30,7 @@ def _video(sdir):
 def test_clock_and_megabytes():
     assert postpack.clock(46.7) == "0:47" and postpack.clock(65) == "1:05" and postpack.clock(59.5) == "1:00"
     assert postpack.megabytes(38_000_000) == "38 MB" and postpack.megabytes(4_250_000) == "4.3 MB"
+    assert postpack.megabytes(9_960_000) == "10 MB" and postpack.megabytes(9_940_000) == "9.9 MB"
 
 
 def test_pack_has_every_field_in_order_and_the_files(tmp_path):
@@ -94,10 +94,3 @@ def test_shown_never_raises(tmp_path):
     (sdir / "source" / "short.json").write_text("{not json", "utf-8")
     postpack.shown(sdir)
     assert not (sdir / "out" / "post-pack.md").exists()
-
-
-def test_cli_post_writes_the_pack(home, pendulum):  # noqa: F811
-    out = ok(run(home, "post", "pendulum"))
-    assert (pendulum / "out" / "post-pack.md").is_file() and out["changed"] is True
-    assert out["counts"]["title"]["max"] == 100 and out["fields"]["title"].startswith("Why a pendulum")
-    assert ok(run(home, "post", "pendulum"))["changed"] is False

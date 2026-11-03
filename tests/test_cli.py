@@ -1722,3 +1722,10 @@ def test_validate_reports_post_problems(home, pendulum):
 def test_a_dotted_post_format_key_alone_marks_the_question_asked(home):
     ok(run(home, "settings", "set", "post_format.title_suffix", " #shorts"))
     assert ok(run(home, "settings", "post-format"))["asked"] is True
+
+
+def test_cli_post_writes_the_pack(home, pendulum):
+    out = ok(run(home, "post", "pendulum"))
+    assert (pendulum / "out" / "post-pack.md").is_file() and out["changed"] is True
+    assert out["counts"]["title"]["max"] == 100 and out["fields"]["title"].startswith("Why a pendulum")
+    assert ok(run(home, "post", "pendulum"))["changed"] is False
