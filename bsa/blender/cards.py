@@ -206,3 +206,51 @@ def _progress(seq, prog, cache_dir: Path, frame) -> None:
         shown = round(fill.w * (f - prog.f0 + 1) / n)
         fs.crop.max_x = fill.w - shown
         fs.crop.keyframe_insert("max_x", frame=f)
+
+
+def render_sample(kit, out_png: Path, cache_dir: Path) -> list[str]:
+    """One 1080x1920 RGB frame previewing `kit`: a flat `palette.background` strip, then the sample sheet's cards
+    (bsa.kitlayout.sample) at frame 1, into `out_png`; the card images are cached in `cache_dir`. Only the sequencer
+    draws: the render engine of every scene, this one included, is left as it is. Returns the warnings (a missing
+    font or logo)."""
+    from bsa import fonts
+    from bsa.blender.closing_card import _background
+    from bsa.kit import logo_missing
+    from bsa.kitlayout import sample
+
+    out_png, cache_dir = Path(out_png), Path(cache_dir)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    font, note = cards.card_font_and_note(kit, fonts.font_caches())
+    ov = sample(kit, font)
+    warnings = [n for n in [note, *ov.notes, logo_missing(kit.logo)] if n]
+    bg_png = cache_dir / f"sample-background-{uuid.uuid4().hex[:8]}.png"
+    old = bpy.data.scenes.get("KitSample")
+    if old is not None:
+        bpy.data.scenes.remove(old)
+    scene = bpy.data.scenes.new("KitSample")
+    try:
+        r = scene.render
+        r.resolution_x, r.resolution_y, r.resolution_percentage = W, H, 100
+        r.use_sequencer, r.use_compositing = True, False
+        scene.view_settings.view_transform = "Standard"
+        scene.view_settings.look = "None"
+        scene.frame_start = scene.frame_end = 1
+        seq = scene.sequence_editor_create()
+        _background(seq, hex_colour(kit.palette["background"], 1.0), bg_png)
+        add_overlay(seq, ov, cache_dir)
+        if hasattr(r.image_settings, "media_type"):
+            r.image_settings.media_type = "IMAGE"
+        r.image_settings.file_format = "PNG"
+        r.image_settings.color_mode = "RGB"
+        r.image_settings.color_depth = "8"
+        r.use_file_extension = False
+        r.filepath = str(out_png)
+        scene.frame_set(1)
+        bpy.ops.render.render(write_still=True, scene=scene.name)
+    finally:
+        bpy.data.scenes.remove(scene)
+        bg_png.unlink(missing_ok=True)
+    if not out_png.is_file() or out_png.stat().st_size == 0:
+        raise RuntimeError(f"the kit sample was not written to {out_png}")
+    return warnings

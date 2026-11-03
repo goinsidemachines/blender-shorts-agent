@@ -274,3 +274,17 @@ def test_a_scene_named_card_is_left_alone():
         assert not [s for s in bpy.data.scenes if s.name.startswith("Card-")]  # the drawing scene is gone
     finally:
         bpy.data.scenes.remove(mine)
+
+
+def test_kit_sample_frame_has_the_background_and_the_cards():
+    engines = {s.name: s.render.engine for s in bpy.data.scenes}
+    out = TMP / "sample" / "sheet.png"
+    warnings = bsa.blender.cards.render_sample(K, out, TMP / "sample-cache")
+    px = read_png(out)
+    assert px.shape[:2] == (1920, 1080), px.shape
+    assert _close(px[2, 2, :3], (0xEA, 0xF2, 0xF8), 1), px[2, 2]  # the background
+    bar = np.all(np.abs(px[..., :3].astype(int) - np.array([0x1B, 0x2A, 0x3A])) <= 1, axis=2)
+    assert bar[1300:1500].sum() > 5000, bar[1300:1500].sum()  # the solid caption bar
+    assert isinstance(warnings, list)
+    assert {s.name: s.render.engine for s in bpy.data.scenes} == engines  # the engine is the user's choice
+    assert not bpy.data.scenes.get("KitSample")

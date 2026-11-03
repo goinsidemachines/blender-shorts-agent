@@ -1137,6 +1137,32 @@ def cmd_closing(args) -> dict:
     return {**out, "warnings": warnings} if warnings else out
 
 
+def cmd_kit_sample(args) -> dict:
+    """One sample sheet of a brand kit (every card on the kit's background) to --out, before anything is saved: from
+    --kit (a brand object as JSON) or the settings' brand. Writes nothing to the settings; no short, no engine."""
+    from bsa import kit as kit_mod
+    from bsa.blender import cards as blender_cards
+
+    if args.kit is not None:
+        try:
+            brand = json.loads(args.kit)
+        except ValueError as exc:
+            raise CliError(f"--kit is not JSON: {exc}") from exc
+        if not isinstance(brand, dict):
+            raise CliError("--kit must be a JSON object (the brand)")
+        try:
+            k = kit_mod.kit_from(brand)
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+    else:
+        k = kit_mod.kit_for(settings.load_settings())
+        if k is None:
+            raise CliError("no brand kit is set: brand.style is missing")
+    out = Path(args.out)
+    warnings = blender_cards.render_sample(k, out, settings.bsa_home() / "cards")
+    return {"png": str(out), "warnings": warnings}
+
+
 THUMB_TEXT_FIRST = "Write the thumbnail text first: short.json post.thumbnail title (one or two lines)"
 MAX_HEROES = 3
 
@@ -1745,6 +1771,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="a frame to make a candidate from (up to 3); else short.json's, else picked")
     sp.add_argument("--only", type=int, metavar="N", help="make candidate N again, the others stay")
     sp.set_defaults(fn=cmd_thumbs)
+
+    sp = sub.add_parser("kit-sample", help="a sample sheet of a brand kit (before it is saved) to --out")
+    sp.add_argument("--kit", metavar="JSON", help="a brand object; else the settings' brand")
+    sp.add_argument("--out", required=True, metavar="PNG")
+    sp.set_defaults(fn=cmd_kit_sample)
 
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")

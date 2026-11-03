@@ -339,3 +339,15 @@ def test_no_personal_post_format_in_the_plugin():
         for f in (root / d).rglob("*"):
             if f.is_file() and f.suffix in {".md", ".py", ".html", ".js", ".json", ".css"}:
                 assert "\u25b6\ufe0f" not in f.read_text(encoding="utf-8", errors="ignore"), f
+
+
+def test_first_run_asks_for_the_brand_kit_and_previews_it():
+    t = _flat(_read("playbook/00-first-run.md"))
+    assert "Do you have a brand? Colours, a logo, a font." in t and "BLENDER kit-sample" in t
+    assert "settings check" in t and "brand.mode fresh" in t
+    for style in ("realistic", "toy", "toon", "clay", "blueprint", "paper", "pencil"):
+        assert style in t, style
+    assert "brand.mode brand" in t and "brand.style" in t
+    section = t.split("## 4.")[1].split("## 5.")[0]
+    assert "goinsidemachines" not in section.lower() and "#FF6B00" not in section
+    assert "render.engine" not in section and "engine" not in section.lower()
