@@ -435,6 +435,10 @@ def test_docs_use_no_owner_values():
         t = _read(f"playbook/{name}")
         for value in banned:
             assert value.lower() not in t.lower(), (name, value)
+    for name in ("01-interview.md", "05-narration.md"):  # the voice docs: nothing from the owner's own voice tool
+        t = _read(f"playbook/{name}")
+        for value in ("exaggeration", "tts-take", "tts-leadin"):
+            assert value not in t.lower(), (name, value)
 
 
 def test_readme_has_your_brand_with_both_images():
@@ -448,3 +452,23 @@ def test_readme_has_your_brand_with_both_images():
     assert "your engine" in flat.lower() and "your choice" in flat.lower()
     for banned in ("goinsidemachines.com", "Inside Machines", "Mojood", "#F4B400"):
         assert banned not in section, banned
+
+
+def test_interview_offers_make_it_like_that_one():
+    t = _flat(_read("playbook/01-interview.md"))
+    for word in ("CLI shorts", "--like", "skipped", "Started from", "last_finished"):
+        assert word in t, word
+    assert "never ask for or set the engine" in t.lower()
+
+
+def test_narration_documents_take_mode_and_lead_in():
+    t = _flat(_read("playbook/05-narration.md"))
+    for word in ("take_mode", "paragraph", "{take}", "lead_in", "--take", "fallback", "sources"):
+        assert word in t, word
+    assert "NO_TAKE_PLACEHOLDER" not in t and "must accept an empty" in t
+
+
+def test_skill_lists_shorts_like_and_take():
+    t = _flat((ROOT / "skills" / "make-short" / "SKILL.md").read_text(encoding="utf-8"))
+    for word in ("CLI shorts", "new-short", "--like", "narrate SHORT --line ID --take"):
+        assert word in t, word

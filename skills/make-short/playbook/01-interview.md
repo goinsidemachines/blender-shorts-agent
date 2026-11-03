@@ -3,11 +3,21 @@
 Goal: agree on the topic, the audience, the length, and anything the user already wants. Keep it to a few quick
 questions; offer sensible defaults so the user can just say "yes".
 
+0. **Offer to start from an earlier short.** Run `CLI shorts`. When `last_finished` is not empty, ask once: "Make it
+   like an earlier one? The last three were ..." (use its titles). If the user says no, go on to step 1 as usual.
+   On a pick, step 1 uses `CLI new-short "<working title>" --like OTHER` (OTHER is the earlier short's number, slug or
+   folder). It copies only what differs from the user's settings and brand: the look, length, pace, closing and
+   voice choices, never the story, and never the render engine. Its result has `said` (one line: say it as it is),
+   `notes` (anything it could not copy: say each in plain words) and `skipped` (the questions the copied values
+   already answer). Then ask only the questions that are not in `skipped`. A copied value can be changed in chat, or
+   by a note on its row under "Started from" on the Interview stage of the page. Never ask for or set the engine
+   because of it: the engine stays the user's own choice (`playbook/04-engine.md`).
 1. **Make the short's folder:** `CLI new-short "<working title>"`. It returns the folder and the slug. Say where it
    is in one line. When the user (or their content plan) wants a particular number, add `--number N`: it refuses a
    number another short already has (or another session is making), and says which. When the brief already gives
    the topic or the length, pass them too: `--topic "<what a viewer should understand>"` and `--length <seconds>`
-   (15 to 90) go into `short.json` `topic` and `length_s` (the length is 45 without it). Then only ask what is left.
+   (15 to 90) go into `short.json` `topic` and `length_s` (the length is 45 without it; with `--like` it is the earlier
+   short's, unless you pass `--length`). Then only ask what is left.
 2. **Open the review page:** `CLI page SHORT`. It is the one page the user follows this short on, from the
    interview to the post text; it updates itself as you work. Say in one line what it is for. Its result has `url`
    and `opened`: when `opened` is false the page did not open (or never checked in), so tell the user it didn't

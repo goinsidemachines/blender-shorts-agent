@@ -47,6 +47,16 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
   time per workspace, across sessions: a second one waits for the first (`<workspace>/.gpu.lock`, `08-render.md`).
   Never delete that file by hand.
 
+Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook/05-narration.md`):
+
+- `CLI shorts`: the workspace's shorts (title, look, length, voice) and `last_finished`, the last three finished
+  titles, for "Make it like an earlier one?".
+- `CLI new-short "<title>" --like OTHER`: starts a short from an earlier one (its number, slug or folder): copies only
+  what differs from the user's settings and brand, never the story or the render engine. The result has `said`,
+  `notes` and `skipped` (the interview questions to leave out).
+- `CLI narrate SHORT --line ID`: re-takes one line and keeps its neighbours. `CLI narrate SHORT --line ID --take`
+  re-speaks the whole paragraph holding that line (paragraph take mode only; not with `--say`).
+
 Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render.md` say when):
 
 - `BLENDER extremes SHORT`: renders each hero at the extremes of its motion, full resolution, before the preview.

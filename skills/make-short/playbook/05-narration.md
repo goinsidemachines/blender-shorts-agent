@@ -20,6 +20,8 @@ finished.
      regenerates a take that doesn't match (alone, with seeds 8 then 9; for the user's own tool the command is
      run again with a lines file holding only those lines);
    - marks the `narration` stage itself (`status` `ok` or `captions-only`);
+   - with `narrator.take_mode paragraph`, speaks a few lines per take and cuts each take into its lines (Whisper's
+     word timings place the cuts when it is installed); `narrator.lead_in` pads each take's start;
    - re-times the short from the takes and rewrites `source/timeline.json` (returned as `timeline`). A take that
      opens with silence (some voices leave a lead-in) keeps its place in the mix, but its caption cards start when
      the voice does: the timing measures each take's leading silence, so captions never show before the word;
@@ -73,6 +75,30 @@ The takes set the real line lengths, so shot lengths change. `source/build.py` r
 timeline: more than about 15% off the agreed length means the script is too long or too short; tighten lines (a
 voice that runs long is better fixed by cutting words than by a faster speed), then `narrate` again.
 
+## Takes: one line or one paragraph
+
+By default each line is spoken on its own (`narrator.take_mode` is `line`). Set `narrator.take_mode` to
+`paragraph` (`CLI settings set narrator.take_mode paragraph`) and the voice speaks a few lines at a time, then the
+plugin cuts each take back into one WAV per line. The lines flow into each other like one read. Every voice works
+this way, the user's own tool too (it needs `{take}` in its command, see below). A line the cut can't find, a
+retry and the closing line are spoken alone, like before.
+
+`narrator.lead_in` is the quiet before the voice in each take, from 0 to 1 second (default 0). The captions start
+with the voice, not with the quiet.
+
+A short can have its own `narrator` in `short.json` (`voice`, `speed`, `take_mode`, `lead_in`) that wins over the
+settings for that short only. With neither set, narration is exactly as it was.
+
+The result says where each line's audio came from in `sources`: `take`, `line` (spoken alone) or `fallback` (its take
+failed, so it was spoken alone), and `fallbacks` gives the reason for each fallback line. The voice check on the
+page shows the same on each row. Say a fallback in one line and check that line. The voice's own notes (for
+example, that `{take}` is missing from the command) show on the Narration stage of the page too.
+
+- `CLI narrate SHORT --line ID` re-takes one line and keeps its neighbours. In a paragraph take, only that line is
+  spoken again.
+- `CLI narrate SHORT --line ID --take` re-speaks the whole paragraph that holds the line, with the next seed, and
+  cuts it again. It needs paragraph mode and does not go with `--say`.
+
 ## Voice choices
 
 - **ElevenLabs** needs `ELEVENLABS_API_KEY` in the environment and `narrator.voice` set to a voice id. The key
@@ -90,6 +116,24 @@ as always. Each WAV the tool writes is converted to 48 kHz mono 16-bit in place;
 WAVs, so the tool needs no `durations.json`. Any failure (command not found, non-zero exit with its last error
 line, a line without a WAV, a non-WAV file) gives captions only, said once. Changing `narrator.command` counts as a
 different narrator: the old takes are removed on the next `narrate`.
+
+### Paragraph takes with their own tool
+
+For `narrator.take_mode paragraph` the command must contain `{take}`. Without it the lines are spoken one by one and
+the result says so (take mode needs `{take}` in the voice command). The contract:
+
+- For a paragraph take, `{take}` is the take's id (`t01`, `t02`, ...) and the `{lines}` file holds one item:
+  `{"id": "t01", "text": <the take's lines joined with spaces>, "lines": [line ids], "texts": [each line's text]}`.
+  The tool speaks `text` in one go (it may use `lines` and `texts`, for example to put a pause between lines; that is
+  optional) and writes `<out>/t01.wav`, where `{out}` is the takes folder. The plugin cuts the take back into one WAV
+  per line; the tool never cuts.
+- For a line spoken on its own (line mode, a line the take couldn't be cut at, a retry, the closing line), `{take}`
+  is empty (`""`) and the `{lines}` file holds the lines as usual (`{"id", "text"}`); the tool writes
+  `<out>/<line id>.wav`. The tool must accept an empty `{take}` argument.
+- Take ids are reused: `t01` is always a short's first paragraph, whatever its words are now. A tool must not cache
+  its output by id, and should not skip a take whose file already exists.
+
+A command without `{take}` is always run line by line, also in paragraph mode.
 
 Test a new command with `CLI voice test-custom` (it touches no short) before relying on it.
 
