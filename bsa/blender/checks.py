@@ -119,7 +119,7 @@ from mathutils.bvhtree import BVHTree
 
 from bsa import overlays, viewer
 from bsa.blender.anchors import screen_box, screen_top
-from bsa.blender.bake import is_hero, is_overlay, is_surface, may_exit, tags
+from bsa.blender.bake import category, is_hero, is_overlay, is_surface, may_exit, tags
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
 from bsa.pops import find_pops
@@ -253,6 +253,7 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
     run = _Run(scene)
     short = _short_beside_blend() if short is None else short
     run.short, run.tl = short, tl
+    run.kit, run.kit_font = _kit_and_font(short)
     try:
         if scene.world and scene.world.node_tree:
             for problem in _image_problems(scene.world.node_tree):
@@ -267,6 +268,19 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
         scene.frame_set(original)
     found = _cap_overlaps(run.findings) if cap else run.findings
     return sorted(found, key=lambda f: f.severity != "error")
+
+
+def _kit_and_font(short):
+    """(the brand kit the short's edit draws, its card font) or (None, None) without one: the covered check then
+    measures the kit's cards instead of today's text boxes (bsa.overlays.shot_boxes)."""
+    from bsa import cards, kit, settings
+    from bsa.fonts import font_caches
+
+    k = kit.kit_for(settings.load_settings(), short)
+    if k is None:
+        return None, None
+    sdir = Path(bpy.data.filepath).resolve().parent.parent if bpy.data.filepath else None  # <short>/blend/short.blend
+    return k, cards.card_font(k, font_caches(sdir))
 
 
 def _short_beside_blend():
@@ -309,6 +323,8 @@ class _Run:
         self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
+        self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
+        self.kit_font = None
 
     def add(self, check, severity, obj, frame, message, key=None, pair=None):
         key = (check, obj, message) if key is None else (check, *key)
@@ -409,10 +425,16 @@ class _Run:
             obj = self.scene.objects.get(near) if near else None
             if obj is None:
                 continue
-            anchors[near] = {"f0": frame, "points": [screen_top(self.scene, cam_ev, obj, dg)]}
+            anchors[near] = {"f0": frame, "points": [screen_top(self.scene, cam_ev, obj, dg)],
+                             "category": category(obj)}  # a kit's part label shows its category's dot
             subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
-        texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
-                                    {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame])  # fmt: skip
+        try:
+            texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
+                                        {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame],
+                                        kit=self.kit, font=self.kit_font)  # fmt: skip
+        except ValueError as exc:  # a kit's cards can't be laid out (too many labels): CLI validate names it
+            self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
+            return
         seen["texts"][frame] = {"subjects": subjects, "texts": texts[frame]}
 
     def below_ground(self, frame, cam_pos, heroes, geos, below):

@@ -61,6 +61,7 @@ FONT_NOTE_PROP = "bsa_font_fallback"
 FONT_USED_PROP = "bsa_font_used"
 END_NOTE_PROP = "bsa_end_card_note"
 GLYPH_NOTE_PROP = "bsa_glyph_fallbacks"
+KIT_CARDS_PROP = "bsa_kit_cards"
 
 
 def text_strip_rect(strip) -> Rect:
@@ -100,6 +101,11 @@ def font_used(scene) -> str:
 def font_note(scene) -> str | None:
     """Why the edit used another font than the style named (a missing font or weight), or None."""
     return scene.get(FONT_NOTE_PROP) or None
+
+
+def kit_cards(scene) -> int:
+    """How many card images a brand kit placed in the edit (0 without a kit)."""
+    return int(scene.get(KIT_CARDS_PROP, 0))
 
 
 def glyph_fallbacks(scene) -> list[str]:
@@ -232,6 +238,26 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
             _follow(strip, points, span, cards, fixed, placed, (label_heroes or {}).get(shot.id), near)
 
 
+def _add_kit(short: Short, tl: Timeline, seq, k, sdir: Path | None, anchors: dict | None,
+             label_heroes: dict | None) -> tuple[int, list[str]]:  # fmt: skip
+    """The brand kit's cards as image strips where bsa.kitlayout puts them, drawn into `sdir`/cards (a temp folder
+    without a short folder). Returns (card images placed, notes: the card font's and the layout's)."""
+    import tempfile
+
+    from bsa import cards, kitlayout
+    from bsa.blender.cards import add_overlay
+
+    caches = font_caches(sdir)
+    font = cards.card_font(k, caches)
+    notes = [resolve(k.font, cache_dirs=caches)[2]] if k.font else []
+    ov = kitlayout.build(short, tl, k, font, anchors, label_heroes)
+    cache_dir = Path(sdir) / "cards" if sdir is not None else Path(tempfile.mkdtemp(prefix="bsa-cards-"))
+    before = {s.name for s in seq.strips_all}
+    add_overlay(seq, ov, cache_dir)
+    placed = sum(1 for s in seq.strips_all if s.type == "IMAGE" and s.name not in before)
+    return placed, [n for n in [*notes, *ov.notes] if n]
+
+
 def _add_end_card(tl: Timeline, texts: _Texts, settings: dict, heroes: dict | None = None, short=None) -> str | None:
     """The end card: the user's @handle (the only identity there ever is), with the end-card line smaller above it
     and an optional second line (the user's site, say) smaller below it, a clear gap between the boxes; without a
@@ -330,8 +356,10 @@ def build_edit(
     closing: dict | None = None,
 ):
     """Create the `Edit` scene: shot frames, captions, badges, labels, optional @handle end card, the closing card
-    and sound. `closing` ({"png", "f0", "n_frames"}, bsa.closing.plan) holds the closing card's PNG after the story,
-    from frame f0 (the frame after the timeline) for n_frames; the mix already covers them. `anchors`
+    and sound. With a brand kit (bsa.kit.kit_for: brand.style set) the captions, badges and labels are the kit's
+    cards (image strips, bsa.kitlayout); without one, today's text strips, unchanged. The end card is text in both.
+    `closing` ({"png", "f0", "n_frames"}, bsa.closing.plan) holds the closing card's PNG after the story, from frame
+    f0 (the frame after the timeline) for n_frames; the mix already covers them. `anchors`
     ({shot: {object: {"f0", "points"}}}, from source/anchors.json) places labels that are near an object; `hero_boxes`
     (the last shot's {"f0", "boxes", "scenery"} from anchors.json) keeps the end card off its heroes, then off its
     other meshes; `label_heroes` ({shot: {"f0", "boxes"}}) keeps near labels off the other heroes of their shot."""
@@ -353,8 +381,16 @@ def build_edit(
     if used:
         scene[FONT_USED_PROP] = used
     texts = _Texts(seq.strips, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
-    _add_overlays(short, tl, texts, settings, anchors, label_heroes)
-    note = _add_end_card(tl, texts, settings, hero_boxes, short)
+    from bsa import kit as kit_mod
+
+    k = kit_mod.kit_for(settings, short)
+    if k is None:  # no brand.style: exactly today's text captions, badges and labels
+        _add_overlays(short, tl, texts, settings, anchors, label_heroes)
+    else:
+        n, notes = _add_kit(short, tl, seq, k, sdir, anchors, label_heroes)
+        scene[KIT_CARDS_PROP] = n
+        texts.notes += notes
+    note = _add_end_card(tl, texts, settings, hero_boxes, short)  # today's text strips, with a kit too
     if note:
         scene[END_NOTE_PROP] = note
     if texts.notes:

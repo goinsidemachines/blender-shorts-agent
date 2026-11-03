@@ -728,10 +728,12 @@ def cmd_validate(args) -> dict:
 
     sdir = short_dir(args.short)
     short = load(sdir)
+    from bsa import kit
+
     rule_errors, rule_warnings = _rule_problems(short)
     errors = validate(short) + rule_errors
     post_errors, post_warnings = post.problems(short, settings.load_settings())
-    errors += post_errors
+    errors += post_errors + kit.errors(settings.load_settings(), short)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
     rows, source = [], None
@@ -748,8 +750,6 @@ def cmd_validate(args) -> dict:
         warnings += pace_warnings
         source = "takes" if from_takes else "reading pace"
     warnings += _font_and_sound_warnings(sdir, short)
-    from bsa import kit
-
     warnings += kit.problems(settings.load_settings(), short)
     out = {"ok": not errors, "errors": errors, "warnings": warnings, "pacing": rows, "pacing_from": source}
     if errors:

@@ -165,3 +165,19 @@ def test_logo_name_is_validated():
             kit.check("logo.name", bad)
     with pytest.raises(ValueError, match="brand.logo.name"):
         kit.check("logo", {"name": ""})
+
+
+def test_a_kit_short_with_more_labels_than_a_kit_draws_is_an_error():
+    """kitlayout draws at most MAX_LABELS labels a shot: CLI validate and the edit refuse more with a plain error
+    before anything is drawn (without a kit, today's text labels have no such limit)."""
+    from bsa.kitlayout import MAX_LABELS
+    from bsa.short import Shot
+
+    def short(n):
+        return Short("t", "T", 10.0, shots=[Shot("s1", "a", "p", "S", labels=[f"L{i}" for i in range(n)])])
+
+    errs = kit.errors({"brand": KIT}, short(MAX_LABELS + 1))
+    assert len(errs) == 1 and errs[0].startswith(f"shot s1 has {MAX_LABELS + 1} labels"), errs
+    assert f"a brand kit draws at most {MAX_LABELS} per shot" in errs[0]
+    assert kit.errors({"brand": KIT}, short(MAX_LABELS)) == []
+    assert kit.errors({}, short(MAX_LABELS + 1)) == [] and kit.errors({"brand": {"mode": "brand"}}, short(9)) == []

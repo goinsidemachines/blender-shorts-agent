@@ -33,6 +33,14 @@ def test_edit_in_blender(blender_run):
         "test_short_end_card_without_a_handle",
         "test_near_labels_keep_off_the_other_heroes",
         "test_end_card_keeps_off_other_meshes_after_heroes",
+        "test_legacy_brand_without_a_style_changes_nothing",
+        "test_kit_edit_places_card_images_and_no_caption_text",
+        "test_kit_caption_pixels_are_the_kit_box_colour",
+        "test_kit_progress_fill_grows",
+        "test_kit_near_label_has_a_pointer_to_its_anchor",
+        "test_kit_edit_without_its_logo_file_warns_and_draws_no_badge",
+        "test_kit_edit_leaves_every_engine_alone",
+        "test_caption_draw_false_draws_no_captions_in_either_path",
     ):
         assert f"PASS {name}" in result.stdout
 

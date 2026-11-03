@@ -1210,6 +1210,7 @@ def _fake_edit(monkeypatch, seen, probe=None, fail_encode=False):
     fake.font_used = lambda scene: seen.get("font_used", "Segoe UI")
     fake.end_card_note = lambda scene: seen.get("end_card_note")
     fake.glyph_fallbacks = lambda scene: seen.get("glyph_fallbacks", [])
+    fake.kit_cards = lambda scene: seen.get("kit_cards", 0)
     monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake)
 
 
@@ -1789,3 +1790,114 @@ def test_validate_shows_kit_problems_only_with_a_style(home, pendulum):
     assert not any("brand.outline_px" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
     path.write_text(json.dumps({**base, "brand": {"style": "toon", "outline_px": "thick"}}), "utf-8")
     assert any("brand.outline_px" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
+
+
+def _set_brand(home: Path, brand: dict) -> None:
+    """Put a brand kit in the settings as a hand edit would (a logo file need not exist)."""
+    path = home / "settings.json"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    path.write_text(json.dumps({**data, "brand": brand}), encoding="utf-8")
+
+
+def _many_labels(short: Path, n: int) -> None:
+    from bsa.kitlayout import MAX_LABELS
+
+    spec = json.loads((short / "source" / "short.json").read_text(encoding="utf-8"))
+    for shot in spec["shots"]:
+        shot["labels"] = [lb for lb in shot.get("labels", []) if isinstance(lb, str)][:MAX_LABELS]
+    spec["shots"][0]["labels"] = [f"Part {chr(65 + i)}" for i in range(n)]
+    (short / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+
+
+def test_validate_refuses_a_kit_short_with_more_labels_than_a_kit_draws(home, pendulum):
+    from bsa.kitlayout import MAX_LABELS
+    from tests.kitfix import KIT
+
+    _many_labels(pendulum, MAX_LABELS + 1)
+    out = ok(run(home, "validate", "pendulum"))  # no kit: today's text labels, no limit
+    assert not [e for e in out["errors"] if "labels" in e]
+    _set_brand(home, KIT)
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and f"a brand kit draws at most {MAX_LABELS} per shot" in proc.stderr, proc.stderr
+
+
+def test_kit_edit_reports_its_cards_and_a_missing_logo_once_and_refuses_too_many_labels(home, pendulum, monkeypatch,
+                                                                                         capsys):  # fmt: skip
+    import bsa_blender
+    from bsa.kitlayout import MAX_LABELS
+    from tests.kitfix import KIT
+
+    _many_labels(pendulum, MAX_LABELS)  # the most a kit draws, and no near labels (no anchors needed)
+    gone = home / "logo.png"
+    _set_brand(home, {**KIT, "logo": {"file": str(gone)}})
+    tl = _rendered(home, pendulum, "preview")
+    probe = {"width": 1080, "height": 1920, "fps": 30.0, "frames": tl["n_frames"], "has_audio": False}
+    note = f"your logo file {gone.resolve()} is missing, so no logo badge is drawn: set brand.logo.file again"
+    seen = {"kit_cards": 12, "glyph_fallbacks": [note]}  # the edit's layout notes the missing logo too
+    _fake_edit(monkeypatch, seen, probe=lambda mp4: probe)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["edit", "pendulum", "--preset", "preview"]) == 0, capsys.readouterr().err
+    out = json.loads(capsys.readouterr().out.split("BSA_RESULT ", 1)[1])
+    assert out["cards"] == 12 and out["warnings"].count(note) == 1, out.get("warnings")
+    _set_brand(home, {"mode": "brand"})  # no kit: no cards in the result
+    seen.update(kit_cards=0, glyph_fallbacks=[])
+    assert bsa_blender.main(["edit", "pendulum", "--preset", "preview"]) == 0, capsys.readouterr().err
+    assert "cards" not in json.loads(capsys.readouterr().out.split("BSA_RESULT ", 1)[1])
+    _set_brand(home, KIT)
+    _many_labels(pendulum, MAX_LABELS + 1)
+    tl = _rendered(home, pendulum, "preview")
+    seen.clear()
+    assert bsa_blender.main(["edit", "pendulum", "--preset", "preview"]) == 1
+    err = capsys.readouterr().err
+    assert f"a brand kit draws at most {MAX_LABELS} per shot" in err and "built" not in seen, err
+
+
+def test_anchors_record_each_near_objects_category_fresh_every_run(home, pendulum, monkeypatch):
+    """anchors.json gives every near label's object its "category:" tag (bake.category), read again on every run,
+    for reused entries too: retagging a part never needs a new projection to change its label's dot."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+    from bsa.short import near_labels
+
+    spec = json.loads((pendulum / "source" / "short.json").read_text(encoding="utf-8"))
+    spec["shots"][0]["labels"] = [{"text": "Bob", "near": "Bob"}]
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _rendered(home, pendulum, "preview")  # timeline.json and a current anchors.json (Bob's points reusable)
+    short = bsa_blender._load(pendulum)
+    tl, tl_hash = bsa_blender._timeline(pendulum, short)
+    bob = {"bsa_tags": "hero:s01,category:Flow"}
+
+    class Scene:
+        def __init__(self, name):
+            self.name, self.objects = name, {n: bob if n == "Bob" else {} for _, _, n in near_labels(short)}
+
+        def get(self, key, default=None):
+            return tl_hash if key == freshness.TIMELINE_PROP else default
+
+    projected = []
+    fake = types.ModuleType("bsa.blender.anchors")
+    fake.project = lambda scene, names, f0, f1: projected.append(names) or {n: {"f0": f0, "points": [[1, 2]]}
+                                                                            for n in names}  # fmt: skip
+    fake.hero_boxes = lambda scene, names, f0, f1: {"f0": f0, "boxes": {}}
+    fake.scenery_boxes = lambda scene, f0, f1, shot_id=None: {"f0": f0, "boxes": []}
+    fake.heroes = lambda scene, shot_id: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.anchors", fake)
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots})
+
+    def bob_entry():
+        bsa_blender._write_anchors(pendulum, short, tl, tl_hash, data, fps={})
+        return json.loads((pendulum / "source" / "anchors.json").read_text(encoding="utf-8"))["shots"]["s01"]["Bob"]
+
+    entry = bob_entry()
+    assert entry["category"] == "flow" and entry["points"] == [[500, 800]] * len(entry["points"]) and not projected
+    bob["bsa_tags"] = "hero:s01,category:grip"  # retagged: the reused entry reads it again
+    assert bob_entry()["category"] == "grip" and not projected
+    bob["bsa_tags"] = "hero:s01"
+    assert bob_entry()["category"] is None
+    (pendulum / "source" / "anchors.json").unlink()  # projected again: the category is there too
+    bob["bsa_tags"] = "category:spark"
+    entry = bob_entry()
+    assert ["Bob"] in projected and entry == {"f0": entry["f0"], "points": [[1, 2]], "category": "spark"}

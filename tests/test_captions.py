@@ -200,7 +200,7 @@ def _stubbed_edit(monkeypatch, sdir, tl_hash):
 
     fake = types.SimpleNamespace(build_edit=lambda *a, **k: object(), encode=encode, probe=lambda p: info,
                                  end_card_note=lambda s: None, glyph_fallbacks=lambda s: [],
-                                 font_used=lambda s: "f", font_note=lambda s: None)  # fmt: skip
+                                 font_used=lambda s: "f", font_note=lambda s: None, kit_cards=lambda s: 0)  # fmt: skip
     run = types.SimpleNamespace(progress=lambda *a, **k: None)
     args = types.SimpleNamespace(preset="final")
     short = bsa_blender._load(sdir)

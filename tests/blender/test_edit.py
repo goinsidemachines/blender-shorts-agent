@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 
@@ -512,3 +513,206 @@ def test_end_card_keeps_off_other_meshes_after_heroes():
     sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview", hero_boxes=hero_low)
     top3, bottom3 = _end_block(sc)
     assert abs((top3 + bottom3) / 2 - (s.y + s.h / 2)) < 1  # the middle: off the hero and the rails
+
+
+# --------------------------------------------------------------------------- the brand kit's cards
+
+
+def _kit():
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from kitfix import KIT
+
+    return KIT
+
+
+def _strip_facts(scene):
+    return sorted((s.name, s.type, s.channel, s.frame_final_start, s.frame_final_end,
+                   tuple(round(v, 6) for v in getattr(s, "location", ())), tuple(getattr(s, "color", ())),
+                   tuple(getattr(s, "box_color", ()))) for s in scene.sequence_editor.strips_all)  # fmt: skip
+
+
+def _images(scene, channel=None):
+    return [s for s in scene.sequence_editor.strips_all
+            if s.type == "IMAGE" and s.channel >= 3 and (channel is None or s.channel == channel)]  # fmt: skip
+
+
+def _curve(scene, strip, prop: str, index: int = 0):
+    """The fcurve keying `prop` ("transform.offset_x", "crop.max_x") of `strip`, or None."""
+    from bsa.blender.bake import _fcurves
+
+    owner, _, name = prop.rpartition(".")
+    path = (getattr(strip, owner) if owner else strip).path_from_id(name)
+    return next((fc for fc in _fcurves(scene.animation_data.action) if fc.data_path == path
+                 and fc.array_index == index), None)  # fmt: skip
+
+
+def _render_frame(scene, frame, keep: Path | None = None) -> np.ndarray:
+    """One frame of the edit as an (H, W, 3) float array, top row first: a one-frame animation render (a still render
+    or frame_set on a scene that is not the context's would not evaluate its keyframes). `keep`: copy the PNG there."""
+    import shutil
+
+    r = scene.render
+    saved = (getattr(r.image_settings, "media_type", None), r.image_settings.file_format, r.filepath,
+             scene.frame_start, scene.frame_end)  # fmt: skip
+    out_dir = Path(tempfile.mkdtemp())
+    try:
+        if saved[0] is not None:
+            r.image_settings.media_type = "IMAGE"
+        r.image_settings.file_format = "PNG"
+        r.filepath = str(out_dir / "f_")
+        scene.frame_start = scene.frame_end = frame
+        bpy.ops.render.render(animation=True, scene=scene.name)
+    finally:
+        if saved[0] is not None:
+            r.image_settings.media_type = saved[0]
+        r.image_settings.file_format, r.filepath = saved[1], saved[2]
+        scene.frame_start, scene.frame_end = saved[3], saved[4]
+    png = next(out_dir.glob("f_*.png"))
+    if keep is not None:
+        keep.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(png, keep)
+    img = bpy.data.images.load(str(png))
+    a = np.array(img.pixels[:], dtype=np.float32).reshape(H, W, 4)[::-1, :, :3]
+    bpy.data.images.remove(img)
+    return a
+
+
+def test_legacy_brand_without_a_style_changes_nothing():
+    """Without brand.style the edit is exactly today's: every strip, its place and colours, even with a legacy
+    palette, outline and categories in the brand."""
+    short, tl, frames, wav, out = _fixture()
+    plain = _strip_facts(edit.build_edit(short, tl, frames, wav, out, {"handle": None}, preset="preview"))
+    legacy = {"handle": None, "brand": {"mode": "brand", "palette": {"spark": "#D9483B", "accent": "#7A4CE0"},
+                                        "outline_px": 4, "categories": {"flow": "#3B8ED9"}}}  # fmt: skip
+    assert _strip_facts(edit.build_edit(short, tl, frames, wav, out, legacy, preset="preview")) == plain
+    assert any(f[1] == "TEXT" and f[2] == edit.CH_CAPTION for f in plain)  # today's text captions
+    assert not [f for f in plain if f[1] == "IMAGE" and f[2] >= 3]  # and no card images
+
+
+def test_kit_edit_places_card_images_and_no_caption_text():
+    from bsa import kitlayout
+
+    short, tl, frames, wav, out = _fixture()
+    sc = edit.build_edit(short, tl, frames, wav, out, {"handle": "me", "brand": _kit()}, preset="preview")
+    assert not [s for s in _texts(sc) if s.channel == edit.CH_CAPTION]
+    assert not [s for s in _texts(sc) if s.channel < edit.CH_END]  # every overlay is a card image
+    assert sorted(s.text for s in _texts(sc)) == ["@me", "Follow for more"]  # the end card stays today's text
+    imgs = _images(sc)
+    assert {s.channel for s in imgs} >= {kitlayout.CH["caption"], kitlayout.CH["badge"], 3, 4, 5}
+    assert {s.channel for s in imgs} >= {kitlayout.CH["stacked"]}  # "Label A", stacked under the badge
+    caps = sorted((s.frame_final_start, s.frame_final_end - 1) for s in _images(sc, kitlayout.CH["caption"]))
+    assert caps == [(3, 12), (18, 28)]
+    assert edit.kit_cards(sc) == len(imgs)
+    assert edit.kit_cards(edit.build_edit(short, tl, frames, wav, out, {"handle": None}, preset="preview")) == 0
+
+
+def test_kit_caption_pixels_are_the_kit_box_colour():
+    from bsa import cards, kit, kitlayout
+
+    short, tl, frames, wav, out = _fixture(badge=None, labels=())
+    settings = {"handle": None, "brand": _kit()}
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    k = kit.kit_for(settings, short)
+    ov = kitlayout.build(short, tl, k, cards.card_font(k))
+    cap = next(p for p in ov.cards if p.channel == kitlayout.CH["caption"] and p.f0 <= 5 <= p.f1)
+    keep = Path(os.environ["BSA_TEST_KEEP"]) / "kit-edit-frame5.png" if os.environ.get("BSA_TEST_KEEP") else None
+    a = _render_frame(sc, 5, keep)
+    x, y = round(cap.at.x + k.outline_px + 12), round(cap.at.y + cap.spec.box_h / 2)
+    got = [round(float(v) * 255) for v in a[y, x]]
+    assert all(abs(g - w) <= 2 for g, w in zip(got, (0x1B, 0x2A, 0x3A), strict=True)), (x, y, got)
+    assert np.abs(a[60, 540] - a[5, 5]).max() < 0.02  # off the cards: the shot's own frame
+
+
+def test_kit_progress_fill_grows():
+    from bsa import kitlayout
+
+    short, tl, frames, wav, out = _fixture()
+    sc = edit.build_edit(short, tl, frames, wav, out, {"handle": None, "brand": _kit()}, preset="preview")
+    fill = next(s for s in _images(sc, kitlayout.CH["progress"] + 1))
+    fc = _curve(sc, fill, "crop.max_x")
+    assert fc is not None
+    assert fc.evaluate(1) > fc.evaluate(15) > fc.evaluate(30) == 0  # less cropped away: the fill shown grows
+
+
+def test_kit_near_label_has_a_pointer_to_its_anchor():
+    import bsa.blender.cards
+    from bsa import cards, kit, kitlayout
+    from bsa.blender.pixels import read_png
+
+    short, tl, frames, wav, out = _fixture(badge=None, labels=())
+    short.shots[0].labels = [{"text": "Ball", "near": "Ball"}]
+    anchors = {"a": {"Ball": {"f0": 1, "points": [[300 + 20 * i, 1000] for i in range(15)], "category": "spark"}}}
+    settings = {"handle": None, "brand": _kit()}
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview", anchors=anchors)
+    card = next(s for s in _images(sc, kitlayout.CH["near"]))
+    line = next(s for s in _images(sc, kitlayout.CH["pointer"]))
+    dot = next(s for s in _images(sc, kitlayout.CH["dot"]))
+    for s in (card, line, dot):
+        assert (s.frame_final_start, s.frame_final_end - 1) == (1, 15), s.name
+    k = kit.kit_for(settings, short)
+    ptr = kitlayout.build(short, tl, k, cards.card_font(k), anchors).pointers[0]
+    for f in (1, 8, 15):
+        start, anchor = ptr.ends[f]
+        r = Rect(anchor[0] - ptr.dot.w / 2, anchor[1] - ptr.dot.h / 2, ptr.dot.w, ptr.dot.h)
+        want = bsa.blender.cards._at(ptr.dot, r, (W, H))
+        for prop in ("offset_x", "offset_y"):
+            assert abs(_curve(sc, dot, f"transform.{prop}").evaluate(f) - want[prop]) < 0.5, (f, prop)
+        t = kitlayout.pointer_transform(start, anchor, ptr.spec.w, ptr.spec.h)
+        assert abs(_curve(sc, line, "transform.scale_x").evaluate(f) - t["scale_x"]) < 1e-3, f
+        assert abs(_curve(sc, line, "transform.rotation").evaluate(f) - t["rotation"]) < 1e-3, f
+    dx = _curve(sc, dot, "transform.offset_x")
+    assert abs(dx.evaluate(15) - dx.evaluate(1) - 14 * 20) < 0.5  # the dot follows the anchor
+    px = read_png(Path(bpy.path.abspath(card.directory)) / card.elements[0].filename)
+    spark = np.abs(px[..., :3].astype(int) - np.array([0xD9, 0x48, 0x3B])).max(axis=2) <= 2
+    assert spark.sum() > 50  # the part label's dot in its object's category colour (anchors.json "category")
+
+
+def test_kit_edit_without_its_logo_file_warns_and_draws_no_badge():
+    """Review Focus 1: the logo file moved or deleted after setup: no badge, one note, nothing fails."""
+    from bsa import kitlayout
+
+    short, tl, frames, wav, out = _fixture()
+    gone = Path(tempfile.mkdtemp()) / "logo.png"
+    settings = {"handle": None, "brand": {**_kit(), "logo": {"file": str(gone), "name": "Example"}}}
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    assert not _images(sc, kitlayout.CH["logo"])
+    notes = [n for n in edit.glyph_fallbacks(sc) if "logo" in n]
+    assert len(notes) == 1 and "is missing, so no logo badge is drawn" in notes[0], notes
+    img = bpy.data.images.new("logo", 64, 64, alpha=True)  # put a logo there: the badge shows on every frame
+    img.pixels.foreach_set(np.tile([1.0, 0.0, 0.0, 1.0], 64 * 64).astype(np.float32))
+    img.filepath_raw, img.file_format = str(gone), "PNG"
+    img.save()
+    bpy.data.images.remove(img)
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    logos = _images(sc, kitlayout.CH["logo"])
+    assert [(s.frame_final_start, s.frame_final_end - 1) for s in logos] == [(1, tl.n_frames)]
+    assert not [n for n in edit.glyph_fallbacks(sc) if "logo" in n]
+
+
+def test_kit_edit_leaves_every_engine_alone():
+    short, tl, frames, wav, out = _fixture()
+    mine = bpy.data.scenes.new("Mine")
+    mine.render.engine = "CYCLES"
+    fresh = bpy.data.scenes.new("Fresh").render.engine  # what a new scene gets when nothing sets it
+    before = {s.name: s.render.engine for s in bpy.data.scenes}
+    sc = edit.build_edit(short, tl, frames, wav, out, {"handle": "me", "brand": _kit()}, preset="preview")
+    assert {s.name: s.render.engine for s in bpy.data.scenes if s.name != "Edit"} == before
+    assert sc.render.engine == fresh
+    assert not [s for s in bpy.data.scenes if s.name.startswith("Card")]  # the card scenes are gone
+
+
+def test_caption_draw_false_draws_no_captions_in_either_path():
+    from bsa import kitlayout
+
+    short, tl, frames, wav, out = _fixture()
+    short.style["caption"] = {"draw": False}
+    sc = edit.build_edit(short, tl, frames, wav, out, {"handle": None}, preset="preview")
+    assert not _captions(sc) and [s for s in _texts(sc) if s.text == "MOTION EXAGGERATED"]
+    sc = edit.build_edit(short, tl, frames, wav, out, {"handle": None, "brand": _kit()}, preset="preview")
+    assert not _images(sc, kitlayout.CH["caption"]) and _images(sc, kitlayout.CH["badge"])
+    short.style.pop("caption")
+    off = {**_kit(), "caption": {**_kit()["caption"], "draw": False}}  # the kit's own switch
+    sc = edit.build_edit(short, tl, frames, wav, out, {"handle": None, "brand": off}, preset="preview")
+    assert not _images(sc, kitlayout.CH["caption"]) and not _captions(sc)

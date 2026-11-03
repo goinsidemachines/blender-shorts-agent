@@ -32,6 +32,8 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   the frame on purpose (water falling out of shot down a pipe): an overlay that `frame_edge` does not warn about;
   `"surface"` for an open water surface that
   things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
+  `"category:<name>"` (a category of the brand kit, `brand.categories`) on a part a label points at: with a
+  brand kit the label's dot takes that category's colour;
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,
   so a rebuild in the same Blender keeps exact object names; see `mcp-mode.md`). It and `setup_scene` also remove

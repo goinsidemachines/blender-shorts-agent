@@ -64,3 +64,18 @@ def test_other_tags_still_refuse_commas():
         bake.tag(Obj(), "contact:a,b")
     with pytest.raises(ValueError):
         bake.tag(Obj(), "hero:")
+
+
+def test_category_tag_parses_after_a_hero_list():
+    """category:<name> starts a new tag after a hero:<shot ids> list; bake.category reads its name, lower case."""
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "category:Spark")
+    assert bake.tags(o) == ["hero:s01,s02", "category:Spark"]
+    assert bake.category(o) == "spark" and bake.is_hero(o, "s02") and not bake.is_hero(o, "category:Spark")
+    assert bake.category(Obj()) is None
+    o2 = Obj()
+    o2["bsa_tags"] = "hero:s01,s02,category:spark"
+    assert bake.tags(o2) == ["hero:s01,s02", "category:spark"] and bake.category(o2) == "spark"
+    o3 = Obj()
+    o3["bsa_tags"] = "category: , grounded"  # an empty name is no category
+    assert bake.category(o3) is None

@@ -85,13 +85,24 @@ def _fcurves(action):
 # Every tag the checks read (07-checks.md documents each): "hero" / "hero:<shot ids>", "grounded",
 # "contact:<other>[:<max depth m>][:moves]" (moves: the pair moves against each other by design), "overlay" (a glow,
 # a guide line: not physical geometry), "overlay:may-exit" (an overlay that may leave the frame on purpose, such as
-# a falling stream: no frame_edge warning) and "surface" (an open fluid surface, such as water: things may cross it).
+# a falling stream: no frame_edge warning), "surface" (an open fluid surface, such as water: things may cross it) and
+# "category:<name>" (the part's category in a brand kit: its label's dot takes that category's colour).
 MAY_EXIT = "overlay:may-exit"
-TAGS = ("hero", "grounded", "contact:", "overlay", MAY_EXIT, "surface")
+TAGS = ("hero", "grounded", "contact:", "overlay", MAY_EXIT, "surface", "category:")
 
 
 def _is_tag_start(word: str) -> bool:
-    return word in ("hero", "grounded", "overlay", MAY_EXIT, "surface") or word.startswith(("contact:", "hero:"))
+    return word in ("hero", "grounded", "overlay", MAY_EXIT, "surface") or word.startswith(
+        ("contact:", "hero:", "category:"))
+
+
+def category(obj) -> str | None:
+    """The name after the object's "category:" tag, lower case (its brand kit category), or None."""
+    for t in tags(obj):
+        if t.startswith("category:"):
+            name = t[len("category:") :].strip().lower()
+            return name or None
+    return None
 
 
 def is_overlay(obj) -> bool:

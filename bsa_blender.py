@@ -327,10 +327,12 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
     """Project every near label's object for its shot and write source/anchors.json, stamped with each shot's
     fingerprint and the timing; shots unchanged since the last anchors keep theirs. Also the screen boxes of the
     heroes of every shot with a near label (labels keep off them) and of the last shot, with the last shot's other
-    meshes during the end card ("scenery": the end card keeps off them after the heroes). Returns its path, how many
-    labels it places and which shots it projected again."""
+    meshes during the end card ("scenery": the end card keeps off them after the heroes). Each near label's object
+    records its "category" tag (bsa.blender.bake.category, or None), read again on every run. Returns its path, how
+    many labels it places and which shots it projected again."""
     from bsa.blender.anchors import hero_boxes, project, scenery_boxes
     from bsa.blender.anchors import heroes as hero_names
+    from bsa.blender.bake import category
     from bsa.short import near_labels
     from bsa.timeline import end_card_start
 
@@ -344,16 +346,18 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
     for shot_id, _text, name in near_labels(short):
         if name in shots.get(shot_id, {}):
             continue
-        prior = reuse["shots"].get(shot_id) or {}
-        if name in prior:
-            shots.setdefault(shot_id, {})[name] = prior[name]
-            continue
         _, scene = _scene(data, short, shot_id, tl_hash)
-        projected.add(shot_id)
-        try:
-            shots.setdefault(shot_id, {}).update(project(scene, [name], spans[shot_id].f0, spans[shot_id].f1))
-        except ValueError as exc:
-            raise CliError(str(exc)) from exc
+        prior = reuse["shots"].get(shot_id) or {}
+        if isinstance(prior.get(name), dict):
+            entry = dict(prior[name])
+        else:
+            projected.add(shot_id)
+            try:
+                entry = project(scene, [name], spans[shot_id].f0, spans[shot_id].f1)[name]
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+        entry["category"] = category(scene.objects.get(name))  # read fresh every run: a retag needs no projection
+        shots.setdefault(shot_id, {})[name] = entry
     last = short.shots[-1]  # the end card shows over the last shot: it must stay off that shot's heroes
     heroes: dict[str, dict] = {}
     for shot_id in [*sorted(shots), last.id]:  # near labels keep off the other heroes of their shot
@@ -1003,8 +1007,11 @@ def _drop_outgoing(sdir: Path, out_mp4: Path, preset: str, side) -> None:
 
 
 def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
-    from bsa import engine_runs
+    from bsa import engine_runs, kit
 
+    kit_errors = kit.errors(settings.load_settings(), short)  # before anything is touched: the kit can't lay it out
+    if kit_errors:
+        raise CliError("; ".join(kit_errors))
     side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4
     out_mp4 = _mp4(sdir, short, args.preset, side)
     tl, tl_hash = _timeline(sdir, short)
@@ -1057,7 +1064,11 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     if edit.end_card_note(scene):
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
+    warnings += [p for p in kit.problems(settings.load_settings(), short) if "logo" in p]  # a logo file gone
+    warnings = list(dict.fromkeys(warnings))  # the edit's layout notes a missing logo too: say it once
     out = {"mp4": str(path), "timeline_hash": tl_hash, **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    if edit.kit_cards(scene):
+        out["cards"] = edit.kit_cards(scene)  # the brand kit's card images placed
     if side.tag:
         out.update(engine=side.engine, tag=side.tag)
     if end:

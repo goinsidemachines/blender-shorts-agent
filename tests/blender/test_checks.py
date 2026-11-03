@@ -1,4 +1,5 @@
 import math
+import os
 import tempfile
 from itertools import pairwise
 from pathlib import Path
@@ -11,6 +12,9 @@ from bsa.blender import bake, checks, look
 from bsa.timeline import Span, Timeline
 
 N = 30
+
+# Settings of their own (none): the kit a user set up never changes what these tests find
+os.environ["BSA_HOME"] = tempfile.mkdtemp()
 
 
 def _material(obj, name="mat"):
@@ -1200,3 +1204,48 @@ def test_a_subject_in_one_half_leaves_the_other_empty():
     bake.tag(_cube("Hero", (0, 0, _z_at_row(sc, 450)), size=1.6), "hero")  # rows about 300-600: the top half only
     found = _seen(sc, "framing", _seen_short(sc))
     assert len(found) == 1 and "bottom half" in found[0].message, found
+
+
+def _with_kit(brand):
+    """Point BSA_HOME at a folder whose settings hold `brand` (None: no settings): run_checks reads the kit there."""
+    import json
+    import os
+
+    home = Path(tempfile.mkdtemp())
+    if brand is not None:
+        (home / "settings.json").write_text(json.dumps({"brand": brand}), encoding="utf-8")
+    os.environ["BSA_HOME"] = str(home)
+
+
+def test_the_covered_check_measures_the_kits_cards():
+    """With a brand kit the edit draws the kit's cards, so the covered check measures them: a title card (drawn only
+    with a kit) over the hero is reported; without a kit the same short has nothing there."""
+    import sys
+
+    from bsa import cards, kit, kitlayout
+    from bsa.layout import safe_rect
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from kitfix import KIT
+
+    sc = _scene()
+    sc.camera.location = (0, -6, 1.5)
+    short = _seen_short(sc, title_card={"lines": ["How a lever", "lifts more"], "highlight": 1})
+    k = kit.kit_from(KIT)
+    band = kitlayout.top_band(short, short.shots[0], k, cards.card_font(k))
+    hero = _cube("Hero", (0, 0, _z_at_row(sc, band.bottom - 120)), size=0.6)  # under the title card's lower half
+    bake.tag(hero, "hero")
+    assert band.bottom - 120 > safe_rect().y + 300
+    try:
+        _with_kit(None)
+        assert not _seen(sc, "covered", short)  # no kit: no title card
+        _with_kit(KIT)
+        found = _seen(sc, "covered", short)
+        assert found and "How a lever" in found[0].message and found[0].obj == "Hero", found
+        hero.location.z = _z_at_row(sc, 1000)  # below the cards: clear
+        assert not _seen(sc, "covered", short)
+        many = _seen_short(sc, labels=[f"L{i}" for i in range(kitlayout.MAX_LABELS + 1)])
+        found = _seen(sc, "covered", many)  # more labels than a kit draws: one plain error, no crash
+        assert len(found) == 1 and found[0].severity == "error" and "at most" in found[0].message, found
+    finally:
+        _with_kit(None)

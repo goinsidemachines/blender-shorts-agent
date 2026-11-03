@@ -320,6 +320,22 @@ def problems(settings: dict, short=None) -> list[str]:
     return out + [note] if note else out
 
 
+def errors(settings: dict, short=None) -> list[str]:
+    """What stops the edit drawing the short's kit cards (CLI validate and the edit refuse it): a shot with more
+    labels than a kit draws (bsa.kitlayout.MAX_LABELS). None without a kit: today's text labels have no such limit."""
+    if short is None or kit_for(settings, short) is None:
+        return []
+    from bsa.kitlayout import MAX_LABELS
+
+    out = []
+    for s in getattr(short, "shots", None) or []:
+        n = len(getattr(s, "labels", None) or [])
+        if n > MAX_LABELS:
+            out.append(f"shot {s.id} has {n} labels: a brand kit draws at most {MAX_LABELS} per shot: move some to "
+                       "another shot or say them in the narration")  # fmt: skip
+    return out
+
+
 def logo_missing(logo: dict | None) -> str | None:
     """The note for a kit logo whose file is gone (moved or deleted after setup), else None."""
     if logo and not Path(logo["file"]).is_file():
