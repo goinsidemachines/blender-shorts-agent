@@ -206,7 +206,15 @@
           var f = state.frame || 1;
           var s = shotAt(f);
           ctx.noteAt("frame", noteId(f), "Note at frame " + f + (s ? " (shot " + s.id + ")" : ""), "", s ? s.id : null);
-        } }, "Note at this moment")));
+        } }, "Note at this moment"),
+      // the final video only: a frame note asking Claude to make a thumbnail candidate from this moment
+      key === "final" ? el("button", { type: "button", class: "note-btn", "data-act": "1", "data-k": "tl:" + key + ":thumb",
+        onclick: function () {
+          var f = state.frame || 1;
+          var s = shotAt(f);
+          ctx.noteAt("frame", noteId(f), "Thumbnail from frame " + f + (s ? " (shot " + s.id + ")" : ""),
+            "Use this frame for the thumbnail", s ? s.id : null);
+        } }, "Use this frame for the thumbnail") : null));
     var unplaced = tl.unplaced || [];
     if (unplaced.length) {
       kids.push(el("section", { class: "tl-unplaced", "aria-labelledby": uid + "-unplaced" },
@@ -354,7 +362,7 @@
 
   // Before and after: Story, Storyboard and Final against a version the user saw (ctx.history, newest first).
   var compareOpen = {}; // stage id -> the version whose view is open, kept across live updates while it is offered
-  var boardSide = "now"; // below 768 px each storyboard shot shows one still: "before" or "now"
+  var boardSide = "now"; // below 768 px each storyboard shot (and the post's thumbnail) shows one: "before" or "now"
   var cmpVideos = null; // {key, now, before}: the final's two compare videos, kept across live updates
   var showUnchanged = false; // the Story compare's unchanged lines, collapsed until the user opens them
 
@@ -497,11 +505,11 @@
     ];
   }
 
-  function stillFig(ctx, side, label, ref, alt) {
+  function stillFig(ctx, side, label, ref, alt, none, tag) {
     var el = ctx.el;
-    var url = ref ? ctx.fileUrl(ref) : "";
+    var url = ref ? ctx.fileUrl(ref, tag) : "";
     var pic = url ? el("img", { class: "still", src: url, alt: alt, loading: "lazy" })
-      : el("div", { class: "ph" }, side === "before" ? "No picture then" : "No picture now");
+      : el("div", { class: "ph" }, none || (side === "before" ? "No picture then" : "No picture now"));
     return el("figure", { class: "cmp-fig cmp-" + side }, pic, el("figcaption", null, label));
   }
 
@@ -558,6 +566,44 @@
     ];
   }
 
+  // Post: the chosen thumbnail then and now (one at a time below 768 px, as on Storyboard), and each field's words.
+  function postView(ctx, h, stageId) {
+    var el = ctx.el;
+    var cmp = h.compare || {};
+    var th = cmp.thumbnail || {};
+    var pair = el("div", { class: "cmp-thumbs cmp-show-" + boardSide },
+      el("div", { class: "cmp-pair" },
+        stillFig(ctx, "before", "Before (version " + h.version + ")", th.before,
+          "Thumbnail before (version " + h.version + ")", "No thumbnail chosen then"),
+        stillFig(ctx, "now", "Now", th.after, "Thumbnail now", "No thumbnail chosen now", ctx.version)));
+    var sides = {};
+    function pick(side) {
+      boardSide = side;
+      pair.className = "cmp-thumbs cmp-show-" + side;
+      Object.keys(sides).forEach(function (k) { sides[k].setAttribute("aria-pressed", String(k === side)); });
+    }
+    [["before", "Show before"], ["now", "Show now"]].forEach(function (p) {
+      sides[p[0]] = el("button", { type: "button", class: "btn small", "aria-pressed": String(boardSide === p[0]),
+        "data-k": "compare:" + stageId + ":side:" + p[0], onclick: function () { pick(p[0]); } }, p[1]);
+    });
+    var fields = (cmp.fields || []).map(function (f) {
+      var ops = f.diff || [];
+      var change = lineChange(ops);
+      return el("li", { class: "cmp-line" + (change ? " changed" : ""), "data-field": String(f.key) },
+        el("p", { class: "cmp-line-head" }, el("strong", null, String(f.key)),
+          change ? el("span", { class: "tag" }, change === "Changed" ? change : change.replace("line", "field")) : null),
+        el("p", null, ops.length ? diffWords(el, ops) : el("span", { class: "muted" }, "(empty)")));
+    });
+    return [
+      el("h4", null, "Thumbnail"),
+      el("div", { class: "cmp-side", role: "group", "aria-label": "Which thumbnail to show" }, sides.before, sides.now),
+      pair,
+      el("h4", null, "Fields"),
+      el("p", { class: "muted" }, "Struck-through words were in version " + h.version + " and underlined words are new."),
+      el("ul", { class: "cmp-lines" }, fields),
+    ];
+  }
+
   review.compare = function (ctx, stageId, content) {
     var el = ctx.el;
     var hist = (ctx.history || []).filter(function (h) { return h && typeof h.version === "number" && h.compare; });
@@ -583,7 +629,8 @@
     if (open) {
       var kids = stageId === "story" ? storyView(ctx, open)
         : stageId === "storyboard" ? storyboardView(ctx, open, stageId)
-          : finalView(ctx, open, content || {});
+          : stageId === "post" ? postView(ctx, open, stageId)
+            : finalView(ctx, open, content || {});
       view = el("div", { class: "cmp-view", id: viewId, role: "region",
         "aria-label": "Version " + open.version + " against now" }, kids);
     }

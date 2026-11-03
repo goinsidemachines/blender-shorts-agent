@@ -517,6 +517,71 @@ def put_candidates(sdir, rows: list[dict], only: int | None = None) -> dict:
     return store.update_json(path, _empty(), change, expect=dict)
 
 
+def _dumps(data, crlf: bool) -> bytes:
+    """JSON as the store and save_short write it (indent 2, not ASCII-escaped), with the file's own line ends."""
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return (text.replace("\n", "\r\n") if crlf else text).encode("utf-8")
+
+
+def _read_short_json(path: Path) -> tuple[dict, bool]:
+    """source/short.json as a raw dict and whether its lines end in CRLF; ValueError when it can't be read."""
+    from bsa.review import store
+
+    try:
+        raw = store.read_bytes(path)
+        data = json.loads(raw.decode("utf-8"))
+    except FileNotFoundError:
+        raise ValueError("source/short.json is missing") from None
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        raise ValueError(f"source/short.json can't be read: {e}") from None
+    if not isinstance(data, dict):
+        raise ValueError("source/short.json can't be read: it is not an object")  # noqa: TRY004 - a refusal
+    return data, b"\r\n" in raw
+
+
+def choose(sdir, n: int, by: str, now: float | None = None) -> dict:
+    """Make candidate `n` the short's thumbnail: copy both its sizes to out/ (postpack.OUT_FILES), record
+    review/thumbs.json `chosen` {"n", "by", "at"} and short.json `post.thumbnail.chosen` (that one key, nothing else).
+    All of it under the review/thumbs.json lock, so two choices at once never leave out/ and the records naming
+    different candidates. ValueError for a candidate that isn't there, a missing file or an unreadable short.json."""
+    import time
+
+    from bsa import jobstate, postpack
+    from bsa.review import store
+
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError("The thumbnail choice must be a whole number")  # noqa: TRY004 - a refusal
+    if by not in ("page", "chat"):
+        raise ValueError(f"unknown author {by!r}; expected page or chat")
+    sdir = Path(sdir)
+    path = sdir / THUMBS_JSON
+    short_path = sdir / "source" / "short.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with store.locked(path):
+        data = {**_empty(), **store.read_json(path, _empty(), expect=dict)}
+        row = next((c for c in data["candidates"] if isinstance(c, dict) and c.get("n") == n), None)
+        if row is None:
+            raise ValueError(f"There is no thumbnail candidate {n}")
+        files = files_for(n)
+        for rel in files.values():
+            if not (sdir / rel).is_file():
+                raise ValueError(f"Thumbnail candidate {n} has no file {rel}: make it again (BLENDER thumbs SHORT "
+                                 f"--only {n})")  # fmt: skip
+        _read_short_json(short_path)  # refused before anything is copied
+        (sdir / "out").mkdir(parents=True, exist_ok=True)
+        for size, rel in postpack.OUT_FILES.items():
+            jobstate.write_atomic(sdir / rel, store.read_bytes(sdir / files[size]))
+        data["chosen"] = {"n": n, "by": by, "at": time.time() if now is None else now}
+        jobstate.write_atomic(path, json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
+        with store.locked(short_path):
+            short, crlf = _read_short_json(short_path)
+            post = short.get("post") if isinstance(short.get("post"), dict) else {}
+            th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
+            short["post"] = {**post, "thumbnail": {**th, "chosen": n}}
+            jobstate.write_atomic(short_path, _dumps(short, crlf))
+    return {"chosen": n, "files": list(postpack.OUT_FILES.values())}
+
+
 def with_font(style: ThumbStyle, text: ThumbText, cache_dirs: list[Path] | None = None, dirs: list[Path] | None = None,
               system: str | None = None) -> tuple[ThumbStyle, list[str]]:  # fmt: skip
     """The style with the font file the thumbnail's text is drawn in and that font's line metrics, so the layout

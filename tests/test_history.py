@@ -39,7 +39,7 @@ def stand_in_mp4(sdir, data: bytes = b"video-1" * 300) -> None:
 
 
 def test_constants():
-    assert history.STAGES == ("story", "storyboard", "final") and history.KEEP == 3 and history.MP4_KEEP == 3
+    assert history.STAGES == ("story", "storyboard", "final", "post") and history.KEEP == 3 and history.MP4_KEEP == 3
 
 
 def test_only_shown_versions_are_offered(tmp_path):
@@ -210,6 +210,37 @@ def test_final_records_findings_and_the_video_digest(tmp_path):
     assert entry["mp4_digest"] == versions.file_digest(sdir, "out/pendulum.mp4")
     final = json.loads((history.root(sdir, "final") / "v1" / "final.json").read_text("utf-8"))
     assert final["findings"] == stage(snap, "final")["content"]["findings"] and "size" in final
+
+
+def test_post_compare_shows_the_earlier_pick(tmp_path):
+    from bsa import thumbs
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    pagefix.write_thumbs(sdir, 2)
+    snap = show(sdir)  # no thumbnail chosen yet
+    v0 = stage(snap, "post")["version"]
+    assert stage(snap, "post")["history"] == []
+    assert json.loads((history.root(sdir, "post") / f"v{v0}" / "post.json").read_text("utf-8"))[0] == {
+        "key": "title", "text": "Why a pendulum keeps perfect time"}
+    thumbs.choose(sdir, 1, "page")
+    v1 = stage(show(sdir), "post")["version"]
+    assert (history.root(sdir, "post") / f"v{v1}" / "thumbnail.png").read_bytes() == (
+        sdir / "review/thumbs/1-1080x1920.png").read_bytes()
+    thumbs.choose(sdir, 2, "page")
+    p = sdir / "source" / "short.json"
+    data = json.loads(p.read_text("utf-8"))
+    data["post"]["title"] = "Why a pendulum keeps time"
+    p.write_text(json.dumps(data, indent=2), "utf-8")
+    snap = show(sdir)
+    hist = stage(snap, "post")["history"]
+    assert [h["version"] for h in hist] == [v1, v0]
+    cmp = hist[0]["compare"]
+    assert cmp["thumbnail"]["before"] == {"file": f"review/history/post/v{v1}/thumbnail.png"}
+    assert cmp["thumbnail"]["after"] == {"file": "out/thumbnail-1080x1920.png"}
+    assert (sdir / cmp["thumbnail"]["before"]["file"]).read_bytes() != (sdir / "out/thumbnail-1080x1920.png").read_bytes()
+    title = next(f for f in cmp["fields"] if f["key"] == "title")
+    assert ["missing", "perfect"] in title["diff"]
+    assert hist[1]["compare"]["thumbnail"]["before"] is None
 
 
 def test_keep_outgoing_final_names_it_by_the_shown_digest(tmp_path):

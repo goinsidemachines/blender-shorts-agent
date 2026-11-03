@@ -127,6 +127,49 @@ def test_post_fields_closing_and_credits(tmp_path):
     assert c["closing"] is None and c["credits"] == []
 
 
+def test_post_candidates_and_no_thumbnail_yet(tmp_path):
+    from bsa import thumbs
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    assert c["thumbnail"] is None and c["candidates"] == []
+    pagefix.write_thumbs(sdir, 2)
+    c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    assert [x["n"] for x in c["candidates"]] == [1, 2] and c["thumbnail"] is None
+    two = c["candidates"][1]
+    assert two["hero"]["shot"] == "s02" and two["source"] == "final" and two["chosen"] is False
+    assert two["vertical"] == {"file": "review/thumbs/2-1080x1920.png"}
+    assert two["landscape"] == {"file": "review/thumbs/2-1280x720.png"}
+    assert two["warnings"] == [] and two["findings"] == []
+    thumbs.choose(sdir, 2, "page")
+    c = _stage(snapshot.build(sdir, settings={}), "post")["content"]
+    assert c["thumbnail"] == {"chosen": 2, "file": {"file": "out/thumbnail-1080x1920.png"}}
+    assert [x["chosen"] for x in c["candidates"]] == [False, True]
+
+
+def test_post_version_moves_with_the_chosen_thumbnail_not_with_candidates(tmp_path):
+    from bsa import thumbs
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    v = _stage(snapshot.build(sdir, settings={}), "post")["version"]
+    pagefix.write_thumbs(sdir, 2)
+    assert _stage(snapshot.build(sdir, settings={}), "post")["version"] == v
+    thumbs.choose(sdir, 1, "page")
+    assert _stage(snapshot.build(sdir, settings={}), "post")["version"] == v + 1
+    thumbs.choose(sdir, 2, "page")
+    assert _stage(snapshot.build(sdir, settings={}), "post")["version"] == v + 2
+
+
+def test_a_damaged_thumbs_store_is_a_problem_line_not_a_crash(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "post")
+    (sdir / "review" / "thumbs.json").write_text("{", encoding="utf-8")
+    row = _stage(snapshot.build(sdir, settings={}), "post")
+    assert row["content"]["fields"][0]["text"] == "Why a pendulum keeps perfect time"
+    assert row["content"]["candidates"] == []
+    assert "thumbs.json is damaged" in row["content"]["thumbs_problem"]
+    assert str(sdir) not in row["content"]["thumbs_problem"]
+
+
 # --------------------------------------------------------------------------- feedback
 
 

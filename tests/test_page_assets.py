@@ -17,15 +17,16 @@ def test_page_is_one_file_with_no_external_resources():
 
 def test_page_inlines_every_part():
     html = page.render("server")
-    for part in ("page.css", "qr.js", "review.js", "stages.js", "page.js"):
+    for part in ("page.css", "qr.js", "review.js", "post.js", "stages.js", "page.js"):
         body = (TEMPLATES / "page" / part).read_text("utf-8").strip()
         assert body[:200] in html, part
     assert "@@" not in html  # every placeholder was filled
     assert html.index("BSA.review") < html.index("BSA.stages.final")  # the timeline is there before the stages
+    assert html.index("BSA.post") < html.index("BSA.stages.post")  # the thumbnails are there before the stages
 
 
 def test_scripts_never_use_innerHTML():
-    for f in ("page.js", "stages.js", "qr.js", "review.js"):
+    for f in ("page.js", "stages.js", "qr.js", "review.js", "post.js"):
         text = (TEMPLATES / "page" / f).read_text("utf-8")
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
             assert bad not in text, (f, bad)

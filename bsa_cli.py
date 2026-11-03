@@ -390,10 +390,31 @@ def _page_stage(stage: str | None) -> str:
     return stage
 
 
+def _page_decide_thumbnail(args, sdir: Path) -> dict:
+    """page decide SHORT thumbnail --choice N [--by page|chat]: use candidate N (its files to out/, the choice
+    recorded in review/thumbs.json and short.json)."""
+    from bsa import thumbs
+
+    if len(args.words) != 3:
+        raise CliError("usage: page decide SHORT thumbnail --choice N [--by page|chat]")
+    by = args.by or "chat"
+    if by not in ("page", "chat"):
+        raise CliError("A thumbnail is chosen on the page or in the chat: --by page|chat")
+    digits = args.choice.strip() if isinstance(args.choice, str) else ""
+    if not (digits.isascii() and digits.isdigit()):
+        raise CliError(f"page decide SHORT thumbnail needs --choice N, the candidate's number (not {args.choice!r})")
+    try:
+        return {"thumbnail": thumbs.choose(sdir, int(digits), by)}
+    except (ValueError, store.StoreDamaged, TimeoutError) as exc:
+        raise CliError(str(exc)) from exc
+
+
 def _page_decide(args, sdir: Path) -> dict:
     from bsa import engine_runs
     from bsa.review import decisions, notes, snapshot, stages
 
+    if len(args.words) >= 3 and args.words[2] == "thumbnail":
+        return _page_decide_thumbnail(args, sdir)
     if len(args.words) != 4:
         raise CliError("usage: page decide SHORT STAGE approve|changes --by page|chat|settings")
     stage, decision = _page_stage(args.words[2]), args.words[3]
@@ -1257,7 +1278,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_state)
 
     sp = sub.add_parser("page", help="decide SHORT STAGE approve|changes --by page|chat|settings [--choice ENGINE] "
-                        "[--note TEXT] [--version N] | note SHORT ID done|declined --reply TEXT | notes SHORT [--stage STAGE] "
+                        "[--note TEXT] [--version N] | decide SHORT thumbnail --choice N [--by page|chat] "
+                        "| note SHORT ID done|declined --reply TEXT | notes SHORT [--stage STAGE] "
                         "| wait SHORT --stage STAGE [--timeout S] | SHORT [--open] [--stage STAGE] | serve")  # fmt: skip
     sp.add_argument("words", nargs="+")
     sp.add_argument("--open", action="store_true")

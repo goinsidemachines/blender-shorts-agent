@@ -422,6 +422,7 @@ a.chip { color: var(--fg); text-decoration: underline; }
 .cmp-shot h4 { margin: 0 0 6px; overflow-wrap: anywhere; }
 .cmp-pair, .cmp-videos { display: grid; grid-template-columns: repeat(2, minmax(0, 220px)); gap: 12px; }
 .cmp-videos { grid-template-columns: repeat(2, minmax(0, 300px)); }
+.cmp-thumbs { margin-bottom: 14px; }
 .cmp-fig { margin: 0; min-width: 0; }
 .cmp-fig img.still { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover; background: var(--chip);
   border-radius: 10px; border: var(--ink-border); }
@@ -431,4 +432,31 @@ a.chip { color: var(--fg); text-decoration: underline; }
   .cmp-pair { grid-template-columns: minmax(0, 220px); }
   .cmp-videos { grid-template-columns: minmax(0, 1fr); }
   .cmp-show-now .cmp-before, .cmp-show-before .cmp-now { display: none; }
+}
+
+/* Post: the thumbnail candidates, each in both sizes, then at feed size beside a neighbour's placeholder */
+.thumbs .thumb-cand { margin-top: 14px; padding: 12px 14px; border-radius: var(--r-sm); background: var(--card2);
+  border: var(--ink-border); min-width: 0; }
+.thumbs .thumb-cand.chosen { border-width: 3px; box-shadow: var(--pop); }
+.thumb-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.thumb-cand h5 { margin: 12px 0 6px; font-size: 14px; font-weight: 800; }
+.thumb-pair { display: flex; align-items: flex-start; gap: 12px; }
+.thumb-fig { margin: 0; min-width: 0; }
+.thumb-v { flex: 0 1 220px; }
+.thumb-l { flex: 0 1 400px; }
+.thumb-fig .thumb-img { display: block; width: 100%; height: auto; background: var(--chip); border-radius: 10px;
+  border: var(--ink-border); }
+.thumb-v .thumb-img { aspect-ratio: 9 / 16; }
+.thumb-l .thumb-img { aspect-ratio: 16 / 9; }
+.thumb-fig figcaption { margin-top: 4px; font-size: 13px; font-weight: 700; }
+.feed { display: flex; gap: 8px; align-items: flex-start; }
+.feed .feed-img, .feed .feed-ph { aspect-ratio: 9 / 16; border-radius: 8px; }
+.feed .feed-img { display: block; flex: none; width: 180px; height: auto; background: var(--chip); }
+.feed .feed-ph { flex: 0 1 180px; min-width: 24px; background: var(--chip); border: 1.5px dashed var(--muted); }
+.thumb-issues { margin-top: 10px; }
+.thumb-cand .btns .btn[aria-pressed="true"] { background: var(--soft); }
+@media (max-width: 767.98px) {
+  .thumb-pair { flex-direction: column; }
+  .thumb-v { flex: none; width: min(100%, 220px); }
+  .thumb-l { flex: none; width: 100%; }
 }

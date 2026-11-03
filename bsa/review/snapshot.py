@@ -436,8 +436,43 @@ def _final(ctx: Ctx) -> dict | None:
 POST_FIELDS = (("title", "Title"), ("description", "Description"), ("hashtags", "Hashtags"))
 
 
+def _texts(items) -> list[str]:
+    return [str(x) for x in items] if isinstance(items, list) else []
+
+
+def _candidates(sdir: Path, data: dict) -> list[dict]:
+    """The thumbnail candidates of review/thumbs.json as the page shows them, with which one is chosen."""
+    from bsa import thumbs
+
+    chosen = thumbs._chosen_n(data.get("chosen"))
+    out = []
+    for c in data.get("candidates") or []:
+        n = c.get("n") if isinstance(c, dict) else None
+        if not isinstance(n, int) or isinstance(n, bool):
+            continue
+        files = thumbs.files_for(n)
+        stamps = []
+        for rel in files.values():  # a remade candidate gets new image URLs: the browser never shows the old one
+            try:
+                st = (sdir / rel).stat()
+                stamps.append(f"{st.st_mtime_ns}.{st.st_size}")
+            except OSError:
+                stamps.append("missing")
+        out.append({"n": n, "hero": c.get("hero") if isinstance(c.get("hero"), dict) else None,
+                    "source": c.get("source"), "vertical": {"file": files["1080x1920"]},
+                    "landscape": {"file": files["1280x720"]}, "warnings": _texts(c.get("warnings")),
+                    "findings": [f for f in c.get("findings") or [] if isinstance(f, dict)],
+                    "chosen": n == chosen, "tag": "-".join(stamps)})  # fmt: skip
+    return out
+
+
 def _post(ctx: Ctx) -> dict | None:
-    """The post text to copy (a note on any field), the closing card and the asset credits."""
+    """The post text to copy (a note on any field), the chosen thumbnail and the candidates to choose from, the
+    closing card and the asset credits. The thumbnail is versioned only once short.json records a choice and its
+    file is in out/; the candidates are not (see _UNVERSIONED): making them is not something to answer. A damaged
+    review/thumbs.json is a line (`thumbs_problem`), not a broken stage."""
+    from bsa import postpack, thumbs
+
     short = _short(ctx)
     post = short.post if isinstance(short.post, dict) else {}
     fields = []
@@ -445,7 +480,19 @@ def _post(ctx: Ctx) -> dict | None:
         value = post.get(key)
         text = " ".join(str(v) for v in value) if isinstance(value, list) else str(value or "")
         fields.append({"key": key, "label": label, "text": text})
-    return {"fields": fields, "closing": _closing_card(ctx, short), "credits": _asset_rows(short.assets)}
+    th = post.get("thumbnail") if isinstance(post.get("thumbnail"), dict) else {}
+    chosen = thumbs._chosen_n(th.get("chosen"))
+    out_file = postpack.OUT_FILES["1080x1920"]
+    thumbnail = None
+    if chosen is not None and (ctx.sdir / out_file).is_file():
+        thumbnail = {"chosen": chosen, "file": {"file": out_file}}
+    content = {"fields": fields, "thumbnail": thumbnail, "candidates": [], "closing": _closing_card(ctx, short),
+               "credits": _asset_rows(short.assets)}  # fmt: skip
+    try:
+        content["candidates"] = _candidates(ctx.sdir, thumbs.load(ctx.sdir))
+    except store.StoreDamaged as e:
+        content["thumbs_problem"] = _plain(ctx.sdir, e)
+    return content
 
 
 BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
@@ -463,7 +510,8 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
 _UNVERSIONED = {"engine": ("runs",), "narration": ("voice",),
-                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions")}
+                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
+                "post": ("candidates", "thumbs_problem")}
 
 
 def stage_fingerprint(sdir: Path, stage: str, content: dict) -> str:

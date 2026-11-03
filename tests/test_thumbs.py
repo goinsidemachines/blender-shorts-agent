@@ -679,3 +679,99 @@ def test_with_font_resolves_the_file_and_its_metrics(tmp_path):
     assert Path(style.font) == other and style.line_h == pytest.approx(1.2) and len(notes) == 1
     assert "DejaVu Sans" in notes[0]
     assert thumbs.with_font(STYLE, TEXT) == (STYLE, [])  # no style font: Blender's own, its measured metrics
+
+
+# --------------------------------------------------------------------------- choosing one
+
+
+def _short_json(sdir) -> Path:
+    return sdir / "source" / "short.json"
+
+
+def test_choose_copies_both_sizes_and_records_it(tmp_path):
+    import pagefix
+
+    from bsa import postpack
+    from bsa.short import load_short
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    pagefix.write_thumbs(sdir, 2)
+    before = json.loads(_short_json(sdir).read_text(encoding="utf-8"))
+    out = thumbs.choose(sdir, 2, "page", now=1234.5)
+    assert out == {"chosen": 2, "files": list(postpack.OUT_FILES.values())}
+    for size, rel in postpack.OUT_FILES.items():
+        assert (sdir / rel).read_bytes() == (sdir / f"review/thumbs/2-{size}.png").read_bytes()
+    assert thumbs.load(sdir)["chosen"] == {"n": 2, "by": "page", "at": 1234.5}
+    assert load_short(_short_json(sdir)).post["thumbnail"] == {"chosen": 2}
+    after = json.loads(_short_json(sdir).read_text(encoding="utf-8"))
+    assert {k: v for k, v in after.items() if k != "post"} == {k: v for k, v in before.items() if k != "post"}
+    assert {k: v for k, v in after["post"].items() if k != "thumbnail"} == before["post"]
+    assert not list((sdir / "out").glob("*.tmp")) and not list((sdir / "out").glob(".*.tmp"))
+
+
+def test_choose_keeps_the_thumbnail_text_and_the_line_endings(tmp_path):
+    import pagefix
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    pagefix.write_thumbs(sdir, 2)
+    data = json.loads(_short_json(sdir).read_text(encoding="utf-8"))
+    data["post"]["thumbnail"] = {"title": "Why it keeps time", "heroes": [], "chosen": None}
+    _short_json(sdir).write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + "\n").replace("\n", "\r\n")
+                                  .encode("utf-8"))  # fmt: skip
+    thumbs.choose(sdir, 1, "chat")
+    raw = _short_json(sdir).read_bytes()
+    assert raw.count(b"\r\n") == raw.count(b"\n")  # CRLF stays CRLF
+    th = json.loads(raw.decode("utf-8"))["post"]["thumbnail"]
+    assert th == {"title": "Why it keeps time", "heroes": [], "chosen": 1}
+
+
+def test_choose_refuses_a_missing_candidate_or_file(tmp_path):
+    import pagefix
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    with pytest.raises(ValueError, match="There is no thumbnail candidate 1"):
+        thumbs.choose(sdir, 1, "page")
+    pagefix.write_thumbs(sdir, 2)
+    before = _short_json(sdir).read_bytes()
+    with pytest.raises(ValueError, match="There is no thumbnail candidate 5"):
+        thumbs.choose(sdir, 5, "page")
+    (sdir / "review/thumbs/2-1280x720.png").unlink()
+    with pytest.raises(ValueError, match="review/thumbs/2-1280x720.png"):
+        thumbs.choose(sdir, 2, "page")
+    with pytest.raises(ValueError, match="page or chat"):
+        thumbs.choose(sdir, 1, "settings")
+    assert thumbs.load(sdir)["chosen"] is None and _short_json(sdir).read_bytes() == before
+    assert not (sdir / "out" / "thumbnail-1080x1920.png").exists()
+
+
+def test_two_choices_at_once_leave_one_consistent_pair(tmp_path):  # Review Focus 3
+    import threading
+
+    import pagefix
+
+    from bsa import postpack
+    from bsa.short import load_short
+
+    sdir = pagefix.make_short(tmp_path, "post")
+    pagefix.write_thumbs(sdir, 2)
+    for _ in range(5):
+        go = threading.Barrier(2)
+        errors = []
+
+        def pick(n, go=go, errors=errors):
+            go.wait()
+            try:
+                thumbs.choose(sdir, n, "page")
+            except Exception as e:  # noqa: BLE001 - collected for the assert
+                errors.append(e)
+
+        threads = [threading.Thread(target=pick, args=(n,)) for n in (1, 2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        n = thumbs.load(sdir)["chosen"]["n"]
+        for size, rel in postpack.OUT_FILES.items():
+            assert (sdir / rel).read_bytes() == (sdir / f"review/thumbs/{n}-{size}.png").read_bytes()
+        assert load_short(_short_json(sdir)).post["thumbnail"]["chosen"] == n

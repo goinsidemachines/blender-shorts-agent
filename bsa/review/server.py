@@ -4,8 +4,9 @@ It binds 127.0.0.1 on a free port (the local network only with lan=True) and che
 the Host header (127.0.0.1:<port> or localhost:<port>, plus the LAN address with lan), the token (the `t` query for
 the page and its files, the X-BSA-Token header for the API, compared in constant time), and on POST a same-origin
 Origin when one is sent. Only a short's stills/, review/ and out/ are served, never anything outside them (symlinks
-included). It never runs commands; its only writes are notes, decisions, the versions a snapshot records and the
-plugin feedback's "reported" mark.
+included). It never runs commands; its only writes are notes, decisions, the versions a snapshot records, the
+plugin feedback's "reported" mark, out/post-pack.md when a snapshot is served, and a thumbnail choice (its two files
+copied to out/ and the choice recorded in review/thumbs.json and short.json, see bsa.thumbs.choose).
 A page Approve only records the decision; `page wait` applies it. With lan=True it binds every interface (_LAN_BIND,
 or the BSA_PAGE_BIND variable, which the tests set to 127.0.0.1) but still answers only a Host of 127.0.0.1,
 localhost or this machine's one LAN address, with the same token.
@@ -28,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from bsa import feedback, jobstate, messages, postpack, render_status
+from bsa import feedback, jobstate, messages, postpack, render_status, thumbs
 from bsa import settings as settings_mod
 from bsa.review import decisions, history, notes, page, snapshot, stages, store
 
@@ -519,6 +520,13 @@ class _Handler(BaseHTTPRequestHandler):
         sent = notes.send_stage(sdir, stage) if decision == "changes" else []
         self._json(200, {"decision": entry, "notes_sent": sent})
 
+    def _thumbnail(self, _name: str, sdir: Path, body: dict) -> None:
+        """The page's "Use this one" on a thumbnail candidate: its files go to out/ and the choice is recorded (bsa.thumbs)."""
+        choice = body.get("choice")
+        if not isinstance(choice, int) or isinstance(choice, bool):
+            raise ValueError("the choice must be a whole number: the candidate to use")  # noqa: TRY004 - a 400
+        self._json(200, {"thumbnail": thumbs.choose(sdir, choice, "page")})
+
     def _feedback_reported(self, _name: str, sdir: Path, body: dict) -> None:
         """The user copied the plugin feedback report or opened it on GitHub: mark those entries reported. Only
         while the panel is shown (the user said yes, and the setting is not `off`)."""
@@ -541,5 +549,6 @@ _API = {
     ("POST", "notes"): _Handler._notes,
     ("POST", "decision"): _Handler._decision,
     ("POST", "show"): _Handler._show,
+    ("POST", "thumbnail"): _Handler._thumbnail,
     ("POST", "feedback-reported"): _Handler._feedback_reported,
 }

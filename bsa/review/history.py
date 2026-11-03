@@ -1,9 +1,9 @@
-"""Version history for before and after: what each version of Story, Storyboard and Final showed, kept only for the
-versions the page actually served to a person (the server's /state and the static page), the last KEEP per stage.
+"""Version history for before and after: what each version of Story, Storyboard, Final and Post showed, kept only for
+the versions the page actually served to a person (the server's /state and the static page), the last KEEP per stage.
 
 A stage's history lives in review/history/<stage>/: index.json lists the kept versions in the order first shown,
 and v<N>/ holds what version N showed (Story: lines.json; Storyboard: shots.json and a copy of each still; Final:
-final.json, with the MP4's digest in the index entry). A copy is made in v<N>.<pid>.tmp and renamed into place under
+final.json, with the MP4's digest in the index entry; Post: post.json and a copy of the chosen thumbnail). A copy is made in v<N>.<pid>.tmp and renamed into place under
 the index's lock, so a half-copied folder is never listed. The approved final's outgoing MP4 is moved (not copied)
 into review/history/final/<sha256[:16]>.mp4 by the edit, and the last MP4_KEEP of those are kept."""
 
@@ -21,7 +21,8 @@ from pathlib import Path
 from bsa import jobstate, messages
 from bsa.review import store, versions, worddiff
 
-STAGES = ("story", "storyboard", "final")
+STAGES = ("story", "storyboard", "final", "post")
+THUMBNAIL = "thumbnail.png"  # Post: the chosen vertical thumbnail as that version showed it
 KEEP = 3
 MP4_KEEP = 3
 INDEX = "index.json"
@@ -77,9 +78,24 @@ def _write(path: Path, data) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _copy_checked(sdir: Path, src: str, dest: Path) -> None:
+    """A copy of a file of the short, never a hard link (Blender and `thumbs.choose` rewrite files in place, which
+    would change a hard link's "before" too); _Moved when it changed while being copied."""
+    shutil.copy2(Path(sdir) / src, dest)
+    if _sha256(dest) != versions.file_digest(sdir, src):
+        raise _Moved(src)
+
+
 def _copy(sdir: Path, stage: str, content: dict, tmp: Path) -> dict:
     """What the version showed, into tmp; the extra index fields."""
     tmp.mkdir(parents=True)
+    if stage == "post":
+        _write(tmp / "post.json", [{"key": f.get("key"), "text": f.get("text")} for f in content.get("fields") or []])
+        th = content.get("thumbnail")
+        ref = th.get("file") if isinstance(th, dict) else None
+        if isinstance(ref, dict) and isinstance(ref.get("file"), str):
+            _copy_checked(sdir, ref["file"], tmp / THUMBNAIL)
+        return {}
     if stage == "story":
         lines = [{"id": ln.get("id"), "text": ln.get("text")}
                  for beat in content.get("beats") or [] for ln in beat.get("lines") or []]  # fmt: skip
@@ -94,11 +110,7 @@ def _copy(sdir: Path, stage: str, content: dict, tmp: Path) -> dict:
             if isinstance(src, str) and src.startswith("stills/") and _plain_name(src[len("stills/"):]):
                 name = src[len("stills/"):]
                 (tmp / "stills").mkdir(exist_ok=True)
-                # a copy, never a hard link: Blender saves a still by rewriting the same file, which would change
-                # a hard link's "before" too
-                shutil.copy2(Path(sdir) / src, tmp / "stills" / name)
-                if _sha256(tmp / "stills" / name) != versions.file_digest(sdir, src):
-                    raise _Moved(src)
+                _copy_checked(sdir, src, tmp / "stills" / name)
             shots.append({"id": shot.get("id"), "title": shot.get("title"), "still": name})
         _write(tmp / "shots.json", shots)
         return {}
@@ -204,7 +216,20 @@ def _final_compare(sdir: Path, folder: Path, entry: dict, content: dict) -> dict
     return {"video": video, "findings": final.get("findings") or []}
 
 
-_COMPARE = {"story": _story_compare, "storyboard": _storyboard_compare, "final": _final_compare}
+def _post_compare(sdir: Path, folder: Path, entry: dict, content: dict) -> dict:
+    old = {d.get("key"): str(d.get("text") or "") for d in _read(folder / "post.json") if isinstance(d, dict)}
+    new = {f.get("key"): str(f.get("text") or "") for f in content.get("fields") or []}
+    keys = _merged([k for k in old if isinstance(k, str)], [k for k in new if isinstance(k, str)])
+    th = content.get("thumbnail")
+    ref = th.get("file") if isinstance(th, dict) else None
+    after = {"file": ref["file"]} if isinstance(ref, dict) and isinstance(ref.get("file"), str) else None
+    before = {"file": _rel(sdir, folder / THUMBNAIL)} if (folder / THUMBNAIL).is_file() else None
+    return {"fields": [{"key": k, "diff": worddiff.diff(old.get(k, ""), new.get(k, ""))} for k in keys],
+            "thumbnail": {"before": before, "after": after}}  # fmt: skip
+
+
+_COMPARE = {"story": _story_compare, "storyboard": _storyboard_compare, "final": _final_compare,
+            "post": _post_compare}  # fmt: skip
 
 
 def listing(sdir: Path, stage: str, current_version: int, content: dict) -> list[dict]:
@@ -229,7 +254,7 @@ def listing(sdir: Path, stage: str, current_version: int, content: dict) -> list
 
 
 def shown(sdir: Path, snap: dict, now: float | None = None) -> dict:
-    """The snapshot is being served to a person: keep what each shown (not locked) Story, Storyboard and Final
+    """The snapshot is being served to a person: keep what each shown (not locked) Story, Storyboard, Final and Post
     version shows, prune to KEEP, and list the earlier ones on the stage row (`history`). Never raises: a failure
     is one line in `problems` and that stage's history is []."""
     sdir = Path(sdir)

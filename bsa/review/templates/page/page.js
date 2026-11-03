@@ -548,6 +548,16 @@
     openEditor(s, kind, id, { label, prefill, shot, back: activeKey() || overallKey(s.id) });
   }
 
+  // "Use this one" on a thumbnail candidate: its files go to out/ and the choice is recorded. Offline, the answer is
+  // copied for the chat.
+  function chooseThumb(n) {
+    if (OFFLINE) return copyAnswer(`Use thumbnail candidate ${n}`);
+    const done = `Thumbnail ${n} chosen.`;
+    return act(() => post("thumbnail", { choice: n }), {
+      after: (ok) => { if (ok) { notice = done; say(done); } },
+    });
+  }
+
   function makeCtx(s) {
     return {
       el, stage: s, version: s.version, offline: OFFLINE, fileUrl, copyButton,
@@ -557,6 +567,7 @@
       noteAt: (kind, id, label, prefill, shot) => noteAt(s, kind, id, label, prefill, shot),
       decide: (stage, decision, choice) => decide(stage, decision, choice),
       copy: (text, what) => copyPlain(text, what),
+      chooseThumb: (n) => chooseThumb(n),
       feedback: (snap && snap.feedback) || null, // the plugin feedback panel's report, only once the user said yes
       feedbackShared: (ids, text) => feedbackShared(ids || [], text),
     };

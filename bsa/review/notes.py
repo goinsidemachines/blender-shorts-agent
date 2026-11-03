@@ -10,7 +10,7 @@ from pathlib import Path
 
 from bsa.review import stages, store
 
-KINDS = ("line", "shot", "still", "frame", "finding", "field", "overall")
+KINDS = ("line", "shot", "still", "frame", "finding", "field", "thumbnail", "overall")  # thumbnail: the candidate's n
 MAX_TEXT = 4000
 MAX_REPLY = 300
 ANSWERS = ("done", "declined")

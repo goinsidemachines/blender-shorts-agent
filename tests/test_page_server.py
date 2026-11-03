@@ -560,3 +560,20 @@ def test_a_range_response_is_capped_and_holds_no_file_open(srv, monkeypatch):
     assert r.read() == data[70:80] and r.getheader("Content-Range") == "bytes 70-79/100"
     r = get(srv, url)
     assert r.status == 200 and r.read() == data  # no Range: the whole file, as before
+
+
+def test_thumbnail_route_chooses(srv):
+    from bsa import thumbs
+
+    pagefix.write_thumbs(srv.sdir, 2)
+    r = api(srv, "POST", "/api/01-pendulum/thumbnail", body={"choice": 1})
+    assert r.status == 200
+    assert body(r) == {"thumbnail": {"chosen": 1, "files": ["out/thumbnail-1080x1920.png",
+                                                            "out/thumbnail-1280x720.png"]}}  # fmt: skip
+    assert thumbs.load(srv.sdir)["chosen"]["n"] == 1 and thumbs.load(srv.sdir)["chosen"]["by"] == "page"
+    for bad in ({"choice": "1"}, {"choice": True}, {"choice": 1.0}, {}):
+        r = api(srv, "POST", "/api/01-pendulum/thumbnail", body=bad)
+        assert r.status == 400 and "whole number" in body(r)["error"], bad
+    r = api(srv, "POST", "/api/01-pendulum/thumbnail", body={"choice": 7})
+    assert r.status == 400 and body(r)["error"] == "There is no thumbnail candidate 7"
+    assert thumbs.load(srv.sdir)["chosen"]["n"] == 1

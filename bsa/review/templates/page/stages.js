@@ -733,6 +733,7 @@
     var credits = content.credits || [];
     return ctx.el("div", { class: "st-post" },
       ctx.el("p", { class: "lead" }, "Ready to copy for YouTube Shorts, Reels or TikTok. You upload it yourself."),
+      compareBlock(ctx, "post", content),
       ctx.el("div", { class: "fields" }, (content.fields || []).map(function (f) {
         var name = String(f.label || f.key).toLowerCase();
         var text = String(f.text || "");
@@ -743,6 +744,7 @@
           text ? ctx.el("pre", { class: "copytext" }, text) : ctx.el("p", { class: "muted" }, "Not written yet."),
           ctx.noteButton("field", f.key, "+ Note on the " + name));
       })),
+      BSA.post && BSA.post.thumbnails ? BSA.post.thumbnails(ctx, content) : null,
       closingInfo(ctx, content.closing),
       section(ctx, "Credits", credits.length ? table(ctx, "Asset credits", ["Name", "From", "Licence", "Size"], assetRows(credits))
         : ctx.el("p", { class: "muted" }, "No outside assets were used.")),

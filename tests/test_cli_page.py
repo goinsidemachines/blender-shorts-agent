@@ -459,3 +459,24 @@ def test_page_wait_notes_name_their_finding_too(home, pendulum):
     _finding_note(pendulum)
     out = ok(run(home, "page", "wait", "pendulum", "--stage", "final", "--timeout", "5"))
     assert out["notes"][0]["finding"]["where"] == "shot s02 · frame 12"
+
+
+def test_page_decide_thumbnail_records_the_choice(home, pendulum):
+    import pagefix
+
+    from bsa import thumbs
+    from bsa.short import load_short
+
+    pagefix.write_thumbs(pendulum, 2)
+    out = ok(run(home, "page", "decide", "pendulum", "thumbnail", "--choice", "2"))
+    assert out["thumbnail"] == {"chosen": 2, "files": ["out/thumbnail-1080x1920.png", "out/thumbnail-1280x720.png"]}
+    assert thumbs.load(pendulum)["chosen"]["n"] == 2 and thumbs.load(pendulum)["chosen"]["by"] == "chat"
+    assert load_short(pendulum / "source" / "short.json").post["thumbnail"]["chosen"] == 2
+    ok(run(home, "page", "decide", "pendulum", "thumbnail", "--choice", "1", "--by", "page"))
+    assert thumbs.load(pendulum)["chosen"]["by"] == "page"
+    for bad in (["--choice", "two"], [], ["--choice", "9"], ["--choice", "1", "--by", "settings"]):
+        proc = run(home, "page", "decide", "pendulum", "thumbnail", *bad)
+        assert proc.returncode == 1 and "Traceback" not in proc.stderr, bad
+    assert "There is no thumbnail candidate 9" in run(home, "page", "decide", "pendulum", "thumbnail",
+                                                      "--choice", "9").stderr  # fmt: skip
+    assert thumbs.load(pendulum)["chosen"]["n"] == 1
