@@ -232,3 +232,11 @@ def test_post_format_is_validated_when_set():
     assert settings.check_value("post_format", link) == link
     assert settings.check_value("post_format.title_suffix", " #shorts") == " #shorts"
     assert settings.DEFAULTS["post_format"] == {} and settings.DEFAULTS["post_format_asked"] is False
+
+
+def test_brand_kit_keys_are_checked_through_the_kit():
+    assert settings.check_value("brand.style", "Flat") == "toon"
+    with pytest.raises(ValueError, match="from 0 to 24"):
+        settings.check_value("brand.shadow_px", 30)
+    assert settings.check_value("brand.material", "glossy toy") == "glossy toy"  # prose passes
+    assert settings.check_value("brand.mode", "Brand") == "brand"

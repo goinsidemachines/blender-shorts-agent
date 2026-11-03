@@ -1763,3 +1763,20 @@ def test_cli_post_refuses_cleanly(home, pendulum, monkeypatch, capsys):
     assert bsa_cli.main(["post", str(pendulum), "--posted", "https://youtu.be/abc"]) != 0
     err = capsys.readouterr().err
     assert "locked by another run" in err and "Traceback" not in err
+
+
+def test_settings_set_kit_numbers_and_check(home):
+    ok(run(home, "settings", "set", "brand.outline_px", "3"))
+    ok(run(home, "settings", "set", "brand.progress", "false"))
+    s = ok(run(home, "settings", "show"))["settings"]["brand"]
+    assert s["outline_px"] == 3 and s["progress"] is False
+    ok(run(home, "settings", "set", "brand.mode", "brand"))
+    assert "brand.style is not set" in " ".join(ok(run(home, "settings", "check"))["advice"])
+    bad = run(home, "settings", "set", "brand.palette.accent", "orange")
+    assert bad.returncode != 0
+    ok(run(home, "settings", "set", "brand.palette.accent", "#7a4ce0"))
+    assert ok(run(home, "settings", "show"))["settings"]["brand"]["palette"]["accent"] == "#7A4CE0"
+    ok(run(home, "settings", "set", "brand.style", "flat"))
+    assert ok(run(home, "settings", "check"))["problems"] == []
+    (home / "settings.json").write_text(json.dumps({"brand": {"style": "toon", "outline_px": "thick"}}), "utf-8")
+    assert any("brand.outline_px" in p for p in ok(run(home, "settings", "check"))["problems"])

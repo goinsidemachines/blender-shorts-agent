@@ -145,6 +145,10 @@ def check_value(path: str, value):
             return float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{value!r} is not a valid brand.exposure: use a number of stops, e.g. 0.3") from None
+    if path == "brand" or (path.startswith("brand.") and path not in ("brand.mode", "brand.exposure")):
+        from bsa import kit
+
+        return kit.check(path[6:], value)
     if path == "post_format" or path.startswith("post_format."):
         from bsa import post
 

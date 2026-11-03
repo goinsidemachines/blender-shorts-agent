@@ -93,7 +93,9 @@ def _parse_value(key: str, text: str):
     except ValueError:
         return text
     if key.startswith("brand.") and not isinstance(value, dict | list):
-        return text
+        from bsa import kit
+
+        return value if kit.json_scalar(key) else text
     return value
 
 
@@ -182,6 +184,11 @@ def cmd_settings(args) -> dict:
         }
     if args.action == "summary":
         return {"summary": settings.summary_line(settings.load_settings())}
+    if args.action == "check":
+        from bsa import kit
+
+        s = settings.load_settings()
+        return {"advice": kit.advice(s), "problems": kit.problems(s)}
     # set
     if not args.key or args.value is None:
         raise CliError("usage: settings set KEY VALUE (for example: settings set render.engine cycles)")
@@ -741,6 +748,9 @@ def cmd_validate(args) -> dict:
         warnings += pace_warnings
         source = "takes" if from_takes else "reading pace"
     warnings += _font_and_sound_warnings(sdir, short)
+    from bsa import kit
+
+    warnings += kit.problems(settings.load_settings(), short)
     out = {"ok": not errors, "errors": errors, "warnings": warnings, "pacing": rows, "pacing_from": source}
     if errors:
         raise CliError(f"short.json has {len(errors)} problem(s): " + "; ".join(errors), out)
@@ -1268,9 +1278,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("where", help="plugin root, Blender, Blender's Python, settings path").set_defaults(fn=cmd_where)
 
-    sp = sub.add_parser("settings", help='show | set KEY VALUE | missing | summary | rules | rule add "TEXT" '
+    sp = sub.add_parser("settings", help='show | set KEY VALUE | missing | check | summary | rules | rule add "TEXT" '
                         "[--kind K] [--part-of ID] | rule remove ID | rule none")  # fmt: skip
-    sp.add_argument("action", choices=["show", "set", "missing", "summary", "rules", "rule", "post-format"])
+    sp.add_argument("action", choices=["show", "set", "missing", "summary", "rules", "rule", "post-format", "check"])
     sp.add_argument("key", nargs="?")
     sp.add_argument("value", nargs="?")
     sp.add_argument("--kind", default=None, help="a rule kind the plugin checks itself (settings rules lists them)")
