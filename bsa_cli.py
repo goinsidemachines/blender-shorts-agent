@@ -789,6 +789,14 @@ def cmd_validate(args) -> dict:
     errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
+    from bsa import translations
+
+    tr_errors, tr_warnings = translations.problems(short, settings.load_settings())
+    errors += tr_errors
+    warnings += tr_warnings
+    if not tr_errors:
+        for lang, ids in translations.stamp(sdir, short).items():
+            warnings.append(f"{lang} subtitles for lines {', '.join(ids)} were made for the old English: update them")
     rows, source = [], None
     if not errors:
         if short.length_s > 0:

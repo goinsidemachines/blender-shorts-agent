@@ -120,6 +120,9 @@ class Short:
     pace: dict = dc_field(default_factory=dict)
     # Where this short started from: {"short": folder name, "copied": [keys], "at": ISO-8601 UTC}. None = from scratch.
     like: dict | None = None
+    # Subtitles in other languages (bsa.translations): {lang: {"lines": {line id: text}, "closing": text}}.
+    # None = not asked yet; {} = asked, none wanted.
+    captions_translations: dict | None = None
 
 
 NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in")

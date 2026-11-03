@@ -270,6 +270,15 @@ def _places(short) -> list[tuple[str, str]]:
         out.append((f"sfx {fx.kind!r} in shot {fx.shot}", fx.kind))
     for a in short.assets:
         out.append((f"asset {a.id}", f"{a.name} {a.id}"))
+    tr = getattr(short, "captions_translations", None)
+    for lang, entry in (tr.items() if isinstance(tr, dict) else ()):
+        if not isinstance(entry, dict):
+            continue
+        got = entry.get("lines")
+        for lid, text in (got.items() if isinstance(got, dict) else ()):
+            out.append((f"line {lid} ({lang})", text if isinstance(text, str) else ""))
+        if isinstance(entry.get("closing"), str):
+            out.append((f"closing ({lang})", entry["closing"]))
     from bsa import post
 
     return out + post.rule_places(short)
