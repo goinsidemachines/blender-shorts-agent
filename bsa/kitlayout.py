@@ -130,35 +130,63 @@ def _logo(kit, font) -> tuple[CardSpec | None, str | None]:
                                             "logo badge is drawn: set brand.logo.file again")  # fmt: skip
 
 
-def bottom_limit(kit) -> float:
-    """The lowest row a static top card may reach: TITLE_GAP_PX above the caption band (a two-line caption in the
-    kit's size) and the progress bar, inside the safe area."""
+def caption_lines(short, tl, kit, font) -> int:
+    """The most lines any caption of the short wraps to in the kit's caption size and `font`: 1 or 2 (a longer one
+    still takes the two-line band, as today); 0 when no caption is drawn (the kit or the short's own
+    style.caption.draw turns them off); 2 when unknown (no short, or one without caption text). The texts are the
+    short's narration lines cut into cards (bsa.timeline.chunk_caption), which is what the edit shows, so validate
+    (no timeline) and the edit measure the same; a short without lines (a bare layout) reads them from `tl`."""
+    if not kit.caption.get("draw", True):
+        return 0
+    if short is None:
+        return 2
+    if not overlays.captions_drawn(short):
+        return 0
+    from bsa.timeline import chunk_caption
+
+    texts = [t for ln in getattr(short, "lines", None) or [] for t in chunk_caption(ln.text)]
+    if not texts and tl is not None:
+        texts = [c.text for c in tl.cards]
+    if not texts:
+        return 2
+    width = safe_rect().w
+    return max(1, min(2, max(len(cards.caption(kit, t, font, width).runs) for t in texts)))
+
+
+def bottom_limit(kit, lines: int = 2) -> float:
+    """The lowest row a static top card may reach: TITLE_GAP_PX above the caption band (`lines` caption lines in the
+    kit's size; none when 0 or the kit draws no captions) and the progress bar, inside the safe area."""
     s = safe_rect()
     limits = [s.bottom]
-    if kit.caption.get("draw", True):
-        limits.append(caption_band(2, int(kit.caption["size"])).y - TITLE_GAP_PX)
+    if lines > 0 and kit.caption.get("draw", True):
+        limits.append(caption_band(lines, int(kit.caption["size"])).y - TITLE_GAP_PX)
     if kit.progress:
         limits.append(H - SAFE["bottom"] - CAPTION_LIFT_PX + PROGRESS_DROP_PX - TITLE_GAP_PX)
     return min(limits)
 
 
-def _static(shot, kit, font, logo: CardSpec | None, notes: list[str], strict: bool = True,
+def _static(shot, kit, font, logo: CardSpec | None, notes: list[str], strict: bool = True, lines: int = 2,
             ) -> list[tuple[str, str, CardSpec, Rect, int]]:  # fmt: skip
     """The shot's static top cards as (kind, text, spec, rect, channel): the logo badge, the category tag, the corner
-    stack (badge, step, stacked labels and measures), the title card and the value bars. When they would reach
-    bottom_limit, the stacked labels move to the right column (under the category tag); still over: CardsTooTall
-    naming what to drop (`strict`), else that layout as it is (top_band frames under it)."""
+    stack (badge, step, stacked labels and measures), the title card and the value bars. `lines`: the caption lines
+    the limit leaves room for (caption_lines). When they would reach bottom_limit, the layout gives way in this order
+    (_variants): the stacked labels move to the right column (under the category tag); the title card shrinks to
+    cards.TITLE_MIN; the bars tighten (half the row gap, bars 3/4 as thick); both; still over: CardsTooTall naming
+    what to drop (`strict`), else the most compact layout (top_band frames under it)."""
     labels = getattr(shot, "labels", None) or []
     if len(labels) > MAX_LABELS:
         raise TooManyLabels(f"shot {shot.id} has {len(labels)} labels: a brand kit draws at most {MAX_LABELS} per shot "
                             "(more would share sequencer channels with the pointers and the end card): move some to "
                             "another shot")  # fmt: skip
-    limit = bottom_limit(kit)
-    out = _lay(shot, kit, font, logo, False)
-    if _bottom(out) > limit and _stacked_labels(shot):
-        out = _lay(shot, kit, font, logo, True)
-    if _bottom(out) > limit and strict and shot is not None:
-        raise CardsTooTall(_too_tall(shot, kit, font, logo, _bottom(out) - limit, limit))
+    limit = bottom_limit(kit, lines)
+    out = []
+    for shrink, tight, right in _variants(shot):
+        out = _lay(shot, kit, font, logo, right, shrink, tight)
+        if _bottom(out) <= limit:
+            break
+    else:
+        if strict and shot is not None:
+            raise CardsTooTall(_too_tall(shot, kit, font, logo, _bottom(out) - limit, limit))
     for _, _, spec, _, _ in out:
         _note(spec, font, notes)
     return out
@@ -174,12 +202,38 @@ def _stacked_labels(shot) -> list:
     return [lb for lb in getattr(shot, "labels", None) or [] if not label_near(lb)]
 
 
+def _variants(shot) -> list[tuple[bool, bool, bool]]:
+    """_static's layouts, gentlest first, as (title at TITLE_MIN, tight bars, stacked labels right): each step of the
+    ladder with the labels on the left, then on the right (only when there are stacked labels); a step that changes
+    nothing for this shot (no title card, no bars) is left out."""
+    from bsa.short import bar_items, bar_verdict, title_lines
+
+    has_title = shot is not None and bool(title_lines(shot)[0])
+    has_bars = shot is not None and bool(bar_items(shot) or bar_verdict(shot))
+    steps = [(False, False)]
+    if has_title:
+        steps.append((True, False))
+    if has_bars:
+        steps.append((False, True))
+    if has_title and has_bars:
+        steps.append((True, True))
+    sides = (False, True) if shot is not None and _stacked_labels(shot) else (False,)
+    return [(shrink, tight, right) for shrink, tight in steps for right in sides]
+
+
 def _fits(shot, kit, font, logo, limit: float) -> bool:
-    return any(_bottom(_lay(shot, kit, font, logo, right)) <= limit for right in (False, True))
+    return any(_bottom(_lay(shot, kit, font, logo, right, shrink, tight)) <= limit
+               for shrink, tight, right in _variants(shot))  # fmt: skip
+
+
+def _names(names: list[str], word: str) -> str:
+    """"a", "a or b", "a, b or c" (`word`: "and" or "or")."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} {word} {names[-1]}"
 
 
 def _too_tall(shot, kit, font, logo, over: float, limit: float) -> str:
-    """The CardsTooTall message: how far the cards reach and the parts whose removal alone makes them fit."""
+    """The CardsTooTall message: how far the cards reach (squeezed as far as they go) and the parts whose removal
+    alone makes them fit."""
     from bsa.short import label_near
 
     near_only = [lb for lb in getattr(shot, "labels", None) or [] if label_near(lb)]
@@ -190,14 +244,17 @@ def _too_tall(shot, kit, font, logo, over: float, limit: float) -> str:
                if (_stacked_labels(shot) if key == "labels" else getattr(shot, key, None))]  # fmt: skip
     one = [name for name, key, empty in present
            if is_dataclass(shot) and _fits(replace(shot, **{key: empty}), kit, font, logo, limit)]  # fmt: skip
-    fix = (f"drop {one[0]}" if len(one) == 1 else f"drop one of {', '.join(one)}" if one
-           else f"drop some of {', '.join(n for n, _, _ in present)}")  # fmt: skip
+    fix = (f"drop {one[0]}" if len(one) == 1 else f"drop {_names(one, 'or')}" if one
+           else f"drop some of {_names([n for n, _, _ in present], 'and')}")  # fmt: skip
     return (f"shot {shot.id}'s top cards reach {math.ceil(over)} px into the captions (they end at row "
-            f"{math.ceil(limit + over)}, the most is {math.floor(limit)}): {fix}, or move it to another shot")
+            f"{math.ceil(limit + over)}, the most is {math.floor(limit)}): {fix}, or move some of them to another "
+            "shot")  # fmt: skip
 
 
-def _lay(shot, kit, font, logo: CardSpec | None, labels_right: bool) -> list[tuple[str, str, CardSpec, Rect, int]]:
-    """_static's layout: stacked labels in the left corner stack, or in the right column with `labels_right`."""
+def _lay(shot, kit, font, logo: CardSpec | None, labels_right: bool, small_title: bool = False, tight: bool = False,
+         ) -> list[tuple[str, str, CardSpec, Rect, int]]:  # fmt: skip
+    """_static's layout: stacked labels in the left corner stack, or in the right column with `labels_right`; the
+    title card at cards.TITLE_MIN with `small_title`; the value bars tight with `tight`."""
     from bsa.short import (
         bar_items,
         bar_verdict,
@@ -261,10 +318,10 @@ def _lay(shot, kit, font, logo: CardSpec | None, labels_right: bool) -> list[tup
     y = _bottom(out) + TITLE_GAP_PX if out else y0
     lines, highlight = title_lines(shot)
     if lines:
-        spec = cards.title(kit, list(lines), highlight, font, s.w)
+        spec = cards.title(kit, list(lines), highlight, font, s.w, cards.TITLE_MIN if small_title else None)
         y = put("title", "\n".join(lines), spec, s.x + (s.w - spec.w) / 2, y, CH["title"]).bottom + TITLE_GAP_PX
     if bar_items(shot) or bar_verdict(shot):
-        put("bars", bar_verdict(shot), cards.bars(kit, shot.bars, font, s.w), s.x, y, CH["bars"])
+        put("bars", bar_verdict(shot), cards.bars(kit, shot.bars, font, s.w, tight), s.x, y, CH["bars"])
     return out
 
 
@@ -356,11 +413,12 @@ def build(short, tl, kit, font, anchors: dict | None = None, label_heroes: dict 
     ov = KitOverlay(cards=list(caps), pointers=[], progress=None, notes=notes)
     spans = {s.id: s for s in tl.shots}
     logo_at = None
+    nlines = caption_lines(short, tl, kit, font)
     for shot in short.shots:
         span = spans.get(shot.id)
         if span is None:
             continue
-        static = _static(shot, kit, font, logo, notes)
+        static = _static(shot, kit, font, logo, notes, lines=nlines)
         for kind, text, spec, rect, channel in static:
             if kind == "logo":
                 logo_at = rect
@@ -385,7 +443,8 @@ def build(short, tl, kit, font, anchors: dict | None = None, label_heroes: dict 
 def top_band(short, shot, kit, font) -> Rect | None:
     """The rows the shot's static top cards take (logo, category, corner stack, title card, bars), full safe width
     from the safe top: pass it as `top=` to camera.frame_objects. None when the shot has none."""
-    static = _static(shot, kit, font, _logo(kit, font)[0], [], strict=False)
+    static = _static(shot, kit, font, _logo(kit, font)[0], [], strict=False,
+                     lines=caption_lines(short, None, kit, font))
     if not static:
         return None
     s = safe_rect()
@@ -401,7 +460,7 @@ def shot_rects(short, tl, shot, span, kit, font, anchors: dict | None = None, he
     frames = list(range(span.f0, span.f1 + 1) if frames is None else frames)
     notes: list[str] = []
     rows, caps = _captions(short, tl, kit, font, notes, frames)
-    static = _static(shot, kit, font, _logo(kit, font)[0], notes)
+    static = _static(shot, kit, font, _logo(kit, font)[0], notes, lines=caption_lines(short, tl, kit, font))
     out: dict[int, list] = {f: [] for f in frames}
     for f in frames:
         out[f] += [("caption", p.text, None, p.at) for p in caps if p.f0 <= f <= p.f1]

@@ -384,7 +384,7 @@ def test_stacked_labels_move_to_the_right_column_when_the_left_stack_would_reach
 
 
 def test_a_shot_whose_top_cards_still_reach_the_captions_is_an_error_naming_what_to_drop(font):
-    shot = _tall(bars=BARS3)  # badge, step, 2 labels, a 2-line title, 3 bars and a verdict
+    shot = _tall(n_labels=4, bars=BARS3)  # badge, step, 4 labels, a 2-line title, 3 bars and a verdict
     with pytest.raises(kitlayout.CardsTooTall, match=r"shot a's top cards reach \d+ px into the captions") as exc:
         kitlayout._static(shot, K, font, None, [])
     assert "drop" in str(exc.value) and "the value bars" in str(exc.value)
@@ -394,6 +394,89 @@ def test_a_shot_whose_top_cards_still_reach_the_captions_is_an_error_naming_what
                                                                  "labels")}), _tl(), K, font)  # fmt: skip
     band = kitlayout.top_band(None, shot, K, font)  # framing never fails: it frames under what is there
     assert band is not None and band.bottom > kitlayout.bottom_limit(K)
+
+
+LONG_CAPTION = "This sentence is long enough that the caption wraps onto a second line of text"
+
+
+def _captioned(shot, text):
+    """A short of `shot` whose one caption says `text` (its narration line, so validate sees it as the edit does)."""
+    from bsa.short import Line
+
+    short = Short(slug="x", title="X", length_s=2, shots=[shot], lines=[Line("l1", text, shot.id)])
+    return short, Timeline(30, 60, [Span(shot.id, 1, 60)], [], [Card(text, "l1", 1, 60)])
+
+
+def test_one_line_captions_give_the_top_cards_more_room(font, monkeypatch):
+    shot = _tall(n_labels=3, bars=BARS3)  # squeezed it ends ~1189: over the two-line band (1141), under the one-line
+    two, tl2 = _captioned(shot, LONG_CAPTION)
+    one_line, tl1 = _captioned(shot, "Short caption")
+    assert kitlayout.caption_lines(two, tl2, K, font) == 2 and kitlayout.caption_lines(one_line, tl1, K, font) == 1
+    with pytest.raises(kitlayout.CardsTooTall):
+        kitlayout.build(two, tl2, K, font)
+    ov = kitlayout.build(one_line, tl1, K, font)
+    assert max(p.at.bottom for p in statics(ov)) <= kitlayout.bottom_limit(K, 1)
+    assert kitlayout.bottom_limit(K, 1) > kitlayout.bottom_limit(K, 2)
+    cap = next(p for p in ov.cards if p.spec.kind == "caption")
+    assert all(overlap_area(p.at, cap.at) == 0 for p in statics(ov))
+    monkeypatch.setattr(cards, "card_font", lambda *a, **kw: font)  # validate measures in the test font too
+    # validate and the edit agree: validate (no timeline) refuses the two-line short and passes the one-line one
+    assert len(kit.errors({"brand": KIT}, two)) == 1 and kit.errors({"brand": KIT}, one_line) == []
+    assert kitlayout.top_band(one_line, shot, K, font).bottom <= kitlayout.bottom_limit(K, 1)
+
+
+def test_caption_lines_is_two_when_unknown_and_a_short_without_captions_measures_none(font, monkeypatch):
+    shot = _tall(n_labels=3)
+    assert kitlayout.caption_lines(None, None, K, font) == 2
+    off, tl = _captioned(shot, "Short caption")
+    off.style = {"caption": {"draw": False}}
+    assert kitlayout.caption_lines(off, tl, K, font) == 0
+    assert kitlayout.bottom_limit(K, 0) > kitlayout.bottom_limit(K, 1)  # no caption band at all
+    ov = kitlayout.build(off, tl, K, font)  # the cards that were too tall for a caption fit with none
+    assert max(p.at.bottom for p in statics(ov)) <= kitlayout.bottom_limit(K, 0)
+    monkeypatch.setattr(cards, "card_font", lambda *a, **kw: font)
+    assert kit.errors({"brand": KIT}, off) == []
+    bare = kit.kit_from({**KIT, "caption": {"draw": False}})
+    assert kitlayout.caption_lines(_captioned(shot, "x")[0], None, bare, font) == 0
+
+
+def test_title_shrinks_then_bars_tighten_before_refusing(font):
+    shot = _tall(n_labels=2, bars=BARS3)  # reaches ~1188: over by ~47 px with the full-size title
+    plain = kitlayout._lay(shot, K, font, None, True)
+    assert kitlayout._bottom(plain) > kitlayout.bottom_limit(K)
+    static = kitlayout._static(shot, K, font, None, [])  # no CardsTooTall
+    assert max(r.bottom for *_, r, _ in static) <= kitlayout.bottom_limit(K)
+    title = next(spec for k, _, spec, _, _ in static if k == "title")
+    small = cards.title(K, ["How a", "lever"], 1, font, safe_rect().w, size=cards.TITLE_MIN)
+    assert title.h == small.h < cards.title(K, ["How a", "lever"], 1, font, safe_rect().w).h
+    rs = [r for *_, r, _ in static]
+    assert all(overlap_area(a, b) == 0 for i, a in enumerate(rs) for b in rs[i + 1:])
+
+
+def test_tight_bars_are_shorter_and_only_used_when_the_title_shrink_is_not_enough(font):
+    full, tight = cards.bars(K, BARS3, font, 900), cards.bars(K, BARS3, font, 900, tight=True)
+    assert tight.h < full.h and all(b[3] == cards.BAR_H * 0.75 for b in tight.bars)
+    assert all(b[3] == cards.BAR_H for b in full.bars)
+    # a shot the title shrink alone doesn't save is drawn with the tight bars (and the small title)
+    shot = _tall(n_labels=3, bars=BARS3)
+    k = kit.kit_from({**KIT, "caption": {**KIT["caption"], "size": 50}})  # a smaller caption: a bit more room
+    small = kitlayout._lay(shot, k, font, None, True, True, False)
+    both = kitlayout._lay(shot, k, font, None, True, True, True)
+    assert kitlayout._bottom(both) <= kitlayout.bottom_limit(k) < kitlayout._bottom(small)
+    static = kitlayout._static(shot, k, font, None, [])
+    bars = next(spec for kd, _, spec, _, _ in static if kd == "bars")
+    assert bars.h == cards.bars(k, BARS3, font, safe_rect().w, tight=True).h
+    assert max(r.bottom for *_, r, _ in static) <= kitlayout.bottom_limit(k)
+
+
+def test_still_refuses_when_nothing_fits(font):
+    shot = _tall(n_labels=4, bars=BARS3)
+    with pytest.raises(kitlayout.CardsTooTall, match=r"shot a's top cards reach \d+ px into the captions") as exc:
+        kitlayout._static(shot, K, font, None, [])
+    msg = str(exc.value)
+    assert "drop" in msg and "the value bars" in msg and "the title card" in msg
+    assert "or move it" not in msg and "drop one of the value bars, the title card, or" not in msg
+    assert msg.endswith("or move some of them to another shot")
 
 
 def test_static_cards_always_stay_above_the_caption_band_and_the_progress_bar(font, tmp_path):

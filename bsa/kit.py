@@ -376,8 +376,9 @@ def errors(settings: dict, short=None, short_dir=None) -> list[str]:
         if not ready:  # resolved once, and only for a short with top cards
             ready, font = True, cards.card_font(k, fonts.font_caches(short_dir))
             logo = kitlayout._logo(k, font)[0]
+            lines = kitlayout.caption_lines(short, None, k, font)
         try:
-            kitlayout._static(s, k, font, logo, [])
+            kitlayout._static(s, k, font, logo, [], lines=lines)
         except kitlayout.LayoutError as exc:
             out.append(str(exc))
     return out

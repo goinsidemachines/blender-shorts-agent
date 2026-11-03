@@ -37,6 +37,8 @@ DOT_D = 30  # a part label's colour dot
 DOT_GAP = 16  # between the dot and the text (and between a bar and its value, the logo and the name)
 BAR_H = 28
 BAR_GAP = 18
+TIGHT_BAR_SCALE = 0.75  # `bars(tight=True)`: the bar thickness, times BAR_H
+TIGHT_GAP_SCALE = 0.5  # and the gap between rows, times BAR_GAP
 BAR_LABEL_SHARE = 0.32  # of a bars card's inner width, for the labels
 BAR_LABEL_MIN = 24  # a bar label shrinks to fit down to this size, then wraps (its row grows)
 PROGRESS_H = 26
@@ -292,9 +294,10 @@ def pill(kit, kind: str, text: str, font, fill=None, colour=None, dot=None, wrap
     return _boxed(kit, kind, w, box_h, fill, radius, runs, font, dot=dot)
 
 
-def bars(kit, bars: dict, font, width) -> CardSpec:
+def bars(kit, bars: dict, font, width, tight: bool = False) -> CardSpec:
     """A value bars card: per item its label, a bar as long as its value (of `max`, else the biggest value) in its
-    category colour, and its value text after the bar; the verdict under them in the highlight colour."""
+    category colour, and its value text after the bar; the verdict under them in the highlight colour. `tight`
+    halves the gap between rows and draws the bars TIGHT_BAR_SCALE as thick (a shot short of room)."""
     from bsa.short import bar_text
 
     items = [i for i in (bars or {}).get("items") or [] if isinstance(i, dict)]
@@ -308,6 +311,7 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
     every = " ".join([*(str(i.get("label") or "") for i in items), *(bar_text(i) for i in items), verdict])
     font, _ = font_for(every, font)
     size = SIZES["bar"]
+    bar_h, gap = (BAR_H * TIGHT_BAR_SCALE, BAR_GAP * TIGHT_GAP_SCALE) if tight else (BAR_H, BAR_GAP)
     value_w = min(inner / 4, max([measure(bar_text(i), size, font) for i in items] or [0]))
     track = max(0.0, inner - label_w - DOT_GAP - value_w)
     runs, boxes, y = [], [], CARD_PAD
@@ -316,25 +320,25 @@ def bars(kit, bars: dict, font, width) -> CardSpec:
         ls = max(BAR_LABEL_MIN, fit(label, size, font, label_w - DOT_GAP))
         lines = _lines(label, ls, font, label_w - DOT_GAP)
         total, ys = _stack([ls] * len(lines), font)
-        row_h = max(BAR_H, total, text_height(1, size, font))
+        row_h = max(bar_h, total, text_height(1, size, font))
         cy = y + row_h / 2
         runs += [Run(ln, ls, kit.palette["text"], CARD_PAD, cy - total / 2 + c, "LEFT") for ln, c in zip(lines, ys,
                  strict=True)]  # fmt: skip
         length = track * min(1.0, v / top) if top > 0 else 0.0
         bx = CARD_PAD + label_w
-        boxes.append((bx, cy - BAR_H / 2, length, BAR_H, kit.colour(item.get("category"))))
+        boxes.append((bx, cy - bar_h / 2, length, bar_h, kit.colour(item.get("category"))))
         text = bar_text(item)
         if text:
             runs.append(Run(text, fit(text, size, font, value_w), kit.palette["text"], bx + length + DOT_GAP, cy,
                             "LEFT"))  # fmt: skip
-        y += row_h + BAR_GAP
+        y += row_h + gap
     if verdict:
         vs = SIZES["verdict"]
         lines = _lines(verdict, vs, font, inner)
         total, ys = _stack([vs] * len(lines), font)
         runs += [Run(ln, vs, kit.palette["highlight"], w / 2, y + c, "CENTER") for ln, c in zip(lines, ys, strict=True)]
-        y += total + BAR_GAP
-    box_h = round(y - BAR_GAP + CARD_PAD) if items or verdict else 2 * CARD_PAD
+        y += total + gap
+    box_h = round(y - gap + CARD_PAD) if items or verdict else 2 * CARD_PAD
     return _boxed(kit, "bars", w, box_h, kit.palette["card"], kit.corner_px, runs, font, bars=tuple(boxes))
 
 
