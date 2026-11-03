@@ -144,3 +144,46 @@ def test_thumbnail_texts_and_rule_places():
         ("post thumbnail fact", "A fact"),
     ]
     assert ("post title", short.post["title"]) in post.rule_places(short)
+
+
+# --------------------------------------------------------------------------- where it went, related shorts
+
+
+def _make_short(ws, name, title, topic, posted=None):
+    import json
+
+    d = ws / name / "source"
+    d.mkdir(parents=True)
+    spec = json.loads(SOURCE.read_text(encoding="utf-8"))
+    spec["title"], spec["topic"] = title, topic
+    spec["post"]["posted"] = posted or []
+    (d / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    return ws / name
+
+
+def test_related_lists_other_posted_shorts(tmp_path):
+    this = _make_short(tmp_path, "01-lever", "The lever", "levers")
+    _make_short(tmp_path, "02-pendulum", "Why the pendulum keeps time", "simple pendulum",
+                [{"platform": "instagram", "url": "https://ig.example/a", "at": "9"},
+                 {"platform": "youtube", "url": "https://youtu.be/x", "at": "1"}])  # fmt: skip
+    _make_short(tmp_path, "03-gear", "Gears", "gears")  # never posted
+    rows = post.related(tmp_path, this)
+    assert [r["slug"] for r in rows] == ["pendulum"]
+    r = rows[0]
+    assert r["url"] == "https://youtu.be/x" and r["platform"] == "youtube" and r["title"].startswith("Why the")
+    assert "pendulum" in r["topic_words"] and "the" not in r["topic_words"] and len(r["topic_words"]) <= 8
+
+
+def test_add_posted_appends_once_per_url(tmp_path):
+    sdir = _make_short(tmp_path, "01-lever", "The lever", "levers")
+    post.add_posted(sdir, "youtube", "https://youtu.be/x", now=1.0)
+    rows = post.add_posted(sdir, "youtube", "https://youtu.be/x", now=2.0)
+    assert [(r["platform"], r["url"]) for r in rows] == [("youtube", "https://youtu.be/x")]
+    assert rows[0]["at"] == "1970-01-01T00:00:02+00:00"
+    assert len(post.add_posted(sdir, "tiktok", "https://tiktok.example/v", now=3.0)) == 2
+    for bad in ("ftp://x", "https://", "youtu.be/x"):
+        with pytest.raises(ValueError):
+            post.add_posted(sdir, "youtube", bad)
+    with pytest.raises(ValueError):
+        post.add_posted(sdir, "vimeo", "https://v.example/x")
+    assert post.problems(load_short(sdir / "source" / "short.json"), {})[0] == []

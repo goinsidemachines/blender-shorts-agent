@@ -1729,3 +1729,18 @@ def test_cli_post_writes_the_pack(home, pendulum):
     assert (pendulum / "out" / "post-pack.md").is_file() and out["changed"] is True
     assert out["counts"]["title"]["max"] == 100 and out["fields"]["title"].startswith("Why a pendulum")
     assert ok(run(home, "post", "pendulum"))["changed"] is False
+
+
+def test_cli_post_posted_and_related(home, workspace, pendulum):
+    other = Path(ok(run(home, "new-short", "Lever"))["short"])
+    shutil.copyfile(SAMPLE, other / "source" / "short.json")
+    assert ok(run(home, "post", "related", str(other)))["related"] == []
+    out = ok(run(home, "post", str(pendulum), "--posted", "https://youtu.be/abc"))
+    assert out["posted"][0]["platform"] == "youtube" and out["posted"][0]["url"] == "https://youtu.be/abc"
+    ok(run(home, "post", str(pendulum), "--posted", "https://youtu.be/abc"))
+    again = ok(run(home, "post", str(pendulum), "--posted", "https://tiktok.example/v", "--platform", "tiktok"))
+    assert len(again["posted"]) == 2
+    rel = ok(run(home, "post", "related", str(other)))["related"]
+    assert [r["url"] for r in rel] == ["https://youtu.be/abc"]
+    assert run(home, "post", str(pendulum), "--posted", "ftp://x").returncode != 0
+    assert run(home, "post", str(pendulum), "--platform", "tiktok").returncode != 0

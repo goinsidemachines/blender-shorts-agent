@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
+import time
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 FIELDS = ("title", "description", "hashtags", "tags", "pinned_comment", "link", "related")
@@ -306,3 +310,104 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
         errors.append('post posted must be a list of {"platform", "url", "at"}')
     warnings += _format_warnings(p, s)
     return errors, warnings
+
+
+# --------------------------------------------------------------------------- where it went, and related shorts
+
+POSTED_PLATFORMS = ("youtube", "instagram", "tiktok", "other")
+TOPIC_WORDS_MAX = 8
+_STOP = frozenset(
+    {
+        w
+        for w in (  # noqa: SIM905 - a word list
+            "a an and are as at be but by can do does for from has have how i if in into is it its of on or so than "
+            "that the their then there these they this to was we what when where which who why will with without "
+            "you your"
+        ).split()
+    }
+)
+
+
+def add_posted(sdir: Path, platform: str, url: str, now: float | None = None) -> list[dict]:
+    """Record where the short was posted in short.json post.posted. The same platform and URL again only updates
+    `at`. ValueError unless the URL is http(s) with a host and the platform is known. The URL is only stored: the
+    plugin never opens it."""
+    from bsa import jobstate
+    from bsa.review import store
+
+    platform = str(platform).strip().lower()
+    if platform not in POSTED_PLATFORMS:
+        raise ValueError(f"unknown platform {platform!r}: use {', '.join(POSTED_PLATFORMS)}")
+    url = str(url).strip()
+    if _web_host(url) is None:
+        raise ValueError(f"{url!r} is not a web link: it must start with http:// or https:// and name a site")
+    path = Path(sdir) / "source" / "short.json"
+    with store.locked(path):
+        raw = store.read_bytes(path)
+        crlf = b"\r\n" in raw
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("source/short.json can't be read: it is not an object")  # noqa: TRY004 - a refusal
+        block = data.get("post") if isinstance(data.get("post"), dict) else {}
+        posted = [x for x in block.get("posted") or [] if isinstance(x, dict)]
+        at = datetime.fromtimestamp(time.time() if now is None else now, UTC).isoformat(timespec="seconds")
+        for x in posted:
+            if x.get("platform") == platform and x.get("url") == url:
+                x["at"] = at
+                break
+        else:
+            posted.append({"platform": platform, "url": url, "at": at})
+        data["post"] = {**block, "posted": posted}
+        text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        jobstate.write_atomic(path, (text.replace("\n", "\r\n") if crlf else text).encode("utf-8"))
+    return posted
+
+
+def _web_host(url: str) -> str | None:
+    try:
+        parts = urlparse(url)
+        return (parts.hostname or None) if parts.scheme in ("http", "https") else None
+    except ValueError:
+        return None
+
+
+def topic_words(short) -> list[str]:
+    """Lower-case words of the short's topic then its title, stop words dropped, unique, at most 8."""
+    out: list[str] = []
+    for text in (getattr(short, "topic", ""), getattr(short, "title", "")):
+        for w in re.findall(r"[^\W_]+", str(text or "").lower()):
+            if w not in _STOP and w not in out:
+                out.append(w)
+    return out[:TOPIC_WORDS_MAX]
+
+
+def _latest(posted: list[dict]) -> dict | None:
+    rows = [x for x in posted if isinstance(x, dict) and x.get("url")]
+    if not rows:
+        return None
+    pick = [x for x in rows if x.get("platform") == "youtube"] or rows
+    return max(pick, key=lambda x: str(x.get("at") or ""))
+
+
+def related(workspace: Path, sdir: Path) -> list[dict]:
+    """Every other short in the workspace that has been posted, by folder name: its slug, title, topic words and its
+    latest YouTube link (else its latest). Shorts whose short.json can't be read are left out."""
+    from bsa.short import load_short
+
+    out = []
+    me = Path(sdir).resolve()
+    for d in sorted(Path(workspace).iterdir(), key=lambda p: p.name) if Path(workspace).is_dir() else []:
+        path = d / "source" / "short.json"
+        if not path.is_file() or d.resolve() == me:
+            continue
+        try:
+            other = load_short(path)
+        except (ValueError, TypeError, OSError):
+            continue
+        row = _latest(fields(other)["posted"] if isinstance(fields(other)["posted"], list) else [])
+        if row is None:
+            continue
+        slug = d.name.split("-", 1)[1] if re.match(r"^\d+-", d.name) else d.name
+        out.append({"slug": slug, "title": other.title, "topic_words": topic_words(other),
+                    "url": row["url"], "platform": row.get("platform", "")})  # fmt: skip
+    return out

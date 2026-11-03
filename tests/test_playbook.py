@@ -303,3 +303,37 @@ def test_post_chapter_names_the_final_review_tools():
 def test_finding_notes_are_read_from_their_finding_row():
     t = _flat(_read("SKILL.md"))
     assert '"finding"' in t and '"gone": true' in t
+
+
+def test_post_chapter_asks_for_the_users_format_once():
+    t = _flat(_read("playbook/09-post.md"))
+    assert "CLI settings post-format" in t and "Paste an earlier post" in t
+    assert "CLI settings set post_format" in t and "post_format_asked true" in t
+
+
+def test_post_chapter_makes_thumbnails_and_caption_files():
+    t = _flat(_read("playbook/09-post.md"))
+    for s in ("BLENDER thumbs SHORT", "--only N", "CLI captions SHORT", "run_in_background: true",
+              "CLI page decide SHORT thumbnail --choice N", "Use this frame for the thumbnail", "CLI post SHORT"):  # fmt: skip
+        assert s in t, s
+    assert ".srt" in _flat(_read("playbook/08-render.md")) and "-transcript.txt" in _flat(_read("playbook/08-render.md"))
+
+
+def test_post_chapter_records_where_it_went():
+    t = _flat(_read("playbook/09-post.md"))
+    assert "--posted" in t and "CLI post related SHORT" in t
+
+
+def test_thumbnail_notes_are_documented():
+    t = _flat(_read("SKILL.md"))
+    assert "Use this frame for the thumbnail" in t and "`thumbnail` note" in t
+    for c in ("BLENDER thumbs", "CLI captions", "CLI post"):
+        assert c in t, c
+
+
+def test_no_personal_post_format_in_the_plugin():
+    root = ROOT
+    for d in ("skills", "bsa"):
+        for f in (root / d).rglob("*"):
+            if f.is_file() and f.suffix in {".md", ".py", ".html", ".js", ".json", ".css"}:
+                assert "\u25b6\ufe0f" not in f.read_text(encoding="utf-8", errors="ignore"), f

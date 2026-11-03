@@ -977,13 +977,26 @@ def cmd_captions(args) -> dict:
 
 
 def cmd_post(args) -> dict:
-    """Write out/post-pack.md: every post field and every output file in one place (written even with problems)."""
+    """Write out/post-pack.md: every post field and every output file in one place (written even with problems).
+    `post SHORT --posted URL [--platform P]` records where it went; `post related SHORT` lists posted shorts."""
     from bsa import post, postpack
 
-    if len(args.words) != 1:
-        raise CliError("usage: post SHORT")
-    sdir = short_dir(args.words[0])
+    words = args.words
+    if words[0] == "related" and len(words) == 2:
+        sdir = short_dir(words[1])
+        load(sdir)
+        return {"related": post.related(sdir.parent, sdir)}
+    if len(words) != 1:
+        raise CliError("usage: post SHORT [--posted URL [--platform youtube]] | post related SHORT")
+    sdir = short_dir(words[0])
     short = load(sdir)
+    if args.posted:
+        try:
+            return {"posted": post.add_posted(sdir, args.platform or "youtube", args.posted)}
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+    if args.platform is not None:
+        raise CliError("--platform goes with --posted URL")
     path, changed = postpack.write(sdir, short)
     errors, warnings = post.problems(short, settings.load_settings())
     return {"pack": str(path), "changed": changed, "fields": post.fields(short), "counts": post.counts(short),
@@ -1323,6 +1336,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("post", help="SHORT: write out/post-pack.md with every post field and file; lists problems")
     sp.add_argument("words", nargs="+")
+    sp.add_argument("--posted", default=None, metavar="URL", help="record where the short was posted (stored only)")
+    sp.add_argument("--platform", default=None, choices=["youtube", "instagram", "tiktok", "other"],
+                    help="with --posted: where (default youtube)")  # fmt: skip
     sp.set_defaults(fn=cmd_post)
 
     sp = sub.add_parser("narrate", help="SHORT [--line ID [--say TEXT]]: generate the narration (never blocks) and "

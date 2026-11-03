@@ -245,7 +245,8 @@ The single steps, when you need one on its own:
    After the final edit, `BLENDER grab SHORT --preset final --sheet` and a few `--at` grabs show the finished video
    itself.
 3. `BLENDER edit SHORT --preset final` (it also needs the passing checks) writes `out/<slug>.mp4` (1080×1920, 30 fps, H.264 + AAC 48 kHz stereo) and
-   marks `final`. If you chain it after the render and frame-check, read every step's `BSA_RESULT`: a refusal
+   marks `final`. The same edit also writes the caption files beside it: `out/<slug>.srt`, `out/<slug>.vtt` and
+   `out/<slug>-transcript.txt`, cue for cue with the captions in the video. If you chain it after the render and frame-check, read every step's `BSA_RESULT`: a refusal
    prints one too (`"ok": false` and the `error`), so relay it rather than retrying blind.
 4. `BLENDER probe "<short>/out/<slug>.mp4"` if you want to double-check: width 1080, height 1920, fps 30, frames
    equal to the timeline's `n_frames`, `has_audio` true.

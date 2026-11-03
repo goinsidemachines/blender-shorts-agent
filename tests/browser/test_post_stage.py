@@ -285,3 +285,21 @@ def test_offline_checklist_boxes_work_but_are_not_saved(view, tmp_path, bsa_home
     expect(box).to_be_checked()
     assert checklist.load(sdir) == {}
     assert_healthy(view)
+
+
+def test_the_whole_post_stage_on_one_short(view, live_server):
+    from bsa import captions, settings, thumbs
+
+    srv = live_server("done")
+    _set_post(srv.sdir, pinned_comment="More like this: https://example.com/x", link="https://example.com/x")
+    pagefix.write_thumbs(srv.sdir, 2)
+    captions.write_files(srv.sdir, load_short(srv.sdir / "source" / "short.json"), settings.load_settings())
+    thumbs.choose(srv.sdir, 1, "chat")
+    p = open_short(view, srv, stage="post")
+    stage = p.locator("#bsa-stage")
+    expect(stage.get_by_role("heading", name="Candidate 1")).to_be_visible()
+    expect(stage.get_by_role("heading", name="Post text")).to_be_visible()
+    expect(stage.get_by_role("button", name="Copy the title")).to_be_visible()
+    expect(stage.get_by_role("heading", name="Files")).to_be_visible()
+    expect(stage.get_by_role("heading", name="Before you post")).to_be_visible()
+    assert_healthy(p)

@@ -53,6 +53,13 @@ Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render
 - `BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]`: single frames at fractions of shots, current
   build, engine and look, reduced size, into `review/test-frames/` (takes the GPU lock).
 - `BLENDER grab SHORT --preset preview|final --at <s>...` (or `--sheet`): frames of the edited MP4, true colour.
+- `BLENDER thumbs SHORT [--hero SHOT@FRAME]... [--only N]`: renders the thumbnail candidates (both sizes) into
+  `review/thumbs/`, with the checks on each (`playbook/09-post.md`). Run it with `run_in_background: true`.
+- `CLI captions SHORT`: writes the caption files (`.srt`, `.vtt`, transcript) beside the final video. The final edit
+  already does; this is for a manual rerun, and it refuses when the final video is stale.
+- `CLI post SHORT`: writes `out/post-pack.md` (every post field and file) and lists problems. `CLI post SHORT
+  --posted URL [--platform youtube|instagram|tiktok|other]` records where it went (stored only, never opened);
+  `CLI post related SHORT` lists the user's other posted shorts for the "related video" line.
 - `BLENDER preview SHORT`: the whole rebuild chain (build, done build, mix, check, render preview, frame-check, edit).
 - `BLENDER render SHORT --preset preview|final`: only shots whose content fingerprint changed render again (and
   `BLENDER check SHORT` re-checks only those); `--shot ID --frames 120-140,200` or `--redo-flagged` redo single
@@ -128,7 +135,7 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
      --reply "why not"`. A note on a stage that is already approved means going back: ask the user before you
      reset anything (`CLI state SHORT reset STAGE`).
    - **What a note points at:** each note has a `target` (`kind`, `id`, and for a frame `shot`) and the user's
-     `text`; read both. Three kinds come from the page's review tools:
+     `text`; read both. Four kinds come from the page's review tools:
      - **A frame note** (`kind` `frame`, from "Note at this moment" under a video's timeline) means "look at frame
        N" of that video. Frames count from 1 in the edited video, at 30 fps. Grab it with `BLENDER grab SHORT
        --preset final --at S`, where `S = (N - 0.5) / 30` (the middle of the frame: frame 412 is `--at 13.7167`),
@@ -140,6 +147,11 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
        fix that shot, then rebuild as usual (`BLENDER preview SHORT`, and the final again when it was made).
        When the page says "This video was cut from an older timing", its markers are hidden and frame numbers
        may not match the current timing: run the edit again first (`playbook/08-render.md`).
+     - **A `thumbnail` note** (`kind` `thumbnail`, from "+ Note on candidate N" on the Post stage; its `id` is the
+       candidate's number) asks for a change to that thumbnail. Change `post.thumbnail` (the text, or that
+       candidate's entry in `heroes`), then `BLENDER thumbs SHORT --only N` and answer the note. A frame note whose
+       text is "Use this frame for the thumbnail" (the button on a frame of the Final timeline) means: make that
+       frame a thumbnail hero. Its `shot` and `id` give `<shot>@<frame>`; see `playbook/09-post.md`.
      - **"Re-take this line"** (a `line` note on Narration, from the voice check; its `id` is the line's id): run
        `CLI narrate SHORT --line ID` with `run_in_background: true`. It throws away only that line's take and
        speaks it again with the next seed; every other take is kept. When the voice misread a word (the voice
