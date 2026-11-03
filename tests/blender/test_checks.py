@@ -1,5 +1,6 @@
 import math
 import os
+import sys
 import tempfile
 from itertools import pairwise
 from pathlib import Path
@@ -1249,3 +1250,186 @@ def test_the_covered_check_measures_the_kits_cards():
         assert len(found) == 1 and found[0].severity == "error" and "at most" in found[0].message, found
     finally:
         _with_kit(None)
+
+
+# --- styles and sets ----------------------------------------------------------------------------------------------
+
+
+def _fixtures():
+    here = Path(__file__).resolve().parent
+    for p in (here.parent, here / "fixtures"):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
+
+
+def _kit_box(name, location, size=0.6, rotation=(0.0, 0.0, 0.0)):
+    """A cube with a kit material (a style bevels it), turned by `rotation`."""
+    obj = _cube(name, location, size=size, material=False)
+    obj.rotation_euler = rotation
+    look.assign(obj, look.kit_material(name, "plastic", "#808080"))
+    return obj
+
+
+def _bevel_scene():
+    """A grounded box standing on one edge on the floor, and a box resting on its edge 5 mm into another's top."""
+    sc = _scene()
+    s = 0.6
+    r = s / math.sqrt(2)
+    bake.tag(_kit_box("OnEdge", (0, 0, r), s, (0, math.radians(45), 0)), "grounded")
+    _kit_box("Base", (2, 0, s / 2), s)
+    tipped = _kit_box("Tipped", (2, 0, s + r - 0.005), s, (0, math.radians(45), 0))
+    tipped.scale.y = 0.9  # its sides inside the base's: no coplanar faces
+    return sc
+
+
+def _physical(sc):
+    return sorted((f.check, f.obj, f.message) for f in checks.run_checks(sc, _timeline())
+                  if f.check in ("floating", "overlap"))  # fmt: skip
+
+
+def test_style_bevels_change_no_floating_or_overlap_finding():
+    """The style bevel rounds every edge (toy, clay, paper): measured as rendered, a box standing on an edge floats
+    and a box sunk 5 mm by its edge is clear. The checks measure the parts without it, as built."""
+    _fixtures()
+    from kitfix import KIT
+
+    from bsa.blender import styles
+    from bsa.kit import kit_from
+
+    plain = _physical(_bevel_scene())
+    assert [c for c, _, _ in plain] == ["overlap"], plain  # the 5 mm sink; nothing floats
+    assert "'Tipped'" in plain[0][2] and "'Base'" in plain[0][2], plain
+    for style in ("toy", "clay", "paper"):
+        sc = _bevel_scene()
+        styles.apply(sc, kit_from({**KIT, "style": style}), target="OnEdge", size=3.0)
+        mods = [o.modifiers.get(styles.BEVEL) for o in sc.objects if o.name in ("OnEdge", "Base", "Tipped")]
+        assert len(mods) == 3 and all(m is not None and m.show_viewport and m.show_render for m in mods), style
+        got = _physical(sc)
+        assert got == plain, (style, got)
+        assert all(m.show_viewport and m.show_render for m in mods), style  # put back as found
+
+
+def _lever(set_name, style):
+    """The demo lever (rocking) in a fresh file, with the set `set_name` (based and dressed) and the style `style`
+    (None: neither), and a timeline of its main-scene shot "s1" only."""
+    _fixtures()
+    from dataclasses import replace
+
+    from kitfix import KIT
+    from sets_short import two_shot
+
+    from bsa.blender import demo, sets, styles
+    from bsa.blender.scene import setup_scene
+    from bsa.kit import kit_from
+    from bsa.timeline import build_timeline
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    short = two_shot(sc.name, "lever")
+    setup_scene(sc, short, "eevee", "still")
+    k = kit_from({**KIT, "style": style or "toy"})
+    if set_name:
+        sets.base(sc, k, set_name, 3.6)
+    built = demo.lever(sc, k)
+    pivot = bpy.data.objects["LeverPivot"]
+    for f, deg in ((1, 11.0), (15, -11.0), (30, 11.0)):
+        pivot.rotation_euler = (0.0, math.radians(deg), 0.0)
+        pivot.keyframe_insert("rotation_euler", frame=f)
+    full = build_timeline(short, {"l1": 0.6, "l2": 0.4})
+    if style:
+        styles.apply(sc, k, **{key: built[key] for key in ("target", "size", "key")})
+    dressed = sets.dress(sc, k, short, full, None) if set_name else {}
+    return sc, short, replace(full, shots=[s for s in full.shots if s.id == "s1"]), dressed
+
+
+def _lever_findings(sc, short, tl, style="toon"):
+    _fixtures()
+    from kitfix import KIT
+
+    try:
+        _with_kit({**KIT, "style": style})
+        return checks.run_checks(sc, tl, short=short)
+    finally:
+        _with_kit(None)
+
+
+def _as_rows(found):
+    return sorted((f.check, f.severity, f.obj, f.frame or 0, f.message) for f in found)
+
+
+def test_toon_lever_with_lines_gives_no_new_findings():
+    """The workbench set and the toon style with its ink lines add no finding to the demo lever."""
+    base = _as_rows(_lever_findings(*_lever(None, None)[:3]))
+    sc, short, tl, dressed = _lever("workbench", "toon")
+    assert dressed["kept"], dressed
+    assert sc.render.use_freestyle
+    assert [o for o in sc.objects if bake.set_role(o) == "floor"]
+    got = _as_rows(_lever_findings(sc, short, tl))
+    assert got == base, (got, base)
+
+
+def _set_box(name, location, role="prop", size=0.6):
+    obj = _cube(name, location, size=size)
+    obj["bsa_tags"] = f"set:{role}"
+    return obj
+
+
+def test_set_props_are_not_heroes_and_set_pairs_are_not_tested():
+    sc = _scene()
+    sc.objects["Floor"]["bsa_tags"] = "set:floor"
+    bake.tag(_cube("Crate", (0, 0, 0.5)), "grounded")  # on the set's floor: held up by it
+    _set_box("Jar", (2.0, 0, 0.3))
+    _set_box("Toolbox", (2.4, 0, 0.3)).scale.y = 0.9  # 20 cm into the jar: both scenery, not tested
+    stray = _set_box("Ruler", (3.4, 0, 0.5))
+    stray["bsa_tags"] = "set:prop,hero,grounded"  # a hand-written hero tag: still scenery; floats, not checked
+    stray.location.x = 6.0  # half out of the frame: no frame_edge for scenery
+    _move_x(_set_box("Hammer", (-3.0, 0, 0.3)), [-3.0] * 14 + [-2.0] * 16)  # a jump: no pop for scenery
+    found = checks.run_checks(sc, _timeline())
+    bad = [f for f in found if f.check in ("overlap", "floating", "pops", "pop_in", "frame_edge", "framing")]
+    assert not bad, bad
+    _set_box("Sunk", (0, 0, 1.25))  # 5 cm into the crate: the subject is still checked against a set prop
+    found = [f for f in checks.run_checks(sc, _timeline()) if f.check == "overlap"]
+    assert len(found) == 1 and "'Crate'" in found[0].message and "'Sunk'" in found[0].message, found
+
+
+def _clearance(found):
+    return [f for f in found if f.check == "set_clearance"]
+
+
+def _a_prop(sc):
+    return min((o for o in sc.objects if bake.set_role(o) == "prop"), key=lambda o: o.name)
+
+
+def test_set_clearance_flags_a_prop_moved_onto_the_subject():
+    sc, short, tl, _ = _lever("workbench", "toon")
+    assert not _clearance(_lever_findings(sc, short, tl))
+    prop = _a_prop(sc)
+    crate = bpy.data.objects["Crate"].matrix_world.translation.copy()
+    prop.location = crate + 0.4 * (sc.camera.matrix_world.translation - crate)  # between the camera and the crate
+    found = _clearance(_lever_findings(sc, short, tl))
+    assert len(found) == 1 and found[0].severity == "warning" and found[0].obj == prop.name, found
+    msg = found[0].message
+    assert f"set prop {prop.name!r} is over the subject in shot 's1'" in msg, msg
+    assert f"replace=[{prop['bsa_prop']!r}]" in msg, msg
+
+
+def test_set_clearance_flags_a_prop_under_the_caption():
+    from bsa import overlays
+
+    sc, short, tl, _ = _lever("workbench", "toon")
+    span = tl.shots[0]
+    frame = (span.f0 + span.f1) // 2
+    boxes = overlays.shot_boxes(short, tl, short.shots[0], span, None, None, [frame])[frame]
+    cap = next(b for kind, _, _, b in boxes if kind == "caption")
+    sc.frame_set(frame)
+    cam = sc.camera
+    tr, br, bl, tl_ = (cam.matrix_world @ v for v in cam.data.view_frame(scene=sc))
+    u, v = (cap.x + cap.w / 2) / 1080, (cap.y + cap.h / 2) / 1920
+    on_frame = tl_.lerp(tr, u).lerp(bl.lerp(br, u), v)
+    origin = cam.matrix_world.translation
+    prop = _a_prop(sc)
+    prop.location = origin + (on_frame - origin).normalized() * 3.0
+    prop.scale = (0.1, 0.1, 0.1)  # small: under the caption only
+    found = _clearance(_lever_findings(sc, short, tl))
+    assert len(found) == 1 and found[0].obj == prop.name, found
+    assert "over the caption in shot 's1'" in found[0].message, found[0].message

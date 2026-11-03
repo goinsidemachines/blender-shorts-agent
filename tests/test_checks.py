@@ -70,5 +70,10 @@ def test_checks_in_blender(blender_run):
         "test_a_small_subject_is_framing_unless_the_shot_is_wide",
         "test_a_subject_in_one_half_leaves_the_other_empty",
         "test_the_covered_check_measures_the_kits_cards",
+        "test_style_bevels_change_no_floating_or_overlap_finding",
+        "test_toon_lever_with_lines_gives_no_new_findings",
+        "test_set_props_are_not_heroes_and_set_pairs_are_not_tested",
+        "test_set_clearance_flags_a_prop_moved_onto_the_subject",
+        "test_set_clearance_flags_a_prop_under_the_caption",
     ):
         assert f"PASS {name}" in result.stdout

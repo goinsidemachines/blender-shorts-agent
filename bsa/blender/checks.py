@@ -8,7 +8,14 @@ overlaps, normals, grounding and pops are not checked on instances: append the o
 "overlay" (a glow halo, a distance line, an arrow: not physical geometry) is left out of the overlap and z-fighting
 checks (as either object of a pair), self_zfight, self_overlap, floating (neither checked nor counted as a support)
 and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero (not when
-tagged "overlay:may-exit": it leaves the frame on purpose). An open mesh
+tagged "overlay:may-exit": it leaves the frame on purpose). Set objects (tagged "set:<role>": the floor, walls,
+backdrop and props a scene set made) are scenery: never heroes (whatever else they are tagged), so never in framing,
+frame_edge, self_overlap or the covered check's subjects; a pair of two set objects is not tested for overlap or
+z-fighting, but a set object against any other object is, so a prop sunk into the subject or a face flush with it is
+still found; floating, pops and pop_in skip them, and a "set:floor" still holds up a grounded part. A style's bevel
+(the "bsa style bevel" modifier of toy, clay and paper) is switched off while the checks run (and put back after):
+every geometry check measures the parts as built, so rounding an edge never makes a part resting on it float, nor
+hides a shallow overlap. An open mesh
 tagged "surface" (water moved by waves, a liquid level: things float in it and dip into it) is left out of the
 overlap and z-fighting checks (as either object of a pair) and gets every other check; it still holds up a grounded
 object. A closed mesh is a solid: it is checked as usual whatever its tags, and a "surface" tag on it is a names
@@ -97,6 +104,11 @@ Tolerances (scene units are metres):
   dimension. A teleport, a keyed jump or a one-frame snap pops; a ball that falls fast and then hangs almost still,
   or a still ball struck into motion, does not (its speed changes once and stays changed). The frame before and
   after each shot are read as references for its first and last moves, not judged (a cut may move anything).
+- set_clearance: a set prop (tagged "set:prop") whose screen box, at a sampled frame, meets the subject's (the
+  shot's heroes' boxes; with no hero, every other rendered mesh that is not scenery or an overlay, as placement takes
+  it) or a card, caption or label of the edit, or a strip the Shorts player covers, by any positive overlap: the one
+  rule placement uses (bsa.setplace.collision, here with no margin round the subject). A warning, one per prop and
+  shot, naming the frames: a prop the saved arrangement kept that a new timing or motion now puts in the way.
 - names: object names ending in ".001" (Blender renamed a duplicate: object names are one namespace across
   scenes) are one warning naming them; a contact tag naming no object in the scene, a hero tag naming a shot
   short.json does not have, or a near label naming an object its shot's scene does not have, is an error.
@@ -117,9 +129,10 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from bsa import kitlayout, overlays, viewer
+from bsa import kitlayout, overlays, setplace, viewer
 from bsa.blender.anchors import screen_box, screen_top
-from bsa.blender.bake import category, is_hero, is_overlay, is_surface, may_exit, tags
+from bsa.blender.bake import category, is_hero, is_overlay, is_set, is_surface, may_exit, set_role, tags
+from bsa.blender.styles import BEVEL as STYLE_BEVEL
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
 from bsa.pops import find_pops
@@ -250,11 +263,12 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
     mesh, material, collection and library names with words a rule may forbid are "hard_rule" warnings. `cap`: list
     the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead)."""
     original = scene.frame_current
-    run = _Run(scene)
-    short = _short_beside_blend() if short is None else short
-    run.short, run.tl = short, tl
-    run.kit, run.kit_font = _kit_and_font(short)
+    bevels = _hide_style_bevels(scene)  # measure the parts as built, not rounded by a style
     try:
+        run = _Run(scene)
+        short = _short_beside_blend() if short is None else short
+        run.short, run.tl = short, tl
+        run.kit, run.kit_font = _kit_and_font(short)
         if scene.world and scene.world.node_tree:
             for problem in _image_problems(scene.world.node_tree):
                 run.add("images", "error", None, None, f"world: {problem}", key=("world", problem))
@@ -265,9 +279,30 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
             run.shot(shot, sample_every, progress)
         run.finish_self()
     finally:
+        _restore_modifiers(bevels)
         scene.frame_set(original)
     found = _cap_overlaps(run.findings) if cap else run.findings
     return sorted(found, key=lambda f: f.severity != "error")
+
+
+def _hide_style_bevels(scene) -> list[tuple]:
+    """Switch off every style bevel ("bsa style bevel", bsa.blender.styles) in the viewport and render, so the
+    evaluated meshes the checks read are the parts as built. Returns what to put back (_restore_modifiers)."""
+    hidden = []
+    for obj in scene.objects:
+        mod = obj.modifiers.get(STYLE_BEVEL) if obj.type == "MESH" and obj.library is None else None
+        if mod is not None and (mod.show_viewport or mod.show_render):
+            hidden.append((obj.name, mod.name, mod.show_viewport, mod.show_render))
+            mod.show_viewport = mod.show_render = False
+    return hidden
+
+
+def _restore_modifiers(hidden: list[tuple]) -> None:
+    for obj_name, mod_name, viewport, render in hidden:
+        obj = bpy.data.objects.get(obj_name)
+        mod = obj.modifiers.get(mod_name) if obj is not None else None
+        if mod is not None:
+            mod.show_viewport, mod.show_render = viewport, render
 
 
 def _kit_and_font(short):
@@ -321,10 +356,19 @@ class _Run:
         self.drift: dict[tuple[str, str], dict] = {}  # per shot: where each such pair meets, and how far it drifts
         self.overlay = {o.name for o in scene.objects if is_overlay(o)}  # glows, guide lines: not physical
         self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
+        self.set_objs = {o.name for o in scene.objects if is_set(o)}  # a set's floor, walls and props: scenery
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
         self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
         self.kit_font = None
+
+    def hero(self, obj, shot_id=None) -> bool:
+        """is_hero, but a set object is never a hero (scenery, whatever it is tagged)."""
+        return obj.name not in self.set_objs and is_hero(obj, shot_id)
+
+    def solid(self, name) -> bool:
+        """Checked for grounding: not an overlay, not scenery (a set:floor still holds others up)."""
+        return name not in self.overlay and name not in self.set_objs
 
     def add(self, check, severity, obj, frame, message, key=None, pair=None):
         key = (check, obj, message) if key is None else (check, *key)
@@ -341,7 +385,7 @@ class _Run:
         views: dict[str, dict] = {}  # heroes and overlays: {"overlay", "samples": [(frame, share outside)]}
         self.cur, self.changed, self.hits, self.drift = {}, {}, {}, {}
         sizes: dict[str, float] = {}
-        seen = {"below": {}, "framing": {}, "texts": {}}  # what the viewer sees at the sampled frames (see_frame)
+        seen = {"below": {}, "framing": {}, "texts": {}, "props": {}}  # what the viewer sees at sampled frames
         self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
         shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
         for frame in range(shot.f0, shot.f1 + 1):
@@ -384,7 +428,9 @@ class _Run:
             m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
             scale = float(np.linalg.norm(m[:3, :3], axis=0).max())
             now[obj.name] = scale > POP_IN_SCALE
-            if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name) or obj.name in self.overlay:
+            if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name):
+                continue
+            if obj.name in self.overlay or obj.name in self.set_objs:
                 continue
             corners = np.array([tuple(c) for c in obj.evaluated_get(self.depsgraph).bound_box], dtype=np.float64)
             world = corners @ m[:3, :3].T + m[:3, 3]
@@ -411,31 +457,57 @@ class _Run:
         dg = self.depsgraph
         cam_ev = cam.evaluated_get(dg)
         geos = self.cur
-        heroes = [o for o in objs if is_hero(o, span.id) and o.name not in self.overlay and o.name in geos]
+        heroes = [o for o in objs if self.hero(o, span.id) and o.name not in self.overlay and o.name in geos]
         self.below_ground(frame, np.array(cam_ev.matrix_world.translation), [geos[o.name] for o in heroes], geos,
                           seen["below"])  # fmt: skip
         boxes = {o.name: screen_box(self.scene, cam_ev, o, dg) for o in heroes}
         seen["framing"][frame] = [viewer.box_rect(b) for b in boxes.values()]
         shot = self.short_shot(span.id)
-        if shot is None or self.tl is None:
+        texts = []
+        if shot is not None and self.tl is not None:
+            anchors, subjects = {}, {n: viewer.box_rect(b) for n, b in boxes.items()}
+            for label in shot.labels:
+                near = label_near(label)
+                obj = self.scene.objects.get(near) if near else None
+                if obj is None:
+                    continue
+                anchors[near] = {"f0": frame, "points": [screen_top(self.scene, cam_ev, obj, dg)],
+                                 "category": category(obj)}  # a kit's part label shows its category's dot
+                subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
+            try:
+                texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
+                                            {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame],
+                                            kit=self.kit, font=self.kit_font)[frame]  # fmt: skip
+            except kitlayout.LayoutError as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
+                self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
+            else:
+                seen["texts"][frame] = {"subjects": subjects, "texts": texts}
+        self.set_clearance(frame, cam_ev, objs, boxes if heroes else None, texts, seen["props"])
+
+    def set_clearance(self, frame, cam_ev, objs, hero_boxes, texts, hits):
+        """Note each rendered set prop on screen at `frame` that meets the subject (`hero_boxes`, the shot's heroes'
+        screen boxes; None with no hero: every other rendered mesh that is not scenery or an overlay, as placement
+        takes it), a text box of the edit (`texts`: (kind, text, near, rect)) or a strip the player covers:
+        hits[prop] gets (frame, why) (bsa.setplace.collision, no margin)."""
+        props = [o for o in objs if o.name in self.set_objs and set_role(o) == "prop"]
+        if not props:
             return
-        anchors, subjects = {}, {n: viewer.box_rect(b) for n, b in boxes.items()}
-        for label in shot.labels:
-            near = label_near(label)
-            obj = self.scene.objects.get(near) if near else None
-            if obj is None:
-                continue
-            anchors[near] = {"f0": frame, "points": [screen_top(self.scene, cam_ev, obj, dg)],
-                             "category": category(obj)}  # a kit's part label shows its category's dot
-            subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
-        try:
-            texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
-                                        {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame],
-                                        kit=self.kit, font=self.kit_font)  # fmt: skip
-        except kitlayout.LayoutError as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
-            self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
-            return
-        seen["texts"][frame] = {"subjects": subjects, "texts": texts[frame]}
+        dg = self.depsgraph
+
+        def rect(o):
+            return viewer.box_rect(screen_box(self.scene, cam_ev, o, dg))
+
+        if hero_boxes is None:
+            subjects = [rect(o) for o in objs if o.name not in self.set_objs and o.name not in self.overlay]
+        else:
+            subjects = [viewer.box_rect(b) for b in hero_boxes.values()]
+        subjects = [r for r in subjects if r is not None]
+        rects = [(kind, r) for kind, _, _, r in texts] + [("covered", r) for r in setplace.covered_rects()]
+        for prop in props:
+            r = rect(prop)
+            why = setplace.collision(r, subjects, rects, 0) if r is not None else None
+            if why:
+                hits.setdefault(prop.name, []).append((frame, why))
 
     def below_ground(self, frame, cam_pos, heroes, geos, below):
         """Note the camera at `frame` when it is under the top surface of a mesh that acts as ground (bsa.viewer
@@ -477,6 +549,15 @@ class _Run:
             fps = self.tl.fps if self.tl is not None else 30
             for f in viewer.coverage_findings(span.id, seen["texts"], max(1, every), fps):
                 self.add(f.check, f.severity, f.obj, f.frame, f.message)
+        for name, hits in sorted(seen["props"].items()):
+            frames = [f for f, _ in hits]
+            obj = self.scene.objects.get(name)
+            prop = str(obj.get("bsa_prop", name)) if obj is not None else name  # the set's name for it
+            self.add("set_clearance", "warning", name, frames[0],
+                     f"set prop {name!r} is {hits[0][1]} in shot {span.id!r} (frames "
+                     f"{viewer.frame_spans(frames, max(1, every))}): move or drop it with sets.dress(..., "
+                     f"replace=[{prop!r}]) after asking, or let the next dress place it again",
+                     key=(name, span.id))  # fmt: skip
 
     def track_positions(self, frame, positions):
         """Positions at a frame just outside a shot, kept with the shot's own for the pops check only."""
@@ -515,21 +596,21 @@ class _Run:
                 continue
             geos[obj.name] = geo
             state, share, seen = _view(self.scene, cam, geo) if cam else ("in", 0.0, None)
-            if cam and (is_hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
+            if cam and (self.hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
                 views.setdefault(obj.name, {"overlay": obj.name in self.overlay, "samples": []})["samples"].append(
                     (frame, share, seen))
             if obj.name not in self.static_done:
                 self.static_done.add(obj.name)
                 self.static(obj, depsgraph, frame)
             self.material(obj.name, obj.evaluated_get(depsgraph).material_slots, frame, state)
-            if (state != "out" or is_hero(obj)) and obj.name not in self.overlay:
+            if (state != "out" or self.hero(obj)) and obj.name not in self.overlay:
                 self.coplanar(obj, geo, frame)
         self.note_changes(frame, geos)
         self.overlaps(frame, objs, geos)
         for obj in objs:
-            if "grounded" in tags(obj) and obj.name in geos and obj.name not in self.overlay:
+            if "grounded" in tags(obj) and obj.name in geos and self.solid(obj.name):
                 self.floating(frame, obj.name, geos)
-            if obj.name in geos and is_hero(obj) and obj.name not in self.overlay:
+            if obj.name in geos and self.hero(obj) and obj.name not in self.overlay:
                 self.loose_parts(obj.name, geos[obj.name], frame)
 
     def sweep(self, frame, objs):
@@ -549,7 +630,7 @@ class _Run:
             return
         self.overlaps(frame, objs, geos, only=changed)
         for obj in objs:
-            if obj.name in changed and "grounded" in tags(obj) and obj.name not in self.overlay:
+            if obj.name in changed and "grounded" in tags(obj) and self.solid(obj.name):
                 self.floating(frame, obj.name, geos)
 
     def images(self, name, slots, frame):
@@ -640,7 +721,7 @@ class _Run:
                 if bad:
                     self.add("normals", "error", obj.name, frame, f"mesh is inside out ({len(bad)} of "
                              f"{len(shells)} shells have negative signed volume, e.g. {bad[0].volume:.4g})")  # fmt: skip
-        if open_edges and is_hero(obj):
+        if open_edges and self.hero(obj):
             self.add("normals", "warning", obj.name, frame, f"hero mesh has {open_edges} non-manifold edges")
 
     def faceted(self, obj, mesh, frame):
@@ -784,6 +865,8 @@ class _Run:
         else:
             pairs = sorted({(min(a, b), max(a, b)) for a in only for b in names if b != a})
         for a, b in pairs:
+            if a in self.set_objs and b in self.set_objs:  # scenery against scenery: not checked
+                continue
             ga, gb = geos[a], geos[b]
             if not _boxes_touch(ga, gb, OVERLAP_TOL):
                 continue
@@ -967,7 +1050,7 @@ class _Run:
 
     def pops(self, shot, positions, sizes):
         for name, track in positions.items():
-            if name in self.overlay:  # a glow or guide may snap into place
+            if name in self.overlay or name in self.set_objs:  # a glow or guide may snap into place; scenery
                 continue
             for frame, d, limit in find_pops(track, sizes.get(name, 0.0), judged=(shot.f0, shot.f1)):
                 self.add("pops", "error", name, frame, f"jumps {d:.3f} m in one frame (limit {limit:.3f} m from the "
