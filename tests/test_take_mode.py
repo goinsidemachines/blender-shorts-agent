@@ -29,7 +29,7 @@ take = a[a.index('--take') + 1] if '--take' in a else None
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, 'calls.txt'), 'a', encoding='utf-8') as f:
     f.write(json.dumps({'ids': [it['id'] for it in items], 'texts': [it['text'] for it in items], 'seed': seed,
-                        'take': take}) + '\\n')
+                        'take': take, 'items': items}) + '\\n')
 SR = 48000
 for it in items:
     sentences = [s for s in re.split(r'(?<=[.!?])\\s+', it['text'].strip()) if s]
@@ -97,6 +97,10 @@ def test_paragraph_mode_cuts_takes_into_line_takes(tmp_path):
     calls = e.calls()
     assert len(calls) == len(groups) and all(len(c["ids"]) == 1 and c["take"] for c in calls)  # one call per take
     assert [c["texts"][0] for c in calls] == [takes.joined(g) for g in groups]
+    # the take's item also names its lines and their texts, for a tool that wants a pause between them
+    assert [(c["items"][0]["lines"], c["items"][0]["texts"]) for c in calls] == [
+        ([ln.id for ln in g], [ln.text for ln in g]) for g in groups
+    ]
     ids = [ln.id for ln in _short().lines]
     for lid in ids:
         assert contract.check_take(e.vo / f"{lid}.wav") == []

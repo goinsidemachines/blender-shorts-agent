@@ -11,7 +11,7 @@ import pytest
 from bsa import jobstate
 from bsa.narrate import contract, elevenlabs, install, local
 from bsa.narrate import run as nrun
-from bsa.short import Line, Short
+from bsa.short import Line, Short, Shot
 
 KEY = "sk_test_SECRET_KEY_12345"
 
@@ -1162,3 +1162,82 @@ def test_lead_in_pads_cut_lines_and_fallbacks(tmp_path):
     for lid in ids:
         assert contract.leading_silence(vo / f"{lid}.wav") == pytest.approx(0.4, abs=0.015)
     assert contract.read_durations(vo, ids) == res.durations
+
+
+def _two_take_short(hold=True):
+    return Short(slug="t", title="T", length_s=10, shots=[Shot("s1", "One", "a", "a", hold=hold), Shot("s2", "Two", "b", "b")],
+                 lines=[Line("l01", "The pendulum swings out wide.", "s1"), Line("l02", "Gravity pulls it back.", "s1"),
+                        Line("l03", "Each swing takes the same time.", "s2"),
+                        Line("l04", "Only its length can change that.", "s2")])  # fmt: skip
+
+
+def test_a_retake_waiting_in_a_paragraph_moves_the_whole_take_on(tmp_path):
+    log = []
+    fake = SimpleNamespace(generate=_sentence_gen(log))
+    nrun.narrate(tmp_path, _para_short(), {"narrator": PARA}, local=fake)
+    vo = tmp_path / "audio" / "vo"
+    assert nrun.retake(vo, "l02") == 8
+    (vo / "l01.wav").unlink()
+    (vo / "l03.wav").unlink()
+    nrun.narrate(tmp_path, _para_short(), {"narrator": PARA}, local=fake)
+    assert [(ids, seed) for ids, _, seed, _ in log] == [(["t01"], 7), (["t01"], 8)]
+    assert nrun.take_seeds(vo) == {"l01": 8, "l02": 8, "l03": 8}
+    assert nrun.take_records(vo)[0]["seed"] == 8
+
+
+class _Crash(BaseException):
+    pass
+
+
+def test_a_run_stopped_between_takes_keeps_the_finished_take(tmp_path):
+    log, crash = [], [True]
+    gen = _sentence_gen(log)
+
+    def crashing(model, lns, voice, speed, out, seed=7):
+        if lns[0].id == "t02" and crash[0]:
+            raise _Crash
+        return gen(model, lns, voice, speed, out, seed=seed)
+
+    fake = SimpleNamespace(generate=crashing)
+    vo = tmp_path / "audio" / "vo"
+    with pytest.raises(_Crash):
+        nrun.narrate(tmp_path, _two_take_short(), {"narrator": PARA}, local=fake)
+    assert [t["id"] for t in nrun.take_records(vo)] == ["t01"]
+    assert {k: v["source"] for k, v in nrun.line_sources(vo).items()} == {"l01": "take", "l02": "take"}
+    crash[0] = False
+    log.clear()
+    res = nrun.narrate(tmp_path, _two_take_short(), {"narrator": PARA}, local=fake)
+    assert res.status == "ok" and [ids for ids, *_ in log] == [["t02"]]  # take 1 isn't paid for twice
+    assert [t["id"] for t in nrun.take_records(vo)] == ["t01", "t02"]
+    assert {v["source"] for v in nrun.line_sources(vo).values()} == {"take"}
+
+
+def test_a_failed_take_is_spoken_line_by_line(tmp_path):
+    log = []
+    gen = _sentence_gen(log)
+
+    def failing(model, lns, voice, speed, out, seed=7):
+        if lns[0].id.startswith("t"):
+            raise contract.NarrationError("the engine ran out of memory")
+        return gen(model, lns, voice, speed, out, seed=seed)
+
+    res = nrun.narrate(tmp_path, _para_short(), {"narrator": PARA}, local=SimpleNamespace(generate=failing))
+    assert res.status == "ok"
+    assert [(ids, seed) for ids, _, seed, _ in log] == [(["l01", "l02", "l03"], 7)]
+    vo = tmp_path / "audio" / "vo"
+    why = "the take failed: the engine ran out of memory"
+    assert nrun.line_sources(vo) == {i: {"source": "fallback", "reason": why} for i in ("l01", "l02", "l03")}
+    assert nrun.take_records(vo) == []
+
+
+def test_take_records_are_dropped_when_the_lines_regroup(tmp_path):
+    vo = tmp_path / "audio" / "vo"
+    short = _two_take_short(hold=False)  # no hold: one paragraph of four lines
+    narrator = nrun.narrator_for({"narrator": PARA}, short)
+    nrun.clear_stale_takes(vo, short, narrator)
+    nrun.narrate(tmp_path, short, {"narrator": PARA}, local=SimpleNamespace(generate=_sentence_gen([])))
+    assert nrun.clear_stale_takes(vo, short, narrator) == []
+    assert [t["lines"] for t in nrun.take_records(vo)] == [["l01", "l02", "l03", "l04"]]
+    regrouped = _two_take_short(hold=True)  # a hold on s1 now splits it into t01 = l01, l02 and t02 = l03, l04
+    assert nrun.clear_stale_takes(vo, regrouped, narrator) == []  # the line takes themselves are still good
+    assert nrun.take_records(vo) == [] and not (vo / nrun.TAKES_DIR / "t01.wav").exists()

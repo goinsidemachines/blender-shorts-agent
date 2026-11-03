@@ -7,13 +7,22 @@ The command has placeholders {lines} (a lines JSON file), {out} (the folder for 
 {voice}, {speed} and {take}. It must write <out>/<id>.wav for every line. Whatever WAV it writes is normalised to the
 contract (48 kHz mono 16-bit). The command is run without a shell, so a path with spaces stays one argument.
 
-{take} is what lets paragraph take mode use the tool: for a paragraph take it is the take's id (the lines file then
-holds one item, the take, whose text is several lines joined), and it is empty for a line spoken on its own. A command
-without {take} is always run line by line.
+Paragraph takes (narrator.take_mode paragraph) need {take} in the command. The contract:
+- For a paragraph take, {take} is the take's id (t01, t02, ...) and the {lines} file holds one item:
+  {"id": "t01", "text": <the take's lines joined with spaces>, "lines": [line ids], "texts": [each line's text]}.
+  The tool speaks "text" in one go (it may use "lines"/"texts", e.g. to put a pause between lines; that is optional)
+  and writes <out>/t01.wav. The plugin cuts that take back into one WAV per line; the tool never cuts.
+- For a line spoken on its own (line mode, a line the take couldn't be cut at, a retry, the closing line), {take} is
+  empty ("") and the {lines} file holds the lines as usual ({"id", "text"}); the tool writes <out>/<line id>.wav.
+  The tool must accept an empty {take}.
+- Take ids are reused: t01 is always a short's first paragraph, whatever its words are now. A tool must not cache
+  its output by id (and should not skip a take whose file already exists).
+A command without {take} is always run line by line, also in paragraph mode.
 """
 
 from __future__ import annotations
 
+import json
 import struct
 import subprocess
 import wave
@@ -25,6 +34,7 @@ from bsa.messages import trim
 from bsa.narrate import contract
 from bsa.narrate.contract import SR, NarrationError
 from bsa.settings import split_command
+from bsa.short import spoken_text
 
 _START_HINT = "put the program that runs it first, e.g. python script.py"
 _ADAPTER_HINT = "ask Claude to write a small adapter that turns your tool's output into WAV files"
@@ -32,13 +42,13 @@ _ADAPTER_HINT = "ask Claude to write a small adapter that turns your tool's outp
 
 LOG_FILE = "narrator.log"  # everything the tool printed, per run, in the takes folder
 TAKE_PLACEHOLDER = "{take}"
+_NOTE_WORDS = ("fallback", "fall back", "fell back", "warning", "error")
+LOG_NOTES_MAX = 20
 
 
 def takes_supported(command: str) -> bool:
     """The command can speak a paragraph take: it has the {take} placeholder."""
     return TAKE_PLACEHOLDER in str(command or "")
-_NOTE_WORDS = ("fallback", "fall back", "fell back", "warning", "error")
-LOG_NOTES_MAX = 20
 
 
 def _log(out_dir: Path, argv: list[str], lines, proc=None, failure: str | None = None) -> None:
@@ -105,13 +115,19 @@ def generate(
     speed: float = 1.0,
     run=subprocess.run,
     take: str | None = None,
+    parts=None,
 ) -> dict[str, float]:
     """Run the command for `lines` and return seconds per line, measured from the (normalised) WAVs. `take` fills
-    {take}: a paragraph take's id, or None (empty) for lines spoken on their own."""
+    {take}: a paragraph take's id, or None (empty) for lines spoken on their own. `parts` (a take's own lines) adds
+    their ids and texts to the take's item in the lines file (see the module doc)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     lines_file = out_dir / "lines.json"
     contract.write_lines(lines_file, lines)
+    if parts and len(lines) == 1:
+        item = {"id": lines[0].id, "text": spoken_text(lines[0]), "lines": [ln.id for ln in parts],
+                "texts": [spoken_text(ln) for ln in parts]}  # fmt: skip
+        lines_file.write_text(json.dumps([item], ensure_ascii=False), encoding="utf-8")
     argv = _argv(
         command,
         {
