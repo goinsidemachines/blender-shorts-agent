@@ -124,23 +124,39 @@ def _look() -> dict:
     return json.loads((SDIR / "stills" / "look.json").read_text(encoding="utf-8"))
 
 
-def _box_region(px: np.ndarray) -> np.ndarray | None:
-    """The pixels of the caption box in the lower part of the frame: the bounding box of the pixels near the kit's
-    caption colour there, or None."""
-    h = px.shape[0]
-    band = px[int(h * 0.55) :, :, :3].astype(int)
-    want = np.array([0x1B, 0x2A, 0x3A])
-    near = np.all(np.abs(band - want) <= 10, axis=2)
-    if near.sum() < 400:
-        return None
-    rows, cols = np.where(near.any(axis=1))[0], np.where(near.any(axis=0))[0]
-    return band[rows[0] : rows[-1] + 1, cols[0] : cols[-1] + 1].astype(np.uint8)
+def _caption_boxes() -> dict[int, list]:
+    """{frame: [the caption cards' box rects showing then]}, where the kit's layout puts them (kitlayout.build, as
+    the edit and the look do)."""
+    import dataclasses
+
+    from bsa import cards, fonts, kitlayout
+    from bsa import kit as kit_mod
+
+    short = bsa_blender._load(SDIR)
+    tl, _ = bsa_blender._timeline(SDIR, short)
+    kit = kit_mod.kit_for(settings.load_settings(), short)
+    font, _ = cards.card_font_and_note(kit, fonts.font_caches(SDIR))
+    bare = dataclasses.replace(short, shots=[dataclasses.replace(s, labels=[]) for s in short.shots])
+    ov = kitlayout.build(bare, tl, kit, font)
+    caps = [p for p in ov.cards if p.channel == kitlayout.CH["caption"] and p.at is not None]
+    return {f: [(p.at.x, p.at.y, p.spec.w, p.spec.box_h) for p in caps if p.f0 <= f <= p.f1]
+            for f in range(1, tl.n_frames + 1)}
+
+
+def _box_region(px: np.ndarray, box) -> np.ndarray:
+    """The pixels of the caption box (x, y, w, box height: not its shadow), 12 px in from its rounded edges."""
+    x, y, w, h = box
+    return px[round(y) + 12 : round(y + h) - 12, round(x) + 12 : round(x + w) - 12, :3]
 
 
 def test_look_writes_three_frames_with_cards():
     _fixture()
     fonts_before = set(bpy.data.fonts.keys())
+    stale = SDIR / "stills" / "look" / "s9.jpg"  # a shot an earlier run showed, gone from short.json since
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"old")
     out = bsa_blender.cmd_look(_args())
+    assert not stale.exists(), "a stale look frame was kept"
     data = _look()
     assert [f["shot"] for f in data["frames"]] == ["s1", "s2", "s3"], data
     assert data["style"] == "toon" and data["set"] == "workbench", data
@@ -150,15 +166,16 @@ def test_look_writes_three_frames_with_cards():
     assert out["frames"] == data["frames"]
     assert not [w for w in data["warnings"] if "label" in w], data["warnings"]  # the near label was placed
     assert (SDIR / "stills" / "look" / "kit.png").is_file()
+    boxes = _caption_boxes()
     for f in data["frames"]:
         jpg = SDIR / "stills" / f["file"]
         assert jpg.is_file(), jpg
         px = read_png(jpg)
         assert px.shape[:2] == (1920, 1080), px.shape
         assert px[:1000, :, :3].reshape(-1, 3).std(axis=0).max() > 5, f"{jpg.name}: no picture under the cards"
-        box = _box_region(px)
-        assert box is not None, f"{jpg.name}: no caption box"
-        got = colour.dominant_colour(box)
+        rects = boxes[f["frame"]]
+        assert len(rects) == 1, (f, rects)
+        got = colour.dominant_colour(_box_region(px, rects[0]))
         assert colour.delta_e(got, BOX) <= 4, (jpg.name, colour.srgb_to_hex(got))
     assert not [s for s in bpy.data.scenes if s.name.startswith(("LookFrame", "KitSample"))]
     assert set(bpy.data.fonts.keys()) == fonts_before, list(bpy.data.fonts.keys())
@@ -174,6 +191,7 @@ def test_look_with_another_style_leaves_the_blend_unchanged():
     bsa_blender.cmd_look(_args())
     toon = read_png(SDIR / "stills" / "look" / "s1.jpg").astype(int)
     mtime, digest = BLEND.stat().st_mtime_ns, _digest(BLEND)
+    sets_json = (SDIR / "source" / "sets.json").read_bytes()
     bsa_blender.cmd_look(_args(style="pencil", set="outdoor"))
     data = _look()
     assert data["style"] == "pencil" and data["set"] == "outdoor", data
@@ -181,6 +199,7 @@ def test_look_with_another_style_leaves_the_blend_unchanged():
     pencil = read_png(SDIR / "stills" / "look" / "s1.jpg").astype(int)
     assert np.abs(pencil[:1000] - toon[:1000]).mean() > 3, "the preview did not change style"
     assert BLEND.stat().st_mtime_ns == mtime and _digest(BLEND) == digest  # never saved
+    assert (SDIR / "source" / "sets.json").read_bytes() == sets_json  # the built arrangement is kept
     for name in ("Scene", "Close"):  # the open file is the saved one again
         sc = bpy.data.scenes[name]
         assert sc["bsa_style"] == "toon" and sc["bsa_set"] == "workbench", name

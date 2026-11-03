@@ -1228,8 +1228,12 @@ def cmd_look(args) -> dict:
     one by default, with the kit's cards on top, the kit sheet, and stills/look.json. Another style or set is put on
     the scenes in memory only: the .blend is never saved, and the file is reverted afterwards. The engine is the
     user's (_look_engine); the time per frame is a measured estimate."""
+    import contextlib
+
     import bpy
 
+    if not bpy.app.background:  # it changes the scenes and reverts the file: never the user's open session
+        raise CliError("look runs in a background Blender (BLENDER look ...), never in the open session")
     from bsa import kit as kit_mod
     from bsa import setplace
     from bsa.kit import STYLES
@@ -1255,12 +1259,15 @@ def cmd_look(args) -> dict:
     for shot in lookframes.look_shots(short):
         shot, scene = _scene(data, short, shot.id, tl_hash)
         scenes[shot.id], frames[shot.id] = scene, _still_frame(shot, spans[shot.id])
+    ours = bool(data.filepath) and Path(data.filepath).resolve() == _blend(sdir).resolve()
     try:
         out = lookframes.preview(sdir, short, tl, k, scenes, frames, engine, style, set_name)
     except BaseException:
-        bpy.ops.wm.revert_mainfile()  # whatever was changed in memory goes: the file on disk is the short's
+        if ours:  # whatever was changed in memory goes: the file on disk is the short's
+            with contextlib.suppress(Exception):  # a failing revert never hides why the look failed
+                bpy.ops.wm.revert_mainfile()
         raise
-    if out.pop("changed"):
+    if out.pop("changed") and ours:
         bpy.ops.wm.revert_mainfile()
     return {**out, "path": str(sdir / "stills" / lookframes.LOOK_JSON)}
 

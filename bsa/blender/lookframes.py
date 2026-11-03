@@ -246,6 +246,10 @@ def preview(sdir: Path, short, tl, kit, scenes: dict, still_frames: dict, engine
                 compose(still, ov, frame, out, cache_dir)
             frames.append({"shot": shot.id, "frame": frame, "file": f"{LOOK_DIR}/{out.name}"})
         warnings += blender_cards.render_sample(kit, look_dir / SHEET, cache_dir)
+    listed = {Path(f["file"]).name for f in frames}
+    for old in look_dir.glob("*.jpg"):  # frames of shots an earlier run showed and this one doesn't
+        if old.name not in listed:
+            old.unlink(missing_ok=True)
     data = {
         "style": style or built["style"] or kit.style,
         "set": set_name or built["set"],

@@ -30,3 +30,17 @@ def test_look_never_sets_or_saves():
     assert not re.search(r"\.engine\s*=(?!=)|\"CYCLES\"\s*$|BLENDER_EEVEE", src), "an engine is set in the look"
     assert "save_mainfile" not in src and "save_as_mainfile" not in src
     assert "engine=engine" in src  # the user's value goes through to the still render
+
+
+def test_look_refuses_outside_a_background_blender(monkeypatch):
+    """In the user's open session (MCP mode) look would change their scenes and revert their file: it refuses first."""
+    import sys
+    import types
+
+    import bsa_blender
+
+    fake = types.SimpleNamespace(app=types.SimpleNamespace(background=False))
+    monkeypatch.setitem(sys.modules, "bpy", fake)
+    args = types.SimpleNamespace(short="no-such-short", style=None, set=None, engine=None)
+    with pytest.raises(bsa_blender.CliError, match="look runs in a background Blender"):
+        bsa_blender.cmd_look(args)
