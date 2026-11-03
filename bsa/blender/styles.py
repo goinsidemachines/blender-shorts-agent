@@ -292,15 +292,24 @@ def _see_through(mat, nt, shader, alpha: float):
     return mix.outputs["Shader"]
 
 
-def _cel(mat, lin, shadow, alpha: float | None = None) -> None:
+def _cel(mat, lin, shadow, alpha: float | None = None, pattern: str | None = None) -> None:
     """The sampler's toon material: the colour `lin` where the sun reaches, the flat dark step `shadow` elsewhere,
     lit by nothing else, so the lit area shows the exact colour under the Standard view. EEVEE: Diffuse -> Shader to
     RGB -> a constant ramp at looks.RAMP_AT -> mix(shadow, colour) -> Emission. Cycles (no Shader to RGB there):
     Emission(shadow) + a Toon BSDF (diffuse) of colour - shadow, size looks.TOON_SIZE, smooth 0, which the calibrated
     sun (looks.cycles_energy) brings up to the colour exactly; the flat step glows for camera rays only, so a big cel
     floor or wall lights no other part (in a room it lifted the shadow side ΔE 4.5 off the dark step and EEVEE).
-    `alpha` (glass, water): seen through at that alpha."""
+    `alpha` (glass, water): seen through at that alpha. `pattern` (a set surface's dots, grid or wood): the colour
+    is the pattern made from `lin`, and the dark step the pattern scaled by shadow / colour, so the pegboard's holes
+    and the paper's lines still read on both sides."""
     nt = _reset(mat)
+    shade = step = None
+    if pattern is not None:
+        shade, _ = look._PATTERN_NODES[pattern](nt, nt.nodes.new("ShaderNodeTexCoord"), lin)
+        ratio = look._vmath(nt, "MULTIPLY")
+        ratio.inputs[1].default_value = [s / max(c, 1e-6) for s, c in zip(shadow, lin)]
+        nt.links.new(shade, ratio.inputs[0])
+        step = ratio.outputs["Vector"]
     diffuse = nt.nodes.new("ShaderNodeBsdfDiffuse")
     to_rgb = nt.nodes.new("ShaderNodeShaderToRGB")
     ramp = nt.nodes.new("ShaderNodeValToRGB")
@@ -311,6 +320,10 @@ def _cel(mat, lin, shadow, alpha: float | None = None) -> None:
     nt.links.new(diffuse.outputs["BSDF"], to_rgb.inputs["Shader"])
     nt.links.new(to_rgb.outputs["Color"], ramp.inputs["Fac"])
     flat = look._mix_rgba(nt, ramp.outputs["Color"], shadow, lin)
+    if shade is not None:
+        socks = {s.identifier: s for s in flat.node.inputs}
+        nt.links.new(step, socks["A_Color"])
+        nt.links.new(shade, socks["B_Color"])
     eevee = nt.nodes.new("ShaderNodeEmission")
     nt.links.new(flat, eevee.inputs["Color"])
     toon_bsdf = nt.nodes.new("ShaderNodeBsdfToon")
@@ -320,6 +333,12 @@ def _cel(mat, lin, shadow, alpha: float | None = None) -> None:
     toon_bsdf.inputs["Smooth"].default_value = 0.0
     add = nt.nodes.new("ShaderNodeAddShader")
     base = _emission(nt, shadow)
+    if shade is not None:
+        rest = look._vmath(nt, "SUBTRACT")
+        nt.links.new(shade, rest.inputs[0])
+        nt.links.new(step, rest.inputs[1])
+        nt.links.new(rest.outputs["Vector"], toon_bsdf.inputs["Color"])
+        nt.links.new(step, base.inputs["Color"])
     path = nt.nodes.new("ShaderNodeLightPath")  # the flat step is for the camera: it lights no other part
     nt.links.new(path.outputs["Is Camera Ray"], base.inputs["Strength"])
     if hasattr(getattr(mat, "cycles", None), "emission_sampling"):
@@ -347,7 +366,7 @@ def toon(kit: Kit) -> Style:
     def material(mat, stamp, ctx, key):
         hex_ = looks.part_colour("toon", stamp["colour"], ctx.kit, key)
         if ctx.scenery(mat):
-            _cel(mat, _lin(hex_), _lin(looks.shadow_of(hex_, _heat(ctx.kit), TOON_SET_STEP)))
+            _cel(mat, _lin(hex_), _lin(looks.shadow_of(hex_, _heat(ctx.kit), TOON_SET_STEP)), pattern=stamp["pattern"])
             return
         kind = stamp["kind"]
         if kind == "emissive":
@@ -915,13 +934,18 @@ def _bounces(scene, sl: looks.StyleLook) -> None:
 
 
 def _world(scene, kit: Kit, name: str, sl: looks.StyleLook, warnings: list) -> None:
-    if "bsa_set" in scene:
-        try:
-            from bsa.blender import sets
-        except ImportError:  # the scene sets come in a later round of work
-            return
-        sets.refresh_world(scene, kit)
+    if scene.get("bsa_set"):
+        from bsa.blender import sets
+
+        sets.refresh_world(scene, kit, warnings)
         return
+    paper_backdrop(scene, kit, name, sl, warnings)
+
+
+def paper_backdrop(scene, kit: Kit, name: str, sl: looks.StyleLook, warnings: list) -> None:
+    """The style's flat backdrop: a paper_world in looks.backdrop through the scene's view (the world "<scene> paper",
+    the user's own world left as made), lighting the scene at the style's world strength, stamped per engine (Cycles
+    gets none in the line styles)."""
     if scene.world is None or "bsa_paper" not in scene.world:
         own = f"{scene.name} paper"  # the user's own world is left as made, unassigned
         scene.world = bpy.data.worlds.get(own) or bpy.data.worlds.new(own)

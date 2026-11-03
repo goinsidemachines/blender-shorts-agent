@@ -27,6 +27,7 @@ SUBJECT_MARGIN_PX = 40  # a prop keeps this far off the subject's projected box
 FOOTPRINT_GROW = 0.10  # floor props keep out of the subject's footprint grown by this share of its size, each side
 OTHER_PROP = "against another prop"
 NO_ROOM = "no room for it in the set"
+DIMS_TOLERANCE = 1e-3  # a saved prop whose size is further than this share off the prop's size now is placed again
 
 
 @dataclass(frozen=True)
@@ -297,13 +298,15 @@ def save_scene(sdir, scene: str, entry: dict, slug: str | None = None) -> None:
         jobstate.write_atomic(path, json.dumps(new, indent=2, ensure_ascii=False).encode("utf-8"))
 
 
-def approved(sdir) -> bool:
-    """The storyboard's latest live decision is an approval (one superseded or followed by changes does not count)."""
+def approved(sdir, current: int | None = None) -> bool:
+    """The storyboard's latest live decision is an approval (one superseded or followed by changes does not count),
+    and with `current` (the storyboard's version now) an approval of that version: one of an older storyboard
+    approved content the user has not seen since."""
     try:
         d = decisions.latest(Path(sdir), "storyboard")
     except (store.StoreDamaged, OSError, KeyError, TypeError):
         return False
-    return bool(d) and d.get("decision") == "approve"
+    return bool(d) and d.get("decision") == "approve" and (current is None or d.get("version") == current)
 
 
 def _numbers(v, n: int) -> bool:
@@ -323,7 +326,8 @@ def _problem(entry, scene: str, set_name: str, size_m: float) -> str | None:
         return f"its scene {scene}'s floor is not four numbers"
     if not isinstance(entry["props"], list) or not isinstance(entry["dropped"], list):
         return f"its scene {scene}'s props or dropped is not a list"
-    names = {p.name for p in props(set_name, size_m)}
+    sizes = {p.name: p.dims for p in props(set_name, size_m)}
+    names = set(sizes)
     for p in entry["props"]:
         if not isinstance(p, dict) or not {"name", "at", "rot", "dims"} <= set(p):
             return f"a prop in its scene {scene} is missing its name, at, rot or dims"
@@ -331,22 +335,34 @@ def _problem(entry, scene: str, set_name: str, size_m: float) -> str | None:
             return f"its scene {scene} has a prop {p['name']!r} the {set_name} set does not have"
         if not _numbers(p["at"], 3) or not _numbers(p["dims"], 3) or not _numbers([p["rot"]], 1):
             return f"its prop {p['name']!r} in scene {scene} has a bad position, rotation or size"
+        want = sizes[p["name"]]
+        if any(abs(a - b) > DIMS_TOLERANCE * max(abs(b), 1e-3) for a, b in zip(p["dims"], want)):
+            return (f"its prop {p['name']!r} in scene {scene} was sized for another subject: its size "
+                    f"{p['dims']} is not {list(want)} now")  # fmt: skip
     for d in entry["dropped"]:
         if not isinstance(d, dict) or not {"name", "why"} <= set(d):
             return f"a dropped prop in its scene {scene} is missing its name or why"
     return None
 
 
-def saved_for(sdir, scene: str, set_name: str, size_m: float) -> tuple[dict | None, str | None]:
+def saved_for(sdir, scene: str, set_name: str, size_m: float,
+              current: int | None = None) -> tuple[dict | None, str | None]:  # fmt: skip
     """The scene's saved arrangement to reuse: only while the storyboard approval stands and the entry is valid for
-    this set. (None, None) when nothing is saved; (None, why) when one is saved but can't be trusted, so the scene is
+    this set and these prop sizes. With `current` (the storyboard's version now) the approvals not applied yet that
+    answered another version are retired first (decisions.supersede_stale) and only an approval of `current`
+    counts. (None, None) when nothing is saved; (None, why) when one is saved but can't be trusted, so the scene is
     placed again and the caller warns with `why`."""
     data, why = _read(sdir)
     if why:
         return None, f"sets.json can't be read ({why}), so the props are placed again"
     if data is None:
         return None, None
-    if not approved(sdir):
+    if current is not None:
+        try:
+            decisions.supersede_stale(Path(sdir), "storyboard", current)
+        except (store.StoreDamaged, OSError) as e:
+            return None, f"the storyboard's answers can't be read ({e}), so the props are placed again"
+    if not approved(sdir, current):
         return None, "the storyboard is not approved (or its approval was superseded), so the props are placed again"
     scenes = data.get("scenes") or {}
     if scene not in scenes:
@@ -355,3 +371,22 @@ def saved_for(sdir, scene: str, set_name: str, size_m: float) -> tuple[dict | No
     if problem:
         return None, f"sets.json can't be trusted ({problem}), so the props are placed again"
     return scenes[scene], None
+
+
+def storyboard_version(sdir) -> int | None:
+    """The storyboard's version now (bsa.review.snapshot.stage_version): None when it has no content yet."""
+    from bsa.review import snapshot
+
+    return snapshot.stage_version(Path(sdir), "storyboard")
+
+
+def reusable(sdir, scene: str, set_name: str, size_m: float) -> tuple[dict | None, str | None]:
+    """`saved_for` against the storyboard as it is now (`storyboard_version`), so an approval of content that has
+    changed since is never trusted; when the version can't be worked out, (None, why): placed again."""
+    try:
+        current = storyboard_version(sdir)
+    except Exception as e:  # noqa: BLE001 - a damaged short never stops a build: the props are placed again
+        if sets_path(sdir).exists():
+            return None, f"the storyboard's version can't be worked out ({e}), so the props are placed again"
+        return None, None
+    return saved_for(sdir, scene, set_name, size_m, current)

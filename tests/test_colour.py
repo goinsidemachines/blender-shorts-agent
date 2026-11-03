@@ -67,6 +67,14 @@ def test_only_a_flat_backdrop_gets_the_background_check():
     assert colour.flat_backdrop(_world(*flat), transparent=True) is False
 
 
+def test_a_set_world_is_not_a_flat_backdrop():
+    """Pegboard, graph paper and sky are environments: a set's world (stamped "set") gets no background check, even
+    when it is a plain colour; the studio set's paper_world still does."""
+    flat = ("ShaderNodeOutputWorld", "ShaderNodeBackground", "ShaderNodeLightPath", "ShaderNodeMixShader")
+    assert colour.flat_backdrop(_world(*flat, stamp="set")) is False
+    assert colour.flat_backdrop(_world(*flat, stamp="paper")) is True
+
+
 def test_set_colours_has_every_key_as_hex():
     c = colour.set_colours(kit.kit_from(KIT))
     assert set(c) == {"wall", "floor", "pattern", "wood", "wood_dark", "ground", "hills_near", "hills_far",

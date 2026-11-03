@@ -265,3 +265,68 @@ def test_overlap_area_is_the_measure_of_meeting():
     a, b = Rect(0, 0, 10, 10), Rect(10, 0, 10, 10)
     assert overlap_area(a, b) == 0
     assert setplace.collision(a, [], [("caption", b)], 0) is None
+
+
+def test_kept_dropped_and_spotless_props_cover_every_prop():
+    # A floor so small the floor props have no spots at all: they come back from dropped_without_spots.
+    small = (-0.6, -0.6, 0.6, 0.6)
+    cands = setplace.candidates("workbench", "lever", "Main", 1.0, FOOT, small)
+    frames = [1, 2]
+    none = {f: [] for f in frames}
+    kept, dropped = setplace.place(cands, _grid_project, frames, none, none)
+    spotless = setplace.dropped_without_spots("workbench", 1.0, cands)
+    assert spotless and all(d["why"] == setplace.NO_ROOM for d in spotless)
+    names = [c.prop.name for c in kept] + [d["name"] for d in dropped + spotless]
+    assert sorted(names) == sorted(p.name for p in setplace.props("workbench", 1.0))
+
+
+def test_saved_props_whose_size_no_longer_matches_are_placed_again(tmp_path):
+    sdir = tmp_path / "lever"
+    (sdir / "source").mkdir(parents=True)
+    setplace.save_scene(sdir, "Main", _entry(size=1.0))
+    _approve(sdir)
+    assert setplace.saved_for(sdir, "Main", "workbench", 1.0)[0] == _entry(size=1.0)
+    assert setplace.saved_for(sdir, "Main", "workbench", 1.0005)[0] == _entry(size=1.0)  # within the tolerance
+    entry, why = setplace.saved_for(sdir, "Main", "workbench", 2.0)
+    assert entry is None and "toolbox" in why and "size" in why
+
+
+def test_an_approval_of_an_older_storyboard_is_not_reused(tmp_path):
+    sdir = tmp_path / "lever"
+    (sdir / "source").mkdir(parents=True)
+    setplace.save_scene(sdir, "Main", _entry())
+    d = _approve(sdir, 1)
+    assert setplace.saved_for(sdir, "Main", "workbench", 1.0, current=1)[0] == _entry()
+    decisions.mark_applied(sdir, d["id"])  # applied: supersede_stale no longer retires it, the version still counts
+    entry, why = setplace.saved_for(sdir, "Main", "workbench", 1.0, current=2)
+    assert entry is None and "approv" in why
+    # An approval not applied yet that answered another version is retired on the way.
+    sdir2 = tmp_path / "pulley"
+    (sdir2 / "source").mkdir(parents=True)
+    setplace.save_scene(sdir2, "Main", _entry())
+    _approve(sdir2, 1)
+    assert setplace.saved_for(sdir2, "Main", "workbench", 1.0, current=2)[0] is None
+    assert decisions.latest(sdir2, "storyboard") is None  # superseded
+
+
+def test_reusable_asks_the_storyboard_for_its_current_version(tmp_path, monkeypatch):
+    from bsa.review import snapshot
+
+    sdir = tmp_path / "lever"
+    (sdir / "source").mkdir(parents=True)
+    setplace.save_scene(sdir, "Main", _entry())
+    _approve(sdir, 3)
+    asked = []
+    monkeypatch.setattr(snapshot, "stage_version", lambda s, stage: asked.append(stage) or 3)
+    assert setplace.reusable(sdir, "Main", "workbench", 1.0) == (_entry(), None)
+    assert asked == ["storyboard"]
+    monkeypatch.setattr(snapshot, "stage_version", lambda s, stage: 4)
+    entry, why = setplace.reusable(sdir, "Main", "workbench", 1.0)
+    assert entry is None and why
+
+    def broken(s, stage):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(snapshot, "stage_version", broken)
+    entry, why = setplace.reusable(sdir, "Main", "workbench", 1.0)
+    assert entry is None and "disk gone" in why
