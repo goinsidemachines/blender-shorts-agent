@@ -1140,11 +1140,9 @@ def cmd_closing(args) -> dict:
     return {**out, "warnings": warnings} if warnings else out
 
 
-def cmd_kit_sample(args) -> dict:
-    """One sample sheet of a brand kit (every card on the kit's background) to --out, before anything is saved: from
-    --kit (a brand object as JSON) or the settings' brand. Writes nothing to the settings; no short, no engine."""
+def _sample_kit(args):
+    """The kit a sample command shows: --kit (a brand object as JSON), else the settings' brand."""
     from bsa import kit as kit_mod
-    from bsa.blender import cards as blender_cards
 
     if args.kit is not None:
         try:
@@ -1154,16 +1152,65 @@ def cmd_kit_sample(args) -> dict:
         if not isinstance(brand, dict):
             raise CliError("--kit must be a JSON object (the brand)")
         try:
-            k = kit_mod.kit_from(brand)
+            return kit_mod.kit_from(brand)
         except ValueError as exc:
             raise CliError(str(exc)) from exc
-    else:
-        k = kit_mod.kit_for(settings.load_settings())
-        if k is None:
-            raise CliError("no brand kit is set: brand.style is missing")
+    k = kit_mod.kit_for(settings.load_settings())
+    if k is None:
+        raise CliError("no brand kit is set: brand.style is missing")
+    return k
+
+
+def cmd_kit_sample(args) -> dict:
+    """One sample sheet of a brand kit (every card on the kit's background) to --out, before anything is saved: from
+    --kit (a brand object as JSON) or the settings' brand. Writes nothing to the settings; no short, no engine."""
+    from bsa.blender import cards as blender_cards
+
+    k = _sample_kit(args)
     out = Path(args.out)
     warnings = blender_cards.render_sample(k, out, settings.bsa_home() / "cards")
     return {"png": str(out), "warnings": warnings}
+
+
+def _style_engine(args) -> str:
+    """The engine the user chose for style-sample: --engine, else the render.engine setting when it is cycles or eevee.
+    Never a default: "ask-always", "ask" or nothing means Claude must ask the user."""
+    chosen = getattr(args, "engine", None)
+    if chosen is None:
+        chosen = (settings.load_settings().get("render") or {}).get("engine")
+    if chosen not in ("cycles", "eevee"):
+        raise CliError("style-sample needs an engine: pass --engine eevee or --engine cycles, or set render.engine "
+                       "(the engine is always yours to pick)")  # fmt: skip
+    return chosen
+
+
+def cmd_style_sample(args) -> dict:
+    """The demo machine in each style (--styles a,b; default the kit's own) on a set (--set, default studio, "none" =
+    no set) tiled left to right with each style's name under it, to --out; each tile is --scale x 1080x1920. The
+    engine is the user's (_style_engine). Writes nothing to the settings; no short."""
+    from bsa import setplace
+    from bsa.kit import STYLES
+
+    engine = _style_engine(args)
+    k = _sample_kit(args)
+    names = [n.strip().lower() for n in args.styles.split(",") if n.strip()] if args.styles else [k.style]
+    if not names:
+        raise CliError("--styles needs at least one style name")
+    for n in names:
+        if n not in STYLES:
+            raise CliError(f"{n!r} is not a style: use one of {', '.join(STYLES)}")
+    set_name = (args.set or "studio").strip().lower()
+    if set_name != "none" and set_name not in setplace.SETS:
+        raise CliError(f"{set_name!r} is not a set: use one of {', '.join(setplace.SETS)} or none")
+    scale = args.scale if args.scale is not None else 0.5
+    if not 0.05 <= scale <= 1:
+        raise CliError("--scale must be from 0.05 to 1")
+    from bsa.blender import stylesample
+
+    out = Path(args.out)
+    seconds, warnings = stylesample.render_sheet(k, names, set_name, engine, scale, out)
+    return {"png": str(out), "engine": engine, "styles": names, "set": set_name, "seconds": seconds,
+            "warnings": warnings}  # fmt: skip
 
 
 THUMB_TEXT_FIRST = "Write the thumbnail text first: short.json post.thumbnail title (one or two lines)"
@@ -1779,6 +1826,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kit", metavar="JSON", help="a brand object; else the settings' brand")
     sp.add_argument("--out", required=True, metavar="PNG")
     sp.set_defaults(fn=cmd_kit_sample)
+
+    sp = sub.add_parser("style-sample", help="the demo machine in each style on a set, tiled into one PNG at --out")
+    sp.add_argument("--kit", metavar="JSON", help="a brand object; else the settings' brand")
+    sp.add_argument("--styles", metavar="A,B", help="style names, comma separated; else the kit's own style")
+    sp.add_argument("--set", metavar="NAME", help="a scene set (workbench, graph, outdoor, studio) or none; default "
+                                                  "studio")  # fmt: skip
+    sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
+                    help="the render engine (the user's choice); else the render.engine setting")
+    sp.add_argument("--scale", type=float, default=0.5, help="each tile's size as a fraction of 1080x1920 (default 0.5)")
+    sp.add_argument("--out", required=True, metavar="PNG")
+    sp.set_defaults(fn=cmd_style_sample)
 
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")

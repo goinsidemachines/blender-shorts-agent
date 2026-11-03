@@ -1985,3 +1985,56 @@ def test_kit_sample_command_paths(home, tmp_path, monkeypatch):
     assert sample(json.dumps(KIT)) == {"png": str(out), "warnings": ["w"]}
     assert calls == [("toon", out, home / "cards")]
     assert settings_file.read_bytes() == before
+
+
+def test_style_sample_refuses_without_an_engine(home, tmp_path, monkeypatch):
+    """BLENDER style-sample: with no --engine and no render.engine of cycles or eevee it refuses with one plain line (the
+    engine is always the user's) before opening anything; bad styles, set and scale are plain errors; the settings
+    file is never written."""
+    import re
+    import types
+
+    import bsa_blender
+    from tests.kitfix import KIT
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    settings_file = home / "settings.json"
+    out = tmp_path / "sheet.png"
+
+    def sample(**kw):
+        base = {"kit": json.dumps(KIT), "styles": None, "set": "studio", "engine": None, "out": str(out), "scale": 0.5}
+        return bsa_blender.cmd_style_sample(types.SimpleNamespace(**{**base, **kw}))
+
+    needs = "style-sample needs an engine: pass --engine eevee or --engine cycles, or set render.engine"
+    for body in (None, '{"render": {"engine": "ask-always"}}', '{"render": {"engine": "ask"}}'):
+        if body is not None:
+            settings_file.write_text(body, encoding="utf-8")
+        before = settings_file.read_bytes() if settings_file.exists() else None
+        with pytest.raises(bsa_blender.CliError, match=re.escape(needs)) as exc:
+            sample()
+        assert "(the engine is always yours to pick)" in str(exc.value)
+        assert (settings_file.read_bytes() if settings_file.exists() else None) == before
+    assert not out.exists()
+    settings_file.write_text('{"render": {"engine": "eevee"}}', encoding="utf-8")
+    with pytest.raises(bsa_blender.CliError, match="not a style"):
+        sample(styles="toy,glossy")
+    with pytest.raises(bsa_blender.CliError, match="not a set"):
+        sample(set="moon")
+    with pytest.raises(bsa_blender.CliError, match="--scale"):
+        sample(scale=0)
+    with pytest.raises(bsa_blender.CliError, match="--kit is not JSON"):
+        sample(kit="{nope")
+    with pytest.raises(bsa_blender.CliError, match="no brand kit is set"):
+        sample(kit=None)
+
+
+def test_style_sample_command_is_registered_with_its_flags():
+    import bsa_blender
+
+    args = bsa_blender.build_parser().parse_args(
+        ["style-sample", "--styles", "toy,toon", "--set", "none", "--engine", "cycles", "--out", "x.png",
+         "--scale", "0.25"])
+    assert (args.styles, args.set, args.engine, args.out, args.scale) == ("toy,toon", "none", "cycles", "x.png", 0.25)
+    assert args.fn is bsa_blender.cmd_style_sample
+    with pytest.raises(SystemExit):
+        bsa_blender.build_parser().parse_args(["style-sample", "--engine", "workbench", "--out", "x.png"])
