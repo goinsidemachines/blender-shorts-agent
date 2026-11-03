@@ -84,6 +84,17 @@ def test_caption_is_the_full_width_and_wraps_by_real_widths(font):
     assert cards.shape_rgba(half)[half.box_h // 2, half.w // 2, 3] == 128
 
 
+def test_an_8_digit_caption_box_keeps_its_alpha_times_the_opacity(font):
+    """brand.caption.box "#1B2A3A80" is half see-through; with opacity 0.5 on top it is a quarter (one alpha, never a
+    second one appended)."""
+    see = {**KIT, "caption": {**KIT["caption"], "box": "#1b2a3a80", "color": "#FFFFFFCC"}}
+    c = cards.caption(kit.kit_from(see), "a", font, 600)
+    assert c.fill == "#1B2A3A80" and c.runs[0].colour == "#FFFFFFCC"
+    q = cards.caption(kit.kit_from({**see, "caption": {**see["caption"], "opacity": 0.5}}), "a", font, 600)
+    assert q.fill == "#1B2A3A40"
+    assert cards.shape_rgba(q)[q.box_h // 2, q.w // 2, 3] == 64
+
+
 def test_title_highlight_line_is_bigger_and_shrinks_to_fit(font):
     c = cards.title(K, ("Push", "Lift"), 1, font, safe_rect().w)
     assert [(r.text, r.size, r.colour) for r in c.runs] == [

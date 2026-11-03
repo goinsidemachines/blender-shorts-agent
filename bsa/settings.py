@@ -145,7 +145,11 @@ def check_value(path: str, value):
             return float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{value!r} is not a valid brand.exposure: use a number of stops, e.g. 0.3") from None
-    if path == "brand" or (path.startswith("brand.") and path not in ("brand.mode", "brand.exposure")):
+    if path == "brand":  # the whole object: every key checked as its own brand.KEY (set_value merges it in)
+        if not isinstance(value, dict):
+            raise ValueError(f"brand must be an object of brand settings, got {value!r}")
+        return {k: check_value(f"brand.{k}", v) for k, v in value.items()}
+    if path.startswith("brand.") and path not in ("brand.mode", "brand.exposure"):
         from bsa import kit
 
         return kit.check(path[6:], value)
@@ -170,7 +174,11 @@ def check_value(path: str, value):
 
 
 def set_value(path: str, value) -> dict:
+    """Store `value` at `path`. A whole `brand` object merges into the stored brand key by key (the setup flow sets
+    brand.mode first, then the sampled kit: the kit never drops mode, exposure or a note it does not name)."""
     s = load_settings()
+    if path == "brand" and isinstance(value, dict) and isinstance(s.get("brand"), dict):
+        value = {**s["brand"], **value}
     node = s
     keys = path.split(".")
     for k in keys[:-1]:

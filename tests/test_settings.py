@@ -240,3 +240,22 @@ def test_brand_kit_keys_are_checked_through_the_kit():
         settings.check_value("brand.shadow_px", 30)
     assert settings.check_value("brand.material", "glossy toy") == "glossy toy"  # prose passes
     assert settings.check_value("brand.mode", "Brand") == "brand"
+
+
+def test_caption_colours_take_6_or_8_hex_digits_without_a_style():
+    assert settings.check_value("brand.caption.box", "#14161a99") == "#14161A99"
+    assert settings.check_value("brand.caption.color", "#FFFFFF") == "#FFFFFF"
+    assert settings.check_value("brand.caption", {"box": "#14161A99"}) == {"box": "#14161A99"}
+    with pytest.raises(ValueError, match="brand.caption.box"):
+        settings.check_value("brand.caption.box", "#14161A9")
+    with pytest.raises(ValueError, match="brand.palette.accent"):
+        settings.check_value("brand.palette.accent", "#7A4CE080")  # palette colours stay 6 digits
+
+
+def test_setting_the_whole_brand_merges_into_the_stored_one_and_checks_every_key():
+    with pytest.raises(ValueError, match="brand.mode"):
+        settings.check_value("brand", {"mode": "loud"})
+    with pytest.raises(ValueError, match="brand.exposure"):
+        settings.check_value("brand", {"exposure": "bright"})
+    assert settings.check_value("brand", {"mode": "Brand", "exposure": "0.3", "style": "flat"}) == {
+        "mode": "brand", "exposure": 0.3, "style": "toon"}  # fmt: skip

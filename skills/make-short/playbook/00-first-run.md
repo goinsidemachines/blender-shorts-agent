@@ -113,7 +113,8 @@ so this question is not repeated; the engine stage then estimates and asks for e
     the video, drawn from their own file, never over the captions or the platform buttons).
   - Hold these values in a JSON object (the brand), do not save them yet. Run
     `BLENDER kit-sample --kit '<json>' --out <scratch folder>/kit-sample.png`, show the image, and ask whether it
-    looks right. Fix what the user points at and sample again. Only on a yes: `settings set brand '<json>'`, then
+    looks right. Fix what the user points at and sample again. Only on a yes: `settings set brand '<json>'` (it merges
+    the given keys into the brand: `brand.mode` and any key the JSON does not name stay as they are), then
     `settings check` and tell the user anything it names. A `kit-sample` error names the value to fix; it writes nothing
     to the settings.
 - **Existing brand users** (`brand.mode brand` already, no `brand.style`): the `settings check` advice says how their

@@ -117,6 +117,23 @@ def test_brand_exposure_and_look_settings(home):
     assert proc.returncode != 0 and "exposure" in proc.stderr
 
 
+def test_setting_the_whole_brand_keeps_mode_exposure_and_prose_keys(home):
+    """The setup flow sets brand.mode first, then the sampled kit as one object: the kit merges in, it never drops
+    the keys it does not name."""
+    from tests.kitfix import KIT
+
+    ok(run(home, "settings", "set", "brand.mode", "brand"))
+    ok(run(home, "settings", "set", "brand.exposure", "0.3"))
+    ok(run(home, "settings", "set", "brand.material", "matte clay"))
+    kit_only = {k: v for k, v in KIT.items() if k != "mode"}
+    b = ok(run(home, "settings", "set", "brand", json.dumps(kit_only)))["settings"]["brand"]
+    assert b["mode"] == "brand" and b["exposure"] == 0.3 and b["material"] == "matte clay"
+    assert b["style"] == "toon" and b["palette"]["accent"] == "#7A4CE0"
+    assert run(home, "settings", "set", "brand", '{"mode": "loud"}').returncode != 0
+    assert ok(run(home, "settings", "set", "brand.caption.box", "#14161A99"))["settings"]["brand"]["caption"][
+        "box"] == "#14161A99"  # fmt: skip
+
+
 def test_new_short_needs_workspace(home):
     proc = run(home, "new-short", "Pendulum")
     assert proc.returncode != 0

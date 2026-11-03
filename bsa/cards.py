@@ -191,8 +191,10 @@ def _fit(text: str, size: int, font, width: float, floor: int = 1) -> int:
 
 
 def _hexa(value: str, opacity: float) -> str:
-    a = round(max(0.0, min(1.0, float(opacity))) * 255)
-    return value if a >= 255 else f"{value}{a:02X}"
+    """`value` ("#RRGGBB" or "#RRGGBBAA") with its alpha times `opacity`: one alpha, never a second appended."""
+    rgb, own = value[:7], (int(value[7:9], 16) / 255 if len(value) == 9 else 1.0)
+    a = round(max(0.0, min(1.0, float(opacity))) * own * 255)
+    return rgb if a >= 255 else f"{rgb}{a:02X}"
 
 
 def _hex_of(rgba) -> str:

@@ -41,6 +41,7 @@ PLAIN = {
 _KIT_KEYS = ("style", "palette", "categories", "outline_px", "shadow_px", "corner_px", "pill_corner_px", "font",
              "caption", "logo", "progress", "set")  # fmt: skip
 _HEX = re.compile(r"#?([0-9a-fA-F]{6})")
+_HEXA = re.compile(r"#?([0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)")  # caption colours: 8 digits keep their alpha
 
 
 @dataclass(frozen=True)
@@ -72,10 +73,11 @@ def style_name(value) -> str:
     return name
 
 
-def _hex(key: str, value) -> str:
-    m = _HEX.fullmatch(value.strip()) if isinstance(value, str) else None
+def _hex(key: str, value, alpha: bool = False) -> str:
+    m = (_HEXA if alpha else _HEX).fullmatch(value.strip()) if isinstance(value, str) else None
     if not m:
-        raise ValueError(f"brand.{key} must be a colour like #EAF2F8, got {value!r}")
+        more = " (or 8 digits with alpha, like #EAF2F880)" if alpha else ""
+        raise ValueError(f"brand.{key} must be a colour like #EAF2F8{more}, got {value!r}")
     return "#" + m.group(1).upper()
 
 
@@ -165,7 +167,7 @@ def check(key: str, value, *, _must_exist: bool = True):
         if not rest:
             return {k: check(f"caption.{k}", v) for k, v in _dict(key, value, "caption settings").items()}
         if rest in ("color", "box"):
-            return _hex(key, value)
+            return _hex(key, value, alpha=True)
         return value  # an unknown caption key passes
     if top == "logo":
         if value is None and not rest:
