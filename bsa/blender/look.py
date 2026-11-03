@@ -601,11 +601,11 @@ def stamp(mat) -> dict | None:
 _RIG_NAMES = ("Key", "Fill", "Rim", "Sun")
 
 
-def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool = False, sun: bool | None = None,
+def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool = False, sun: bool = False,
                sun_angle_deg: float = SUN_ANGLE_DEG, cycles_scale: float = 1.0) -> dict:  # fmt: skip
-    """A brand style's lights: the `lights` rig (suns when `size` > SUN_ABOVE_M or `sun=True`, each `sun_angle_deg`
-    across), or with `single_sun` one white sun "<scene> Sun" from the key's direction, `sun_angle_deg` across, of
-    `strength`. This scene's other "<scene> Key/Fill/Rim/Sun" lights are removed. Each light is stamped
+    """A brand style's lights: the `lights` rig (suns with `sun=True`; with `sun=False` as `lights` picks by size:
+    the area rig, suns over SUN_ABOVE_M; each sun `sun_angle_deg` across), or with `single_sun` one white sun
+    "<scene> Sun" from the key's direction, `sun_angle_deg` across, of `strength`. This scene's other "<scene> Key/Fill/Rim/Sun" lights are removed. Each light is stamped
     `light["bsa_energy"] = {"eevee": e, "cycles": e * cycles_scale}` and set for the scene's engine now (match_engine
     sets it again for the engine a render uses). Returns {"kind", "distance", "lights"} as `lights` does."""
     if single_sun:
@@ -640,8 +640,63 @@ def kit_lights(scene, target, size: float, strength: float, *, single_sun: bool 
 
 
 INK_LINESET = "bsa ink"
+INK_PREV = "bsa_ink_prev"
 CREASE_DEG = 140.0
 _NO_LINE_ROLES = ("floor", "wall", "backdrop")
+
+
+def _freestyle_state(scene) -> dict:
+    """Everything ink_lines changes on the scene and its view layers, to put back when the ink goes off."""
+    return {
+        "use_freestyle": bool(scene.render.use_freestyle),
+        "thickness_mode": scene.render.line_thickness_mode,
+        "layers": {
+            layer.name: {
+                "use_freestyle": bool(layer.use_freestyle),
+                "mode": layer.freestyle_settings.mode,
+                "crease_angle": float(layer.freestyle_settings.crease_angle),
+                "show_render": {ls.name: bool(ls.show_render) for ls in layer.freestyle_settings.linesets
+                                if ls.name != INK_LINESET},
+            }
+            for layer in scene.view_layers
+        },
+    }  # fmt: skip
+
+
+def _ink_off(scene) -> None:
+    """Undo ink_lines: remove "bsa ink" (and its line style when nothing else uses it) and "<scene> no lines", and put
+    the stamped Freestyle state back. Nothing at all when the ink was never on."""
+    prev = scene.get(INK_PREV)
+    has_ink = any(layer.freestyle_settings.linesets.get(INK_LINESET) for layer in scene.view_layers)
+    if prev is None and not has_ink:
+        return
+    for layer in scene.view_layers:
+        fs = layer.freestyle_settings
+        ls = fs.linesets.get(INK_LINESET)
+        if ls is not None:
+            style = ls.linestyle
+            fs.linesets.remove(ls)
+            if style is not None and style.users == 0:
+                bpy.data.linestyles.remove(style)
+    col = bpy.data.collections.get(f"{scene.name} no lines")
+    if col is not None:
+        bpy.data.collections.remove(col)
+    if prev is None:
+        return
+    scene.render.use_freestyle = bool(prev["use_freestyle"])
+    scene.render.line_thickness_mode = str(prev["thickness_mode"])
+    for layer in scene.view_layers:
+        was = prev["layers"].get(layer.name)
+        if was is None:
+            continue
+        layer.use_freestyle = bool(was["use_freestyle"])
+        fs = layer.freestyle_settings
+        fs.mode = str(was["mode"])
+        fs.crease_angle = float(was["crease_angle"])
+        for ls in fs.linesets:
+            if ls.name in was["show_render"]:
+                ls.show_render = bool(was["show_render"][ls.name])
+    del scene[INK_PREV]
 
 
 def _no_lines(scene, exclude):
@@ -672,18 +727,19 @@ def ink_lines(scene, colour: str, px: float, *, crease: bool = True, exclude=())
     view layers (visible silhouette, border, external contour and, with `crease`, creases sharper than 140 degrees)
     in `colour` ("#RRGGBB"), `px` wide on a 1920-tall frame (RELATIVE thickness, so a smaller render keeps the same
     share). What is in "<scene> no lines" gets no lines (`exclude`, lines:off, overlay, set floor, wall, backdrop).
-    Calling it again reuses the lineset and the collection; other linesets stop rendering. `px <= 0` turns Freestyle
-    off and removes "bsa ink" (returns None). Returns the lineset."""
+    Calling it again reuses the lineset and the collection. While the lines are on, the view layers' other linesets
+    (a default "LineSet" would draw lines on what is left out) do not render. The first call stamps the Freestyle
+    state it found (`scene["bsa_ink_prev"]`); `px <= 0` puts that state back exactly, removes "bsa ink", its line
+    style and "<scene> no lines", and does nothing at all when the lines were never on (returns None). Returns the
+    lineset."""
     from bsa import colour as colours
     from bsa import looks
 
     if px <= 0:
-        scene.render.use_freestyle = False
-        for layer in scene.view_layers:
-            ls = layer.freestyle_settings.linesets.get(INK_LINESET)
-            if ls is not None:
-                layer.freestyle_settings.linesets.remove(ls)
+        _ink_off(scene)
         return None
+    if INK_PREV not in scene:
+        scene[INK_PREV] = _freestyle_state(scene)
     scene.render.use_freestyle = True
     scene.render.line_thickness_mode = "RELATIVE"
     col = _no_lines(scene, exclude)
@@ -695,7 +751,7 @@ def ink_lines(scene, colour: str, px: float, *, crease: bool = True, exclude=())
         fs.mode = "EDITOR"
         fs.crease_angle = math.radians(CREASE_DEG)
         ls = fs.linesets.get(INK_LINESET) or fs.linesets.new(INK_LINESET)
-        for other in fs.linesets:  # a view layer's default "LineSet" would draw lines on the excluded too
+        for other in fs.linesets:  # off while the ink is on; _ink_off renders them again as they were
             if other.name != INK_LINESET:
                 other.show_render = False
         ls.show_render = True
@@ -728,7 +784,8 @@ def match_engine(scene) -> str:
     energy from its `bsa_energy` stamp, each world Background node's strength from `world["bsa_strength"]` ({node
     name: {"eevee", "cycles"}}), and in Cycles `max_bounces` from `scene["bsa_style_bounces"]`; then stamps
     `scene["bsa_style_engine"]`. Unstamped lights and worlds are left alone: a short without a brand style is
-    unchanged (and gets no stamp). Returns "eevee" or "cycles"."""
+    unchanged (and gets no stamp). Any engine but Cycles (EEVEE, Workbench) is matched as "eevee". Returns
+    "eevee" or "cycles"."""
     engine = _engine(scene)
     touched = False
     for obj in scene.objects:

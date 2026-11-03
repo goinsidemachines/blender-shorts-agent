@@ -1,4 +1,5 @@
 import math
+import sys
 import tempfile
 from pathlib import Path
 
@@ -217,6 +218,11 @@ def test_kit_material_is_stamped_and_renders_its_colour():
     _plane("Card", 0, 20, mat)
     got = colour.dominant_colour(_render_background(sc))
     assert colour.delta_e(SPARK, got) < 5, colour.srgb_to_hex(got)
+    from bsa.blender.scene import eevee_id
+
+    sc.render.engine = eevee_id()  # the same card in EEVEE (the test picks its engines)
+    got = colour.dominant_colour(_render_background(sc))
+    assert colour.delta_e(SPARK, got) < 5, ("eevee", colour.srgb_to_hex(got))
     for kind in look.KIT_KINDS:
         for pattern in look.PATTERNS:
             m = look.kit_material(f"m {kind} {pattern}", kind, "#3B8ED9", pattern)
@@ -379,6 +385,67 @@ def test_every_render_entry_point_matches_the_engine():
 
 
 def test_paper_world_stamps_its_colour():
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from kitfix import KIT
+
+    paper = KIT["palette"]["background"]
     sc = _scene()
-    look.paper_world(sc, PAPER.lower(), light=0.7, exposure=0.0)
-    assert dict(sc.world["bsa_paper"]) == {"hex": PAPER, "light": 0.7}
+    look.paper_world(sc, paper.lower(), light=0.7, exposure=0.0)
+    assert dict(sc.world["bsa_paper"]) == {"hex": paper.upper(), "light": 0.7}
+
+
+def _freestyle_snapshot(sc) -> dict:
+    layers = {
+        layer.name: (layer.use_freestyle, layer.freestyle_settings.mode, round(layer.freestyle_settings.crease_angle, 6),
+                     [(ls.name, ls.show_render) for ls in layer.freestyle_settings.linesets])
+        for layer in sc.view_layers
+    }  # fmt: skip
+    return {"scene": (sc.render.use_freestyle, sc.render.line_thickness_mode), "layers": layers,
+            "keys": sorted(sc.keys()), "collections": sorted(c.name for c in bpy.data.collections),
+            "linestyles": sorted(s.name for s in bpy.data.linestyles)}  # fmt: skip
+
+
+def test_ink_lines_off_puts_the_users_freestyle_back_exactly():
+    """A user's own Freestyle (on, with their lineset) survives ink on, ink again, ink off; ink off on a scene that
+    never had the ink does nothing at all."""
+    sc = _tiny("eevee")
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    layer = sc.view_layers[0]
+    sc.render.use_freestyle = True
+    mine = layer.freestyle_settings.linesets.new("My lines")
+    mine.show_render = True
+    before = _freestyle_snapshot(sc)
+    look.ink_lines(sc, "#1B2A3A", 0)  # never on: nothing changes
+    assert _freestyle_snapshot(sc) == before
+    look.ink_lines(sc, "#1B2A3A", 3.0)
+    assert not mine.show_render and sc.render.line_thickness_mode == "RELATIVE"
+    look.ink_lines(sc, "#7A4CE0", 4.0)  # a second style with lines (toon then pencil)
+    look.ink_lines(sc, "#1B2A3A", 0)  # then one without (realistic)
+    assert _freestyle_snapshot(sc) == before
+    plain = _tiny("eevee")  # Freestyle off to start with: back off, no trace
+    before = _freestyle_snapshot(plain)
+    look.ink_lines(plain, "#1B2A3A", 3.0)
+    look.ink_lines(plain, "#1B2A3A", 0)
+    assert _freestyle_snapshot(plain) == before
+
+
+def test_a_stamp_error_never_hides_the_renders_own_error():
+    from bsa.blender.scene import preserved_render_state
+
+    sc = _tiny("eevee")
+    light = _stamped_light(sc)
+    light["bsa_energy"] = {"cycles": 7.0}  # broken: no eevee value, match_engine raises
+    try:
+        with preserved_render_state(sc):
+            raise RuntimeError("the render failed")
+    except RuntimeError as exc:
+        assert "the render failed" in str(exc)
+    else:
+        raise AssertionError("the render's error was lost")
+    try:
+        with preserved_render_state(sc):
+            pass
+    except KeyError:
+        pass  # no render error to hide: the stamp problem shows
+    else:
+        raise AssertionError("a broken stamp passed silently")

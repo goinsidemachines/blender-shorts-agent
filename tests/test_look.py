@@ -25,5 +25,7 @@ def test_look_in_blender(blender_run):
         "test_render_still_matches_the_engine_it_renders_with",
         "test_every_render_entry_point_matches_the_engine",
         "test_paper_world_stamps_its_colour",
+        "test_ink_lines_off_puts_the_users_freestyle_back_exactly",
+        "test_a_stamp_error_never_hides_the_renders_own_error",
     ):
         assert f"PASS {name}" in result.stdout
