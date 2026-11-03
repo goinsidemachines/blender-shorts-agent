@@ -17,6 +17,7 @@ from fractions import Fraction
 LANG = re.compile(r"^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$")  # BCP-47 shape: es, pt-BR, zh-Hans
 RTL = ("ar", "fa", "he", "ur", "ps", "yi", "dv", "ckb", "sd", "ug")  # right-to-left: accepted, noted on the page
 BIDI_OVERRIDES = "\u202a\u202b\u202c\u202d\u202e"  # reorder text invisibly; the isolates (2066-2069) are fine
+OLD_ENGLISH = "Made for the old English: update the translation, then run CLI captions SHORT"
 CLOSING = "closing"  # the key of the closing line in "from"
 
 _THOUSANDS = "   "  # no-break, narrow no-break and thin space (a plain space is not one)
@@ -193,11 +194,102 @@ def problems(short, settings: dict) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
+_PUNCT = "。！？、，；：．!?,;:"  # where an unspaced language may break first (kept with what comes before)
+_JOINERS = "\u200d\u200c"
+
+
+def _glued(text: str, i: int) -> bool:
+    """True when text[i] belongs with the character before it: a combining mark, a joiner, a skin tone."""
+    ch = text[i]
+    return (unicodedata.category(ch)[0] == "M" or ch in _JOINERS or text[i - 1] == "\u200d"
+            or "\U0001f3fb" <= ch <= "\U0001f3ff")  # fmt: skip
+
+
+def _chunks(word: str, width: int) -> list[str]:
+    """A word longer than `width` as lines: broken after punctuation first, else at `width` characters, never
+    between a character and its combining marks."""
+    segs, cur = [], ""
+    for i, ch in enumerate(word):
+        cur += ch
+        if ch in _PUNCT and not (i + 1 < len(word) and _glued(word, i + 1)):
+            segs.append(cur)
+            cur = ""
+    if cur:
+        segs.append(cur)
+    lines, line = [], ""
+    for seg in segs:
+        while len(seg) > width:
+            cut = width
+            while cut > 1 and _glued(seg, cut):
+                cut -= 1
+            if line:
+                lines.append(line)
+                line = ""
+            lines.append(seg[:cut])
+            seg = seg[cut:]
+        if line and len(line) + len(seg) > width:
+            lines.append(line)
+            line = ""
+        line += seg
+    return [*lines, line] if line else lines
+
+
+def wrap(text: str) -> list[str]:
+    """captions.wrap, and a word longer than MAX_CHARS (a language written without spaces) is broken at punctuation
+    or by character count so no line is over the limit."""
+    from bsa import captions
+
+    width = captions.MAX_CHARS
+    lines: list[str] = []
+    cur = ""
+    for word in str(text).split():
+        if len(word) > width:
+            if cur:
+                lines.append(cur)
+            lines += _chunks(word, width)
+            cur = lines.pop()
+            continue
+        if cur and len(cur) + 1 + len(word) <= width:
+            cur = f"{cur} {word}"
+            continue
+        if cur:
+            lines.append(cur)
+        cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def skipped(short, settings: dict | None = None) -> dict[str, str]:
+    """{language: why} for each translated language whose subtitle files must not be (re)written: it has problems
+    (the first named) or lines made for older English. The one status `CLI captions`, the Post stage, the post pack
+    and the upload checklist all use."""
+    import copy
+
+    data = getattr(short, "captions_translations", None)
+    if not isinstance(data, dict):
+        return {}
+    settings = settings or {}
+    old = stale(short, settings)
+    out: dict[str, str] = {}
+    for lang, entry in data.items():
+        one = copy.copy(short)
+        one.captions_translations = {lang: entry}
+        errors, _ = problems(one, settings)
+        if errors:
+            out[str(lang)] = f"Not updated: {errors[0]}"
+        elif lang in old:
+            out[str(lang)] = OLD_ENGLISH
+    return out
+
+
 def cues(tl, short, lang: str, closing=None) -> list:
     """The language's subtitle cues, with the English timing: per line one span from its first card's start to its
     last card's end, the translated text wrapped like the English and shared out when it needs more than MAX_LINES
     lines. The closing cue keeps the English cue's frames with the translated closing text. A line (or the closing
     line) with no translation gets no cue."""
+    import math
+
     from bsa import captions
 
     data = getattr(short, "captions_translations", None)
@@ -211,11 +303,12 @@ def cues(tl, short, lang: str, closing=None) -> list:
         if not cards or not _text_ok(text):
             continue
         f0, f1 = min(c.f0 for c in cards), max(c.f1 for c in cards)
-        wrapped = captions.wrap(text)
+        wrapped = wrap(text)
         if not wrapped:
             continue
         out += [captions.Cue(f0, f1, wrapped)] if len(wrapped) <= captions.MAX_LINES else captions._share(wrapped, f0, f1)
+    out = captions._merge(out, math.ceil(round(captions.MIN_CUE_S * tl.fps, 6)), wrap)
     text = entry.get(CLOSING)
-    if closing is not None and _text_ok(text) and captions.wrap(text):
-        out.append(captions.Cue(closing.f0, closing.f1, captions.wrap(text)))
+    if closing is not None and _text_ok(text) and wrap(text):
+        out.append(captions.Cue(closing.f0, closing.f1, wrap(text)))
     return out

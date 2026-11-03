@@ -81,7 +81,8 @@ def _share(lines: list[str], f0: int, f1: int) -> list[Cue]:
     return cues_
 
 
-def _merge(cues_: list[Cue], n: int) -> list[Cue]:
+def _merge(cues_: list[Cue], n: int, wrapper=None) -> list[Cue]:
+    wrap_ = wrapper or wrap
     out = list(cues_)
     i = 0
     while i < len(out):
@@ -93,7 +94,7 @@ def _merge(cues_: list[Cue], n: int) -> list[Cue]:
         need = n - have
         if i > 0:
             prev = out[i - 1]
-            joined = wrap(f"{_text(prev)} {_text(c)}")
+            joined = wrap_(f"{_text(prev)} {_text(c)}")
             if len(joined) <= MAX_LINES:
                 out[i - 1 : i + 1] = [Cue(prev.f0, c.f1, joined)]
                 continue
@@ -102,7 +103,7 @@ def _merge(cues_: list[Cue], n: int) -> list[Cue]:
                 c.f0 -= need
         else:
             nxt = out[1]
-            joined = wrap(f"{_text(c)} {_text(nxt)}")
+            joined = wrap_(f"{_text(c)} {_text(nxt)}")
             if len(joined) <= MAX_LINES:
                 out[0:2] = [Cue(c.f0, nxt.f1, joined)]
                 continue
@@ -142,8 +143,13 @@ def to_srt(cs: list[Cue], fps: int) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
+def _vtt_text(line: str) -> str:
+    """Cue text as WebVTT wants it: & and < as entities, and "-->" (which would read as a timing) broken."""
+    return line.replace("&", "&amp;").replace("<", "&lt;").replace("-->", "--&gt;")
+
+
 def to_vtt(cs: list[Cue], fps: int) -> str:
-    blocks = [f"{_span(c, fps, '.')}\n" + "\n".join(c.lines) for c in cs]
+    blocks = [f"{_span(c, fps, '.')}\n" + "\n".join(_vtt_text(x) for x in c.lines) for c in cs]
     return "WEBVTT\n\n" + "\n\n".join(blocks) + "\n"
 
 
@@ -241,27 +247,16 @@ def write_files(sdir: Path, short, s: dict) -> dict:
 
 def _write_languages(sdir: Path, short, s: dict, tl, last: Cue | None) -> tuple[dict, dict]:
     """Each translated language's SRT and VTT, with the English timing. A language with problems or lines made for
-    older English is skipped (its files are left as they are) and the reason said."""
-    import copy
-
+    older English is skipped (translations.skipped; its files are left as they are) and the reason said."""
     from bsa import translations
 
     data = getattr(short, "captions_translations", None)
     if not isinstance(data, dict):
         return {}, {}
-    old = translations.stale(short, s)
+    skipped = translations.skipped(short, s)
     written: dict[str, dict] = {}
-    skipped: dict[str, str] = {}
-    for lang, entry in data.items():
-        one = copy.copy(short)
-        one.captions_translations = {lang: entry}
-        errors, _ = translations.problems(one, s)
-        if errors:
-            skipped[str(lang)] = f"{lang} subtitles have problems: {errors[0]}"
-            continue
-        if lang in old:
-            names = ", ".join("the closing line" if b == translations.CLOSING else b for b in old[lang])
-            skipped[lang] = f"{lang} subtitles for {names} were made for the old English: update them, then run again"
+    for lang in data:
+        if str(lang) in skipped:
             continue
         cs = translations.cues(tl, short, lang, last)
         where = paths(sdir, short, lang)

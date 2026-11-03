@@ -20,7 +20,7 @@ STALE_NOTE = " (made for an older timing: run the final edit again)"
 _CAPTION_KEYS = ("srt", "vtt", "transcript")
 CHECK_IDS = ("upload", "length", "thumbnail", "captions", "languages", "pin", "link")
 TIMING_TEXT = "made for an older timing: run the final edit again"
-OLD_ENGLISH = "Made for the old English: update the translation, then run CLI captions SHORT"
+OLD_ENGLISH = translations.OLD_ENGLISH
 
 
 def clock(seconds: float) -> str:
@@ -82,7 +82,7 @@ def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None =
         ("vtt", "Captions (VTT)", f"out/{cap['vtt'].name}"),
         ("transcript", "Transcript", f"out/{cap['transcript'].name}"),
     ]
-    old = translations.stale(short, _settings(settings))
+    skipped = translations.skipped(short, _settings(settings))
     for lang in _languages(short):
         lp = captions.paths(sdir, short, lang)
         spec += [(f"srt-{lang}", f"Captions, {lang} (SRT)", f"out/{lp['srt'].name}", lang),
@@ -92,13 +92,13 @@ def files(sdir: Path, short, video: dict | None = None, cap_state: dict | None =
     for key, label, rel, *lang in spec:
         path = sdir / rel
         exists = path.is_file()
-        late = bool(lang and lang[0] in old)  # translated for English that has since changed
+        why = skipped.get(lang[0]) if lang else None  # not updated for the current English
         timing = bool(exists and (key in _CAPTION_KEYS or lang) and stale)
         row = {"key": key, "label": label, "rel": rel, "path": str(path), "exists": exists,
                "size": _size(path.stat().st_size) if exists else None,
-               "stale": bool(timing or (exists and late))}  # fmt: skip
-        if lang and exists and late:  # both reasons: both said; only the timing: no `why` (the default text)
-            row["why"] = f"{OLD_ENGLISH}; also {TIMING_TEXT}" if timing else OLD_ENGLISH
+               "stale": bool(timing or (exists and why))}  # fmt: skip
+        if why and exists:  # both reasons: both said; only the timing: no `why` (the default text)
+            row["why"] = f"{why}; also {TIMING_TEXT}" if timing else why
         rows.append(row)
     return rows
 
@@ -148,9 +148,9 @@ def checklist_items(sdir: Path, short, video: dict | None = None, cap_state: dic
     if srt.is_file() and not (cap_state or captions.state(sdir, short))["stale"]:
         items.append(("captions", (f"Captions: out/{srt.name}. Upload it in YouTube Studio → Subtitles, so the "
                                    "numbers come out right.")))  # fmt: skip
-    old = translations.stale(short, _settings(settings))
+    skipped = translations.skipped(short, _settings(settings))
     ready = [f"out/{captions.paths(sdir, short, lang)['srt'].name}" for lang in _languages(short)
-             if captions.paths(sdir, short, lang)["srt"].is_file() and lang not in old]
+             if captions.paths(sdir, short, lang)["srt"].is_file() and lang not in skipped]
     if ready and not (cap_state or captions.state(sdir, short))["stale"]:
         items.append(("languages", f"Upload each language in YouTube Studio → Subtitles: {', '.join(ready)}"))
     if isinstance(p["pinned_comment"], str) and p["pinned_comment"].strip():
@@ -198,7 +198,7 @@ def markdown(sdir: Path, short, settings: dict | None = None) -> str:
         if row["key"] == "video" and video["length"] and video["size"]:
             line += f" ({video['length']}, {video['size']})"
         elif row.get("why"):
-            line += f" ({row['why'][0].lower()}{row['why'][1:]})"
+            line += f" ({row['why']})"
         elif row["stale"]:
             line += STALE_NOTE
         out.append(line)

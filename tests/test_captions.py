@@ -297,6 +297,8 @@ def _blocks(path):
 def test_language_files_have_the_english_timing(tmp_path):
     sdir = pagefix.make_short(tmp_path, "done")
     arabic = ["البندول يتأرجح مثل الساعة.", "الطول يحدد الإيقاع.", "أطول أربع مرات، أبطأ مرتين.", "الساعات حفظت الوقت."]
+    pagefix.write_timeline(sdir, frames=300)  # lines long enough that no cue is merged
+    pagefix.record_edit(sdir, "final")
     _translate(sdir, "ar", arabic)
     out = captions.write_files(sdir, _short(sdir), {})
     assert out["skipped"] == {} and set(out["languages"]["ar"]) == {"srt", "vtt"}
@@ -349,3 +351,67 @@ def test_paths_for_a_language(tmp_path):
     sdir = pagefix.make_short(tmp_path, "done")
     p = captions.paths(sdir, _short(sdir), "pt-BR")
     assert p == {"srt": sdir / "out" / "pendulum.pt-BR.srt", "vtt": sdir / "out" / "pendulum.pt-BR.vtt"}
+
+
+def _tl(*spans, fps=30):
+    from bsa.timeline import Timeline
+
+    cards = [Card("x", lid, f0, f1) for lid, f0, f1 in spans]
+    return Timeline(fps, max(c.f1 for c in cards), [], [], cards)
+
+
+def _unspaced_short(texts):
+    from bsa.short import Line, Short, Shot
+
+    lines = [Line(f"l0{i + 1}", f"English {i + 1}.", "s1") for i in range(len(texts))]
+    short = Short(slug="t", title="T", length_s=10, lines=lines,
+                  shots=[Shot(id="s1", title="x", picture="y", scene="z")])  # fmt: skip
+    short.captions_translations = {"zh": {"lines": {ln.id: t for ln, t in zip(lines, texts)},
+                                          "from": {ln.id: ln.text for ln in lines}}}  # fmt: skip
+    return short
+
+
+@pytest.mark.parametrize("lang,text", [
+    ("zh", "摆的周期取决于它的长度和重力，而与末端摆锤的重量无关。" * 3 + "这就是为什么老式时钟用同一根摆就能走得很准确。"),
+    ("ja", "振り子の周期はその長さと重力で決まり、先端のおもりの重さには関係しません" * 3),
+    ("th", "ก" + "ิ" * 10 + "ข" * 80),
+    ("x", "a" * 130),
+])  # fmt: skip
+def test_unspaced_text_keeps_every_cue_within_two_lines_of_42(lang, text):
+    from bsa import translations
+
+    short = _unspaced_short([text])
+    short.captions_translations[lang] = short.captions_translations.pop("zh")
+    cs = translations.cues(_tl(("l01", 1, 300)), short, lang, None)
+    assert cs and all(len(c.lines) <= captions.MAX_LINES and all(len(x) <= captions.MAX_CHARS for x in c.lines)
+                      for c in cs)  # fmt: skip
+    assert "".join("".join(c.lines) for c in cs) == text
+    assert cs[0].f0 == 1 and cs[-1].f1 == 300 and all(a.f1 + 1 == b.f0 for a, b in itertools.pairwise(cs))
+    if lang == "th":  # a combining mark stays with its base
+        assert not any(x[0] == "ิ" for c in cs for x in c.lines)
+
+
+def test_unspaced_text_breaks_after_punctuation_first():
+    from bsa import translations
+
+    text = "摆的周期取决于它的长度。" + "重力也很重要，" * 4 + "结束了。"
+    lines = translations.wrap(text)
+    assert all(len(x) <= 42 for x in lines) and "".join(lines) == text
+    assert all(x[-1] in "。，" for x in lines[:-1])
+
+
+def test_translated_cues_under_half_a_second_are_merged():
+    from bsa import translations
+
+    short = _unspaced_short(["Uno.", "Dos."])
+    short.captions_translations["zh"]["lines"] = {"l01": "Uno.", "l02": "Dos."}
+    cs = translations.cues(_tl(("l01", 1, 5), ("l02", 6, 10)), short, "zh", None)  # 5 frames each at 30 fps
+    assert len(cs) == 1 and cs[0].f0 == 1 and cs[0].f1 == 10 and " ".join(cs[0].lines) == "Uno. Dos."
+
+
+def test_vtt_escapes_what_would_read_as_markup_or_timing():
+    cs = [captions.Cue(1, 30, ["Tom & Jerry <b>", "a --> b"])]
+    vtt = captions.to_vtt(cs, 30)
+    assert "Tom &amp; Jerry &lt;b>" in vtt and "a --&gt; b" in vtt
+    assert vtt.count("-->") == 1  # only the cue's timing line
+    assert "Tom & Jerry" in captions.to_srt(cs, 30)

@@ -11,6 +11,12 @@ from bsa.review import checklist, snapshot
 from bsa.short import load_short
 
 
+@pytest.fixture(autouse=True)
+def _no_machine_settings(monkeypatch):
+    """The pack reads the user's settings when none are given: here it never does, whatever machine runs this."""
+    monkeypatch.setattr(postpack, "_settings", lambda settings: {} if settings is None else settings)
+
+
 def _short(sdir):
     return load_short(sdir / "source" / "short.json")
 
@@ -263,3 +269,27 @@ def test_a_language_file_says_which_reason_it_is_stale(tmp_path):
     assert only_timing["stale"] and "why" not in only_timing
     md = postpack.markdown(sdir, _short(sdir))
     assert "run the final edit again" in md
+
+
+def test_a_language_with_errors_is_flagged_everywhere_until_fixed(tmp_path):
+    from bsa import captions
+
+    sdir = pagefix.make_short(tmp_path, "done")
+    _translated(sdir, es=True)
+    captions.write_files(sdir, _short(sdir), {})
+    items = postpack.checklist_items(sdir, _short(sdir))
+    assert "out/pendulum.es.srt" in {i["id"]: i["text"] for i in items}["languages"]
+    p = sdir / "source" / "short.json"
+    good = p.read_text("utf-8")
+    d = json.loads(good)
+    d["lines"].append({**d["lines"][-1], "id": "l05", "text": "A new line."})
+    p.write_text(json.dumps(d), "utf-8")
+    rows = {r["key"]: r for r in postpack.files(sdir, _short(sdir))}
+    assert rows["srt-es"]["stale"] and rows["srt-es"]["why"] == "Not updated: line l05 has no es translation"
+    assert "languages" not in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir))]
+    md = postpack.markdown(sdir, _short(sdir))
+    assert "(Not updated: line l05 has no es translation)" in md
+    assert captions.write_files(sdir, _short(sdir), {})["skipped"]["es"].startswith("Not updated: line l05")
+    p.write_text(good, "utf-8")
+    assert not {r["key"]: r for r in postpack.files(sdir, _short(sdir))}["srt-es"]["stale"]
+    assert "languages" in [i["id"] for i in postpack.checklist_items(sdir, _short(sdir))]
