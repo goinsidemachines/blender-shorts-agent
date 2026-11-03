@@ -68,9 +68,12 @@ if "--" in sys.argv:  # script mode: blender -b --python build.py -- PLUGIN_ROOT
     sys.path.insert(0, PLUGIN_ROOT)
 
 import bpy
-from bsa.blender import bake, look, scene as bsa_scene
+from bsa import setplace
+from bsa.blender import bake, look, scene as bsa_scene, sets, styles
+from bsa.kit import kit_for
+from bsa.settings import load_settings
 from bsa.short import load_short
-from bsa.timeline import timeline_hash
+from bsa.timeline import timeline_hash, timeline_from_json
 
 STYLE = int(os.environ.get("BSA_STYLE", "0") or 0)
 ENGINE = "cycles"  # the engine approved at the engine stage (or the saved preference); "eevee" if that was chosen
@@ -81,12 +84,20 @@ def build(short_dir):
     short = load_short(short_dir / "source" / "short.json")
     tl = json.loads((short_dir / "source" / "timeline.json").read_text(encoding="utf-8"))
     span = {s["id"]: (s["f0"], s["f1"]) for s in tl["shots"]}
+    kit = kit_for(load_settings(), short)  # None without a brand kit: sets and styles then do nothing at all
+    tl_obj = timeline_from_json(tl)  # sets.dress reads shot spans from this
+    size_m = 1.0  # the subject's largest real dimension in metres (from your sourced dimensions)
     names = sorted({s.scene for s in short.shots})
     bsa_scene.remove_scenes(names)  # old scenes and their objects, so a rebuild keeps exact object names
     for name in names:
         sc = bpy.data.scenes.new(name)
         bsa_scene.setup_scene(sc, short, ENGINE, "preview")
-        # ... models, materials, lights, world, camera moves, baked motion, tags ...
+        set_name = setplace.resolve(kit.set, size_m) if kit else None  # "auto" picks by size; "none" is None
+        sets.base(sc, kit, set_name, size_m)  # the floor and walls first, before the subject (no kit: nothing)
+        # ... models (parts from look.kit_material(name, kind, colour) with category: tags; `hero` is the
+        # subject's main object), lights, camera moves, baked motion, tags ...
+        sets.dress(sc, kit, short, tl_obj, short_dir)  # after the motion is baked: sizes the set, places the props
+        styles.apply(sc, kit, target=hero, size=size_m, key=[hero.name])  # last: restyles the finished scene
         sc.frame_start, sc.frame_end = 1, tl["n_frames"]
         sc["bsa_timeline"] = timeline_hash(tl)  # the Blender commands refuse a scene built for another timing
     bpy.ops.wm.save_as_mainfile(filepath=str(short_dir / "blend" / "short.blend"))
@@ -105,6 +116,37 @@ Run it (script mode):
 For a style thumbnail, set `BSA_STYLE=<n>` in that command's environment. In MCP mode run the same file through the
 MCP instead, always with `import runpy; runpy.run_path(r"<root>/bsa_mcp_build.py")["build_short"](r"<short>")` so the
 open Blender uses the plugin's current code (`mcp-mode.md`).
+
+### Sets, styles and kit materials (brand kit only)
+
+With a brand kit (`brand.style`, `look-and-brand.md`) build.py also makes the short's set and puts the style on it.
+Without a kit all three calls do nothing, so one build.py serves both. The order in the skeleton is fixed:
+
+1. `kit = kit_for(load_settings(), short)` once, then for each scene `set_name = setplace.resolve(kit.set, size_m)
+   if kit else None` (`size_m` is the subject's real size: `auto` picks the set from it; `"none"` gives `None`).
+2. `sets.base(sc, kit, set_name, size_m)` **before** the subject: the floor (its top at z = 0), walls and backdrop,
+   tagged `set:floor`, `set:wall`, `set:backdrop`, in the kit's colours. Build the subject on that floor.
+3. Parts with `look.kit_material(name, kind, colour)` and a `category:<name>` tag when a label points at them. The
+   `colour` is a `#RRGGBB` from the kit (`kit.categories`, `kit.palette`), never a hand-picked one. The kinds are
+   `plastic`, `metal`, `glass`, `emissive`, `toy`, `toy_water` and `matte`; the optional `pattern=` is `dots`, `grid`
+   or `wood`. `glass` does not work in EEVEE: use `toy_water` (`look-and-brand.md`). A part made another way is left
+   as made by every style, and `styles.apply` lists it.
+4. After the motion is baked and the cameras are framed: `sets.dress(sc, kit, short, tl_obj, short_dir)` sizes the
+   set to what the cameras see and places the props clear of the subject and of the cards, captions and labels. It
+   saves the arrangement to `source/sets.json` (once the storyboard is approved, later builds reuse it). To place
+   one prop again, after asking the user: `sets.dress(..., replace=["toolbox"])` (names as the `set_clearance`
+   check gives them; `replace=True` places all).
+5. `styles.apply(sc, kit, target=..., size=..., key=[...])` **last**. `target` is the subject (an object, its name
+   or a point), `size` its largest dimension in metres, `key` the names of the parts the shot is about. `blueprint`
+   and `pencil` draw colour only on `key=[...]` parts, so pass them for those styles.
+   It restyles the materials, lights, world and ink lines for the engine the scene renders with, and returns
+   `warnings`: read them.
+
+Tag parts that should have no ink line with `"lines:off"` (a glow, a thin wire). Never tag scenery yourself: the set
+tags its own objects (`set:floor`, `set:wall`, `set:backdrop`, `set:prop`) and a set object is never a hero.
+`BLENDER look SHORT` (`03-storyboard.md`) restyles the open scenes in memory with `--style` / `--set`, so build.py
+needs nothing for the look preview. A different style or set, once chosen, is a setting (`look-and-brand.md`): rebuild.
+The render engine is never set here: `setup_scene` is told the user's engine as before.
 
 ## Quality bar for the build (no half-done work)
 

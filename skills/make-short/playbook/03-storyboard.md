@@ -11,6 +11,14 @@ sees how the scene progresses and where every line lands before anything long is
    now.
 3. **Stills:** `BLENDER stills SHORT` writes `stills/<shot>.jpg` at each shot's `still_at` (half resolution, quick
    samples).
+3b. **With a brand kit: the look preview.** When the short has a kit (`brand.style` set, and no `"look": "fresh"`),
+    run `BLENDER look SHORT` after the stills. It renders three frames (the first shot, a middle one, the last) in
+    the kit's style and set, with the kit's cards on top, and writes `stills/look.json`. It needs the user's engine
+    (`--engine eevee|cycles`, else the short's approved engine or `render.engine`): when there is none, ask the user
+    and never choose one. Look at the three frames yourself, as with the stills. The page shows them as the "Look"
+    section of the Storyboard stage, and the user approves the look together with the storyboard (one approval).
+    A `look` note on the page (`id` `style` or `set`, "Use the pencil style") is handled as `look-and-brand.md`
+    "Look preview" says: `BLENDER look SHORT --style NAME` or `--set NAME`, then save the choice once they agree.
 4. **Look at every still yourself** (read each image) before showing anything. Hunt for: pink or flat-grey
    surfaces (missing or default material), black or blown-out frames, the subject cut off or outside the safe area,
    wrong-looking motion (a part through another, something floating), a picture that does not show what its line

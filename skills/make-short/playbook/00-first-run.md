@@ -104,8 +104,12 @@ so this question is not repeated; the engine stage then estimates and asks for e
   - the logo, optional: a PNG file (not an SVG) and its corner, `brand.logo '{"file": "C:/path/logo.png", "place":
     "top-left"}'` (`top-left` or `top-right`);
   - outline and shadow: offer "outlined toy" (`outline_px 3`, `shadow_px 5`) or "clean, no outlines" (both 0);
-  - the style: realistic, toy, toon, clay, blueprint, paper or pencil. Save the choice as `brand.style`; for now only
-    its name is stored and checked, how each style looks is added later, so say that once and do not promise it;
+  - the style: realistic, toy, toon, clay, blueprint, paper or pencil (`playbook/look-and-brand.md` "Styles" says how
+    each looks). Offer a one-frame look at all seven: `BLENDER style-sample --styles
+    realistic,toy,toon,clay,blueprint,paper,pencil --engine <their engine> --out <scratch folder>/styles.png`, then
+    show the image. It needs the engine they use: when `render.engine` is not `cycles` or `eevee` (`ask-always` or
+    unset), ask which one they want for the sample first, and never pick one for them. Save the choice as
+    `brand.style`;
   - `brand.set` `auto`, and `brand.caption.opacity 1` for a solid caption bar (`brand.caption` also takes `size`,
     `color` and `box` as hex: 6 digits are opaque, 8 keep their alpha); and optionally `brand.material` (overall
     feel: matte clay, brushed metal, glossy toy...), `brand.exposure` (stops, e.g. `0.3`), `brand.look` (e.g.

@@ -350,7 +350,9 @@ def test_first_run_asks_for_the_brand_kit_and_previews_it():
     assert "brand.mode brand" in t and "brand.style" in t
     section = t.split("## 4.")[1].split("## 5.")[0]
     assert "goinsidemachines" not in section.lower() and "#FF6B00" not in section
-    assert "render.engine" not in section and "engine" not in section.lower()
+    # the style sample is drawn in the user's own engine: ask for it, never pick one for them
+    assert "--engine <their engine>" in section and "never pick one for them" in section
+    assert "BLENDER style-sample --styles realistic,toy,toon,clay,blueprint,paper,pencil" in section
 
 
 def test_look_and_brand_documents_the_kit():
@@ -367,3 +369,71 @@ def test_build_doc_names_category_tags_and_the_kit_top_band():
 
 def test_checks_doc_says_covered_sees_kit_cards():
     assert "kit" in _flat(_read("playbook/07-checks.md")).split("`covered`")[1][:800]
+
+
+STYLE_DOCS = ("look-and-brand.md", "06-build.md", "07-checks.md", "03-storyboard.md", "00-first-run.md")
+
+
+def test_docs_name_every_style_and_set():
+    from bsa import kit, setplace
+
+    t = _flat(_read("playbook/look-and-brand.md"))
+    for style in kit.STYLES:
+        assert f"`{style}`" in t, style
+    for name in setplace.SETS:
+        assert f"`{name}`" in t, name
+    for s in ("BLENDER look", "--style", "--set", "sets.json", "look.match_engine(scene)", "look.toy_water",
+              "BLENDER style-sample"):
+        assert s in t, s
+
+
+def test_build_doc_calls_sets_and_styles_in_order():
+    t = _read("playbook/06-build.md")
+    base, dress, apply = t.index("sets.base("), t.index("sets.dress("), t.index("styles.apply(")
+    assert base < dress < apply
+    flat = _flat(t)
+    for s in ("kit_for(load_settings(), short)", "setplace.resolve(kit.set, size_m)", "look.kit_material(",
+              "lines:off", "set:floor", "key=["):
+        assert s in flat, s
+    import ast
+
+    names = {}  # bsa.blender.look imports bpy: read its two tuples from the source
+    for node in ast.parse((ROOT / "bsa" / "blender" / "look.py").read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in ("KIT_KINDS", "PATTERNS"):
+            names[node.targets[0].id] = [v for v in ast.literal_eval(node.value) if v]
+    assert names["KIT_KINDS"] and names["PATTERNS"]
+    for word in names["KIT_KINDS"] + names["PATTERNS"]:
+        assert f"`{word}`" in flat, word
+
+
+def test_checks_doc_has_set_clearance():
+    t = _flat(_read("playbook/07-checks.md"))
+    assert "`set_clearance`" in t and "replace=[" in t and "set:prop" in t
+    assert "no geometry" in t
+
+
+def test_skill_documents_the_look_note():
+    t = _flat(_read("SKILL.md"))
+    for s in ("`look`", "Use the", "BLENDER look SHORT --style", "--set", "render.engine"):
+        assert s in t, s
+
+
+def test_docs_never_pick_an_engine():
+    for name in STYLE_DOCS + ("../SKILL.md",):
+        t = _flat(_read(f"playbook/{name}")).lower()
+        assert not re.search(r"defaults? to (eevee|cycles)|(eevee|cycles) by default|pick the engine", t), name
+        assert not re.search(r"(suits|best in|use) (eevee|cycles) (for|with) (the )?(toon|toy|clay|paper|pencil|blueprint)",
+                             t), name  # fmt: skip
+    t = _flat(_read("playbook/look-and-brand.md"))
+    assert "the user's choice" in t and "never changes it" in t
+
+
+def test_docs_use_no_owner_values():
+    banned = ("#F3F2EE", "#202326", "#FF6B00", "#B34700", "#FFC800", "#00A86B", "#0072CE", "#C9D3DD", "Fredoka",
+              "#EEF1F4", "#1F2430", "#E4572E", "#3A7DDA")
+    for name in STYLE_DOCS:
+        t = _read(f"playbook/{name}")
+        for value in banned:
+            if name == "look-and-brand.md" and value == "Fredoka":
+                continue  # the font section's existing example of a static weight
+            assert value.lower() not in t.lower(), (name, value)

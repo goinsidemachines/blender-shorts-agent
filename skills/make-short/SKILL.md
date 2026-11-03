@@ -135,7 +135,7 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
      --reply "why not"`. A note on a stage that is already approved means going back: ask the user before you
      reset anything (`CLI state SHORT reset STAGE`).
    - **What a note points at:** each note has a `target` (`kind`, `id`, and for a frame `shot`) and the user's
-     `text`; read both. Four kinds come from the page's review tools:
+     `text`; read both. These kinds come from the page's review tools:
      - **A frame note** (`kind` `frame`, from "Note at this moment" under a video's timeline) means "look at frame
        N" of that video. Frames count from 1 in the edited video, at 30 fps. Grab it with `BLENDER grab SHORT
        --preset final --at S`, where `S = (N - 0.5) / 30` (the middle of the frame: frame 412 is `--at 13.7167`),
@@ -147,6 +147,18 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
        fix that shot, then rebuild as usual (`BLENDER preview SHORT`, and the final again when it was made).
        When the page says "This video was cut from an older timing", its markers are hidden and frame numbers
        may not match the current timing: run the edit again first (`playbook/08-render.md`).
+     - **A `look` note** (`kind` `look`, from the "Look" section on the Storyboard stage; its `id` is `style` or
+       `set`, and its `text` is "Use the toon style", "Use the studio set" or "Use no set") asks to see the storyboard
+       in another style or set. Run `BLENDER look SHORT --style NAME` (or `--set NAME`, `none` for no set) with
+       `run_in_background: true`; look at the new frames yourself, answer the note (`CLI page note SHORT ID done
+       --reply "..."`), and show the page again. The engine is always the user's choice, never yours: `look` and
+       `style-sample` need it (`--engine eevee|cycles`, else the short's approved engine or `render.engine`), and when
+       `render.engine` is `ask-always` ask the user which to use; never pick or suggest an engine for a style. Once the
+       user agrees with the new look, save it: the workspace's first brand short, `settings set brand.style NAME` (or
+       `brand.set NAME`) for every short; a later one, ask whether it is for every short or only this one (the short's
+       own `style`: `{"style": {"style": "NAME"}}` or `{"style": {"set": "NAME"}}`); then rebuild
+       (`playbook/look-and-brand.md` "Look preview"). `blueprint` and `pencil` draw colour only on `key=[...]`
+       parts, so keep them in build.py's `styles.apply` call.
      - **A `thumbnail` note** (`kind` `thumbnail`, from "+ Note on candidate N" on the Post stage; its `id` is the
        candidate's number) asks for a change to that thumbnail. Change `post.thumbnail` (the text, or that
        candidate's entry in `heroes`), then `BLENDER thumbs SHORT --only N` and answer the note. A frame note whose

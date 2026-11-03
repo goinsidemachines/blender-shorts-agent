@@ -34,10 +34,9 @@ any bad value and says how to fix it. A bad value is ignored (the plain value is
 | `progress` | true or false |
 | `set` | `auto`, `workbench`, `graph`, `outdoor`, `studio`, `none` |
 
-The style is saved now and checked as a name only. The seven names are realistic, toy, toon, clay, blueprint, paper,
-pencil. How a style draws the scene is added in a later version: do not promise a style's look unless your brief
-says it is built. `brand.material`, `brand.cards` and `brand.handle_place` are notes Claude reads; the cards use
-the kit's values, not those notes. Old flat keys still work: a hex under `brand.palette` that is not one of the six
+The seven styles are realistic, toy, toon, clay, blueprint, paper, pencil: see "Styles" below for how each one
+looks. `brand.material`, `brand.cards` and `brand.handle_place` are notes Claude reads; the cards use the kit's
+values, not those notes. Old flat keys still work: a hex under `brand.palette` that is not one of the six
 roles, and `brand.background`, are read as category colours and `palette.background` once `brand.style` is set
 (`settings check` says how to move them). The render engine is never part of the kit: it is always the user's choice.
 
@@ -79,6 +78,89 @@ with `"look": "fresh"` (below) drops the brand kit, so only its own `style` can 
 
 **Preview.** `BLENDER kit-sample --kit '<json>' --out sample.png` draws a sample sheet of a kit before it is
 saved (without `--kit` it uses the saved brand). It writes nothing to the settings.
+
+### Styles
+
+`brand.style` is one of seven. The kit's colours, its materials (`look.kit_material`, `06-build.md`), the lights, the
+world and the ink lines follow it. Every one works in EEVEE and in Cycles. The render engine is the user's choice:
+the plugin never changes it, and no style prefers one. Whichever engine the scene renders with, the `BLENDER` render
+commands (stills, preview, render, extremes, estimate) match the lights and the world to it themselves. Only a render
+you start by hand after the user switches engine needs `look.match_engine(scene)` first (it reads the engine and sets
+the stamped light values; it never sets the engine).
+
+| Style | How it looks |
+|---|---|
+| `realistic` | Today's look made from the kit: plastic, metal and glass as before, the AgX view. |
+| `toy` | Glossy toy plastic with a clear coat, edges lifted toward a pale tint, soft shadows; the kit's colours read true. |
+| `toon` | Cel shading: flat kit colours with one darker step in shadow, one sun, ink lines round every part. |
+| `clay` | Matte modelling clay with a faint grain and a warm tone, soft light, no lines. |
+| `blueprint` | A drawing on grid paper: parts are see-through fills with white-blue lines, the key parts in the accent colour. |
+| `paper` | Folded paper: parts crumpled into flat tilted facets (the crumple is in the shader, not extra geometry), a fine grain, one sun. |
+| `pencil` | A sketch on cream paper: grey shading and hatching, sketchy graphite lines, colour only on the key parts. |
+
+- **Lines** are Freestyle ink lines. They add no geometry (no shells, no extra faces, so no new overlaps). They are on
+  by nature in `toon`, `blueprint` and `pencil`, and off in the others unless the kit says `brand.outline_3d true`
+  (`outline_px` sets their width). A part tagged `lines:off` never gets one (`06-build.md`).
+- **`blueprint` and `pencil` need `key=[...]`.** They draw colour only on the key parts, so
+  `styles.apply(..., key=[names])` takes the names of the parts the shot is about (usually the heroes). Without it
+  `apply` warns.
+- **Glass does not work in EEVEE** (transmission needs ray-traced refraction there). For water and clear parts use
+  `look.toy_water` (`look.kit_material(name, "toy_water", colour)` makes the same): it looks right in both engines,
+  and every style keeps it as it is made.
+- Parts not made with `look.kit_material` are left as they were made, and `apply` says which. Build parts with it
+  from the start.
+- **See them before choosing.** `BLENDER style-sample --styles realistic,toy,toon,clay,blueprint,paper,pencil
+  --engine <their engine> --out <scratch folder>/styles.png` draws the demo machine in each style on one sheet
+  (`--set NAME` picks the set, `studio` by default; `--kit '<json>'` a kit not saved yet; `--scale 0.5`). It needs the
+  user's engine: `--engine eevee` or `--engine cycles`, or the `render.engine` setting. When `render.engine` is
+  `ask-always` (or unset), ask the user which engine to use for the sample, and never choose one for them. It
+  writes nothing to the settings.
+
+### Sets
+
+A kit short stands its subject in a set, so it is not floating on an empty backdrop. `brand.set` (or the short's
+`style.set`) is one of:
+
+- `auto`: the plugin picks by the subject's real size. Five metres or more is `outdoor`; a short that explains by
+  measuring is `graph`; 1.5 metres or less is `workbench`; anything between is `studio`.
+- `workbench`: a wooden bench top and a pegboard wall, with a toolbox, a jar, small boxes, and a hammer, wrench and
+  pliers on the wall.
+- `graph`: graph paper for the floor and the wall, with a ruler, a pencil and a set square lying on it.
+- `outdoor`: ground, two layers of hills, trees and clouds.
+- `studio`: a plain sweep (the floor curving up into the wall) in the paper colour, no props.
+- `none`: no set (the style's own paper backdrop). To leave one scene without a set, pass `None` as the set name to
+  `sets.base` for that scene (`06-build.md`).
+
+How a set is made: `sets.base` builds the floor, walls and backdrop before the subject. After the motion is baked,
+`sets.dress` sizes them to what the cameras see and places the props clear of the subject and of every card, caption
+and label. The props are objects only (never people, faces or animals). The arrangement is saved in
+`<short>/source/sets.json` once the storyboard is approved, and a rebuild keeps it, so what the user approved is what
+renders. When a change moves the subject, the `set_clearance` check (`07-checks.md`) names the prop that is now in the
+way. The background colour check (`BLENDER stills`) only runs for `studio`, whose backdrop is the paper colour; the
+other sets are scenes, not a flat backdrop.
+
+### Look preview
+
+With a brand kit, `BLENDER stills` is followed by `BLENDER look SHORT`: three frames (the first shot, a middle one and
+the last) in the kit's style and set, with the kit's cards on top, the kit sheet, and `stills/look.json`. It runs in a
+background Blender, writes nothing to the settings and never saves the `.blend`. `--style NAME` and `--set NAME` (a
+set, or `none`) show another style or set on those frames, in memory only, so the user can compare. It needs the
+engine: `--engine eevee` or `--engine cycles`, else the short's approved engine or `render.engine`. When there is
+none (`ask-always`), ask the user, and never choose for them. The page shows the frames under "Look" on the
+Storyboard stage, and the user approves them together with the storyboard (one approval, not two).
+
+When the user wants another look, they leave a `look` note (`id` `style` or `set`, text "Use the toon style", "Use the
+studio set" or "Use no set"). Run `BLENDER look SHORT --style toon` (or `--set studio`) with `run_in_background:
+true`, look at the frames yourself, answer the note, and show the page again. When the user is happy with the new
+choice, save it:
+
+- the first brand short in the workspace (`look.json` `first` is true): `settings set brand.style toon` (or
+  `brand.set studio`), so every short has it;
+- any later short: ask whether it is for every short (the settings) or for this short only (`short.json` `style`:
+  `{"style": {"style": "toon"}}`, or `{"style": {"set": "studio"}}`).
+
+Then rebuild (`BLENDER preview SHORT`, or build.py and the stills again) so the scenes carry the new look, and run
+`BLENDER look SHORT` again to confirm.
 
 ### One short with its own look
 
@@ -174,8 +256,8 @@ A look is a few decisions held consistently across every shot:
 - **World:** an HDRI (CC0, downloaded only after a yes) or a simple gradient world; never a pure black void unless
   that is the look.
 - **A plain backdrop in an exact colour** (a brand's paper, say): never set the world to the hex and hope. Under AgX
-  a world of #F3F2EE at strength 1 renders about #C5C5C3, grey, and saturated colours wash out. Use
-  `bsa.blender.look.paper_world(scene, "#F3F2EE", light=1.0)` after `setup_scene`: it solves the colour the camera
+  a world set to the plain hex at strength 1 renders as a duller, greyer colour, and saturated colours wash out. Use
+  `bsa.blender.look.paper_world(scene, "#F4EFE6", light=1.0)` after `setup_scene`: it solves the colour the camera
   sees through the scene's view transform, look and exposure (Blender's own colour management), and lights the
   scene separately with the plain colour times `light`. It returns the colour it reached and its `delta_e`; over
   2 the view can't reach it, and the result has a `warning` (also printed) naming the colour it shows instead.
