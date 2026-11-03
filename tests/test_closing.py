@@ -238,3 +238,28 @@ def test_kit_closing_with_a_logo_starts_with_the_badge(tmp_path, font):
     assert rows[0][0].kind == "logo" and len(rows) == 4
     assert rows[0][1].y == closing.TOP_PX and rows[1][1].y == rows[0][1].bottom + closing.GAP_PX
     assert closing.kit_layout({"website": "example.com"}, K, font)[0][0].kind == "text"  # no logo: no badge
+
+
+def test_a_kit_closing_card_with_a_missing_logo_says_so_in_closing_json(tmp_path, monkeypatch):
+    """The logo file moved after setup: the closing card is made without its badge and stills/closing.json (and the
+    returned warnings) say so once."""
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    import bsa_blender
+
+    gone = tmp_path / "gone" / "logo.png"
+    s = {"website": "a.com", "brand": {**KIT, "logo": {"file": str(gone), "place": "top-left"}}}
+    monkeypatch.setattr(bsa_blender.settings, "load_settings", lambda: s)
+    made = []
+    monkeypatch.setitem(sys.modules, "bsa.blender.closing_card",
+                        SimpleNamespace(make_card=lambda *a, **k: made.append(k.get("kit"))))  # fmt: skip
+    monkeypatch.setitem(sys.modules, "bsa.blender.pixels", SimpleNamespace(read_png=lambda p: np.zeros((4, 4, 4))))
+    monkeypatch.setattr(closing, "zone_warnings", lambda rgba: [])
+    (tmp_path / "stills").mkdir()
+    cfg, png, warnings = bsa_blender._closing_card(tmp_path, _short())
+    assert made and made[0] is not None and cfg is not None
+    want = kit.logo_missing(made[0].logo)
+    assert want and warnings == [want]
+    assert json.loads((tmp_path / "stills" / closing.INFO_FILE).read_text(encoding="utf-8"))["warnings"] == [want]

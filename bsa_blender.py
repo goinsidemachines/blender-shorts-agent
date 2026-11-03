@@ -257,6 +257,9 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
     k = kit_mod.kit_for(s, short) if not cfg["image"] else None  # the user's own image is never restyled
     closing_card.make_card(cfg, brand, png, short.style.get("font") or brand.get("font"), kit=k,
                            card_dir=sdir / "cards")  # fmt: skip
+    logo_note = kit_mod.logo_missing(k.logo) if k is not None else None  # drawn without its badge
+    if logo_note:
+        warnings.append(logo_note)
     warnings += closing.zone_warnings(read_png(png))
     made = {"kit": True} if k is not None else {}
     info.write_text(json.dumps({**cfg, **made, "warnings": warnings}, indent=2, ensure_ascii=False), encoding="utf-8")
