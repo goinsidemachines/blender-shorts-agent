@@ -132,7 +132,18 @@ from mathutils.bvhtree import BVHTree
 
 from bsa import kitlayout, overlays, setplace, viewer
 from bsa.blender.anchors import screen_box, screen_top
-from bsa.blender.bake import category, is_hero, is_overlay, is_set, is_surface, may_exit, set_role, tags
+from bsa.blender.bake import (
+    category,
+    is_fast,
+    is_hero,
+    is_overlay,
+    is_set,
+    is_surface,
+    may_exit,
+    set_role,
+    tag_problem,
+    tags,
+)
 from bsa.blender.styles import BEVEL as STYLE_BEVEL
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
@@ -360,6 +371,7 @@ class _Run:
         self.overlay = {o.name for o in scene.objects if is_overlay(o)}  # glows, guide lines: not physical
         self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
         self.set_objs = {o.name for o in scene.objects if is_set(o)}  # a set's floor, walls and props: scenery
+        self.fast: set[str] = {o.name for o in scene.objects if is_fast(o)}  # really moves that quickly: no pops
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
         self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
@@ -1007,7 +1019,11 @@ class _Run:
                      key=("renamed",))  # fmt: skip
         for obj in sorted(self.scene.objects, key=lambda o: o.name):
             for t in tags(obj):
-                if t.startswith("contact:"):
+                problem = tag_problem(t)
+                if problem:  # a typo, or a prefix with nothing after it: the checks would not read it
+                    self.add("names", "error", obj.name, None, f"tag {t!r} on {obj.name!r}: {problem}",
+                             key=(obj.name, t))  # fmt: skip
+                elif t.startswith("contact:"):
                     target = _contact_target(t[len("contact:") :], present)
                     if target not in present:
                         self.add("names", "error", obj.name, None, f"tag {t!r} names {target!r}, which scene "
@@ -1062,11 +1078,12 @@ class _Run:
 
     def pops(self, shot, positions, sizes):
         for name, track in positions.items():
-            if name in self.overlay or name in self.set_objs:  # a glow or guide may snap into place; scenery
-                continue
+            if name in self.overlay or name in self.set_objs or name in self.fast:  # a glow or guide may snap into
+                continue  # place; scenery; a part tagged fast really moves that quickly
             for frame, d, limit in find_pops(track, sizes.get(name, 0.0), judged=(shot.f0, shot.f1)):
                 self.add("pops", "error", name, frame, f"jumps {d:.3f} m in one frame (limit {limit:.3f} m from the "
-                         f"moves around it) in shot {shot.id!r}", key=(name, frame))  # fmt: skip
+                         f"moves around it) in shot {shot.id!r}; if the real motion is this quick (a flick, a snap), "
+                         "tag it 'fast'", key=(name, frame))  # fmt: skip
 
 
 def _creases(mesh, lo: float, hi: float) -> int:

@@ -424,6 +424,13 @@ def test_tags_must_name_objects_in_the_scene():
     assert len(found) == 1 and "'Yoke'" in found[0].message and found[0].obj == "Rod", found
 
 
+def test_unknown_tags_are_names_errors():
+    sc = _scene()
+    _cube("Cube", (0, 0, 0.5))["bsa_tags"] = "contcat:Floor"  # a typo bake.tag would refuse, written by hand
+    found = _found(sc, "names", "Cube", "error")
+    assert len(found) == 1 and "did you mean 'contact:'" in found[0].message, found
+
+
 def test_near_labels_and_hero_shots_must_exist():
     from types import SimpleNamespace
 
@@ -561,6 +568,21 @@ def test_pop_found():
     _move_x(cube, [0.02 * i + (2.0 if i >= 14 else 0.0) for i in range(N)])
     found = _found(sc, "pops", "Popper", "error")
     assert [f.frame for f in found] == [15], found
+
+
+def test_fast_tag_lets_a_part_flick_but_still_checks_overlaps():
+    """A part that really moves that quickly (a flick, a snap) is tagged "fast": no pop, but still every other check."""
+    sc = _scene()
+    flick = _cube("Flick", (0, 0, 0.5))
+    _move_x(flick, [0.0] * 10 + [1.5] * (N - 10))  # still, then 1.5 m in one frame, then still
+    found = _found(sc, "pops", "Flick", "error")
+    assert len(found) == 1 and "tag it 'fast'" in found[0].message, found
+    bake.tag(flick, "fast")
+    assert not _found(sc, "pops", "Flick"), _found(sc, "pops", "Flick")
+    bake.tag(_cube("Snap", (-1.5, 0, 1.0), size=0.6), "fast")  # sunk halfway into the block below
+    _cube("Block", (-1.5, 0, 0.5))
+    overlaps = [f for f in _found(sc, "overlap", severity="error") if "Snap" in f"{f.obj} {f.message}"]
+    assert overlaps, checks.run_checks(sc, _timeline())
 
 
 def test_floating_found():

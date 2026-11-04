@@ -109,3 +109,27 @@ def test_set_tags_parse_and_set_objects_cannot_be_heroes():
         bake.tag(Obj(), "hero:s01", "set:wall")
     with pytest.raises(ValueError, match="floor"):
         bake.tag(Obj(), "set:ceiling")
+
+
+def test_tag_typos_are_refused_with_a_suggestion():
+    with pytest.raises(ValueError, match="did you mean 'contact:'"):
+        bake.tag(Obj(), "contcat:Floor")
+    with pytest.raises(ValueError, match="'hero'"):
+        bake.tag(Obj(), "heros")
+    for empty in ("contact:", "category:"):
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), empty)
+    assert bake.tag_problem("contcat:Floor") == "unknown tag 'contcat:Floor' (did you mean 'contact:'?)"
+    assert bake.tag_problem("contact:") == "tag 'contact:' names no object"
+    assert bake.tag_problem("category:") == "tag 'category:' names no category"
+    assert bake.tag_problem("hero:") == "tag 'hero:' lists no shot"
+    for t in ("hero", "hero:s01,s02", "grounded", "contact:A:0.01:moves", "overlay", "overlay:may-exit",
+              "surface", "category:gear", "set:prop", "lines:off", "fast"):
+        assert bake.tag_problem(t) is None, t
+
+
+def test_new_tags_end_a_hero_shot_list():
+    o = Obj()
+    o["bsa_tags"] = "hero:s03,s04,fast"
+    assert bake.tags(o) == ["hero:s03,s04", "fast"]
+    assert bake.is_fast(o) and not bake.is_fast(Obj())

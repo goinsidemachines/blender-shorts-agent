@@ -34,7 +34,9 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
   `"category:<name>"` (a category of the brand kit, `brand.categories`; e.g. `bake.tag(obj, "category:spark")`)
   on a part a label points at: with a brand kit the label's dot takes that category's colour;
-  `"lines:off"` on a part that should have no ink lines round it (a glow, a thin wire); `"set:floor"`,
+  `"lines:off"` on a part that should have no ink lines round it (a glow, a thin wire); `"fast"` on a part whose
+  real motion is quicker than the pop limit in one frame (a flick, a snap: no `pops` error, every other check still
+  runs); `"set:floor"`,
   `"set:wall"`, `"set:backdrop"` and `"set:prop"` mark the scenery a brand kit's set makes (never a hero);
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import math
 from collections.abc import Callable, Sequence
 from itertools import pairwise
@@ -87,18 +88,60 @@ def _fcurves(action):
 # a guide line: not physical geometry), "overlay:may-exit" (an overlay that may leave the frame on purpose, such as
 # a falling stream: no frame_edge warning), "surface" (an open fluid surface, such as water: things may cross it),
 # "category:<name>" (the part's category in a brand kit: its label's dot takes that category's colour),
-# "set:<role>" (scenery a set made: its floor, wall, backdrop or a prop; never a hero) and "lines:off" (no ink
-# lines drawn round it).
+# "set:<role>" (scenery a set made: its floor, wall, backdrop or a prop; never a hero), "lines:off" (no ink
+# lines drawn round it) and "fast" (a part that really moves more than the pop limit in one frame: a flick, a snap).
+# An entry ending in ":" is a prefix (the tag goes on after it); every other entry is a whole tag.
 MAY_EXIT = "overlay:may-exit"
 LINES_OFF = "lines:off"
+FAST = "fast"
 SET_ROLES = ("floor", "wall", "backdrop", "prop")
 SET_TAGS = tuple(f"set:{r}" for r in SET_ROLES)
-TAGS = ("hero", "grounded", "contact:", "overlay", MAY_EXIT, "surface", "category:", *SET_TAGS, LINES_OFF)
+TAGS = ("hero", "hero:", "grounded", "contact:", "overlay", MAY_EXIT, "surface", "category:", *SET_TAGS, LINES_OFF,
+        FAST)
+TAG_WORDS: tuple[str, ...] = tuple(t for t in TAGS if not t.endswith(":"))
+TAG_PREFIXES: tuple[str, ...] = tuple(t for t in TAGS if t.endswith(":"))
+
+
+def _hero_shape(t: str, rest: str) -> str | None:
+    return None if any(i.strip() for i in rest.split(",")) else f"tag {t!r} lists no shot"
+
+
+def _contact_shape(t: str, rest: str) -> str | None:
+    return None if rest.split(":", 1)[0].strip() else f"tag {t!r} names no object"
+
+
+def _category_shape(t: str, rest: str) -> str | None:
+    return None if rest.strip() else f"tag {t!r} names no category"
+
+
+# What a known tag must look like, by its TAGS entry: (the whole tag, the text after a prefix) -> why not, or None.
+# A tag with no rule here is right as long as it is in TAG_WORDS or starts with one of TAG_PREFIXES.
+TAG_SHAPES: dict[str, Callable[[str, str], str | None]] = {
+    "hero:": _hero_shape,
+    "contact:": _contact_shape,
+    "category:": _category_shape,
+}
 
 
 def _is_tag_start(word: str) -> bool:
-    return word in ("hero", "grounded", "overlay", MAY_EXIT, "surface", LINES_OFF) or word.startswith(
-        ("contact:", "hero:", "category:", "set:"))
+    return word in TAG_WORDS or word.startswith(TAG_PREFIXES)
+
+
+def tag_problem(t: str) -> str | None:
+    """None for a known tag of the right shape; else why not, with the nearest known tag for a typo."""
+    if t in TAG_WORDS:
+        rule = TAG_SHAPES.get(t)
+        return rule(t, "") if rule else None
+    for prefix in TAG_PREFIXES:
+        if t.startswith(prefix):
+            rule = TAG_SHAPES.get(prefix)
+            return rule(t, t[len(prefix) :]) if rule else None
+    if t.startswith("set:"):
+        return f"unknown tag {t!r}: a set tag is one of {', '.join(SET_TAGS)}"
+    close = difflib.get_close_matches(t, TAGS, n=1, cutoff=0.6)
+    if not close and ":" in t:  # a long name after a misspelt prefix: compare the prefix alone
+        close = difflib.get_close_matches(t.split(":", 1)[0] + ":", TAG_PREFIXES, n=1, cutoff=0.6)
+    return f"unknown tag {t!r}" + (f" (did you mean {close[0]!r}?)" if close else "")
 
 
 def set_role(obj) -> str | None:
@@ -137,6 +180,12 @@ def may_exit(obj) -> bool:
     return MAY_EXIT in tags(obj)
 
 
+def is_fast(obj) -> bool:
+    """Whether the object is tagged "fast": it really moves more than the pop limit in one frame (a flick, a snap),
+    so the pops check leaves it out; every other check still runs."""
+    return FAST in tags(obj)
+
+
 def is_surface(obj) -> bool:
     """Whether the object is tagged "surface": an open fluid surface (water moved by waves, a liquid level) that
     things may cross. The overlap and z-fighting checks leave it out while its mesh is open; a closed mesh is a
@@ -168,15 +217,17 @@ def is_hero(obj, shot_id: str | None = None) -> bool:
 
 def tag(obj, *new_tags: str) -> None:
     """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay", "surface", "set:<role>",
-    "lines:off") into bsa_tags (comma-joined, no duplicates). Only a hero:<shot ids> tag may hold commas (between its
-    shot ids). A set object (set:<role>) is never a hero: ValueError."""
+    "lines:off", "fast": see TAGS) into bsa_tags (comma-joined, no duplicates). An unknown or empty tag (a typo) is
+    a ValueError saying why (tag_problem). Only a hero:<shot ids> tag may hold commas (between its shot ids). A set
+    object (set:<role>) is never a hero: ValueError."""
     for t in new_tags:
+        problem = tag_problem(t)
+        if problem:
+            raise ValueError(problem)
         ids = t[5:].split(",") if t.startswith("hero:") else None
         bad = not t or (ids is None and "," in t) or (ids is not None and not all(i.strip() and " " not in i for i in ids))
         if bad:
             raise ValueError(f"invalid tag {t!r}: must be non-empty and contain no comma (hero:s03,s04 lists shots)")
-        if t.startswith("set:") and t not in SET_TAGS:
-            raise ValueError(f"invalid tag {t!r}: a set tag is one of {', '.join(SET_TAGS)}")
     merged = tags(obj)
     merged.extend(t for t in new_tags if t not in merged)
     if any(t in SET_TAGS for t in merged) and any(t == "hero" or t.startswith("hero:") for t in merged):

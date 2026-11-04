@@ -480,3 +480,11 @@ def test_post_chapter_offers_translated_subtitles_once():
     assert "once per short" in t and "is None" in t and "{}" in t
     assert "checked by a speaker" in t and "CLI captions SHORT" in t and "CLI validate" in t
     assert "right-to-left" in t and '"from"' in t
+
+
+def test_checks_chapter_documents_every_tag():
+    from bsa.blender import bake
+
+    text = _read("playbook/07-checks.md").split("Tags the checks read", 1)[1]
+    for t in bake.TAGS:
+        assert f"`{t.rstrip(':')}" in text, t

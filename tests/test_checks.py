@@ -78,5 +78,7 @@ def test_checks_in_blender(blender_run):
         "test_set_clearance_measures_the_shots_heroes",
         "test_set_clearance_keeps_props_off_near_labels",
         "test_style_bevels_are_put_back_when_the_checks_fail",
+        "test_unknown_tags_are_names_errors",
+        "test_fast_tag_lets_a_part_flick_but_still_checks_overlaps",
     ):
         assert f"PASS {name}" in result.stdout
