@@ -2361,7 +2361,7 @@ def test_style_sample_command_is_registered_with_its_flags():
         bsa_blender.build_parser().parse_args(["style-sample", "--engine", "workbench", "--out", "x.png"])
 
 
-CLOSING_TOOL = """import json, struct, sys, wave
+CLOSING_TOOL = """import json, os, struct, sys, wave
 a = sys.argv
 items = json.load(open(a[a.index('--lines') + 1], encoding='utf-8'))
 out = a[a.index('--out') + 1]
@@ -2371,6 +2371,8 @@ for it in items:
     w.setframerate(48000)
     w.writeframes(struct.pack('<h', 3000) * round(secs * 48000))
     w.close()
+    if it['id'] == 'closing' and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fail')):
+        sys.exit(3)  # the closing take is written, then the tool fails
 """
 
 
@@ -2407,3 +2409,26 @@ def test_validate_counts_the_closing_card(home, pendulum, tmp_path):
     out = ok(run(home, "validate", "pendulum"))
     assert out["closing"]["seconds"] == 4.1 and out["closing"]["set_seconds"] == 2.5
     assert STRETCH in out["warnings"]
+
+
+def test_a_stale_closing_take_is_not_counted(home, pendulum, tmp_path):
+    """A closing.wav the mix would not use (narration not finished with a voice) leaves the card at its set length."""
+    _closing_short(home, pendulum, tmp_path)
+    _write_take(pendulum / "audio" / "vo" / "closing.wav", 3.4)
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["closing"] == {"seconds": 2.5, "set_seconds": 2.5} and STRETCH not in out["warnings"]
+    for lid in ("l01", "l02", "l03", "l04"):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", 1.0)
+    jobstate.mark_done(pendulum, "narration", status="captions-only", provider="custom")
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["closing"]["seconds"] == 2.5 and STRETCH not in out["warnings"]
+
+
+def test_a_failed_closing_line_gives_no_stretch_warning(home, pendulum, tmp_path):
+    _closing_short(home, pendulum, tmp_path)
+    (tmp_path / "fail").write_text("", encoding="utf-8")
+    out = ok(run(home, "narrate", "pendulum"))
+    assert out["status"] == "ok", out
+    assert any("closing line couldn't be narrated" in w for w in out["warnings"]), out
+    assert STRETCH not in out["warnings"]
+    assert (pendulum / "audio" / "vo" / "closing.wav").is_file()  # the tool left a 3.4 s take behind

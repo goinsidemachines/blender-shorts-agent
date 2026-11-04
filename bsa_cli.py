@@ -65,6 +65,20 @@ def current_timeline(sdir: Path, short):
     return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
 
 
+def _closing_take_s(sdir: Path, short) -> float | None:
+    """The closing take's seconds when the mix and the edit would use it (the takes are current: narration finished
+    with a voice, as current_timeline reads them), else None (the card's set length). A broken take is None too."""
+    from bsa import closing
+    from bsa.narrate.run import takes_durations
+
+    try:
+        if takes_durations(sdir, short) is None:
+            return None
+        return closing.take_seconds(sdir / "audio" / "vo")
+    except Exception:  # noqa: BLE001 - broken takes: the card as set (narrate reports the takes)
+        return None
+
+
 def built_timeline(sdir: Path, short):
     """current_timeline, which must match source/timeline.json (the timing build.py animated)."""
     from bsa import freshness
@@ -799,10 +813,7 @@ def cmd_validate(args) -> dict:
         from bsa import closing
 
         card = closing.resolve(settings.load_settings(), short)
-        try:  # the closing take, when narrated, can hold the card longer than closing.seconds
-            take_s = closing.take_seconds(sdir / "audio" / "vo") if card else None
-        except Exception:  # noqa: BLE001 - a broken take: the card as set (narrate reports the takes)
-            take_s = None
+        take_s = _closing_take_s(sdir, short) if card else None  # it can hold the card past closing.seconds
         closing_s = closing.card_seconds(card, take_s, short.fps)
         if card:
             closing_out = {"seconds": closing_s, "set_seconds": card["seconds"]}
@@ -993,12 +1004,8 @@ def cmd_narrate(args) -> dict:
         out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
     if closing_note:
         out["warnings"] = [closing_note]
-    if result.status == "ok":
-        try:
-            take_s = closing.take_seconds(sdir / "audio" / "vo")
-        except Exception:  # noqa: BLE001 - a broken take: the timing below reports it
-            take_s = None
-        stretched = closing.stretch_warning(closing.resolve(s, short), take_s, short.fps)
+    if result.status == "ok" and not closing_note:  # a closing line that failed leaves the card silent, as set
+        stretched = closing.stretch_warning(closing.resolve(s, short), _closing_take_s(sdir, short), short.fps)
         if stretched:
             out.setdefault("warnings", []).append(stretched)
     try:
