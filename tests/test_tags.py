@@ -166,3 +166,24 @@ def test_swap_tag():
         bake.tag(Obj(), "swap:")
     assert bake.tag_problem("swap:") == "tag 'swap:' names no object"
     assert bake.tag_problem("swap:Blade A") is None
+
+
+def test_rigid_assembly_and_volume_tags():
+    """rigid (one solid of several meshes), assembly:<name>[:<max depth m>] (members mesh with each other only) and
+    volume (gas or flame round solids)."""
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "rigid", "volume", "assembly:Balance")
+    assert bake.tags(o) == ["hero:s01,s02", "rigid", "volume", "assembly:Balance"]
+    assert bake.is_rigid(o) and bake.is_volume(o) and not bake.is_rigid(Obj()) and not bake.is_volume(Obj())
+    assert bake.RIGID == "rigid" and bake.VOLUME == "volume"
+    assert bake.assembly(o) == ("Balance", None) and bake.assembly(Obj()) is None
+    for t, want in (("assembly:Balance:0.002", ("Balance", 0.002)), ("assembly:Gear:train", ("Gear:train", None)),
+                    ("assembly:Train:0", ("Train", 0.0)), ("assembly:0.002", ("0.002", None))):
+        p = Obj()
+        bake.tag(p, t)
+        assert bake.assembly(p) == want, t
+    for bad in ("assembly:", "assembly::0.002"):
+        assert bake.tag_problem(bad) == f"tag {bad!r} names no assembly"
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), bad)
+    assert "did you mean 'rigid'" in bake.tag_problem("rigdi")

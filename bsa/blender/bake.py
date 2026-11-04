@@ -90,16 +90,21 @@ def _fcurves(action):
 # a falling stream: no frame_edge warning), "surface" (an open fluid surface, such as water: things may cross it),
 # "category:<name>" (the part's category in a brand kit: its label's dot takes that category's colour),
 # "set:<role>" (scenery a set made: its floor, wall, backdrop or a prop; never a hero), "lines:off" (no ink
-# lines drawn round it), "fast" (a part that really moves more than the pop limit in one frame: a flick, a snap) and
-# "swap:<other>" (this part takes over from <other> on screen: switched on as the other is switched off, in its place).
+# lines drawn round it), "fast" (a part that really moves more than the pop limit in one frame: a flick, a snap),
+# "swap:<other>" (this part takes over from <other> on screen: switched on as the other is switched off, in its place),
+# "rigid" (one solid built from several meshes: it and everything under it may sink into each other),
+# "assembly:<name>" / "assembly:<name>:<max depth m>" (members may touch or mesh with each other only) and "volume"
+# (gas, flame or smoke round solids: no overlap, z-fighting or floating; still a pop, and seen on screen).
 # An entry ending in ":" is a prefix (the tag goes on after it); every other entry is a whole tag.
 MAY_EXIT = "overlay:may-exit"
 LINES_OFF = "lines:off"
 FAST = "fast"
+RIGID = "rigid"
+VOLUME = "volume"
 SET_ROLES = ("floor", "wall", "backdrop", "prop")
 SET_TAGS = tuple(f"set:{r}" for r in SET_ROLES)
 TAGS = ("hero", "hero:", "grounded", "contact:", "overlay", MAY_EXIT, "surface", "category:", *SET_TAGS, LINES_OFF,
-        FAST, "swap:")
+        FAST, "swap:", RIGID, "assembly:", VOLUME)
 TAG_WORDS: tuple[str, ...] = tuple(t for t in TAGS if not t.endswith(":"))
 TAG_PREFIXES: tuple[str, ...] = tuple(t for t in TAGS if t.endswith(":"))
 
@@ -116,6 +121,10 @@ def _swap_shape(t: str, rest: str) -> str | None:
     return None if rest.strip() else f"tag {t!r} names no object"
 
 
+def _assembly_shape(t: str, rest: str) -> str | None:
+    return None if assembly_tag(rest)[0].strip() else f"tag {t!r} names no assembly"
+
+
 def _category_shape(t: str, rest: str) -> str | None:
     return None if rest.strip() else f"tag {t!r} names no category"
 
@@ -127,6 +136,7 @@ TAG_SHAPES: dict[str, Callable[[str, str], str | None]] = {
     "contact:": _contact_shape,
     "category:": _category_shape,
     "swap:": _swap_shape,
+    "assembly:": _assembly_shape,
 }
 
 
@@ -255,6 +265,42 @@ def is_fast(obj) -> bool:
     return FAST in tags(obj)
 
 
+def is_rigid(obj) -> bool:
+    """Whether the object is tagged "rigid": one solid built from several meshes (a forged crank and its pin). It
+    and every object under it are one group whose meshes the overlap check does not test against each other; each is
+    still checked against everything outside the group."""
+    return RIGID in tags(obj)
+
+
+def is_volume(obj) -> bool:
+    """Whether the object is tagged "volume": gas, flame or smoke round solids. The overlap, z-fighting (self_zfight),
+    loose-part and grounding checks leave it out (it holds nothing up either); pops, pop_in, frame_edge, materials,
+    images and every on-screen measure still see it (it is scene, not an overlay)."""
+    return VOLUME in tags(obj)
+
+
+def assembly_tag(rest: str) -> tuple[str, float | None]:
+    """(the assembly's name, the depth it sets or None) from the text after "assembly:": "Train" -> ("Train", None),
+    "Train:0.002" -> ("Train", 0.002). The last ":" part is a depth only when it reads as metres (metres_value), so
+    "Gear:train" is one name."""
+    head, sep, tail = rest.rpartition(":")
+    if sep and metres_value(tail) is not None:
+        return head, metres_value(tail)
+    return rest, None
+
+
+def assembly(obj) -> tuple[str, float | None] | None:
+    """(name, max depth in metres or None) from the object's first "assembly:" tag, or None. Members of one
+    assembly may touch or mesh with each other (up to the depth when one is given); against anything else they are
+    checked as usual."""
+    for t in tags(obj):
+        if t.startswith("assembly:"):
+            name, depth = assembly_tag(t[len("assembly:") :])
+            if name.strip():
+                return name, depth
+    return None
+
+
 def swap_of(obj) -> str | None:
     """The object this one takes over from on screen (the name after its "swap:" tag), or None."""
     for t in tags(obj):
@@ -294,9 +340,9 @@ def is_hero(obj, shot_id: str | None = None) -> bool:
 
 def tag(obj, *new_tags: str) -> None:
     """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay", "surface", "set:<role>",
-    "lines:off", "fast", "swap:<other>": see TAGS) into bsa_tags (comma-joined, no duplicates). An unknown or empty
-    tag (a typo) is a ValueError saying why (tag_problem). Only a hero:<shot ids> tag may hold commas (between its
-    shot ids). A set object (set:<role>) is never a hero: ValueError."""
+    "lines:off", "fast", "swap:<other>", "rigid", "assembly:<name>[:<depth>]", "volume": see TAGS) into bsa_tags
+    (comma-joined, no duplicates). An unknown or empty tag (a typo) is a ValueError saying why (tag_problem). Only a
+    hero:<shot ids> tag may hold commas (between its shot ids). A set object (set:<role>) is never a hero: ValueError."""
     for t in new_tags:
         problem = tag_problem(t)
         if problem:

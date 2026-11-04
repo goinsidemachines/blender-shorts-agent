@@ -1632,3 +1632,67 @@ def test_a_swap_that_matches_is_not_a_pop_in_and_one_that_does_not_is_warned():
     b["bsa_tags"] = "swap:Blade C"  # an object the scene does not have
     names = [f for f in found("names") if f.severity == "error"]
     assert len(names) == 1 and "'Blade C'" in names[0].message, names
+
+
+def test_a_rigid_parent_and_its_children_are_one_solid():
+    """A forged part built from several meshes (its parent tagged rigid) is one solid: its meshes may sink into each
+    other, but a part outside the group clipping any of them is an overlap."""
+    sc = _scene()
+    crank = _cube("Crank", (0, 0, 0.5))
+    bake.tag(crank, "rigid")
+    pin = _cube("Pin", (0, 0, 1.18), size=0.4)  # 2 cm into Crank's top
+    _parent(pin, crank)
+    web = _cube("Web", (0.02, 0.01, 1.0), size=0.3)  # deep in Pin and in Crank (its grandparent)
+    _parent(web, pin)
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+    _cube("Case", (0.3, 0.1, 1.25), size=0.3)  # not in the group: clips Pin
+    found = _found(sc, "overlap", severity="error")
+    assert found and all("'Case'" in f.message for f in found), found
+    assert any("'Pin'" in f.message for f in found), found
+
+
+def _cylinder(name, radius, depth, location, rotation=(0, 0, 0)):
+    bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=depth, location=location, rotation=rotation)
+    obj = bpy.context.object
+    obj.name = name
+    _material(obj)
+    return obj
+
+
+def test_assembly_members_mesh_but_a_member_clipping_a_non_member_is_an_error():
+    """Members of one assembly (a gear train) may mesh with each other; a member against anything else is checked as
+    usual: a balance wheel clipping its cock is still caught."""
+    sc = _scene()
+    along_y = (math.radians(90), 0, 0)
+    bake.tag(_cylinder("Wheel", 0.5, 0.1, (0, 0, 1.0), along_y), "assembly:Train")
+    bake.tag(_cylinder("Arbor", 0.05, 0.6, (0, 0, 1.0), along_y), "assembly:Train")  # through the wheel
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+    _cube("Cock", (0.5, 0.02, 1.0), size=0.3)  # not a member: clips the wheel's rim
+    found = _found(sc, "overlap", severity="error")
+    assert len(found) == 1 and "'Cock'" in found[0].message and "'Wheel'" in found[0].message, found
+
+
+def test_assembly_depth_caps_how_deep_members_go():
+    sc = _scene()
+    bake.tag(_cube("Plate", (0, 0, 0.5)), "assembly:Train:0.002")
+    bridge = _cube("Bridge", (0.99, 0.2, 0.6))  # 1 cm into Plate
+    bake.tag(bridge, "assembly:Train:0.002")
+    found = _found(sc, "overlap", severity="error")
+    assert len(found) == 1 and "assembly 'Train'" in found[0].message and "2 mm" in found[0].message, found
+    bridge.location = (0.999, 0.2, 0.6)  # 1 mm in
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+
+
+def test_volume_fills_round_solids_but_still_pops():
+    """Gas round a solid is no overlap, z-fighting or floating, and holds nothing up; a jump is still a pop."""
+    sc = _scene()
+    _cube("Core", (0, 0, 0.5))
+    gas = _material_boxes("Gas", [((0, 0, 1), (2, 2, 2), "white"), ((0, 0, 1.9), (3, 3, 0.2), "glass")], (0, 0, 0.1))
+    bake.tag(gas, "volume", "grounded", "hero")  # floats 10 cm over the floor, round Core, with coplanar caps
+    bake.tag(_cube("Lid", (0, 0, 2.35), size=0.5), "grounded")  # sits on the gas: nothing solid under it
+    for check in ("overlap", "self_zfight", "self_overlap"):
+        assert not _found(sc, check), (check, _found(sc, check))
+    assert [f.obj for f in _found(sc, "floating")] == ["Lid"], _found(sc, "floating")
+    _move_x(gas, [0.0] * 10 + [1.5] * (N - 10))
+    found = _found(sc, "pops", "Gas", "error")
+    assert len(found) == 1, found

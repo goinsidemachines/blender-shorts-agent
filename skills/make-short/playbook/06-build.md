@@ -38,7 +38,13 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   real motion is quicker than the pop limit in one frame (a flick, a snap: no `pops` error, every other check still
   runs); `"swap:<other>"` on a part that takes over from `<other>` in place (a straight blade swapped for a bent
   one: switch the new one on and the old one off on the same frame, at exactly the same place; `swap` checks it,
-  not `pop_in`); `"set:floor"`,
+  not `pop_in`); `"rigid"` on a forged part built from several meshes (a crank and its pin): it and everything
+  under it is one solid, its meshes are not tested against each other, and each is still checked against everything
+  outside (joining the meshes into one is simpler); `"assembly:<name>"` on each member of a group whose parts touch
+  or mesh with each other only (a gear train, a balance and its arbor; `"assembly:<name>:<max depth m>"` caps how
+  deep members may go): a member against anything outside the assembly is checked as usual;
+  `"volume"` on gas, flame or smoke round solids (no overlap, z-fighting or floating; `pops` and `pop_in` still
+  checked; it is scene, not an overlay); `"set:floor"`,
   `"set:wall"`, `"set:backdrop"` and `"set:prop"` mark the scenery a brand kit's set makes (never a hero);
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,

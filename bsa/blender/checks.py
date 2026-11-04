@@ -133,14 +133,17 @@ from mathutils.bvhtree import BVHTree
 from bsa import kitlayout, overlays, setplace, viewer
 from bsa.blender.anchors import screen_box, screen_top
 from bsa.blender.bake import (
+    assembly,
     category,
     contact_tag,
     follow_differs,
     is_fast,
     is_hero,
     is_overlay,
+    is_rigid,
     is_set,
     is_surface,
+    is_volume,
     may_exit,
     merged_contact,
     set_role,
@@ -378,6 +381,9 @@ class _Run:
         self.set_objs = {o.name for o in scene.objects if is_set(o)}  # a set's floor, walls and props: scenery
         self.fast: set[str] = {o.name for o in scene.objects if is_fast(o)}  # really moves that quickly: no pops
         self.swap: dict[str, str] = {o.name: swap_of(o) for o in scene.objects if swap_of(o)}  # new part: the old one
+        self.rigid_root: dict[str, str] = _rigid_roots(scene)  # at or under a rigid part: the outermost rigid part
+        self.assemblies: dict[str, tuple[str, float | None]] = {o.name: assembly(o) for o in scene.objects if assembly(o)}
+        self.volume: set[str] = {o.name for o in scene.objects if is_volume(o)}  # gas, flame round solids: not solid
         self.switches: dict[str, dict[str, list[int]]] = {}  # per shot: {"on": [frames], "off": [frames]} per object
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
@@ -389,8 +395,23 @@ class _Run:
         return obj.name not in self.set_objs and is_hero(obj, shot_id)
 
     def solid(self, name) -> bool:
-        """Checked for grounding: not an overlay, not scenery (a set:floor still holds others up)."""
-        return name not in self.overlay and name not in self.set_objs
+        """Checked for grounding: not an overlay, not a volume, not scenery (a set:floor still holds others up)."""
+        return name not in self.overlay and name not in self.volume and name not in self.set_objs
+
+    def grouped(self, a: str, b: str) -> tuple[str, float | None, bool] | None:
+        """Why two objects may pass into each other as parts of one group, the depth the group allows (None: any) and
+        whether the pair is not tested at all: both under one rigid part (one solid), or both in one assembly (up to
+        its depth: the deeper one either member states; any depth when neither states one). None otherwise: a member
+        against anything outside its group is checked as usual."""
+        root = self.rigid_root.get(a)
+        if root is not None and root == self.rigid_root.get(b):
+            return (f"rigid group of {root!r}", None, True)
+        ga, gb = self.assemblies.get(a), self.assemblies.get(b)
+        if ga is None or gb is None or ga[0] != gb[0]:
+            return None
+        stated = [d for d in (ga[1], gb[1]) if d is not None]
+        depth = max(stated) if stated else None
+        return (f"assembly {ga[0]!r}", depth, depth is None)
 
     def add(self, check, severity, obj, frame, message, key=None, pair=None):
         key = (check, obj, message) if key is None else (check, *key)
@@ -672,14 +693,14 @@ class _Run:
                 self.static_done.add(obj.name)
                 self.static(obj, depsgraph, frame)
             self.material(obj.name, obj.evaluated_get(depsgraph).material_slots, frame, state)
-            if (state != "out" or self.hero(obj)) and obj.name not in self.overlay:
+            if (state != "out" or self.hero(obj)) and obj.name not in self.overlay and obj.name not in self.volume:
                 self.coplanar(obj, geo, frame)
         self.note_changes(frame, geos)
         self.overlaps(frame, objs, geos)
         for obj in objs:
             if "grounded" in tags(obj) and obj.name in geos and self.solid(obj.name):
                 self.floating(frame, obj.name, geos)
-            if obj.name in geos and self.hero(obj) and obj.name not in self.overlay:
+            if obj.name in geos and self.hero(obj) and obj.name not in self.overlay and obj.name not in self.volume:
                 self.loose_parts(obj.name, geos[obj.name], frame)
 
     def sweep(self, frame, objs):
@@ -918,7 +939,8 @@ class _Run:
                      "this", key=(a, b))  # fmt: skip
 
     def overlaps(self, frame, objs, geos, only=None):
-        """Every pair of objects whose boxes touch (only pairs with an object in `only` when given)."""
+        """Every pair of objects whose boxes touch (only pairs with an object in `only` when given). Overlays, open
+        surfaces and volumes are left out; a pair in one rigid group or one depth-free assembly is not tested."""
         by_name = {o.name: o for o in objs}
         for n in sorted(self.surface & set(geos)):
             if geos[n].closed:
@@ -926,9 +948,10 @@ class _Run:
                          "solid and its overlaps are checked. Use it on an open surface (a grid moved by waves), or "
                          "remove it", key=(n, "surface"))  # fmt: skip
         open_surface = {n for n in self.surface & set(geos) if not geos[n].closed}
-        names = sorted(n for n in geos if n not in self.overlay and n not in open_surface)  # not solid: no overlap
+        skip = self.overlay | open_surface | self.volume  # not solid: no overlap
+        names = sorted(n for n in geos if n not in skip)
         if only is not None:
-            only = {n for n in only if n not in self.overlay and n not in open_surface}
+            only = {n for n in only if n not in skip}
         if only is None:
             pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
         else:
@@ -939,7 +962,12 @@ class _Run:
             ga, gb = geos[a], geos[b]
             if not _boxes_touch(ga, gb, OVERLAP_TOL):
                 continue
+            group = self.grouped(a, b)
+            if group is not None and group[2]:  # one solid, or members free to mesh: not tested
+                continue
             exempt = _exemption(by_name[a], by_name[b])
+            if group is not None and (exempt is None or _allowance(ga, gb, group[1]) > _allowance(ga, gb, exempt[1])):
+                exempt = group[:2]  # the assembly's depth, when it is the deeper allowance
             limit = None if exempt is None else _allowance(ga, gb, exempt[1])
             step = None if exempt is not None else self.zfight_step(np.maximum(ga.lo, gb.lo), np.minimum(ga.hi, gb.hi))
             rule = ("strict", step) if exempt is None else ("contact", exempt[1])  # not the allowance: it jitters
@@ -1104,7 +1132,7 @@ class _Run:
             origin = (float(p[0]), float(p[1]), zmin + GROUND_RAY_LIFT)
             top = None
             for other, og in geos.items():
-                if other == name or other in self.overlay or not (og.lo[0] <= p[0] <= og.hi[0] and og.lo[1] <= p[1] <= og.hi[1]):
+                if other == name or other in self.overlay or other in self.volume or not (og.lo[0] <= p[0] <= og.hi[0] and og.lo[1] <= p[1] <= og.hi[1]):
                     continue
                 if og.lo[2] > origin[2]:
                     continue
@@ -1414,6 +1442,20 @@ def _follows(name: str, moves: tuple[str, ...]) -> str:
     if not moves:
         return f"{name!r} follows nothing that moves"
     return f"{name!r} moves with " + " and ".join(repr(m) for m in moves)
+
+
+def _rigid_roots(scene) -> dict[str, str]:
+    """Every object at or under a rigid-tagged object (bake.is_rigid): the name of the outermost such object."""
+    roots = {}
+    for obj in scene.objects:
+        root, up = None, obj
+        while up is not None:
+            if is_rigid(up):
+                root = up.name
+            up = up.parent
+        if root is not None:
+            roots[obj.name] = root
+    return roots
 
 
 def _exemption(a, b) -> tuple[str, float | None] | None:
