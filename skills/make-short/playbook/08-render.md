@@ -26,6 +26,10 @@ Its result lists the PNG `paths` (and each one's shot, fraction and frame): open
 a light or a framing without a whole preview render, instead of a render script of your own. It takes the GPU lock
 like the commands above (it waits and says for what, or fails at once with `--no-wait`), so it never renders
 alongside another session's job. Rebuild first after changing `build.py` (it warns when the .blend is older).
+Judge framing on `--guides` frames: they show the caption zone, the top cards and the framing band the edit and the
+checks use. `--guides` (on `test-frames`, `stills` and `grab`) also writes `<name>-guides.png` beside each frame
+with those zones outlined (caption zone yellow, top cards cyan with a kit, framing band magenta) and lists them in
+the result's `guides`; the plain frames are unchanged.
 
 ## Moving parts at their extremes (before the first preview)
 
@@ -224,7 +228,9 @@ The single steps, when you need one on its own:
    `review/grabs/preview-sheet.png`, for an overview. Grabs of an older edit of the same video are removed first
    (the result's `cleared` counts them), so the folder only ever holds frames of the video as it is now; a side
    run's grabs are its own. The result's `older` counts this video's other grabs still in the folder (with an
-   `older_note`); `--clear` removes them before grabbing. No .blend is needed. The grabs use the Standard view
+   `older_note`; a grab and its `--guides` copy count as one); `--clear` removes them before grabbing. `--guides`
+   also writes `preview-f0046-guides.png` beside each `--at` grab (the shot comes from the timeline; a frame in the
+   closing card gets none): judge framing on those. No .blend is needed. The grabs use the Standard view
    transform, so their colours match the video (pulling frames through a default scene's AgX washes them out). Check
    captions, labels, badges and the end card where they really sit, and grab the moments where parts move against
    each other at full size: a contact sheet is too small to show thin parts passing through each other.

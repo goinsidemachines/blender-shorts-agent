@@ -1422,6 +1422,11 @@ def test_blender_stills_and_check_smoke(home, pendulum):
         assert (pendulum / "stills" / f"{sid}.jpg").stat().st_size > 0
     one = blender_cmd("stills", "pendulum", "--shot", "s01", "--out", pendulum / "stills" / "style-1.jpg")
     assert one.returncode == 0 and (pendulum / "stills" / "style-1.jpg").is_file(), one.stdout + one.stderr
+    drawn = blender_cmd("stills", "pendulum", "--shot", "s01", "--guides")  # a JPEG still read by Blender's loader
+    assert drawn.returncode == 0, drawn.stdout + drawn.stderr
+    result = json.loads(drawn.stdout.split("BSA_RESULT ", 1)[1].splitlines()[0])
+    assert result["guides"] == [str(pendulum / "stills" / "s01-guides.png")]
+    assert (pendulum / "stills" / "s01-guides.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
     still = blender_cmd("extremes", "pendulum", "--shot", "s01")  # nothing is tagged hero in the tiny scenes
     assert still.returncode == 0, still.stdout + still.stderr
@@ -1797,6 +1802,112 @@ def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys
     assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "1"]) == 0
     assert _result(capsys)["cleared"] == 2  # f0001 and f0031 came from the older video
     assert sorted(p.name for p in grabs.glob("preview-f*.png")) == ["preview-f0031.png"]
+
+
+def _frame_png(path: Path, w: int = 108, h: int = 192) -> None:
+    from bsa import guides
+
+    y, x = np.mgrid[0:h, 0:w]
+    guides.write_png(path, np.stack([x * 2 % 256, y % 256, (x + y) % 256], axis=-1).astype(np.uint8))
+
+
+def _fake_pixels(monkeypatch):
+    """bsa.blender.pixels (it needs bpy) read through the pure decoder instead."""
+    import types
+
+    import bsa.blender
+    from bsa.image_checks import read_png
+
+    fake = types.ModuleType("bsa.blender.pixels")
+    fake.read_png = read_png
+    monkeypatch.setitem(sys.modules, "bsa.blender.pixels", fake)
+    monkeypatch.setattr(bsa.blender, "pixels", fake, raising=False)
+
+
+def test_test_frames_writes_guides_beside_the_plain_frames(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa.blender
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    fake = types.ModuleType("bsa.blender.stills")
+    fake.render_still = lambda scene, frame, out, **kw: _frame_png(out, 432, 768)
+    monkeypatch.setitem(sys.modules, "bsa.blender.stills", fake)
+    monkeypatch.setattr(bsa.blender, "stills", fake, raising=False)
+    _fake_pixels(monkeypatch)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_engine", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, short, sid, h: (
+        next(s for s in short.shots if s.id == sid), object()))  # fmt: skip
+    monkeypatch.setenv("BSA_HOME", str(home))
+    argv = ["test-frames", "pendulum", "--at", "s01:0.5", "s02:0"]
+    assert bsa_blender.main(argv) == 0, capsys.readouterr().err
+    plain = _result(capsys)
+    assert "guides" not in plain
+    before = {p: Path(p).read_bytes() for p in plain["paths"]}
+    assert bsa_blender.main([*argv, "--guides"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert out["paths"] == plain["paths"]
+    assert out["guides"] == [str(Path(p).with_name(Path(p).stem + "-guides.png")) for p in out["paths"]]
+    assert {p: Path(p).read_bytes() for p in out["paths"]} == before  # the plain frames are unchanged
+    from bsa import guides
+    from bsa.image_checks import read_png
+
+    drawn = read_png(Path(out["guides"][0]))
+    assert drawn.shape[:2] == (768, 432)
+    assert np.all(drawn[..., :3] == guides.COLOURS["caption"], axis=-1).any()
+    assert bsa_blender.main(argv) == 0  # rendered again without --guides: the older guides copies go
+    _result(capsys)
+    assert not any(Path(p).exists() for p in out["guides"])
+
+
+def test_grab_guides_follow_the_timeline_and_go_with_their_frames(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa.blender
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    tl = json.loads((pendulum / "source" / "timeline.json").read_text(encoding="utf-8"))
+    n = int(tl["n_frames"])
+    mp4 = pendulum / "out" / "pendulum-preview.mp4"
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"mp4")
+    grabs = pendulum / "review" / "grabs"
+    fake_edit = types.ModuleType("bsa.blender.edit")
+    fake_edit.probe = lambda p: {"width": 1080, "height": 1920, "fps": 30.0, "frames": n + 75, "has_audio": True}
+    fake_grab = types.ModuleType("bsa.blender.grab")
+    fake_grab.frame_at = lambda t, fps, nf: int(t * fps) + 1
+
+    def grab_frames(mp4, frames, folder, stem):
+        folder.mkdir(parents=True, exist_ok=True)
+        for f in frames:
+            _frame_png(folder / f"{stem}-f{f:04d}.png")
+
+    fake_grab.grab_frames = grab_frames
+    monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake_edit)
+    monkeypatch.setitem(sys.modules, "bsa.blender.grab", fake_grab)
+    monkeypatch.setattr(bsa.blender, "grab", fake_grab, raising=False)
+    _fake_pixels(monkeypatch)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    argv = ["grab", "pendulum", "--preset", "preview"]
+    closing = (n + 30) / 30  # a second in the closing card, after the story
+    assert bsa_blender.main([*argv, "--at", "0", str(closing), "--guides"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert out["guides"] == [str(grabs / "preview-f0001-guides.png")]  # the closing card's frame gets none
+    assert out["older"] == 0
+    assert bsa_blender.main([*argv, "--at", "1"]) == 0
+    out = _result(capsys)
+    assert "guides" not in out
+    assert out["older"] == 2  # f0001 and its guides copy are one grab; the closing card's frame the other
+    assert bsa_blender.main([*argv, "--at", "1", "--clear"]) == 0
+    assert _result(capsys)["cleared"] == 4
+    assert sorted(p.name for p in grabs.glob("*.png")) == ["preview-f0031.png"]
+    fake_grab.sheet_frames = lambda nf, count: [1, 31]
+    fake_grab.contact_sheet = lambda mp4, frames, path, columns: path
+    assert bsa_blender.main([*argv, "--sheet", "--guides"]) == 0
+    assert _result(capsys)["warnings"] == ["--guides draws on --at grabs only, not on the contact sheet"]
 
 
 def test_frame_check_findings_carry_a_redo_command(tmp_path):

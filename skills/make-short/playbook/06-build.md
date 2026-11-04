@@ -317,6 +317,9 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   refused. It measures the objects
   in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
   camera's) scene does not have are refused instead of measured at the origin.
+  Judge framing on `--guides` frames (`BLENDER test-frames SHORT --at s01:0.5 --guides`, also on `stills` and
+  `grab`): they show the caption zone, the top cards and the framing band the edit and the checks use, outlined on a
+  `<name>-guides.png` copy beside each frame.
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject
   fills the 1080 px width and only a third of the height, and looks small. Instead:
   - Shoot it at a 3/4 angle **along the row** (camera 30-45 degrees off its long axis, a little above): the row

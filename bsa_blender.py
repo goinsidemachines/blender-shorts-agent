@@ -271,6 +271,32 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
     return cfg, png, warnings
 
 
+def _guide_kit(sdir: Path, short) -> tuple:
+    """(the kit the short's edit draws, its card font) or (None, None) without one, as the checks get them."""
+    from bsa import cards, kit
+    from bsa.fonts import font_caches
+
+    k = kit.kit_for(settings.load_settings(), short)
+    return (k, cards.card_font(k, font_caches(sdir))) if k is not None else (None, None)
+
+
+def _guides(frame: Path, short, shot, kf: tuple) -> Path:
+    """`<stem>-guides.png` beside `frame`: a copy with the caption zone, the top cards (with a kit) and the framing
+    band outlined (bsa.guides). The frame itself is left as it is."""
+    from bsa import guides
+    from bsa.blender import pixels
+
+    boxes = guides.rects(short, shot, *kf)
+    return guides.write_png(guides.guides_path(frame), guides.draw(pixels.read_png(frame), boxes))
+
+
+def _no_guides(frame: Path) -> None:
+    """Remove an older run's guides copy of `frame` (the frame was just rendered again, without --guides)."""
+    from bsa import guides
+
+    guides.guides_path(frame).unlink(missing_ok=True)
+
+
 # --------------------------------------------------------------------------- commands
 
 
@@ -285,7 +311,8 @@ def cmd_stills(args) -> dict:
     spans = {s.id: s for s in tl.shots}
     data = _open_blend(sdir)
     engine = _engine(sdir)
-    written = []
+    written, drawn = [], []
+    kf = _guide_kit(sdir, short) if args.guides else None
     from bsa.colour import flat_backdrop
 
     for shot in _shots(short, args.shot):
@@ -296,7 +323,13 @@ def cmd_stills(args) -> dict:
         flat = flat_backdrop(scene.world, scene.render.film_transparent)
         mask = world_mask(scene, frame, _still_shape(out)) if flat else None
         written.append((shot.id, out, flat, mask))
+        if args.guides:
+            drawn.append(_guides(out, short, shot, kf))
+        else:
+            _no_guides(out)
     result = {"stills": [str(p) for _, p, _, _ in written]}
+    if args.guides:
+        result["guides"] = [str(p) for p in drawn]
     warnings = _background_warnings(short, written)
     if not args.shot:  # the storyboard shows the closing card too
         _, card, card_warnings = _closing_card(sdir, short)
@@ -1528,9 +1561,12 @@ def cmd_grab(args) -> dict:
         frames = grab.sheet_frames(n, args.count)
         cleared = _fresh_grabs(folder, stem, mp4, clear=args.clear)
         sheet = grab.contact_sheet(mp4, frames, folder / f"{stem}-sheet.png", columns=args.columns)
-        return {"mp4": str(mp4), "sheet": str(sheet), "frames": frames, "cleared": cleared,
-                "seconds": [round((f - 1) / fps, 2) for f in frames],
-                **_older_grabs(folder, stem, {Path(sheet)})}  # fmt: skip
+        out = {"mp4": str(mp4), "sheet": str(sheet), "frames": frames, "cleared": cleared,
+               "seconds": [round((f - 1) / fps, 2) for f in frames],
+               **_older_grabs(folder, stem, {Path(sheet)})}  # fmt: skip
+        if args.guides:
+            out["warnings"] = ["--guides draws on --at grabs only, not on the contact sheet"]
+        return out
     try:
         frames = [grab.frame_at(t, fps, n) for t in args.at]
     except ValueError as exc:
@@ -1538,13 +1574,36 @@ def cmd_grab(args) -> dict:
     cleared = _fresh_grabs(folder, stem, mp4, clear=args.clear)
     grab.grab_frames(mp4, list(dict.fromkeys(frames)), folder, stem)
     mine = [folder / f"{stem}-f{f:04d}.png" for f in frames]
-    return {"mp4": str(mp4), "cleared": cleared,
-            "grabs": [{"seconds": t, "frame": f, "path": str(p)}
-                      for t, f, p in zip(args.at, frames, mine, strict=True)],
-            **_older_grabs(folder, stem, set(mine))}  # fmt: skip
+    out = {"mp4": str(mp4), "cleared": cleared,
+           "grabs": [{"seconds": t, "frame": f, "path": str(p)}
+                     for t, f, p in zip(args.at, frames, mine, strict=True)]}  # fmt: skip
+    if args.guides:
+        out.update(_grab_guides(sdir, short, dict(zip(frames, mine, strict=True))))
+    return {**out, **_older_grabs(folder, stem, set(mine))}
 
 
-_GRAB = re.compile(r"-(f\d{4}|sheet)\.png$")
+def _grab_guides(sdir: Path, short, grabs: dict[int, Path]) -> dict:
+    """{"guides": [paths]} (plus "warnings"): each grab's guides copy, for the shot its frame is in on the timeline
+    the video was edited to (source/timeline.json). A frame past the story (the closing card) gets none."""
+    from bsa.timeline import timeline_from_json
+
+    try:
+        tl = timeline_from_json(json.loads((sdir / "source" / "timeline.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError, TypeError):
+        why = ("no guides: source/timeline.json is missing or unreadable, so the grabs' shots are not known (run "
+               "CLI timeline SHORT)")  # fmt: skip
+        return {"guides": [], "warnings": [why]}
+    shots = {s.id: s for s in short.shots}
+    kf = _guide_kit(sdir, short)
+    drawn = []
+    for f, path in grabs.items():
+        span = next((s for s in tl.shots if s.f0 <= f <= s.f1), None)
+        if span is not None and span.id in shots:
+            drawn.append(str(_guides(path, short, shots[span.id], kf)))
+    return {"guides": drawn}
+
+
+_GRAB = re.compile(r"-(f\d{4}(-guides)?|sheet)\.png$")  # a frame, its --guides copy, the contact sheet
 
 
 def _stem_grabs(folder: Path, stem: str) -> list[Path]:
@@ -1557,8 +1616,13 @@ def _stem_grabs(folder: Path, stem: str) -> list[Path]:
 
 
 def _older_grabs(folder: Path, stem: str, mine: set[Path]) -> dict:
-    """{"older": n, "older_note": ...}: this stem's grab PNGs left in the folder that this call did not write."""
-    n = sum(1 for p in _stem_grabs(folder, stem) if p not in mine)
+    """{"older": n, "older_note": ...}: this stem's grabs left in the folder that this call did not write. A frame
+    and its --guides copy count as one grab."""
+
+    def grab(p: Path) -> str:
+        return p.name.replace("-guides.png", ".png")
+
+    n = len({grab(p) for p in _stem_grabs(folder, stem)} - {grab(p) for p in mine})
     out = {"older": n}
     if n:
         out["older_note"] = f"{n} older grabs of this video are in review/grabs: --clear removes them"
@@ -1643,7 +1707,8 @@ def cmd_test_frames(args) -> dict:
     data = _open_blend(sdir)
     engine = _engine(sdir)
     folder = sdir / "review" / "test-frames"
-    frames = []
+    frames, drawn = [], []
+    kf = _guide_kit(sdir, short) if args.guides else None
     for shot_id, frac in args.at:
         shot, scene = _scene(data, short, shot_id, tl_hash)
         span = spans[shot.id]
@@ -1652,8 +1717,15 @@ def cmd_test_frames(args) -> dict:
         render_still(scene, frame, out, preset="preview", percent=round(args.scale * 100), engine=engine,
                      file_format="PNG")  # fmt: skip
         frames.append({"shot": shot.id, "at": frac, "frame": frame, "path": str(out)})
-    return {"folder": str(folder), "engine": engine or "the scene's own", "scale": args.scale,
-            "paths": [f["path"] for f in frames], "frames": frames}  # fmt: skip
+        if args.guides:
+            drawn.append(_guides(out, short, shot, kf))
+        else:
+            _no_guides(out)
+    result = {"folder": str(folder), "engine": engine or "the scene's own", "scale": args.scale,
+              "paths": [f["path"] for f in frames], "frames": frames}  # fmt: skip
+    if args.guides:
+        result["guides"] = [str(p) for p in drawn]
+    return result
 
 
 # ----- the preview chain: everything after an edit to build.py or short.json, up to a checked preview
@@ -1883,6 +1955,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--shot")
     sp.add_argument("--out")
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.add_argument("--guides", action="store_true",
+                    help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
+                    "framing band outlined")
     sp.set_defaults(fn=cmd_stills)
 
     sp = sub.add_parser("anchors", help="where each near label's object is on screen, into source/anchors.json")
@@ -1936,6 +2011,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--count", type=int, default=12, help="frames on the contact sheet")
     sp.add_argument("--columns", type=int, default=4, help="contact sheet columns")
     sp.add_argument("--clear", action="store_true", help="remove this video's older grabs first")
+    sp.add_argument("--guides", action="store_true",
+                    help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
+                    "framing band outlined")
     _engine_args(sp)
     sp.set_defaults(fn=cmd_grab)
 
@@ -1950,6 +2028,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--at", type=_at_spec, nargs="+", required=True, metavar="SHOT:FRACTION", help="e.g. s01:0.5")
     sp.add_argument("--scale", type=float, default=0.4, help="fraction of the full resolution (default 0.4)")
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.add_argument("--guides", action="store_true",
+                    help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
+                    "framing band outlined")
     sp.set_defaults(fn=cmd_test_frames)
 
     sp = sub.add_parser("preview", help="after an edit: build, mark build done, mix, check, render, frame-check, edit")
