@@ -18,6 +18,17 @@ def test_the_overlap_cap_counts_pairs_not_findings():
     assert [pair_of(r) for r in hidden] == [("E", "F"), ("G", "H")] and more == 2
     assert cap_pairs(rows, 4) == (rows, [], 0)
     assert "2 more overlapping pairs not listed" in not_listed(2).message
+    assert "every pair is in overlap_summary" in not_listed(2).message
+
+
+def test_not_listed_names_the_held_back_pairs_when_nothing_writes_a_summary():
+    """Run in Blender with the cap (no review/checks.json, so no overlap_summary), the finding itself names every
+    held-back pair, grouped by name family."""
+    held = [_pair("Tape", f"Tooth {i}", "s01") for i in range(3, 6)] + [_pair("Lid", "Box", "s01", "zfight", None)]
+    message = not_listed(4, summary=False, held=held).message
+    assert message == ("4 more overlapping pairs not listed: Tape vs Tooth 3-5: 3 pairs, up to 1 cm, s01; Box vs "
+                       "Lid: 1 pair, z-fighting, s01. Fix the ones above and check again")  # fmt: skip
+    assert "overlap_summary" not in message
 
 
 def test_a_finding_with_no_pair_is_never_held_back():
@@ -77,3 +88,8 @@ def test_overlap_summary_groups_every_pair_with_real_clips_first():
     first = overlap_families(rows, shots)[0]
     assert first["pairs"] == 22 and first["real"] and first["shots"] == shots
     assert family_lines([], shots) == []
+
+
+def test_a_depth_under_half_a_millimetre_reads_under_1_mm():
+    rows = [_pair("Pin", "Hole", "s01", "deep", 0.0003), _pair("Rod", "Cap", "s01", "deep", 0.0006)]
+    assert family_lines(rows, ["s01"]) == ["Cap vs Rod: 1 pair, up to 1 mm, s01", "Hole vs Pin: 1 pair, under 1 mm, s01"]

@@ -358,8 +358,8 @@ def _short_beside_blend():
 
 
 def _cap_overlaps(findings: list[Finding]) -> list[Finding]:
-    kept, _, more = cap_pairs(findings, OVERLAP_MAX_FINDINGS)
-    return [*kept, not_listed(more)] if more else kept
+    kept, held, more = cap_pairs(findings, OVERLAP_MAX_FINDINGS)
+    return [*kept, not_listed(more, summary=False, held=held)] if more else kept  # no overlap_summary here
 
 
 class _Run:

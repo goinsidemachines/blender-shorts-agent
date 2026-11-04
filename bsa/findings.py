@@ -43,10 +43,15 @@ def cap_pairs(items: list, most: int) -> tuple[list, list, int]:
     return kept, hidden, max(0, len(pairs) - most)
 
 
-def not_listed(count: int) -> Finding:
-    """The finding that stands for `count` overlapping pairs held back by the cap."""
-    return Finding("overlap", "error", None, None, f"{count} more overlapping pairs not listed: every pair is in "
-                   "overlap_summary, grouped by name. Fix the ones above and check again")  # fmt: skip
+def not_listed(count: int, summary: bool = True, held: list | None = None) -> Finding:
+    """The finding that stands for `count` overlapping pairs held back by the cap. `summary`: the check writes every
+    pair under overlap_summary (the CLI check), so the message points there; else the message itself names the held
+    back pairs (`held`, findings or rows), grouped by name family."""
+    if summary:
+        why = "every pair is in overlap_summary, grouped by name. Fix the ones above and check again"
+    else:
+        why = f"{'; '.join(family_lines(held or [], []))}. Fix the ones above and check again"
+    return Finding("overlap", "error", None, None, f"{count} more overlapping pairs not listed: {why}")
 
 
 def metres(d: float) -> str:
@@ -157,7 +162,9 @@ def overlap_families(rows: list, shot_order: list[str]) -> list[dict]:
     out = []
     for g in groups.values():
         n, side_a, side_b, shots = len(g["pairs"]), _side(g["a"]), _side(g["b"]), _in_order(g["shots"], shot_order)
-        how = f"up to {metres(g['depth'])}" if g["depth"] > 0 else "interpenetrating" if g["real"] else "z-fighting"
+        depth = g["depth"]
+        how = (f"up to {metres(depth)}" if depth >= 0.0005 else "under 1 mm" if depth > 0
+               else "interpenetrating" if g["real"] else "z-fighting")  # fmt: skip
         where = f", {_shot_spans(shots, shot_order)}" if shots else ""
         line = f"{side_a} vs {side_b}: {n} pair{'s' if n != 1 else ''}, {how}{where}"
         out.append({"a": side_a, "b": side_b, "pairs": n, "depth": g["depth"], "real": g["real"], "shots": shots,
