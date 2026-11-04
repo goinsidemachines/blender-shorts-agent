@@ -4,9 +4,10 @@ changes one shot leaves the other shots' frames, checks and anchors current.
 Two parts:
 
 - static: every datablock the shot's scene reaches (render settings, world, view layers and collections, objects
-  and their modifiers, constraints and particle settings, mesh / curve / text data, materials and node trees, images
-  and fonts with their files' size and time, lights, cameras, the compositor), walked generically through RNA, so a
-  property nobody thought of is still in it. Animated and driven properties are left out of this part.
+  and their modifiers with their geometry nodes inputs, constraints and particle settings, mesh / curve / text
+  data, materials and node trees, images and fonts with their files' size and time, lights, cameras, the
+  compositor), walked generically through RNA, so a property nobody thought of is still in it. Animated and driven
+  properties are left out of this part.
 - per frame, for every frame of the shot: each object's evaluated world matrix and visibility, the scene camera,
   every animated or driven property's value, and the evaluated geometry of objects that change with time on their
   own (geometry nodes reading the scene time or simulating, physics, wave and build modifiers).
@@ -125,6 +126,8 @@ class _Hasher:
             mine: list = []
             self._walk(idb, h, 0, set(), _animated_paths(idb), mine)
             self._extra(idb, h)
+            if isinstance(idb, bpy.types.Object):
+                self._nodes_inputs(idb, h, mine)
             self.id_hash[k], self.children[k] = h.digest(), mine
         found += self.children[k]
         return self.id_hash[k]
@@ -151,6 +154,27 @@ class _Hasher:
             self._file(idb.filepath, idb, h)
         if isinstance(idb, (bpy.types.Sound, bpy.types.MovieClip, bpy.types.CacheFile, bpy.types.Volume)):
             self._file(getattr(idb, "filepath", ""), idb, h)
+
+    def _nodes_inputs(self, obj, h, found: list) -> None:
+        """The values of `obj`'s geometry nodes modifier inputs (an ID input by identity: it is walked like any
+        datablock pointed to); an animated one is sampled per frame instead. Nothing at all for an object without
+        such inputs, so its hash is what it was before inputs counted."""
+        inputs = _nodes_inputs(obj)
+        if not inputs:
+            return
+        animated = _animated_paths(obj)
+        for path, name, value in inputs:
+            h.update(b"gn:" + path.encode("utf-8", "replace"))
+            if path in animated:
+                h.update(b"~")
+            elif isinstance(value, bpy.types.ID):
+                if type(value).__name__ in _SKIP_ID_TYPES:
+                    h.update(b"id:" + value.name.encode())
+                else:
+                    h.update(b"id:" + repr(self.key(value)).encode())
+                    found.append(value)
+            else:
+                h.update(_enc(value))
 
     def _file(self, filepath: str, idb, h) -> None:
         path = bpy.path.abspath(filepath, library=getattr(idb, "library", None)) if filepath else ""
@@ -231,6 +255,32 @@ class _Hasher:
                 self._walk(value, h, depth + 1, seen, animated, found)
         else:
             h.update(_enc(value))
+
+
+def _nodes_inputs(obj) -> list[tuple[str, str, object]]:
+    """(data path, input, value) of every geometry nodes modifier input on `obj`. Blender 5 keeps them in the
+    modifier's `properties.inputs` (whose address is the modifier's own, so the generic walk takes it for visited and
+    never sees them); before, they were the modifier's ID properties, which RNA does not list."""
+    out = []
+    for mod in getattr(obj, "modifiers", ()):
+        if mod.type != "NODES":
+            continue
+        inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+        if inputs is not None:
+            for prop in inputs.bl_rna.properties:
+                if prop.identifier in ("rna_type", "name"):
+                    continue
+                item = getattr(inputs, prop.identifier, None)
+                if item is not None and hasattr(item, "value"):
+                    path = f'modifiers["{mod.name}"].properties.inputs.{prop.identifier}.value'
+                    out.append((path, prop.identifier, item.value))
+            continue
+        try:
+            names = list(mod.keys())  # a struct's ID properties (before Blender 5)
+        except TypeError:
+            continue
+        out += [(f'modifiers["{mod.name}"]["{name}"]', name, mod[name]) for name in names]
+    return out
 
 
 def _identity(struct) -> str:
@@ -545,29 +595,6 @@ def _closure(hasher: _Hasher, obj) -> dict[tuple, bytes]:
     return out
 
 
-def _nodes_inputs(obj) -> list[tuple[str, str, object]]:
-    """(modifier, input, value) of every geometry nodes modifier input on `obj`. The generic walk does not see them
-    (the modifier's `properties` struct has the modifier's own address, so it counts as visited); before Blender 5
-    they were the modifier's ID properties."""
-    out = []
-    for mod in getattr(obj, "modifiers", ()):
-        if mod.type != "NODES":
-            continue
-        inputs = getattr(getattr(mod, "properties", None), "inputs", None)
-        if inputs is not None:
-            for prop in inputs.bl_rna.properties:
-                if prop.identifier in ("rna_type", "name"):
-                    continue
-                item = getattr(inputs, prop.identifier, None)
-                out.append((mod.name, prop.identifier, getattr(item, "value", item)))
-        else:
-            try:
-                out += [(mod.name, name, mod[name]) for name in mod.keys()]  # noqa: SIM118 - ID properties
-            except TypeError:
-                pass
-    return out
-
-
 def _object_deps(hasher: _Hasher, obj, closure: dict) -> list:
     """The objects whose keys go into `obj`'s: every object a datablock of its closure points to (its parent, modifier
     targets such as a boolean cutter or a hook, geometry nodes object inputs, constraint and bone constraint targets,
@@ -586,9 +613,6 @@ def _object_deps(hasher: _Hasher, obj, closure: dict) -> list:
     for k in closure:
         for c in hasher.children.get(k, ()):
             add(c)
-    for _, _, value in _nodes_inputs(obj):
-        if isinstance(value, bpy.types.ID):
-            add(value)
     deps.pop(obj.name, None)
     return [deps[n] for n in sorted(deps)]
 
@@ -608,9 +632,6 @@ class _ObjectKeys:
             for k, digest in sorted(self.closures[o.name].items()):
                 h.update(repr(k).encode() + digest)
             h.update(repr(_bsa_props(o)).encode("utf-8", "replace"))
-            for mod, name, value in _nodes_inputs(o):
-                shown = repr(hasher.key(value)) if isinstance(value, bpy.types.ID) else value
-                h.update(mod.encode() + name.encode() + _enc(shown))
             static[o.name] = h.digest()
         self.static = static
         in_checked = set().union(*(self.closures[n] for n in self.checked)) if self.checked else set()

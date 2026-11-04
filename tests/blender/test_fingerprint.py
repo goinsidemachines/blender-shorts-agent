@@ -417,37 +417,49 @@ def test_a_boolean_cutters_change_changes_the_cut_objects_key():
     assert _changed(edited, _keys(sc)) == ["A"]
 
 
+class _Nodes:
+    """A geometry nodes modifier on `obj` joining its geometry with an Object Info input's, plus a float and a bool
+    input; .set(name, value) sets one of the modifier's inputs ("Target", "Amount", "Flag")."""
+
+    def __init__(self, obj):
+        tree = bpy.data.node_groups.new("Join", "GeometryNodeTree")
+        tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+        self.ids = {name: tree.interface.new_socket(name, in_out="INPUT", socket_type=kind).identifier
+                    for name, kind in (("Target", "NodeSocketObject"), ("Amount", "NodeSocketFloat"),
+                                       ("Flag", "NodeSocketBool"))}  # fmt: skip
+        tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        nodes = tree.nodes
+        group_in, group_out = nodes.new("NodeGroupInput"), nodes.new("NodeGroupOutput")
+        info, join = nodes.new("GeometryNodeObjectInfo"), nodes.new("GeometryNodeJoinGeometry")
+        tree.links.new(group_in.outputs["Target"], info.inputs["Object"])
+        tree.links.new(group_in.outputs["Geometry"], join.inputs[0])
+        tree.links.new(info.outputs["Geometry"], join.inputs[0])
+        tree.links.new(join.outputs[0], group_out.inputs[0])
+        self.mod = obj.modifiers.new("Join", "NODES")
+        self.mod.node_group = tree
+
+    def item(self, name):
+        inputs = getattr(getattr(self.mod, "properties", None), "inputs", None)
+        return None if inputs is None else getattr(inputs, self.ids[name])
+
+    def set(self, name, value):
+        item = self.item(name)
+        if item is not None:  # Blender 5
+            item.value = value
+        else:
+            self.mod[self.ids[name]] = value
+
+
 def test_a_geometry_nodes_object_input_and_a_hook_are_dependencies():
     sc = _keyed_scene()
     a, b = bpy.data.objects["A"], bpy.data.objects["B"]
-    tree = bpy.data.node_groups.new("Join", "GeometryNodeTree")
-    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-    target = tree.interface.new_socket("Target", in_out="INPUT", socket_type="NodeSocketObject")
-    amount = tree.interface.new_socket("Amount", in_out="INPUT", socket_type="NodeSocketFloat")
-    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
-    nodes = tree.nodes
-    group_in, group_out = nodes.new("NodeGroupInput"), nodes.new("NodeGroupOutput")
-    info, join = nodes.new("GeometryNodeObjectInfo"), nodes.new("GeometryNodeJoinGeometry")
-    tree.links.new(group_in.outputs["Target"], info.inputs["Object"])
-    tree.links.new(group_in.outputs["Geometry"], join.inputs[0])
-    tree.links.new(info.outputs["Geometry"], join.inputs[0])
-    tree.links.new(join.outputs[0], group_out.inputs[0])
-    mod = a.modifiers.new("Join", "NODES")
-    mod.node_group = tree
-
-    def set_input(identifier, value):
-        inputs = getattr(getattr(mod, "properties", None), "inputs", None)
-        if inputs is not None:  # Blender 5
-            getattr(inputs, identifier).value = value
-        else:
-            mod[identifier] = value
-
-    set_input(target.identifier, b)
+    gn = _Nodes(a)
+    gn.set("Target", b)
     base = _keys(sc)
     _move(b)
     moved = _keys(sc)
     assert _changed(base, moved) == ["A", "B"]
-    set_input(amount.identifier, 0.5)  # a plain input value
+    gn.set("Amount", 0.5)  # a plain input value
     assert _changed(moved, _keys(sc)) == ["A"]
 
     sc = _keyed_scene()  # a hook on A pulled by B
@@ -493,11 +505,9 @@ GOLDEN = {"5.2.0 LTS": {"s01": "91029611177095de0537490848f1ff1b", "s02": "60b25
 _FIXED_RENDER_CODE = b"render presets: fixed for the golden test"
 
 
-def test_fingerprints_are_byte_identical_to_before():
+def _golden_fingerprints():
     from bsa.blender import fingerprint
 
-    want = GOLDEN.get(bpy.app.version_string)
-    _golden_scene()
     path = Path(tempfile.mkdtemp()) / "scene.py"
     path.write_bytes(_FIXED_RENDER_CODE)
     saved, fingerprint._RENDER_CODE = fingerprint._RENDER_CODE, path
@@ -507,7 +517,88 @@ def test_fingerprints_are_byte_identical_to_before():
         assert fingerprints(groups, objects={})[0] == got
     finally:
         fingerprint._RENDER_CODE = saved
+    return got
+
+
+def _golden_gn_scene():
+    """_golden_scene with a geometry nodes modifier on Cube A (scene A only) whose inputs are set."""
+    _golden_scene()
+    gn = _Nodes(bpy.data.objects["Cube A"])
+    gn.set("Amount", 0.5)
+    gn.set("Flag", True)
+    gn.set("Target", bpy.data.objects["Sun A"])  # not Sphere A: a child of Cube A, read by it, is a cycle
+
+
+# _golden_gn_scene's fingerprints by the code before (6f0dac3, which did not see the inputs) and now
+GOLDEN_GN = {
+    "5.2.0 LTS": {"before": {"s01": "1b8d8ecad762908af5cfd5fc3f10324f", "s02": "60b25b50e883733dd2cc2e765ec06d8b"},
+                  "now": {"s01": "8a46b0a085558ffb7a53f1525eced76b", "s02": "60b25b50e883733dd2cc2e765ec06d8b"}},
+}
+
+
+def test_fingerprints_are_byte_identical_to_before():
+    want = GOLDEN.get(bpy.app.version_string)
+    _golden_scene()
+    got = _golden_fingerprints()
     if want is None:  # another Blender: its RNA differs, so its fingerprints do too
         print(f"no golden fingerprints for Blender {bpy.app.version_string}: {got}")
         return
     assert got == want
+
+
+
+def test_geometry_nodes_inputs_change_the_fingerprint():
+    """A float, a bool and an object input of a geometry nodes modifier each change the shot's fingerprint and the
+    object's key (Blender 5 keeps them where the generic walk does not look)."""
+    sc = _keyed_scene()
+    gn = _Nodes(bpy.data.objects["A"])
+    spans = [Span("s01", 1, 30)]
+
+    def fp():
+        return fingerprints([(sc, spans)])[0]["s01"]
+
+    seen = [fp()]
+    keys = [_keys(sc)]
+    for name, value in (("Amount", 0.5), ("Flag", True), ("Target", bpy.data.objects["B"])):
+        gn.set(name, value)
+        seen.append(fp())
+        keys.append(_keys(sc))
+        assert seen[-1] != seen[-2], name
+        assert "A" in _changed(keys[-2], keys[-1]), name
+    assert fp() == seen[-1]  # and it is stable
+
+
+def test_an_animated_geometry_nodes_input_is_sampled_per_frame():
+    sc = _keyed_scene()
+    gn = _Nodes(bpy.data.objects["A"])
+    item = gn.item("Amount")
+    if item is None:  # before Blender 5 the inputs are ID properties, keyed through the modifier
+        return
+    spans = [Span("s01", 1, 15), Span("s02", 16, 30)]
+    item.value = 0.1
+    item.keyframe_insert("value", frame=1)
+    item.value = 0.2
+    item.keyframe_insert("value", frame=10)
+    before = fingerprints([(sc, spans)])[0]
+    item.value = 0.7  # the current (animated) value is not what counts: the keys are
+    assert fingerprints([(sc, spans)])[0] == before
+    from bsa.blender.bake import _fcurves
+
+    fc = next(f for f in _fcurves(bpy.data.objects["A"].animation_data.action) if "Socket" in f.data_path)
+    fc.keyframe_points[-1].co.y = 0.9  # the key at frame 10: shot 1 only (constant after it)
+    fc.update()
+    after = fingerprints([(sc, spans)])[0]
+    assert after["s01"] != before["s01"]
+
+
+def test_geometry_nodes_inputs_now_count_and_only_where_they_are():
+    """A shot whose scene has geometry nodes inputs renders once again after the update (its fingerprint differs from
+    6f0dac3's); a shot whose scene has none keeps its fingerprint."""
+    want = GOLDEN_GN.get(bpy.app.version_string)
+    _golden_gn_scene()
+    got = _golden_fingerprints()
+    if want is None:
+        print(f"no golden geometry nodes fingerprints for Blender {bpy.app.version_string}: {got}")
+        return
+    assert got == want["now"]
+    assert got["s01"] != want["before"]["s01"] and got["s02"] == want["before"]["s02"]

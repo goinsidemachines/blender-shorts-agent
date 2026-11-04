@@ -28,5 +28,8 @@ def test_fingerprints_in_blender(blender_run):
         "test_a_geometry_nodes_object_input_and_a_hook_are_dependencies",
         "test_a_dependency_cycle_ends_and_its_keys_are_stable",
         "test_fingerprints_are_byte_identical_to_before",
+        "test_geometry_nodes_inputs_change_the_fingerprint",
+        "test_an_animated_geometry_nodes_input_is_sampled_per_frame",
+        "test_geometry_nodes_inputs_now_count_and_only_where_they_are",
     ):
         assert f"PASS {name}" in result.stdout
