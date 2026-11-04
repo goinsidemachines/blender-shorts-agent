@@ -528,7 +528,6 @@ def _bsa_props(obj) -> list:
 
 _CHECKED_TYPES = frozenset({"MESH", "CURVE", "FONT", "SURFACE", "META"})  # the objects the checks look at
 _CLOSURE_STOP = ("Object", "Collection", "Scene", "World")  # a closure does not reach past these
-_DEP_MODIFIERS = ("HOOK", "ARMATURE")  # modifiers whose target object moves this one's geometry
 
 
 def _closure(hasher: _Hasher, obj) -> dict[tuple, bytes]:
@@ -546,12 +545,52 @@ def _closure(hasher: _Hasher, obj) -> dict[tuple, bytes]:
     return out
 
 
-def _object_deps(obj) -> list:
-    """The objects whose keys go into `obj`'s: its parent and its hook / armature modifiers' targets."""
-    deps = [obj.parent] if obj.parent is not None else []
-    deps += [m.object for m in getattr(obj, "modifiers", ()) if m.type in _DEP_MODIFIERS
-             and getattr(m, "object", None) is not None]  # fmt: skip
-    return deps
+def _nodes_inputs(obj) -> list[tuple[str, str, object]]:
+    """(modifier, input, value) of every geometry nodes modifier input on `obj`. The generic walk does not see them
+    (the modifier's `properties` struct has the modifier's own address, so it counts as visited); before Blender 5
+    they were the modifier's ID properties."""
+    out = []
+    for mod in getattr(obj, "modifiers", ()):
+        if mod.type != "NODES":
+            continue
+        inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+        if inputs is not None:
+            for prop in inputs.bl_rna.properties:
+                if prop.identifier in ("rna_type", "name"):
+                    continue
+                item = getattr(inputs, prop.identifier, None)
+                out.append((mod.name, prop.identifier, getattr(item, "value", item)))
+        else:
+            try:
+                out += [(mod.name, name, mod[name]) for name in mod.keys()]  # noqa: SIM118 - ID properties
+            except TypeError:
+                pass
+    return out
+
+
+def _object_deps(hasher: _Hasher, obj, closure: dict) -> list:
+    """The objects whose keys go into `obj`'s: every object a datablock of its closure points to (its parent, modifier
+    targets such as a boolean cutter or a hook, geometry nodes object inputs, constraint and bone constraint targets,
+    particle instances...) and every object of a collection one points to (a collection info input, an instanced
+    collection), sorted by name. Generic, so a target nobody listed still counts."""
+    deps: dict[str, object] = {}
+
+    def add(c) -> None:
+        kind = type(c).__name__
+        if kind == "Object":
+            deps.setdefault(c.name, c)
+        elif kind == "Collection":
+            for o in c.all_objects:
+                deps.setdefault(o.name, o)
+
+    for k in closure:
+        for c in hasher.children.get(k, ()):
+            add(c)
+    for _, _, value in _nodes_inputs(obj):
+        if isinstance(value, bpy.types.ID):
+            add(value)
+    deps.pop(obj.name, None)
+    return [deps[n] for n in sorted(deps)]
 
 
 class _ObjectKeys:
@@ -559,6 +598,7 @@ class _ObjectKeys:
     fingerprint samples (scene_fingerprints), split by whose they are."""
 
     def __init__(self, hasher: _Hasher, objects: list, ids: list, channels: list, drivers: bytes):
+        self.hasher = hasher
         self.objects = objects
         self.checked = {o.name for o in objects if o.type in _CHECKED_TYPES}
         self.closures = {o.name: _closure(hasher, o) for o in objects}
@@ -568,6 +608,9 @@ class _ObjectKeys:
             for k, digest in sorted(self.closures[o.name].items()):
                 h.update(repr(k).encode() + digest)
             h.update(repr(_bsa_props(o)).encode("utf-8", "replace"))
+            for mod, name, value in _nodes_inputs(o):
+                shown = repr(hasher.key(value)) if isinstance(value, bpy.types.ID) else value
+                h.update(mod.encode() + name.encode() + _enc(shown))
             static[o.name] = h.digest()
         self.static = static
         in_checked = set().union(*(self.closures[n] for n in self.checked)) if self.checked else set()
@@ -582,13 +625,14 @@ class _ObjectKeys:
         for idb, *_ in channels:
             k = hasher.key(idb)
             self.channel_owners.append([o.name for o in objects if k in self.closures[o.name]])
-        self.deps = {o.name: _object_deps(o) for o in objects}
+        self.deps = {o.name: _object_deps(hasher, o, self.closures[o.name]) for o in objects}
 
     def start(self, span) -> None:
         self.own = {}
         for o in self.objects:
             self.own[o.name] = hashlib.sha256(self.static[o.name])
             self.own[o.name].update(b"span %d %d" % (span.f0, span.f1))
+        self.memo: dict[str, bytes] = {}
         self.rest = hashlib.sha256(self.rest_static)
         self.rest.update(b"span %d %d" % (span.f0, span.f1))
 
@@ -611,18 +655,44 @@ class _ObjectKeys:
     def hash_of(self, obj):
         return self.own[obj.name]
 
-    def _key(self, obj, visiting: frozenset) -> bytes:
+    def _outside(self, obj) -> tuple[bytes, list]:
+        """The static hash and dependencies of an object outside the scene (reached through a pointer: it is not
+        sampled per frame, but its data still counts)."""
+        closure = _closure(self.hasher, obj)
+        h = hashlib.sha256(b"outside " + repr(obj.name).encode())
+        for k, digest in sorted(closure.items()):
+            h.update(repr(k).encode() + digest)
+        return h.digest(), _object_deps(self.hasher, obj, closure)
+
+    def _key(self, obj, visiting: frozenset) -> tuple[bytes, bool]:
+        """(`obj`'s key, whether a dependency cycle was cut below it). A key with no cut is the same from any path
+        and is memoized, so a dependency shared by many objects is hashed once; one with a cut depends on where
+        the walk started and is not."""
+        if obj.name in self.memo:
+            return self.memo[obj.name], False
         own = self.own.get(obj.name)
-        h = own.copy() if own is not None else hashlib.sha256(repr(obj.name).encode())  # not in the scene
-        for dep in self.deps[obj.name] if obj.name in self.deps else _object_deps(obj):
+        if own is not None:
+            h, deps = own.copy(), self.deps[obj.name]
+        else:
+            static, deps = self._outside(obj)
+            h = hashlib.sha256(static)
+        cut = False
+        for dep in deps:
             if dep.name in visiting:
                 h.update(b"cycle:" + dep.name.encode())
+                cut = True
             else:
-                h.update(b"dep:" + dep.name.encode() + self._key(dep, visiting | {dep.name}))
-        return h.digest()
+                key, below = self._key(dep, visiting | {dep.name})
+                h.update(b"dep:" + dep.name.encode() + key)
+                cut = cut or below
+        digest = h.digest()
+        if not cut:
+            self.memo[obj.name] = digest
+        return digest, cut
 
     def result(self) -> dict:
-        keys = {o.name: self._key(o, frozenset({o.name})).hex()[:16] for o in self.objects if o.name in self.checked}
+        keys = {o.name: self._key(o, frozenset({o.name}))[0].hex()[:16] for o in self.objects
+                if o.name in self.checked}  # fmt: skip
         return {"objects": keys, "rest": _short(self.rest)}
 
 

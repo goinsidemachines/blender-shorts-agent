@@ -24,5 +24,9 @@ def test_fingerprints_in_blender(blender_run):
         "test_object_keys_change_only_for_the_object_that_changed",
         "test_a_parent_change_changes_the_childs_key",
         "test_object_keys_do_not_change_the_fingerprints",
+        "test_a_boolean_cutters_change_changes_the_cut_objects_key",
+        "test_a_geometry_nodes_object_input_and_a_hook_are_dependencies",
+        "test_a_dependency_cycle_ends_and_its_keys_are_stable",
+        "test_fingerprints_are_byte_identical_to_before",
     ):
         assert f"PASS {name}" in result.stdout

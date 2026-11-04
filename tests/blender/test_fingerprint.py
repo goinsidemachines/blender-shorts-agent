@@ -391,3 +391,123 @@ def test_object_keys_do_not_change_the_fingerprints():
     obj.hide_render = True
     obj.keyframe_insert("hide_render", frame=20)
     assert fingerprints([(sc, spans)]) == fingerprints([(sc, spans)], objects={})
+
+
+
+def _move(obj, frame=10):
+    obj.keyframe_insert("location", frame=1)
+    obj.location.z += 1.0
+    obj.keyframe_insert("location", frame=frame)
+
+
+def test_a_boolean_cutters_change_changes_the_cut_objects_key():
+    """A live Boolean on A cuts with B: moving B or editing B's mesh changes A's evaluated mesh, so A's key; B (it
+    depends on nothing) keeps its key when only A changes."""
+    sc = _keyed_scene()
+    a, b = bpy.data.objects["A"], bpy.data.objects["B"]
+    a.modifiers.new("Cut", "BOOLEAN").object = b
+    base = _keys(sc)
+    _move(b)
+    moved = _keys(sc)
+    assert _changed(base, moved) == ["A", "B"]
+    b.data.vertices[0].co.x += 0.2
+    edited = _keys(sc)
+    assert _changed(moved, edited) == ["A", "B"]
+    bpy.data.materials["Mat A"].node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.13
+    assert _changed(edited, _keys(sc)) == ["A"]
+
+
+def test_a_geometry_nodes_object_input_and_a_hook_are_dependencies():
+    sc = _keyed_scene()
+    a, b = bpy.data.objects["A"], bpy.data.objects["B"]
+    tree = bpy.data.node_groups.new("Join", "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    target = tree.interface.new_socket("Target", in_out="INPUT", socket_type="NodeSocketObject")
+    amount = tree.interface.new_socket("Amount", in_out="INPUT", socket_type="NodeSocketFloat")
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    nodes = tree.nodes
+    group_in, group_out = nodes.new("NodeGroupInput"), nodes.new("NodeGroupOutput")
+    info, join = nodes.new("GeometryNodeObjectInfo"), nodes.new("GeometryNodeJoinGeometry")
+    tree.links.new(group_in.outputs["Target"], info.inputs["Object"])
+    tree.links.new(group_in.outputs["Geometry"], join.inputs[0])
+    tree.links.new(info.outputs["Geometry"], join.inputs[0])
+    tree.links.new(join.outputs[0], group_out.inputs[0])
+    mod = a.modifiers.new("Join", "NODES")
+    mod.node_group = tree
+
+    def set_input(identifier, value):
+        inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+        if inputs is not None:  # Blender 5
+            getattr(inputs, identifier).value = value
+        else:
+            mod[identifier] = value
+
+    set_input(target.identifier, b)
+    base = _keys(sc)
+    _move(b)
+    moved = _keys(sc)
+    assert _changed(base, moved) == ["A", "B"]
+    set_input(amount.identifier, 0.5)  # a plain input value
+    assert _changed(moved, _keys(sc)) == ["A"]
+
+    sc = _keyed_scene()  # a hook on A pulled by B
+    a, b = bpy.data.objects["A"], bpy.data.objects["B"]
+    a.modifiers.new("Hook", "HOOK").object = b
+    base = _keys(sc)
+    _move(b)
+    assert _changed(base, _keys(sc)) == ["A", "B"]
+
+
+def test_a_dependency_cycle_ends_and_its_keys_are_stable():
+    sc = _keyed_scene()
+    a, b = bpy.data.objects["A"], bpy.data.objects["B"]
+    a.modifiers.new("Cut", "BOOLEAN").object = b
+    b.modifiers.new("Cut", "BOOLEAN").object = a
+    base = _keys(sc)
+    assert _keys(sc) == base
+    _move(b)
+    assert _changed(base, _keys(sc)) == ["A", "B"]
+
+
+
+def _golden_scene():
+    """_two_scenes plus what the per-frame loop treats specially: a WAVE modifier (geometry sampled per frame), an
+    animated material value and a keyed hide_render (channels), a parented object."""
+    _two_scenes()
+    a = bpy.data.objects["Cube A"]
+    a.modifiers.new("Wave", "WAVE")
+    socket = bpy.data.materials["Only A"].node_tree.nodes["Principled BSDF"].inputs["Roughness"]
+    socket.keyframe_insert("default_value", frame=1)
+    socket.default_value = 0.9
+    socket.keyframe_insert("default_value", frame=30)
+    sphere = bpy.data.objects["Sphere A"]
+    sphere.keyframe_insert("hide_render", frame=1)
+    sphere.hide_render = True
+    sphere.keyframe_insert("hide_render", frame=20)
+    sphere.parent = a
+
+
+# fingerprints of _golden_scene computed by the code before the object keys (6f0dac3), per Blender version, with the
+# render presets' code fixed (_FIXED_RENDER_CODE) so an edit to scene.py does not move them
+GOLDEN = {"5.2.0 LTS": {"s01": "91029611177095de0537490848f1ff1b", "s02": "60b25b50e883733dd2cc2e765ec06d8b"}}
+_FIXED_RENDER_CODE = b"render presets: fixed for the golden test"
+
+
+def test_fingerprints_are_byte_identical_to_before():
+    from bsa.blender import fingerprint
+
+    want = GOLDEN.get(bpy.app.version_string)
+    _golden_scene()
+    path = Path(tempfile.mkdtemp()) / "scene.py"
+    path.write_bytes(_FIXED_RENDER_CODE)
+    saved, fingerprint._RENDER_CODE = fingerprint._RENDER_CODE, path
+    try:
+        groups = [(bpy.data.scenes[name], spans) for name, spans in SPANS.items()]
+        got = fingerprints(groups)[0]
+        assert fingerprints(groups, objects={})[0] == got
+    finally:
+        fingerprint._RENDER_CODE = saved
+    if want is None:  # another Blender: its RNA differs, so its fingerprints do too
+        print(f"no golden fingerprints for Blender {bpy.app.version_string}: {got}")
+        return
+    assert got == want
