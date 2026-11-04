@@ -46,6 +46,26 @@ def test_background_warning():
     assert "s01" in msg and "#C5C5C3" in msg and "#F3F2EE" in msg and "paper_world" in msg
 
 
+def test_background_measured_only_where_the_world_shows():
+    px = np.full((100, 100, 3), (0x20, 0x20, 0x20), np.uint8)  # a dark part filling 70% of the still
+    px[:, 70:] = (0xAF, 0xC6, 0xD3)  # the brand background showing round it
+    m = np.zeros((100, 100), bool)
+    m[:, 70:] = True
+    assert colour.dominant_colour(px, m) == pytest.approx((0xAF / 255, 0xC6 / 255, 0xD3 / 255), abs=1 / 255)
+    assert colour.background_warning(px, "#AFC6D3", "s01", mask=m) is None
+    assert colour.background_warning(px, "#AFC6D3", "s01") is not None  # the whole frame's colour is the part's
+
+
+def test_too_little_world_skips_the_warning():
+    px = np.full((100, 100, 3), (0x20, 0x20, 0x20), np.uint8)
+    m = np.zeros((100, 100), bool)
+    m[:, 90:] = True  # the world is 10% of the still
+    assert colour.WORLD_MIN_SHARE == 0.15
+    assert colour.background_warning(px, "#F3F2EE", "s01", mask=m) is None
+    m[:, 80:] = True  # 20%: measured, and far
+    assert colour.background_warning(px, "#F3F2EE", "s01", mask=m) is not None
+
+
 def _world(*node_types, stamp=None, use_nodes=True):
     from types import SimpleNamespace
 

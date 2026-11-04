@@ -270,7 +270,7 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
 
 
 def cmd_stills(args) -> dict:
-    from bsa.blender.stills import render_still
+    from bsa.blender.stills import render_still, world_mask
 
     sdir = _short_dir(args.short)
     short = _load(sdir)
@@ -286,9 +286,12 @@ def cmd_stills(args) -> dict:
     for shot in _shots(short, args.shot):
         shot, scene = _scene(data, short, shot.id, tl_hash)
         out = Path(args.out) if args.out else sdir / "stills" / f"{shot.id}.jpg"
-        render_still(scene, _still_frame(shot, spans[shot.id]), out, engine=engine)
-        written.append((shot.id, out, flat_backdrop(scene.world, scene.render.film_transparent)))
-    result = {"stills": [str(p) for _, p, _ in written]}
+        frame = _still_frame(shot, spans[shot.id])
+        render_still(scene, frame, out, engine=engine)
+        flat = flat_backdrop(scene.world, scene.render.film_transparent)
+        mask = world_mask(scene, frame, _still_shape(out)) if flat else None
+        written.append((shot.id, out, flat, mask))
+    result = {"stills": [str(p) for _, p, _, _ in written]}
     warnings = _background_warnings(short, written)
     if not args.shot:  # the storyboard shows the closing card too
         _, card, card_warnings = _closing_card(sdir, short)
@@ -298,23 +301,37 @@ def cmd_stills(args) -> dict:
     return {**result, "warnings": warnings} if warnings else result
 
 
+def _still_shape(path: Path) -> tuple[int, int]:
+    """A rendered still's (height, width), from its image header."""
+    import bpy
+
+    img = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        w, h = img.size
+    finally:
+        bpy.data.images.remove(img)
+    return h, w
+
+
 def _background_warnings(short, stills) -> list[str]:
     """Each still whose background (its most common colour) is far from the intended one, when one is set: the
     short's style.palette.background, else the brand's (unless the short has its own look, "look": "fresh").
-    `stills` are (shot id, path, flat): only a still whose scene has a flat backdrop (paper_world or a plain colour,
-    bsa.colour.flat_backdrop) is checked. A sky, an HDRI or a landscape is not a paper backdrop."""
+    `stills` are (shot id, path, flat, mask): only a still whose scene has a flat backdrop (paper_world or a plain
+    colour, bsa.colour.flat_backdrop) is checked. A sky, an HDRI or a landscape is not a paper backdrop. `mask`
+    (bsa.blender.stills.world_mask, or None) is where the world shows: only there is measured, and a still that is
+    mostly its subject (world under bsa.colour.WORLD_MIN_SHARE) is not judged."""
     from bsa.colour import background_source, background_warning
 
     found = background_source(short, settings.load_settings())
-    flat = [(shot_id, path) for shot_id, path, is_flat in stills if is_flat]
+    flat = [(shot_id, path, mask) for shot_id, path, is_flat, mask in stills if is_flat]
     if not found or not flat:
         return []
     want, whose = found
     from bsa.blender.pixels import read_png
 
     out = []
-    for shot_id, path in flat:
-        msg = background_warning(read_png(path), want, f"shot {shot_id}", whose=whose)
+    for shot_id, path, mask in flat:
+        msg = background_warning(read_png(path), want, f"shot {shot_id}", whose=whose, mask=mask)
         if msg:
             out.append(msg)
     return out

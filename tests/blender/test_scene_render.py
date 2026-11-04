@@ -237,6 +237,94 @@ def test_render_still_shows_its_frame_in_a_scene_that_is_not_the_context_scene()
     assert bpy.context.scene != other  # the window's scene is left as it was
 
 
+def _half_cube_scene():
+    """A cube filling the left half of the 9:16 frame (orthographic camera), the world a flat colour, set to Cycles
+    with odd settings so a mask pass that leaves anything changed shows."""
+    sc = _tiny_scene(engine="cycles")
+    cube = bpy.data.objects["Cube"]
+    cube.location, cube.scale = (-2.5, 0, 0), (2.5, 1, 9)  # x -5..0, the frame's x -4.5..4.5
+    cam = sc.camera
+    cam.data.type, cam.data.ortho_scale = "ORTHO", 16.0  # 16 high, 9 wide
+    sc.world = bpy.data.worlds.new("flat")
+    sc.world.color = (0.4, 0.6, 0.7)
+    r, ims = sc.render, sc.render.image_settings
+    r.engine = "CYCLES"
+    r.film_transparent = False
+    r.filepath = "//mine/frame_"
+    r.use_file_extension = True
+    r.resolution_percentage = 37
+    ims.file_format = "JPEG"
+    ims.color_mode = "RGB"
+    sc.cycles.samples = 7
+    sc.frame_set(3)
+    return sc
+
+
+def _render_state(sc):
+    r, ims = sc.render, sc.render.image_settings
+    return (r.engine, r.film_transparent, r.filepath, r.use_file_extension, r.resolution_percentage,
+            ims.file_format, ims.color_mode, sc.frame_current, sc.cycles.samples, sc.cycles.device,
+            bpy.data.filepath)  # fmt: skip
+
+
+def _recording_render(real_render, raise_after=False):
+    """A stand-in for stills.bpy whose ops.render.render records the file each render writes, and raises after
+    rendering when asked: everything else is the real bpy."""
+    import types
+
+    written = []
+
+    def render_(**kw):
+        sc = bpy.data.scenes[kw["scene"]]
+        written.append((Path(bpy.path.abspath(sc.render.filepath)), sc.render.engine))
+        result = real_render(**kw)
+        if raise_after:
+            raise RuntimeError("render failed")
+        return result
+
+    fake = types.SimpleNamespace(context=bpy.context, data=bpy.data, path=bpy.path,
+                                 ops=types.SimpleNamespace(render=types.SimpleNamespace(render=render_)))  # fmt: skip
+    return fake, written
+
+
+def test_world_mask_marks_only_where_the_world_shows():
+    sc = _half_cube_scene()
+    before = _render_state(sc)
+    real = stills.bpy
+    fake, written = _recording_render(bpy.ops.render.render)
+    stills.bpy = fake
+    try:
+        m = stills.world_mask(sc, 1, (192, 108))
+    finally:
+        stills.bpy = real
+    assert m.dtype == bool and m.shape == (192, 108)
+    assert 0.4 <= m.mean() <= 0.6, m.mean()
+    assert not m[:, :40].any() and m[:, -40:].all()  # the cube's half is not world; the right half is
+    assert [e for _, e in written] == ["BLENDER_WORKBENCH"]
+    assert not written[0][0].exists()  # the temp file is gone
+    assert _render_state(sc) == before
+    assert sc.render.engine == "CYCLES"
+
+
+def test_world_mask_restores_everything_when_the_render_raises():
+    sc = _half_cube_scene()
+    before = _render_state(sc)
+    real = stills.bpy
+    fake, written = _recording_render(bpy.ops.render.render, raise_after=True)
+    stills.bpy = fake
+    try:
+        stills.world_mask(sc, 1, (192, 108))
+    except RuntimeError as e:
+        assert "render failed" in str(e)
+    else:
+        raise AssertionError("the render's error was swallowed")
+    finally:
+        stills.bpy = real
+    assert written and not written[0][0].exists()
+    assert _render_state(sc) == before
+    assert sc.render.engine == "CYCLES"
+
+
 def test_remove_scenes_frees_object_names_for_a_rebuild():
     """A rebuild in an open Blender (MCP mode) must get the same object names back: contact:<name> tags use them."""
 

@@ -85,4 +85,4 @@ def test_stills_skip_the_background_check_on_a_sky_or_landscape(tmp_path, monkey
     monkeypatch.setenv("BSA_HOME", str(tmp_path))
     s = _short(look="fresh", style={"palette": {"background": "#AFC6D3"}})
     missing = tmp_path / "never-read.png"  # reading it would fail: it is skipped before that
-    assert bsa_blender._background_warnings(s, [("s01", missing, False)]) == []
+    assert bsa_blender._background_warnings(s, [("s01", missing, False, None)]) == []

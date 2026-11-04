@@ -8,6 +8,7 @@ import re
 import numpy as np
 
 DELTA_E_LIMIT = 5.0  # a still's background further than this (CIE76) from the brand background is warned
+WORLD_MIN_SHARE = 0.15  # a still whose world shows in less than this share is not measured (too little to judge)
 _WHITE = np.array([0.95047, 1.0, 1.08883])  # D65
 _TO_XYZ = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750],
                     [0.0193339, 0.1191920, 0.9503041]])  # fmt: skip
@@ -93,10 +94,13 @@ def delta_e(a, b) -> float:
     return float(np.linalg.norm(np.subtract(srgb_to_lab(_rgb(a)), srgb_to_lab(_rgb(b)))))
 
 
-def dominant_colour(pixels: np.ndarray) -> tuple[float, float, float]:
+def dominant_colour(pixels: np.ndarray, mask: np.ndarray | None = None) -> tuple[float, float, float]:
     """The frame's most common colour (sRGB 0..1), the background of a frame on a plain backdrop: pixels binned 16
-    levels a channel, the fullest bin's mean."""
+    levels a channel, the fullest bin's mean. With `mask` (bool, the frame's height x width) only its True pixels
+    count."""
     rgb = pixels[..., :3].reshape(-1, 3).astype(np.float64)
+    if mask is not None:
+        rgb = rgb[np.asarray(mask, bool).reshape(-1)]
     if pixels.dtype == np.uint8:
         rgb /= 255.0
     bins = np.minimum((rgb * 16).astype(np.int64), 15)
@@ -138,10 +142,13 @@ def flat_backdrop(world, transparent: bool = False) -> bool:
 
 
 def background_warning(pixels: np.ndarray, want_hex: str, where: str, limit: float = DELTA_E_LIMIT,
-                       whose: str = "the brand background") -> str | None:  # fmt: skip
+                       whose: str = "the brand background", mask: np.ndarray | None = None) -> str | None:  # fmt: skip
     """A warning when a frame's background (its dominant colour) is more than `limit` ΔE from `want_hex` (`whose`
-    names it: "the brand background" or "the short's background")."""
-    got = dominant_colour(pixels)
+    names it: "the brand background" or "the short's background"). With `mask` (True where the world shows) only
+    the world is measured, and a still whose world is under WORLD_MIN_SHARE of it is not judged (None)."""
+    if mask is not None and np.asarray(mask, bool).mean() < WORLD_MIN_SHARE:
+        return None
+    got = dominant_colour(pixels, mask)
     d = delta_e(want_hex, got)
     if d <= limit:
         return None
