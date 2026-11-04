@@ -337,6 +337,23 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   Judge framing on `--guides` frames (`BLENDER test-frames SHORT --at s01:0.5 --guides`, also on `stills` and
   `grab`): they show the caption zone, the top cards and the framing band the edit and the checks use, outlined on a
   `<name>-guides.png` copy beside each frame.
+- **A camera that follows a moving part: `camera.follow`, never keyed by hand.** Hand keys on a camera riding a
+  part jitter with every bump of the part, or lag it and lose it. Frame the start (`frame_objects(cam, [part],
+  key=f0)`), then one call keys the whole follow every 2 frames (`every=`), aim and position smoothed with the same
+  Gaussian as `camera.move` (`smooth=` frames, its sigma; 0 for none), the part kept in the band (`band=True`,
+  the same `top=`, `margin=`, `avoid=` as `frame_objects`; where it would not fit, the camera backs off along its
+  view axis just enough), the keys between `f0` and `f1` replaced. `target` is an object or a list (their joint
+  box). Two modes:
+
+  ```python
+  # track a gear's tooth: the camera stays where it is and turns to keep the tooth in the band
+  camera.follow(cam, tooth, f0, f1, mode="track", shot=shot.id)
+  # ride a piston: the camera keeps its offset in the piston's own space (default: where it is now at f0)
+  camera.follow(cam, piston, f0, f1, mode="ride", shot=shot.id)
+  ```
+
+  `offset=(x, y, z)` gives the riding offset in the part's own coordinates instead. Perspective cameras only. It
+  returns `keys`, `distances` and `warnings` (read them as for `frame_objects`; they are kept for the checks).
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject
   fills the 1080 px width and only a third of the height, and looks small. Instead:
   - Shoot it at a 3/4 angle **along the row** (camera 30-45 degrees off its long axis, a little above): the row
