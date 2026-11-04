@@ -488,3 +488,33 @@ def test_checks_chapter_documents_every_tag():
     text = _read("playbook/07-checks.md").split("Tags the checks read", 1)[1]
     for t in bake.TAGS:
         assert f"`{t.rstrip(':')}" in text, t
+
+
+def test_build_chapter_says_relative_paths_resolve_beside_the_blend():
+    text = _flat(_read("playbook/06-build.md"))
+    assert 'bpy.path.abspath("//' in text
+    assert "beside the .blend" in text
+
+
+def test_cutaway_models_are_documented():
+    build = _flat(_read("playbook/06-build.md"))
+    assert "cutaway" in build
+    assert "section face" in build
+    assert "cut the gas at the same plane" in build
+    checks = _read("playbook/07-checks.md")
+    for name in ("overlap", "normals", "volume"):
+        assert f"`{name}`" in checks
+    assert "cutaway" in checks
+
+
+def test_rigid_parts_join_or_tag_rigid():
+    for name in ("playbook/06-build.md", "playbook/fields/physics.md"):
+        text = _flat(_read(name))
+        assert "join" in text and "`rigid`" in text, name
+
+
+def test_time_warps_keep_sound_on_real_beats():
+    text = _flat(_read("playbook/sound.md"))
+    assert "own clock" in text
+    assert "events from the build" in text or "source/events.json" in text
+    assert "skip beats" in text

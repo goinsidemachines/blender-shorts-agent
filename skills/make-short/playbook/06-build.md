@@ -123,6 +123,10 @@ if __name__ == "__main__" and "--" in sys.argv:
     build(SHORT_DIR)
 ```
 
+Relative paths in a `blender -b` script resolve against the working folder, not beside the .blend. Use absolute
+paths (from `SHORT_DIR`), or `bpy.path.abspath("//textures/wood.png")`, which resolves beside the .blend once the file
+is saved.
+
 Run it (script mode):
 
 ```
@@ -234,6 +238,14 @@ The checks pass geometry that is wrong to the eye if you excuse it, so build it 
     single solid and keep other parts as their own objects: a mesh left with holes or open parts has no inside, and
     the overlap check then says it is not closed instead of giving a depth. The checks warn on any live Boolean on a
     rendered mesh.
+    **Cutaway (section) models.** To show the inside, open the cut in the mesh, not with a live Boolean: build the
+    part with the cut already in it (or apply the Boolean in build.py), and close it with a section face, a flat cap
+    on the cut plane in its own flat colour, with the inner detail (hatching, labels) on it, tagged `overlay` when it
+    is only drawn on. Then cut the gas at the same plane: a `volume` (flame, steam) is clipped to the same cut as the
+    solids, or it floats in front of the opened part. See `07-checks.md` for the checks a cutaway meets.
+    **Rigid parts: join, or tag the parent `rigid`.** A forged part built from several meshes (a crank and its pin)
+    is one solid: join the meshes into one (`bpy.ops.object.join()`), or, when they must stay separate objects, tag
+    the parent `rigid` so `overlap` does not test them against each other.
 14. **Parts in contact share the moving parent.** When two parts touch (a rod in its cylinder, a part on a moving
     deck), parent both to the moving part that carries them. When you replace a part's constructor, keep its
     parenting: have part builders return parented parts. A dropped parent leaves one part standing while the other

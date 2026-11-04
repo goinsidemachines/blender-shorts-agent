@@ -105,6 +105,14 @@ of `shot` when it is given), and optional `gain` (0..1, default 1: a soft hit pl
 play exactly like `sfx` entries (recordings rotate, natural-only rules apply) and the mix result counts them in
 `events`. Write the file in every build, so a change to the simulation moves the sounds with it.
 
+### Time warps
+
+When time is sped up or slowed, sound must stay on the mechanism's real beats. Drive the mechanism from its own
+clock (the time warp maps short time to mechanism time), and write events from the build at the mechanism's real
+beats, mapped back through the warp to short frames. Never place sounds by eye on the warped timeline. When time is
+sped up, beats crowd together: skip beats closer than a set rate (for example 12 per second), or the ticks smear into
+a buzz. Tag a part `fast` only for real sub-frame motion (`07-checks.md`).
+
 ## Custom sound from the simulation: `source/sound.py`
 
 For sound that follows the motion (a click on every ratchet notch, a creak at each swing peak, a scrape that lasts
