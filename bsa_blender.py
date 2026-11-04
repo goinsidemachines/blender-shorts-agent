@@ -771,8 +771,10 @@ def _merge_findings(rows: list[dict]) -> list[dict]:
 def cmd_check(args) -> dict:
     """Scene checks per shot into review/checks.json. Shots unchanged since the last checks (same fingerprint,
     frames, short.json scene and labels, shot list, checks code and --every) keep their findings; only the others
-    are checked again (--full checks every shot). Its progress (frames checked of those to check, the shot it is on, time left) shows
-    on the --preset's live status page."""
+    are checked again. In a shot where only some objects changed, the others keep their own findings and those of
+    their pairs (freshness.partial_checks); everything else in it is checked again. --full checks every shot
+    whole. Its progress (frames checked of those to check, the shot it is on, time left) shows on the --preset's
+    live status page."""
     sdir = _short_dir(args.short)
     short = _load(sdir)
     if getattr(args, "in_chain", False):  # beside the preview render: the chain records it (_start_side_check)
@@ -850,7 +852,9 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     keys = _check_keys(short, tl, fps, _parts(sdir, fps), _objects(sdir, fps))  # the object keys: information
     stamp = freshness.checks_stamp(tl_hash, keys, args.every)
-    reuse = {} if getattr(args, "full", False) else freshness.reusable_checks(sdir, stamp)
+    full = getattr(args, "full", False)
+    reuse = {} if full else freshness.reusable_checks(sdir, stamp)
+    partial = {} if full else freshness.partial_checks(sdir, stamp)  # changed shots: the objects that did not change
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,
                  "done": span.f1 - span.f0 + 1 if shot.id in reuse else 0,
@@ -860,6 +864,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     run.progress(0, total, current=None, items=progress, force=True)
     rows: list[dict] = []
     checked, kept = [], []
+    partly: dict[str, dict] = {}
     to_check = sum(shot.id not in reuse for shot, _ in plan)
     if reuse:
         kept_ids = [shot.id for shot, _ in plan if shot.id in reuse]
@@ -876,6 +881,11 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         item["state"] = "checking"
         errors = sum(r.get("severity") == "error" for r in rows)
         line = findings.progress_line(shot.id, len(checked) + 1, to_check, errors)
+        keep, kept_rows = partial.get(shot.id, (None, []))
+        if keep:
+            n_objects = len(stamp["inputs"][shot.id].get("objects") or {})
+            partly[shot.id] = {"kept_objects": len(keep), "retested_objects": n_objects - len(keep)}
+            line += f", {n_objects - len(keep)} of {n_objects} objects changed"
         print(line, file=sys.stderr, flush=True)
         where = f"{line} \u00b7 scene {scene.name}"
         run.progress(counted[0], total, current=line, force=True)
@@ -885,15 +895,18 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
             run.progress(counted[0] + done, total, current=where)
 
         found = run_checks(scene, replace(tl, shots=[span]), sample_every=args.every, short=short,
-                           progress=_progress_cb(on_frame), rules=hard_rules, cap=False)  # fmt: skip
+                           progress=_progress_cb(on_frame), rules=hard_rules, cap=False,
+                           keep_objects=keep)  # fmt: skip
         found += framing_findings(scene, shot.id, span.f0, span.f1)  # the build's framing warnings
         item["state"], item["done"] = "done", item["total"]
         counted[0] += item["total"]
         rows += [_check_row(f, shot.id, scene.name) for f in found]
+        rows += [{**f, "shots": [shot.id]} for f in kept_rows]  # the unchanged objects' and pairs' own findings
         checked.append(shot.id)
     run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
     out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
-                        OVERLAP_MAX_FINDINGS, checked=checked, kept=kept)  # fmt: skip
+                        OVERLAP_MAX_FINDINGS, checked=checked, kept=kept,
+                        **({"partial": partly} if partly else {}))  # fmt: skip
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
     if not getattr(args, "in_chain", False):  # beside the preview render the chain marks it (one writer of state)

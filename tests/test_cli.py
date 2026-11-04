@@ -2714,6 +2714,74 @@ def test_check_in_chain_reports_progress_on_stdout_and_marks_nothing(home, pendu
     assert "checks" not in jobstate.load_state(pendulum)["stages"]
 
 
+def test_check_reuses_unchanged_objects_in_a_changed_shot(home, pendulum, monkeypatch, capsys):
+    """A shot where only some objects changed is checked again with the others kept: their own findings (and those
+    of pairs of two kept objects) are carried over, everything else is found again."""
+    import types
+    from dataclasses import dataclass
+
+    import bsa_blender
+    from bsa.image_checks import Finding
+
+    @dataclass
+    class OverlapFinding(Finding):  # as bsa.blender.checks has it (not importable here)
+        pair: tuple = ("", "")
+        kind: str | None = None
+        depth: float | None = None
+
+    ok(run(home, "timeline", "pendulum"))
+    ids = [s.id for s in bsa_blender._load(pendulum).shots]
+    calls = []
+
+    def run_checks(scene, tl, **kw):
+        sid = tl.shots[0].id
+        calls.append((sid, kw.get("keep_objects")))
+        if sid != "s01":
+            return []
+        keep = kw.get("keep_objects") or set()
+        found = [Finding("faceted", "warning", n, 1, f"{n} looks faceted") for n in ("Bob", "Rod") if n not in keep]
+        if not {"Bob", "Rod"} <= keep:
+            found.append(OverlapFinding("overlap", "warning", "Bob", 2, "Bob and Rod meet", ("Bob", "Rod"), "deep", 0.0))
+        found.append(Finding("floating", "warning", "Bob", 3, "Bob floats"))  # always found again
+        return found
+
+    checks = types.ModuleType("bsa.blender.checks")
+    checks.run_checks, checks.OVERLAP_MAX_FINDINGS = run_checks, 20
+    camera = types.ModuleType("bsa.blender.camera")
+    camera.framing_findings = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.checks", checks)
+    monkeypatch.setitem(sys.modules, "bsa.blender.camera", camera)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, s, sid, h: (None, types.SimpleNamespace(name="Workshop")))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    keys = {sid: {"objects": {"Bob": "kb", "Rod": "kr", "Pin": "kp"}, "rest": "r"} for sid in ids}
+    fps = dict.fromkeys(ids, "fp1")
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: dict(fps))
+    monkeypatch.setattr(bsa_blender, "_objects", lambda sdir, f: keys)
+    assert bsa_blender.main(["check", "pendulum"]) == 0
+    assert calls == [(sid, None) for sid in ids]
+    first = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
+    assert "partial" not in first
+    calls.clear()
+    capsys.readouterr()
+    fps["s01"] = "fp2"
+    keys["s01"] = {"objects": {"Bob": "kb2", "Rod": "kr", "Pin": "kp"}, "rest": "r"}  # only Bob changed
+    assert bsa_blender.main(["check", "pendulum"]) == 0
+    assert calls == [("s01", {"Rod", "Pin"})]
+    io = capsys.readouterr()
+    out = json.loads(io.out.split("BSA_RESULT ", 1)[1])
+    assert out["partial"] == {"s01": {"kept_objects": 2, "retested_objects": 1}}
+    assert out["checked"] == ["s01"] and out["kept"] == ids[1:]
+    assert "checking s01 (1 of 1), 0 errors so far, 1 of 3 objects changed" in io.err
+    data = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
+    rows = sorted((r["check"], r["obj"]) for r in data["findings"])
+    assert rows == [("faceted", "Bob"), ("faceted", "Rod"), ("floating", "Bob"), ("overlap", "Bob")], rows
+    assert next(r for r in data["findings"] if r["obj"] == "Rod")["shots"] == ["s01"]
+    calls.clear()
+    assert bsa_blender.main(["check", "pendulum", "--full"]) == 0
+    assert calls == [(sid, None) for sid in ids]  # --full: every shot whole
+
+
 def _child(code: str) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace")  # fmt: skip

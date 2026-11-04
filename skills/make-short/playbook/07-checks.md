@@ -16,7 +16,15 @@ artifacts. `checks.json` is stamped with the build and the timing: the final ren
 and edit refuse checks that are missing, failed, or ran on an older build or timing, so check again after every
 rebuild. A look at the work may check with a coarse `--every` (`--every 20`), but the final render and edit need
 the default 5 or finer (so a `preview --every 10` chain runs its check step each time rather than skip it: the
-shots it already checked at that `--every` are reused, so it is quick). The preview chain (`BLENDER preview`) runs the
+shots it already checked at that `--every` are reused, so it is quick). In a shot that changed, only the objects
+that changed are checked again when nothing else did (same frames, timing, `--every`, short.json entry, tags and the
+rest of the shot: camera, lights, world, collections): each unchanged object keeps its own findings (`boolean`,
+`faceted`, `normals`, `materials`, `images`, `self_overlap`, `self_zfight`) and a pair of two unchanged objects keeps
+its `overlap` findings. Everything else is checked again every time: `floating`, `contact_parent`, pops, `pop_in`,
+swaps, framing, `frame_edge`, covered, names, hard rules and the camera checks, and any pair with a changed, new or
+renamed object (a deleted object's findings are dropped). A tag change anywhere in the shot, or any change to the
+rest, checks the whole shot; the result's `partial` and the progress line (`, 2 of 40 objects changed`) say which
+shots were checked this way. `--full` checks every shot whole. The preview chain (`BLENDER preview`) runs the
 checks in a second Blender beside its render (they need no GPU), so they cost no time of their own; the edit waits for
 both. When those checks find errors the preview is still made, and its result's `warnings` (and one `warning:` line
 on stderr, after the checks end) say how many and the first few; its check step shows as failed and the `checks`

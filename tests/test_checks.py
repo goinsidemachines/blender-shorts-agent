@@ -97,5 +97,6 @@ def test_checks_in_blender(blender_run):
         "test_assembly_depth_caps_how_deep_members_go",
         "test_volume_fills_round_solids_but_still_pops",
         "test_a_volume_still_pops_in_and_must_stay_in_the_frame",
+        "test_kept_objects_are_not_checked_again_but_others_are",
     ):
         assert f"PASS {name}" in result.stdout

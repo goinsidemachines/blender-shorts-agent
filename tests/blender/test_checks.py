@@ -1877,3 +1877,23 @@ def test_a_volume_still_pops_in_and_must_stay_in_the_frame():
     found = _found(sc, "frame_edge", "Flame", "error")
     assert len(found) == 1, found
 
+def test_kept_objects_are_not_checked_again_but_others_are():
+    """keep_objects: the objects whose own checks still hold (a re-check of a shot where only others changed) are
+    not checked alone again, and a pair is skipped only when both of its objects are kept."""
+    sc = _scene()
+    flipped = _cube("N", (-2, 0, 1.5))  # in the air: no face on the floor
+    bm = bmesh.new()
+    bm.from_mesh(flipped.data)
+    bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    bm.to_mesh(flipped.data)
+    bm.free()
+    _cube("P", (2, 0, 0.5))
+    _cube("Q", (2.5, 0.2, 0.7))  # half a metre into P, no face on a plane of P's
+
+    def found(keep):
+        return [f for f in checks.run_checks(sc, _timeline(), keep_objects=keep) if f.check in ("normals", "overlap")]
+
+    assert {(f.check, f.obj) for f in found(None)} == {("normals", "N"), ("overlap", "P")}, found(None)
+    assert not found({"N", "P", "Q"}), found({"N", "P", "Q"})
+    again = found({"N", "P"})
+    assert [(f.check, tuple(f.pair)) for f in again] == [("overlap", ("P", "Q"))], again

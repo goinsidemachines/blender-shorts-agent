@@ -717,6 +717,82 @@ def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     return out
 
 
+# the checks of one object alone: their findings hold while that object's key (bsa.blender.fingerprint: its data,
+# materials, modifiers, parent chain, what it reads and its motion over the shot) and the rest of the shot (camera,
+# lights, world, collections, tags) are unchanged. Every other check is run again on a shot that changed: floating
+# (it depends on what holds the object up), contact_parent (it depends on the parents), pops, pop_in, swaps,
+# framing, frame_edge, covered, names, hard rules and the camera checks. An overlap belongs to its pair.
+OBJECT_CHECKS = ("boolean", "faceted", "normals", "materials", "images", "self_overlap", "self_zfight")
+_REUSE_SAME = ("frames", "entry", "shot_ids", "rules", "caption_size", "tags", "rest")
+
+
+def object_reuse(old: dict, sid: str, now: dict) -> set[str] | None:
+    """The names of shot `sid`'s objects whose own checks (OBJECT_CHECKS, and overlaps of two such objects) still
+    hold, or None: check the whole shot again. `old` is the stamp of review/checks.json, `now` the shot's
+    shot_check_inputs as they are now with the new stamp's {"timeline", "every"} under "_stamp". None unless the
+    checks code, the timing and --every are the same, both inputs hold object keys and the rest's key, and nothing
+    but object keys changed (frames, short.json entry, shot list, rules, caption size, tags, rest); then the names
+    whose key is the same (a new or renamed object has no old key, so it is checked), None when there are none."""
+    if not isinstance(old, dict) or not isinstance(now, dict) or old.get("code") != checks_code():
+        return None
+    new = now.get("_stamp") if isinstance(now.get("_stamp"), dict) else {}
+    if any(old.get(k) != new.get(k) for k in ("timeline", "every")):
+        return None
+    inputs = old.get("inputs") if isinstance(old.get("inputs"), dict) else {}
+    had = inputs.get(sid)
+    if not isinstance(had, dict) or not isinstance(had.get("objects"), dict) or "rest" not in had:
+        return None
+    if not isinstance(now.get("objects"), dict) or "rest" not in now or had.get("rest") is None:
+        return None
+    if any(had.get(k) != now.get(k) for k in _REUSE_SAME):
+        return None
+    kept = {n for n, k in now["objects"].items() if k is not None and had["objects"].get(n) == k}
+    return kept or None
+
+
+def partial_checks(short_dir: Path, stamp: dict) -> dict[str, tuple[set[str], list[dict]]]:
+    """{shot id: (the names object_reuse keeps, the old rows that still hold)} for each shot of `stamp` whose checks
+    are not reusable as a whole (reusable_checks) but whose unchanged objects' are: the rows of an OBJECT_CHECKS
+    check on a kept object, and of an overlap whose two objects are both kept. The rows come from the findings and
+    the ones the overlap cap held back, split per shot as reusable_checks does. A shot whose old overlap rows can't
+    say their pair is checked again whole."""
+    data = read_checks(short_dir) or {}
+    old = data.get("stamp")
+    inputs = stamp.get("inputs") if isinstance(stamp.get("inputs"), dict) else {}
+    if not isinstance(old, dict) or stamp.get("code") != checks_code() or not inputs:
+        return {}
+    whole = reusable_checks(short_dir, stamp)
+    new = {"timeline": stamp.get("timeline"), "every": stamp.get("every")}
+    keep: dict[str, set[str]] = {}
+    for sid in stamp.get("shots") or {}:
+        if sid in whole or not isinstance(inputs.get(sid), dict):
+            continue
+        kept = object_reuse(old, sid, {**inputs[sid], "_stamp": new})
+        if kept:
+            keep[sid] = kept
+    out: dict[str, tuple[set[str], list[dict]]] = {sid: (names, []) for sid, names in keep.items()}
+    broken: set[str] = set()
+    for f in [*(data.get("findings") or []), *(data.get("held_back") or [])]:
+        if not isinstance(f, dict) or "capped" in f:
+            continue
+        shots = f.get("shots") if isinstance(f.get("shots"), list) else [f.get("shot")]
+        for sid in shots:
+            if sid not in out:
+                continue
+            names = keep[sid]
+            if f.get("check") == "overlap":
+                pair = f.get("pair")
+                if not isinstance(pair, list | tuple) or len(pair) != 2:
+                    broken.add(sid)  # can't tell which pair: the shot is checked again whole
+                    continue
+                hold = all(isinstance(n, str) and n in names for n in pair)
+            else:
+                hold = f.get("check") in OBJECT_CHECKS and isinstance(f.get("obj"), str) and f["obj"] in names
+            if hold:
+                out[sid][1].append(f if f.get("shot") == sid else {**f, "shot": sid})
+    return {sid: v for sid, v in out.items() if sid not in broken}
+
+
 FINAL_MAX_EVERY = 5  # the final needs checks that sampled at least every 5th frame (BLENDER check's default)
 
 

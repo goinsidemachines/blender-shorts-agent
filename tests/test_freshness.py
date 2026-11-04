@@ -623,3 +623,94 @@ def test_object_keys_are_cached_and_never_part_of_the_check_key(sdir):
     assert "objects" not in plain and "rest" not in plain
     assert freshness.checks_stamp("h", {"s01": plain})["shots"] == freshness.checks_stamp("h", {"s01": keyed})["shots"]
     assert freshness.blend_stat(sdir) == freshness._blend_stat(sdir) == [3, blend.stat().st_mtime_ns]
+
+
+def _keyed(sid="s01", objects=None, rest="r1", fp="fp1", span=None, tags=None):
+    parts = {"tags": tags} if tags is not None else None
+    keys = {"objects": dict(objects or {"A": "ka", "B": "kb", "C": "kc"}), "rest": rest}
+    return freshness.shot_check_inputs(fp, span or Span(sid, 1, 90), _shot(id=sid), ("s01", "s02"), parts,
+                                       objects=keys)  # fmt: skip
+
+
+def _reuse(old_stamp, sid, now_stamp):
+    now = {**now_stamp["inputs"][sid], "_stamp": {"timeline": now_stamp["timeline"], "every": now_stamp["every"]}}
+    return freshness.object_reuse(old_stamp, sid, now)
+
+
+def test_object_reuse_rules():
+    """Which objects of a changed shot keep their own checks: only when nothing but object keys changed (same checks
+    code, timing, --every, frames, entry, shot list, rules, caption size, tags and rest), and then only the names
+    whose key is the same; None (re-check the whole shot) otherwise."""
+    base = {"s01": _keyed("s01", tags="t1"), "s02": _keyed("s02", tags="t1")}
+    old = freshness.checks_stamp("h", base, 5)
+
+    def now(sid="s01", every=5, tl="h", **over):
+        return freshness.checks_stamp(tl, {**base, sid: _keyed(sid, **{"tags": "t1", **over})}, every)
+
+    assert _reuse(old, "s01", now(objects={"A": "ka2", "B": "kb", "C": "kc"}, fp="fp2")) == {"B", "C"}
+    assert _reuse(old, "s02", now("s02", objects={"A": "ka", "B": "kb2", "C": "kc"}, fp="fp2")) == {"A", "C"}
+    assert _reuse(old, "s01", now(rest="r2", fp="fp2")) is None  # camera, lights, world, collections...
+    assert _reuse(old, "s01", now(tags="t2")) is None  # a tag changed anywhere in the shot
+    assert _reuse(old, "s01", now(span=Span("s01", 1, 80), fp="fp2")) is None  # its frames changed
+    assert _reuse(old, "s01", now(every=1, fp="fp2")) is None  # --every changed
+    assert _reuse(old, "s01", now(tl="h2", fp="fp2")) is None  # the timing changed
+    assert _reuse(old, "s01", now(objects={"A": "x", "B": "y", "C": "z"}, fp="fp2")) is None  # every key changed
+    assert _reuse({**old, "code": "0:old"}, "s01", now(fp="fp2")) is None  # the checks code changed
+    plain = freshness.checks_stamp("h", {sid: _inputs(span=Span(sid, 1, 90), shot=_shot(id=sid)) for sid in base}, 5)
+    assert _reuse(plain, "s01", now(fp="fp2")) is None  # old inputs without object keys
+    without = freshness.checks_stamp("h", {**base, "s01": _inputs(fp="fp2", parts={"tags": "t1"})}, 5)
+    assert freshness.object_reuse(old, "s01", {**without["inputs"]["s01"], "_stamp": {"timeline": "h", "every": 5}}) \
+        is None  # new inputs without object keys  # fmt: skip
+    new = {**now(fp="fp2")["inputs"]["s01"], "_stamp": {"timeline": "h", "every": 5}}
+    assert freshness.object_reuse(old, "s03", new) is None  # a shot the old checks never had
+
+
+def _row(check, obj=None, pair=None, sid="s01", **over):
+    return {"check": check, "severity": "error", "obj": obj, "frame": None, "message": f"{check} {obj or pair}",
+            "shot": sid, "shots": [sid], **({"pair": list(pair)} if pair else {}), **over}  # fmt: skip
+
+
+def _old_rows(sdir, rows, held=()):
+    base = {"s01": _keyed("s01", tags="t1"), "s02": _keyed("s02", tags="t1")}
+    data = {"stamp": freshness.checks_stamp("h", base, 5), "errors": len(rows), "warnings": 0, "findings": rows,
+            "held_back": list(held)}  # fmt: skip
+    (sdir / "review" / "checks.json").write_text(json.dumps(data), encoding="utf-8")
+    return base
+
+
+def test_partial_checks_keep_only_rows_of_unchanged_objects_and_pairs(sdir):
+    normals_a, materials_b = _row("normals", "A"), _row("materials", "B")
+    ab, ac = _row("overlap", "A", ("A", "B")), _row("overlap", "A", ("A", "C"))
+    floating, contact = _row("floating", "A"), _row("contact_parent", "A")
+    other = _row("normals", "A", sid="s02")
+    base = _old_rows(sdir, [normals_a, materials_b, ab, floating, contact, other], held=[ac])
+    changed_a = freshness.checks_stamp("h", {**base, "s01": _keyed(objects={"A": "ka2", "B": "kb", "C": "kc"},
+                                                                   fp="fp2", tags="t1")}, 5)  # fmt: skip
+    assert freshness.partial_checks(sdir, changed_a) == {"s01": ({"B", "C"}, [materials_b])}
+    changed_b = freshness.checks_stamp("h", {**base, "s01": _keyed(objects={"A": "ka", "B": "kb2", "C": "kc"},
+                                                                   fp="fp2", tags="t1")}, 5)  # fmt: skip
+    assert freshness.partial_checks(sdir, changed_b) == {"s01": ({"A", "C"}, [normals_a, ac])}
+    assert freshness.partial_checks(sdir, freshness.checks_stamp("h", base, 5)) == {}  # nothing changed: all kept
+    retagged = freshness.checks_stamp("h", {**base, "s01": _keyed(fp="fp2", tags="t2")}, 5)
+    assert freshness.partial_checks(sdir, retagged) == {}  # re-check the whole shot
+
+
+def test_partial_reuse_drops_deleted_and_renamed_objects(sdir):
+    """A deleted object's findings are dropped and a pair with it is not kept; a renamed (or new) object has no old
+    key, so its checks run and its pairs are tested again."""
+    rows = [_row("normals", "C"), _row("overlap", "A", ("A", "C")), _row("materials", "D"), _row("faceted", "A"),
+            _row("overlap", "A", ("A", "D")), _row("overlap", "A", ("A", "B"))]  # fmt: skip
+    old = {"s01": _keyed(objects={"A": "ka", "B": "kb", "C": "kc", "D": "kd"}, tags="t1"),
+           "s02": _keyed("s02", tags="t1")}  # fmt: skip
+    data = {"stamp": freshness.checks_stamp("h", old, 5), "errors": 0, "warnings": 0, "findings": rows}
+    (sdir / "review" / "checks.json").write_text(json.dumps(data), encoding="utf-8")
+    deleted = freshness.checks_stamp("h", {**old, "s01": _keyed(objects={"A": "ka", "B": "kb", "D": "kd"}, fp="fp2",
+                                                                tags="t1")}, 5)  # fmt: skip
+    kept, kept_rows = freshness.partial_checks(sdir, deleted)["s01"]
+    assert kept == {"A", "B", "D"} and not [r for r in kept_rows if "C" in (r["obj"], *r.get("pair", ()))]
+    assert kept_rows == [rows[2], rows[3], rows[4], rows[5]]
+    renamed = freshness.checks_stamp("h", {**old, "s01": _keyed(objects={"A": "ka", "B": "kb", "C": "kc", "E": "kd"},
+                                                                fp="fp2", tags="t1")}, 5)  # fmt: skip
+    kept, kept_rows = freshness.partial_checks(sdir, renamed)["s01"]
+    assert kept == {"A", "B", "C"} and "E" not in kept
+    assert kept_rows == [rows[0], rows[1], rows[3], rows[5]]  # nothing of D, nor of the pair A-D

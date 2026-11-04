@@ -280,19 +280,24 @@ class _Contact:
 
 
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
-               rules: list[dict] | None = None, cap: bool = True) -> list[Finding]:  # fmt: skip
+               rules: list[dict] | None = None, cap: bool = True,
+               keep_objects: set[str] | None = None) -> list[Finding]:  # fmt: skip
     """Run every check over each shot (every `sample_every` frames plus the shot's first and last; overlaps of moving
     objects and pops use every frame). `short` (the Short, for its near labels and shot ids) defaults to the
     short.json next to the open .blend (<short>/blend/short.blend), when there is one. Errors come first.
     scene.frame_current is restored afterwards. `progress(shot id, frames done, frames in the shot)` is called after
     each frame when given (it never changes what is found). `rules`: the hard rules (bsa.rules.effective); object,
     mesh, material, collection and library names with words a rule may forbid are "hard_rule" warnings. `cap`: list
-    the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead)."""
+    the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead).
+    `keep_objects`: objects whose own findings from the last checks still hold (bsa.freshness.partial_checks: their
+    keys did not change): their one-object checks (bsa.freshness.OBJECT_CHECKS) are not run, nor the overlap of a
+    pair of two of them; every other check runs as usual."""
     original = scene.frame_current
     bevels: list[tuple] = []
     try:
         _hide_style_bevels(scene, bevels)  # measure the parts as built, not rounded by a style
         run = _Run(scene)
+        run.keep = set(keep_objects or ())
         short = _short_beside_blend() if short is None else short
         run.short, run.tl = short, tl
         run.kit, run.kit_font = _kit_and_font(short)
@@ -397,6 +402,7 @@ class _Run:
         self.tl = None
         self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
         self.kit_font = None
+        self.keep: set[str] = set()  # objects whose own checks still hold (run_checks keep_objects): not run again
 
     def hero(self, obj, shot_id=None, frame=None) -> bool:
         """is_hero, but a set object is never a hero (scenery, whatever it is tagged). With `frame` and `shot_id` (the
@@ -740,6 +746,8 @@ class _Run:
             if cam and framed and not may_exit(obj):
                 views.setdefault(obj.name, {"overlay": obj.name in self.overlay, "samples": []})["samples"].append(
                     (frame, share, seen))
+            if obj.name in self.keep:  # its own checks still hold: only what involves others runs
+                continue
             if obj.name not in self.static_done:
                 self.static_done.add(obj.name)
                 self.static(obj, depsgraph, frame)
@@ -751,6 +759,8 @@ class _Run:
         for obj in objs:
             if "grounded" in tags(obj) and obj.name in geos and self.solid(obj.name):
                 self.floating(frame, obj.name, geos)
+            if obj.name in self.keep:
+                continue
             if obj.name in geos and self.hero(obj) and obj.name not in self.overlay and obj.name not in self.volume:
                 self.loose_parts(obj.name, geos[obj.name], frame)
 
@@ -991,7 +1001,8 @@ class _Run:
 
     def overlaps(self, frame, objs, geos, only=None):
         """Every pair of objects whose boxes touch (only pairs with an object in `only` when given). Overlays, open
-        surfaces and volumes are left out; a pair in one rigid group or one depth-free assembly is not tested."""
+        surfaces and volumes are left out; a pair in one rigid group or one depth-free assembly is not tested, nor a
+        pair of two kept objects (self.keep)."""
         by_name = {o.name: o for o in objs}
         for n in sorted(self.surface & set(geos)):
             if geos[n].closed:
@@ -1009,6 +1020,8 @@ class _Run:
             pairs = sorted({(min(a, b), max(a, b)) for a in only for b in names if b != a})
         for a, b in pairs:
             if a in self.set_objs and b in self.set_objs:  # scenery against scenery: not checked
+                continue
+            if a in self.keep and b in self.keep:  # neither changed: the pair's findings still hold
                 continue
             ga, gb = geos[a], geos[b]
             if not _boxes_touch(ga, gb, OVERLAP_TOL):
