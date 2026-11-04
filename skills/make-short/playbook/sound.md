@@ -85,6 +85,14 @@ Designed UI packs (`kenney-ui-sfx`: interface clicks and switches, tonal and par
 `designed` in search results, under the plan table and in the library. Under natural-only the mix never uses their
 clips, even ones tagged `click`: plan a natural pack (`oga-metal-wood`, `kenney-rpg`) or a recording for those kinds.
 For water and wind, plan `pack:oga-water` and `pack:oga-wind`: they need no Commons and no key.
+For machines, plan `pack:oga-sfx-100-v2` (2.4 MB: machine loops and thunder as `rumble`, air as `hiss`, metal hits
+as `impact`, doors, locks and water loops) and `pack:oga-steam-hisses` (0.6 MB: five steam hisses, all `hiss`); `CLI assets plan
+SHORT pack:oga-steam-hisses` lists each with its size, and nothing downloads without the user's yes. Neither pack has a
+clip named for a thud, so for a piston or firing use its `impact` clips or a recording. Their pages do not say whether
+the sounds were recorded or synthesised, so they are not marked `designed` and natural-only accepts them: say so when
+the user wants natural sounds only. Placing them: a `hiss` event on the frame a valve opens, an `impact` (or `thud`
+where a clip is tagged for it) on each firing, written by `build.py` into `source/events.json`, one per power stroke,
+and a `rumble` bed under a running engine at about -26 dB.
 Each library clip also has a `flatness` score (near 0 tonal, near 1 noisy) to look at; it does not decide picking,
 because real knocks ring as well.
 
