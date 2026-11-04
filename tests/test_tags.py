@@ -208,3 +208,25 @@ def test_rigid_assembly_and_volume_tags():
         with pytest.raises(ValueError):
             bake.tag(Obj(), bad)
     assert "did you mean 'rigid'" in bake.tag_problem("rigdi")
+
+def test_a_misspelt_set_tag_still_ends_a_hero_list():
+    """"set:wal" is not read as a shot id of the hero list before it: the names check reports it as a tag."""
+    o = Obj()
+    o["bsa_tags"] = "hero:s03,s04,set:wal"
+    assert bake.tags(o) == ["hero:s03,s04", "set:wal"]
+    assert "set tag is one of" in bake.tag_problem("set:wal")
+
+
+def test_a_hero_list_with_spaces_or_empty_ids_is_a_problem():
+    """Shot ids are separated by commas only: the checks' names error reads the same rule as bake.tag."""
+    for bad in ("hero:s01, s02", "hero:s01,,s02", "hero:s01 s02"):
+        assert "commas only" in bake.tag_problem(bad), bad
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), bad)
+
+
+def test_a_shot_listed_twice_in_one_hero_tag_takes_its_earliest_start():
+    """As across two tags (hero_from takes the minimum), so within one."""
+    o = Obj()
+    o["bsa_tags"] = "hero:s07@0.6,s07@0.2"
+    assert bake.hero_from(o, "s07") == 0.2

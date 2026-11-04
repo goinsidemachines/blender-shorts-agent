@@ -130,6 +130,8 @@ def _hero_shape(t: str, rest: str) -> str | None:
     if not any(i.strip() for i in rest.split(",")):
         return f"tag {t!r} lists no shot"
     for i in rest.split(","):
+        if not i.strip() or " " in i:
+            return f"tag {t!r}: shot ids are separated by commas only, with no spaces or empty ids (hero:s01,s02)"
         sid, at, frac = i.partition("@")
         if at and (not sid.strip() or hero_fraction(frac) is None):
             return f"tag {t!r}: {i!r} needs a shot id and a fraction 0 < f < 1 after '@' (hero:s07@0.6)"
@@ -164,7 +166,9 @@ TAG_SHAPES: dict[str, Callable[[str, str], str | None]] = {
 
 
 def _is_tag_start(word: str) -> bool:
-    return word in TAG_WORDS or word.startswith(TAG_PREFIXES)
+    """Does this comma-separated word start a new tag (rather than go on a hero:... shot list)? A misspelt set tag
+    ("set:wal") still starts one, so the names check reports it instead of reading it as a shot id."""
+    return word in TAG_WORDS or word.startswith(TAG_PREFIXES) or word.startswith("set:")
 
 
 def tag_problem(t: str) -> str | None:
@@ -356,7 +360,8 @@ def _hero_shots(t: str) -> dict[str, float]:
     out: dict[str, float] = {}
     for i in t[5:].split(","):
         sid, _, frac = i.partition("@")
-        out.setdefault(sid, hero_fraction(frac) or 0.0)
+        f = hero_fraction(frac) or 0.0
+        out[sid] = min(out.get(sid, f), f)  # a shot listed twice: its earliest start, as across two tags
     return out
 
 
@@ -387,9 +392,10 @@ def hero_start(frac: float, f0: int, f1: int) -> int:
 
 def tag(obj, *new_tags: str) -> None:
     """Merge tags ("hero", "hero:s03,s04", "hero:s07@0.6", "grounded", "contact:<other>", "overlay", "surface",
-    "set:<role>", "lines:off", "fast", "swap:<other>", "rigid", "assembly:<name>[:<depth>]", "volume": see TAGS) into bsa_tags
-    (comma-joined, no duplicates). An unknown or empty tag (a typo) is a ValueError saying why (tag_problem). Only a
-    hero:<shot ids> tag may hold commas (between its shot ids). A set object (set:<role>) is never a hero: ValueError."""
+    "set:<role>", "lines:off", "fast", "swap:<other>", "rigid", "assembly:<name>[:<depth>]", "volume": see TAGS)
+    into bsa_tags (comma-joined, no duplicates). An unknown or empty tag (a typo) is a ValueError saying why
+    (tag_problem). Only a hero:<shot ids> tag may hold commas (between its shot ids). A set object (set:<role>) is
+    never a hero: ValueError."""
     for t in new_tags:
         problem = tag_problem(t)
         if problem:
