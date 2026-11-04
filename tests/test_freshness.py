@@ -45,6 +45,8 @@ def test_check_timeline_detects_changed_timing(sdir):
     short.lines[0].text += " and a few more words so the line runs longer"
     with pytest.raises(freshness.StaleError, match="timing changed: run CLI timeline"):
         freshness.check_timeline(sdir, build_timeline(short, None))
+    with pytest.raises(freshness.StaleError, match="timing changed: run CLI timeline 12, then rebuild"):
+        freshness.check_timeline(sdir, build_timeline(short, None), "12")
 
 
 def test_timeline_hash_ignores_key_order():
@@ -514,7 +516,8 @@ def test_checks_code_covers_every_file_the_findings_come_from():
     root = freshness._CHECKS_CODE[0].parent.parent
     names = {p.relative_to(root).as_posix() for p in freshness._CHECKS_CODE}
     assert {"blender/checks.py", "viewer.py", "overlays.py", "findings.py", "blender/camera.py",
-            "layout.py", "rules.py", "blender/bake.py", "pops.py", "blender/anchors.py"} <= names, names  # fmt: skip
+            "layout.py", "rules.py", "blender/bake.py", "pops.py", "blender/anchors.py", "short.py",
+            "kitlayout.py"} <= names, names  # fmt: skip
     assert all(p.is_file() for p in freshness._CHECKS_CODE)
 
 

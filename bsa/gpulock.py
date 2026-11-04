@@ -29,9 +29,10 @@ class GpuBusy(Exception):
 
 class Heartbeat:
     """Which wait lines to print: the first, then one every `every` seconds ("still waiting for ...: waited 0 min
-    30 s"). The clock is injectable so it is tested without sleeping."""
+    30 s"), on a steady beat whatever the poll interval. The clock (monotonic: a wall-clock change never stops or
+    floods the lines) is injectable so it is tested without sleeping."""
 
-    def __init__(self, clock: Callable[[], float] = time.time, every: float = HEARTBEAT_S):
+    def __init__(self, clock: Callable[[], float] = time.monotonic, every: float = HEARTBEAT_S):
         self._clock, self._every = clock, every
         self._start: float | None = None
         self._last = 0.0
@@ -43,7 +44,7 @@ class Heartbeat:
             return text
         if now - self._last < self._every:
             return None
-        self._last = now
+        self._last = now - (now - self._last) % self._every  # the beat it is due on, not when the poll came
         mins, secs = divmod(int(now - self._start), 60)
         return f"still {text}: waited {mins} min {secs} s"
 

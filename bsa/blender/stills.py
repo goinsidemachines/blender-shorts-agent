@@ -75,8 +75,9 @@ def world_mask(scene, frame: int, shape: tuple[int, int]) -> np.ndarray:
     """Where the world shows in `scene` at `frame`, as a bool array of `shape` (the still's height, width): True where
     no object covers the background.
 
-    One quick Workbench pass (MASK_PERCENT, film transparent, PNG RGBA) to a temp file; a pixel with alpha 0 is world.
-    This is the only place the plugin switches the render engine: it is a measuring pass, never a picture, and the
+    One quick Workbench pass (MASK_PERCENT, film transparent, PNG RGBA, no compositor or sequencer, which could
+    repaint the alpha) to a temp file; a pixel with alpha 0 is world, so a semi-transparent part (glass, a glow)
+    counts as not world wherever it covers. This is the only place the plugin switches the render engine: it is a measuring pass, never a picture, and the
     user's engine and every other setting it touches are restored afterwards, also when the render fails. No device
     or samples are set, the temp file is deleted and the .blend is never saved."""
     from bsa.blender.pixels import read_png
@@ -84,13 +85,14 @@ def world_mask(scene, frame: int, shape: tuple[int, int]) -> np.ndarray:
     r = scene.render
     ims = r.image_settings
     saved = (r.film_transparent, r.filepath, r.use_file_extension, ims.file_format, ims.color_mode, ims.color_depth,
-             scene.frame_current)  # fmt: skip
+             scene.frame_current, r.use_compositing, r.use_sequencer)  # fmt: skip
     tmp = Path(tempfile.mkdtemp(prefix="bsa-mask-"))
     try:
         with _window_scene(scene), preserved_render_state(scene):
             r.engine = "BLENDER_WORKBENCH"
             r.resolution_percentage = MASK_PERCENT
             r.film_transparent = True
+            r.use_compositing = r.use_sequencer = False
             ims.file_format = "PNG"
             ims.color_mode = "RGBA"
             ims.color_depth = "8"
@@ -105,6 +107,7 @@ def world_mask(scene, frame: int, shape: tuple[int, int]) -> np.ndarray:
         ims.color_mode = saved[4]
         ims.color_depth = saved[5]
         scene.frame_set(saved[6])
+        r.use_compositing, r.use_sequencer = saved[7], saved[8]
         shutil.rmtree(tmp, ignore_errors=True)
     h, w = shape
     mh, mw = alpha.shape

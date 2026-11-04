@@ -64,7 +64,7 @@ def _timeline(sdir: Path, short):
     durations = takes_durations(sdir, short)
     tl = build_timeline(short, durations, settings.has_end_card(settings.load_settings(), short),
                         onsets=takes_onsets(sdir, short) if durations is not None else None)  # fmt: skip
-    return tl, freshness.check_timeline(sdir, tl)  # (timeline, hash): it must match source/timeline.json
+    return tl, freshness.check_timeline(sdir, tl, _short_key(sdir))  # (timeline, hash): must match timeline.json
 
 
 def _engine(sdir: Path) -> str | None:
@@ -313,15 +313,21 @@ def cmd_stills(args) -> dict:
     engine = _engine(sdir)
     written, drawn = [], []
     kf = _guide_kit(sdir, short) if args.guides else None
-    from bsa.colour import flat_backdrop
+    from bsa.colour import background_source, flat_backdrop
 
+    wanted = background_source(short, settings.load_settings())  # no intended background: no mask pass to measure
     for shot in _shots(short, args.shot):
         shot, scene = _scene(data, short, shot.id, tl_hash)
         out = Path(args.out) if args.out else sdir / "stills" / f"{shot.id}.jpg"
         frame = _still_frame(shot, spans[shot.id])
         render_still(scene, frame, out, engine=engine)
         flat = flat_backdrop(scene.world, scene.render.film_transparent)
-        mask = world_mask(scene, frame, _still_shape(out)) if flat else None
+        mask = None
+        if flat and wanted:
+            try:
+                mask = world_mask(scene, frame, _still_shape(out))
+            except Exception:  # noqa: BLE001 - a failed measuring pass never stops the stills: measure the whole still
+                mask = None
         written.append((shot.id, out, flat, mask))
         if args.guides:
             drawn.append(_guides(out, short, shot, kf))
@@ -565,16 +571,16 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     data = _open_blend(sdir)
     engine = side.engine
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
+    parts = _parts(sdir, fps)
+    check_keys = _check_keys(short, tl, fps, parts)
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render",
-                                 key=_short_key(sdir))
+        freshness.require_checks(sdir, tl_hash, check_keys, "the final render", key=_short_key(sdir))
         failed = None
     else:  # the preview renders anyway; it says what the checks found on this build (the final refuses on it)
-        failed = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+        failed = _failed_checks_warning(sdir, short, tl_hash, check_keys)
         if failed:
             print(f"warning: {failed}", file=sys.stderr, flush=True)
     _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
-    parts = _parts(sdir, fps)
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))
               for s in shots}  # fmt: skip
     damaged = _drop_damaged(root, shots, spans, stamps, redo)  # before the plan counts what is kept
@@ -1578,21 +1584,32 @@ def cmd_grab(args) -> dict:
            "grabs": [{"seconds": t, "frame": f, "path": str(p)}
                      for t, f, p in zip(args.at, frames, mine, strict=True)]}  # fmt: skip
     if args.guides:
-        out.update(_grab_guides(sdir, short, dict(zip(frames, mine, strict=True))))
+        out.update(_grab_guides(sdir, short, dict(zip(frames, mine, strict=True)), mp4, args.preset))
     return {**out, **_older_grabs(folder, stem, set(mine))}
 
 
-def _grab_guides(sdir: Path, short, grabs: dict[int, Path]) -> dict:
+def _grab_guides(sdir: Path, short, grabs: dict[int, Path], mp4: Path, preset: str) -> dict:
     """{"guides": [paths]} (plus "warnings"): each grab's guides copy, for the shot its frame is in on the timeline
-    the video was edited to (source/timeline.json). A frame past the story (the closing card) gets none."""
+    the video was edited to (source/timeline.json). A frame past the story (the closing card) gets none. A timeline
+    newer than the video (the timing changed after this edit) is warned: the grabs' shots may be off."""
     from bsa.timeline import timeline_from_json
 
+    tl_path = sdir / "source" / "timeline.json"
     try:
-        tl = timeline_from_json(json.loads((sdir / "source" / "timeline.json").read_text(encoding="utf-8")))
+        tl = timeline_from_json(json.loads(tl_path.read_text(encoding="utf-8")))
     except (OSError, ValueError, KeyError, TypeError):
         why = ("no guides: source/timeline.json is missing or unreadable, so the grabs' shots are not known (run "
-               "CLI timeline SHORT)")  # fmt: skip
+               f"CLI timeline {_short_key(sdir)})")  # fmt: skip
         return {"guides": [], "warnings": [why]}
+    warnings = []
+    try:
+        newer = tl_path.stat().st_mtime_ns > mp4.stat().st_mtime_ns
+    except OSError:
+        newer = False
+    if newer:
+        warnings.append(f"source/timeline.json is newer than {mp4.name}: the timing changed after this edit, so a "
+                        "grab's shot, and its guides, may be off. Make the video again (render, then BLENDER edit "
+                        f"{_short_key(sdir)} --preset {preset}) and grab that")  # fmt: skip
     shots = {s.id: s for s in short.shots}
     kf = _guide_kit(sdir, short)
     drawn = []
@@ -1600,7 +1617,7 @@ def _grab_guides(sdir: Path, short, grabs: dict[int, Path]) -> dict:
         span = next((s for s in tl.shots if s.f0 <= f <= s.f1), None)
         if span is not None and span.id in shots:
             drawn.append(str(_guides(path, short, shots[span.id], kf)))
-    return {"guides": drawn}
+    return {"guides": drawn, "warnings": warnings} if warnings else {"guides": drawn}
 
 
 _GRAB = re.compile(r"-(f\d{4}(-guides)?|sheet)\.png$")  # a frame, its --guides copy, the contact sheet
@@ -1625,7 +1642,8 @@ def _older_grabs(folder: Path, stem: str, mine: set[Path]) -> dict:
     n = len({grab(p) for p in _stem_grabs(folder, stem)} - {grab(p) for p in mine})
     out = {"older": n}
     if n:
-        out["older_note"] = f"{n} older grabs of this video are in review/grabs: --clear removes them"
+        out["older_note"] = (f"{n} older grab{'s' if n != 1 else ''} of this video {'are' if n != 1 else 'is'} in "
+                             "review/grabs: --clear removes them")
     return out
 
 
@@ -1869,8 +1887,8 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         why = "asked" if args.rebuild else "the timing changed"
     elif not _blend(sdir).is_file():
         why = "no blend/short.blend yet"
-    elif freshness.build_changed(sdir):  # build.py, or a script it imports
-        why = freshness.build_changed_message(sdir).removesuffix(": rebuild")
+    elif stale := freshness.stale_build_file(sdir):  # build.py, or a script it imports
+        why = freshness.build_changed_message(sdir, stale).removesuffix(": rebuild")
     elif not _scenes_current(sdir, short, tl_hash):
         why = "the .blend's scenes are missing or from another timing"
     else:
@@ -2097,9 +2115,10 @@ def _warn_stale_build(args, out: dict) -> None:
     if short is None:
         return
     sdir = _short_dir(short)
-    if not freshness.build_changed(sdir):
+    stale = freshness.stale_build_file(sdir)
+    if stale is None:
         return
-    message = freshness.build_changed_message(sdir)
+    message = freshness.build_changed_message(sdir, stale)
     key = "build_warnings" if isinstance(out.get("warnings"), int) else "warnings"
     out.setdefault(key, []).append(message)
     print(f"warning: {message}", file=sys.stderr, flush=True)
@@ -2179,7 +2198,7 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
     def on_wait(text: str) -> None:
         line = beat.line(text)
         if line is not None:
-            print(f"{short} {command} is {line}" if not said else line, file=sys.stderr, flush=True)
+            print(f"{short} {command} is {line}", file=sys.stderr, flush=True)  # every line says which job waits
         said.append(text)
         if status is not None:
             rs.note_waiting(status, text)

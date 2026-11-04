@@ -1751,11 +1751,17 @@ def test_grab_lists_only_this_calls_grabs_and_counts_older_ones(home, pendulum, 
     out = _result(capsys)
     assert [g["frame"] for g in out["grabs"]] == [31]
     assert out["older"] == 1
-    assert out["older_note"] == "1 older grabs of this video are in review/grabs: --clear removes them"
+    assert out["older_note"] == "1 older grab of this video is in review/grabs: --clear removes them"
     assert bsa_blender.main([*argv, "--at", "0.5", "--clear"]) == 0
     out = _result(capsys)
     assert out["older"] == 0 and "older_note" not in out and out["cleared"] == 2
     assert [p.name for p in grabs.glob("*.png")] == ["preview-f0016.png"]
+    for name in ("final-f0001.png", "preview-eevee-f0001.png", "preview-eevee-sheet.png"):  # another preset, a side run
+        (grabs / name).write_bytes(b"theirs")
+    assert bsa_blender.main([*argv, "--at", "1", "--clear"]) == 0
+    assert _result(capsys)["cleared"] == 1  # only this preset's own older grab
+    assert sorted(p.name for p in grabs.glob("*.png")) == ["final-f0001.png", "preview-eevee-f0001.png",
+                                                          "preview-eevee-sheet.png", "preview-f0031.png"]  # fmt: skip
 
 
 def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys):
@@ -1822,6 +1828,47 @@ def _fake_pixels(monkeypatch):
     fake.read_png = read_png
     monkeypatch.setitem(sys.modules, "bsa.blender.pixels", fake)
     monkeypatch.setattr(bsa.blender, "pixels", fake, raising=False)
+
+
+def test_stills_measure_the_world_only_for_an_intended_background_and_never_fail_on_it(home, pendulum, monkeypatch,
+                                                                                        capsys):
+    """The world-mask pass runs only when there is an intended background to compare with; a mask pass that fails
+    leaves the still measured whole instead of stopping the stills."""
+    import types
+
+    import bsa.blender
+    import bsa.colour
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    masks = []
+
+    def world_mask(scene, frame, shape):
+        masks.append(frame)
+        raise RuntimeError("the measuring pass failed")
+
+    fake = types.ModuleType("bsa.blender.stills")
+    fake.render_still = lambda scene, frame, out, **kw: _frame_png(out, 432, 768)
+    fake.world_mask = world_mask
+    monkeypatch.setitem(sys.modules, "bsa.blender.stills", fake)
+    monkeypatch.setattr(bsa.blender, "stills", fake, raising=False)
+    _fake_pixels(monkeypatch)
+    scene = types.SimpleNamespace(world=None, render=types.SimpleNamespace(film_transparent=False))
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_engine", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_still_shape", lambda path: (768, 432))
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, short, sid, h: (
+        next(s for s in short.shots if s.id == sid), scene))  # fmt: skip
+    monkeypatch.setattr(bsa.colour, "flat_backdrop", lambda world, transparent: True)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    monkeypatch.setattr(bsa.colour, "background_source", lambda short, s: None)
+    assert bsa_blender.main(["stills", "pendulum", "--shot", "s01"]) == 0, capsys.readouterr().err
+    _result(capsys)
+    assert masks == []  # nothing to compare with: no mask pass
+    monkeypatch.setattr(bsa.colour, "background_source", lambda short, s: ("#ffffff", "the short's"))
+    assert bsa_blender.main(["stills", "pendulum", "--shot", "s01"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert len(masks) == 1 and out["stills"] == [str(pendulum / "stills" / "s01.jpg")]
 
 
 def test_test_frames_writes_guides_beside_the_plain_frames(home, pendulum, monkeypatch, capsys):
@@ -1896,7 +1943,14 @@ def test_grab_guides_follow_the_timeline_and_go_with_their_frames(home, pendulum
     assert bsa_blender.main([*argv, "--at", "0", str(closing), "--guides"]) == 0, capsys.readouterr().err
     out = _result(capsys)
     assert out["guides"] == [str(grabs / "preview-f0001-guides.png")]  # the closing card's frame gets none
-    assert out["older"] == 0
+    assert out["older"] == 0 and "warnings" not in out
+    import os
+
+    later = mp4.stat().st_mtime_ns + 10**9
+    os.utime(pendulum / "source" / "timeline.json", ns=(later, later))  # the timing changed after this edit
+    assert bsa_blender.main([*argv, "--at", "0", "--guides"]) == 0
+    warned = _result(capsys)["warnings"]
+    assert len(warned) == 1 and "timeline.json is newer than pendulum-preview.mp4" in warned[0], warned
     assert bsa_blender.main([*argv, "--at", "1"]) == 0
     out = _result(capsys)
     assert "guides" not in out

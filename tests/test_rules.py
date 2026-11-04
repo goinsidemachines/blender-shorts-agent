@@ -132,6 +132,9 @@ def test_keyword_hits_are_warnings_until_answered(short):
     assert errors == []
     text = " ".join(warnings)
     assert "shot s01" in text and "'man'" in text and "'hand'" in text and "line l04" in text and "'faces'" in text
+    assert "run BLENDER check SHORT again" in text  # no folder given: the placeholder
+    _, warnings = rules.problems(short, _s(NO_PEOPLE), key="12")
+    assert "run BLENDER check 12 again" in " ".join(warnings)  # what the user types for this short
     short.rules_check = {"r1": {"kept": "Clock parts only", "cleared": {"face": "the clock's face, not a person's"}}}
     _, warnings = rules.problems(short, _s(NO_PEOPLE))
     text = " ".join(warnings)

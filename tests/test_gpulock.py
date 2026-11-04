@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -104,6 +105,52 @@ def test_the_wait_says_who_holds_it_every_30_seconds():
     assert got[0][1] == text
     assert got[1][1] == f"still {text}: waited 0 min 30 s"
     assert got[2][1] == f"still {text}: waited 1 min 0 s"
+
+
+def test_the_beat_stays_steady_when_polls_come_late():
+    """A poll that comes 3 s late does not push every later line 3 s back."""
+    now = [0.0]
+    beat = gpulock.Heartbeat(clock=lambda: now[0])
+    got = []
+    for t in (0, 33, 61, 64, 90):
+        now[0] = float(t)
+        if beat.line("waiting") is not None:
+            got.append(t)
+    assert got == [0, 33, 61, 90]
+    assert gpulock.Heartbeat()._clock is time.monotonic
+
+
+def test_every_wait_line_says_which_job_waits(tmp_path, monkeypatch, capsys):
+    """The first line and each heartbeat after it start with the short and command that wait."""
+    import argparse
+
+    import bsa_blender
+
+    calls = []
+
+    def acquire(path, *, short, command, wait=True, on_wait=None, **kw):
+        for _ in range(3):
+            on_wait("waiting for watch render (pid 1234, since 14:02:31)")
+        calls.append((short, command))
+        return False
+
+    now = [0.0]
+
+    def clock():
+        now[0] += 15.0
+        return now[0]
+
+    monkeypatch.setattr(gpulock, "acquire", acquire)
+    real = gpulock.Heartbeat
+    monkeypatch.setattr(gpulock, "Heartbeat", lambda: real(clock=clock))
+    sdir = tmp_path / "ws" / "pendulum"
+    sdir.mkdir(parents=True)
+    with bsa_blender._gpu(argparse.Namespace(no_wait=False), sdir, "pendulum", "render"):
+        pass
+    err = [line for line in capsys.readouterr().err.splitlines() if line]
+    assert calls == [("pendulum", "render")]
+    assert err == ["pendulum render is waiting for watch render (pid 1234, since 14:02:31)",
+                   "pendulum render is still waiting for watch render (pid 1234, since 14:02:31): waited 0 min 30 s"]
 
 
 def test_test_frames_arguments():

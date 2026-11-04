@@ -329,10 +329,10 @@ def context(text: str, token: str, n: int = CONTEXT_WORDS) -> str:
     return ("…" if lo > 0 else "") + snippet + ("…" if hi < len(words) else "")
 
 
-def _word_warnings(r: dict, kind: Kind, places, skip) -> list[str]:
+def _word_warnings(r: dict, kind: Kind, places, skip, key: str = "SHORT") -> list[str]:
     """One warning per flagged word (its places, each with the words around it), then one hint to clear words that
     keep the rule. The rule's words are never narrowed: this only says the same thing with less noise. `skip`:
-    (cleared words, phrases) from _skip."""
+    (cleared words, phrases) from _skip. `key`: what the user types for this short (workspace.short_key)."""
     words_, phrases = skip
     by_word: dict[str, list[tuple[str, str, str]]] = {}
     for where, text in places:
@@ -354,15 +354,16 @@ def _word_warnings(r: dict, kind: Kind, places, skip) -> list[str]:
                    f"Where it does not (a tooth's face, a clock's hand), say why once in "
                    f"rules_check.{r.get('id')}.cleared, e.g. {example}: that clears the word everywhere in this short. A "
                    'phrase ("driver pin") clears the word only where it stands in that phrase.'
-                   + (" Clearing a word changes what the scene checks look for, so run BLENDER check SHORT again "
+                   + (f" Clearing a word changes what the scene checks look for, so run BLENDER check {key} again "
                       "after." if kind.scene else ""))  # fmt: skip
     return out
 
 
-def problems(short, s: dict) -> tuple[list[str], list[str]]:
+def problems(short, s: dict, key: str = "SHORT") -> tuple[list[str], list[str]]:
     """(errors, warnings) of the short against the hard rules. Errors: a rule with no rules_check entry, a
     malformed short rule or entry, a short that would loosen a rule. Warnings: words that may break a rule (an
-    answer in rules_check "cleared" silences one), on-screen text under the captions-only rule."""
+    answer in rules_check "cleared" silences one), on-screen text under the captions-only rule. `key`: what the user
+    types for this short in a command a message suggests (workspace.short_key)."""
     errors, warnings = [], []
     errors += _shape_errors(short, {str(r.get("id")) for r in global_rules(s)})
     rules = effective(s, short)
@@ -393,7 +394,7 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
             errors.append(f"sound_policy {short.sound_policy!r} would loosen hard rule {describe(r)}: remove it "
                           f"(the rule makes it {kind.sound})")  # fmt: skip
         if kind.words:
-            warnings += _word_warnings(r, kind, places, _skip(rc.get(r.get("id")), kind.words))
+            warnings += _word_warnings(r, kind, places, _skip(rc.get(r.get("id")), kind.words), key)
         if r.get("kind") == "no_brand_logos":
             from bsa import kit
 

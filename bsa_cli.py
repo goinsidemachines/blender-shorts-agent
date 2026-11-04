@@ -85,7 +85,7 @@ def built_timeline(sdir: Path, short):
 
     tl, from_takes = current_timeline(sdir, short)
     try:
-        freshness.check_timeline(sdir, tl)
+        freshness.check_timeline(sdir, tl, workspace.short_key(sdir, settings.load_settings().get("workspace")))
     except freshness.StaleError as exc:
         raise CliError(str(exc)) from exc
     return tl, from_takes
@@ -320,11 +320,14 @@ def cmd_new_short(args) -> dict:
 LENGTH_RANGE_S = (15, 90)
 
 
-def _rule_problems(short) -> tuple[list[str], list[str]]:
-    """(errors, warnings) of the short against the user's hard rules and its own (bsa.rules.problems)."""
+def _rule_problems(short, sdir: Path | None = None) -> tuple[list[str], list[str]]:
+    """(errors, warnings) of the short against the user's hard rules and its own (bsa.rules.problems); with the
+    short's folder, a command a warning suggests names it as the user types it (workspace.short_key)."""
     from bsa import rules
 
-    return rules.problems(short, settings.load_settings())
+    s = settings.load_settings()
+    key = workspace.short_key(sdir, s.get("workspace")) if sdir is not None else "SHORT"
+    return rules.problems(short, s, key)
 
 
 def _gate(sdir: Path, stage: str) -> None:
@@ -797,7 +800,7 @@ def cmd_validate(args) -> dict:
     short = load(sdir)
     from bsa import kit
 
-    rule_errors, rule_warnings = _rule_problems(short)
+    rule_errors, rule_warnings = _rule_problems(short, sdir)
     errors = validate(short) + rule_errors
     post_errors, post_warnings = post.problems(short, settings.load_settings())
     errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out

@@ -294,7 +294,7 @@ def _render_state(sc):
     r, ims = sc.render, sc.render.image_settings
     return (r.engine, r.film_transparent, r.filepath, r.use_file_extension, r.resolution_percentage,
             ims.file_format, ims.color_mode, sc.frame_current, sc.cycles.samples, sc.cycles.device,
-            bpy.data.filepath)  # fmt: skip
+            r.use_compositing, r.use_sequencer, bpy.data.filepath)  # fmt: skip
 
 
 def _recording_render(real_render, raise_after=False):
@@ -306,7 +306,8 @@ def _recording_render(real_render, raise_after=False):
 
     def render_(**kw):
         sc = bpy.data.scenes[kw["scene"]]
-        written.append((Path(bpy.path.abspath(sc.render.filepath)), sc.render.engine))
+        r = sc.render
+        written.append((Path(bpy.path.abspath(r.filepath)), r.engine, r.use_compositing or r.use_sequencer))
         result = real_render(**kw)
         if raise_after:
             raise RuntimeError("render failed")
@@ -319,6 +320,7 @@ def _recording_render(real_render, raise_after=False):
 
 def test_world_mask_marks_only_where_the_world_shows():
     sc = _half_cube_scene()
+    sc.render.use_compositing = sc.render.use_sequencer = True  # put back after the pass
     before = _render_state(sc)
     real = stills.bpy
     fake, written = _recording_render(bpy.ops.render.render)
@@ -330,7 +332,8 @@ def test_world_mask_marks_only_where_the_world_shows():
     assert m.dtype == bool and m.shape == (192, 108)
     assert 0.4 <= m.mean() <= 0.6, m.mean()
     assert not m[:, :40].any() and m[:, -40:].all()  # the cube's half is not world; the right half is
-    assert [e for _, e in written] == ["BLENDER_WORKBENCH"]
+    assert [w[1] for w in written] == ["BLENDER_WORKBENCH"]
+    assert written[0][2] is False  # no compositor or sequencer to repaint the alpha
     assert not written[0][0].exists()  # the temp file is gone
     assert _render_state(sc) == before
     assert sc.render.engine == "CYCLES"

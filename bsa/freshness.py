@@ -30,18 +30,20 @@ class StaleError(Exception):
 # --------------------------------------------------------------------------- timeline
 
 
-def check_timeline(short_dir: Path, tl: Timeline) -> str:
+def check_timeline(short_dir: Path, tl: Timeline, key: str = "SHORT") -> str:
     """The hash of source/timeline.json, which must equal the timeline recomputed from short.json and the takes
-    (else build.py animated a different timing from the one shots, captions and narration now use)."""
+    (else build.py animated a different timing from the one shots, captions and narration now use). A refusal names
+    the command with `key`, what the user types for this short (workspace.short_key)."""
     path = Path(short_dir) / "source" / "timeline.json"
+    run = f"run CLI timeline {key}"
     if not path.is_file():
-        raise StaleError("source/timeline.json is missing: run CLI timeline SHORT, then rebuild (source/build.py)")
+        raise StaleError(f"source/timeline.json is missing: {run}, then rebuild (source/build.py)")
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StaleError(f"source/timeline.json is not valid JSON ({exc}): run CLI timeline SHORT, then rebuild") from exc
+        raise StaleError(f"source/timeline.json is not valid JSON ({exc}): {run}, then rebuild") from exc
     if saved != json.loads(json.dumps(to_json(tl))):
-        raise StaleError("timing changed: run CLI timeline SHORT, then rebuild (source/build.py)")
+        raise StaleError(f"timing changed: {run}, then rebuild (source/build.py)")
     return timeline_hash(saved)
 
 
@@ -150,9 +152,10 @@ def build_changed(short_dir: Path) -> bool:
     return stale_build_file(short_dir) is not None
 
 
-def build_changed_message(short_dir: Path) -> str:
-    """What changed since the scene was built: BUILD_CHANGED for build.py itself, else the imported script."""
-    f = stale_build_file(short_dir)
+def build_changed_message(short_dir: Path, stale: Path | None = None) -> str:
+    """What changed since the scene was built: BUILD_CHANGED for build.py itself, else the imported script. `stale`:
+    the file stale_build_file already found (else it is looked for again)."""
+    f = stale if stale is not None else stale_build_file(short_dir)
     src = Path(short_dir) / "source"
     if f is None or f == src / "build.py":
         return BUILD_CHANGED
@@ -518,9 +521,11 @@ _BSA = Path(__file__).resolve().parent
 # the code the scene checks' findings come from: the checks, the viewer checks (framing, covered) and the edit's text
 # boxes they measure, the framing band they measure against, the framing_call notes (findings, camera), the hard-rule
 # words (rules) and the object tags (bake: hero, overlay, may-exit)
+# short.py: the near labels' anchors (label_at, label_anchor); kitlayout.py: a kit's card boxes (covered)
 _CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
                 _BSA / "findings.py", _BSA / "blender" / "camera.py", _BSA / "rules.py",
-                _BSA / "blender" / "bake.py", _BSA / "pops.py", _BSA / "blender" / "anchors.py")  # fmt: skip
+                _BSA / "blender" / "bake.py", _BSA / "pops.py", _BSA / "blender" / "anchors.py",
+                _BSA / "short.py", _BSA / "kitlayout.py")  # fmt: skip
 
 
 def checks_code() -> str:
