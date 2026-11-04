@@ -138,11 +138,11 @@ def test_chosen_number_claimed_by_another_session_is_refused(tmp_path):
 def test_short_key(tmp_path):
     """What a message tells the user to type for this short: its number inside the workspace, else its path."""
     ws = tmp_path / "ws"
-    inside = ws / "12-inside-a-watch"
+    inside = ws / "12-how-a-gear-train-works"
     inside.mkdir(parents=True)
     assert workspace.short_key(inside, ws) == "12"
     assert workspace.short_key(inside, str(ws)) == "12"
-    outside = tmp_path / "elsewhere" / "07-door-lock"
+    outside = tmp_path / "elsewhere" / "07-how-a-hinge-swings"
     outside.mkdir(parents=True)
     assert workspace.short_key(outside, ws) == f'"{outside}"'
     assert workspace.short_key(inside, None) == f'"{inside}"'

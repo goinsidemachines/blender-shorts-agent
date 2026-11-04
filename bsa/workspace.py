@@ -124,7 +124,7 @@ def resolve_short(key: str, workspace: Path | None) -> Path:
 
 def short_key(short_dir: Path, workspace: Path | None) -> str:
     """What to type for this short in a command a message suggests: its leading number as written ("12" for
-    12-inside-a-watch) when it is a numbered folder right inside the workspace and that number finds it (no other
+    12-how-a-gear-train-works) when it is a numbered folder right inside the workspace and that number finds it (no other
     folder shares it), else its quoted absolute path."""
     short_dir = Path(short_dir)
     m = re.match(r"\d+", short_dir.name)
