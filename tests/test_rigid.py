@@ -13,5 +13,6 @@ def test_rigid_body_sim_in_blender(blender_run):
         "test_hinge_pendulum_period_at_the_shorts_fps",
         "test_a_second_run_in_the_same_session_repeats_and_never_reuses_a_stale_cache",
         "test_keyframe_matrices_bakes_the_motion_onto_a_render_object",
+        "test_keyframe_matrices_leaves_the_pose",
     ):
         assert f"PASS {name}" in result.stdout

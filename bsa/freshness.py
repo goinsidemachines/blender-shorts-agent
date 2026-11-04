@@ -12,8 +12,10 @@ make frames or checks stale. Pure: no bpy."""
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from bsa.timeline import Span, Timeline, timeline_hash, to_json
@@ -57,16 +59,112 @@ def check_scene_stamp(scene_name: str, stamp, want: str) -> None:
 BUILD_CHANGED = "build.py changed since the scene was built: rebuild"
 
 
+def _local_module(base: Path, name: str, src: Path) -> Path | None:
+    """The file module `name` ("p.q") is under `base`: base/p/q.py or base/p/q/__init__.py, if it exists inside
+    `src` (stdlib, numpy, bpy and bsa never live there)."""
+    parts = [p for p in name.split(".") if p]
+    if not parts:
+        return None
+    for cand in (base.joinpath(*parts[:-1], parts[-1] + ".py"), base.joinpath(*parts, "__init__.py")):
+        cand = Path(os.path.normpath(cand))
+        try:
+            inside = cand.resolve().is_relative_to(src.resolve())
+        except OSError:
+            continue
+        if inside and cand.is_file():
+            return cand
+    return None
+
+
+def _prefixes(name: str) -> list[str]:
+    parts = name.split(".")
+    return [".".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _imports(path: Path, src: Path) -> list[Path]:
+    """The local files `path` imports: `import a.b` means a and a.b, `from a.b import c` means a, a.b and a.b.c (c
+    may be a module); relative imports resolve against the file's own folder. A file that can't be read or parsed
+    imports nothing (it still counts by its time)."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, OSError, ValueError):  # ValueError: not UTF-8, or a null byte
+        return []
+    wanted: list[tuple[Path, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            wanted += [(src, n) for alias in node.names for n in _prefixes(alias.name)]
+        elif isinstance(node, ast.ImportFrom):
+            base = src
+            if node.level:  # from . import c / from ..m import c: against the importing file's folder
+                base = path.parent
+                for _ in range(node.level - 1):
+                    base = base.parent
+            module = node.module or ""
+            wanted += [(base, n) for n in (_prefixes(module) if module else [])]
+            wanted += [(base, f"{module}.{alias.name}" if module else alias.name)
+                       for alias in node.names if alias.name != "*"]  # fmt: skip
+    found = (_local_module(base, name, src) for base, name in wanted)
+    return [f for f in found if f is not None]
+
+
+def build_inputs(short_dir: Path) -> list[Path]:
+    """source/build.py and every local script it imports, followed through their imports (a visited set ends
+    cycles): the files whose edits make the scene file out of date. build.py first, the rest sorted; [] without
+    build.py."""
+    src = Path(short_dir) / "source"
+    build = src / "build.py"
+    if not build.is_file():
+        return []
+    seen = {build.resolve()}
+    out: list[Path] = []
+    todo = [build]
+    while todo:
+        for f in _imports(todo.pop(), src):
+            key = f.resolve()
+            if key not in seen:
+                seen.add(key)
+                out.append(f)
+                todo.append(f)
+    return [build, *sorted(out)]
+
+
+def stale_build_file(short_dir: Path) -> Path | None:
+    """The first of build_inputs edited after blend/short.blend was saved (None when none was, or there is no .blend
+    or build.py): the scenes are not what build.py now makes."""
+    blend = Path(short_dir) / "blend" / "short.blend"
+    try:
+        saved = blend.stat().st_mtime_ns
+    except OSError:
+        return None
+    for f in build_inputs(short_dir):
+        try:
+            if f.stat().st_mtime_ns > saved:
+                return f
+        except OSError:
+            continue
+    return None
+
+
 def build_changed(short_dir: Path) -> bool:
-    """source/build.py was edited after blend/short.blend was saved: the scenes are not what build.py now makes."""
-    build, blend = Path(short_dir) / "source" / "build.py", Path(short_dir) / "blend" / "short.blend"
-    return build.is_file() and blend.is_file() and build.stat().st_mtime_ns > blend.stat().st_mtime_ns
+    """build.py, or a script it imports, was edited after blend/short.blend was saved."""
+    return stale_build_file(short_dir) is not None
+
+
+def build_changed_message(short_dir: Path) -> str:
+    """What changed since the scene was built: BUILD_CHANGED for build.py itself, else the imported script."""
+    f = stale_build_file(short_dir)
+    src = Path(short_dir) / "source"
+    if f is None or f == src / "build.py":
+        return BUILD_CHANGED
+    rel = Path(os.path.relpath(f, src)).as_posix()
+    return f"source/{rel} (imported by build.py) changed since the scene was built: rebuild"
 
 
 def require_current_build(short_dir: Path, command: str) -> None:
-    """The final render and edit refuse a scene file older than build.py; `command` names which ("the final edit")."""
+    """The final render and edit refuse a scene file older than build.py or a script it imports; `command` names
+    which ("the final edit")."""
     if build_changed(short_dir):
-        raise StaleError(f"{BUILD_CHANGED} (run source/build.py) before {command}")
+        raise StaleError(f"{build_changed_message(short_dir)} (run source/build.py) before {command}")
 
 
 # --------------------------------------------------------------------------- shot fingerprints
@@ -615,36 +713,39 @@ def failed_checks(short_dir: Path, tl_hash: str, shots: dict) -> int:
         return 0
 
 
-def require_checks(short_dir: Path, tl_hash: str, shots: dict, command: str = "the final render") -> None:
+def require_checks(short_dir: Path, tl_hash: str, shots: dict, command: str = "the final render",
+                   key: str = "SHORT") -> None:
     """`command` (the final render or edit) needs checks that ran on every shot as it is now (`shots`: {shot id:
     shot_check_inputs}) and on this timing and checks code, sampled every FINAL_MAX_EVERY frames or finer
-    (`--every`), and found no errors. A refusal says which input changed."""
-    again = f"run BLENDER check SHORT again before {command}"
+    (`--every`), and found no errors. A refusal says which input changed, and names the command to run with `key`,
+    what the user types for this short (workspace.short_key)."""
+    check = f"BLENDER check {key}"
+    again = f"run {check} again before {command}"
     data = read_checks(short_dir)
     if data is None:
-        raise StaleError(f"the scene checks have not run on this build: run BLENDER check SHORT before {command}")
+        raise StaleError(f"the scene checks have not run on this build: run {check} before {command}")
     stamp = data.get("stamp")
     if not isinstance(stamp, dict):
         raise StaleError(f"review/checks.json is from an older plugin version and can't say what it checked, so "
                          f"anything may have changed since the checks ran: {again}")  # fmt: skip
     if stamp.get("timeline") != tl_hash:
         raise StaleError(f"the timing changed since the checks ran (source/timeline.json is not the one they checked): "
-                         f"{again}")  # fmt: skip
+                         f"{again} (it re-checks all {len(shots)} shots)")  # fmt: skip
     if not _code_current(stamp.get("code")):
         raise StaleError(f"the checks code changed since the checks ran (the plugin was updated): {again} (it checks "
                          "every shot once)")  # fmt: skip
     every = stamp.get("every")
     if not isinstance(every, int) or isinstance(every, bool):
         raise StaleError(f"the checks can't say how finely they checked (review/checks.json records no --every): "
-                         f"{command} needs --every {FINAL_MAX_EVERY} or finer: run BLENDER check SHORT --every "
+                         f"{command} needs --every {FINAL_MAX_EVERY} or finer: run {check} --every "
                          f"{FINAL_MAX_EVERY} again")  # fmt: skip
     if every > FINAL_MAX_EVERY:
         raise StaleError(f"the checks ran on every {_nth(every)} frame (--every {every}): {command} needs --every "
-                         f"{FINAL_MAX_EVERY} or finer: run BLENDER check SHORT --every {FINAL_MAX_EVERY} again")  # fmt: skip
+                         f"{FINAL_MAX_EVERY} or finer: run {check} --every {FINAL_MAX_EVERY} again")  # fmt: skip
     changed = {sid: _changes(stamp, sid, now) for sid, now in shots.items() if not _shot_current(stamp, sid, now)}
     if changed:
         raise StaleError(f"{_summarise(changed, len(shots))} since the checks ran: {again} (it re-checks only those)")
     n = int(data.get("errors") or 0)
     if n:
-        raise StaleError(f"review/checks.json has {n} error(s): fix them and run BLENDER check SHORT again before "
+        raise StaleError(f"review/checks.json has {n} error(s): fix them and run {check} again before "
                          f"{command}")  # fmt: skip

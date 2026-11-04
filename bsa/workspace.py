@@ -120,3 +120,18 @@ def resolve_short(key: str, workspace: Path | None) -> Path:
     if not workspace:
         raise FileNotFoundError(f"no short {key!r}: no workspace is set yet (settings set workspace PATH)")
     return find_short(Path(workspace), key)
+
+
+def short_key(short_dir: Path, workspace: Path | None) -> str:
+    """What to type for this short in a command a message suggests: its leading number as written ("12" for
+    12-inside-a-watch) when it is a numbered folder right inside the workspace and that number finds it (no other
+    folder shares it), else its quoted absolute path."""
+    short_dir = Path(short_dir)
+    m = re.match(r"\d+", short_dir.name)
+    if m and workspace:
+        try:
+            if find_short(Path(workspace), m.group(0)).resolve() == short_dir.resolve():
+                return m.group(0)
+        except (OSError, ValueError):
+            pass
+    return f'"{short_dir}"'

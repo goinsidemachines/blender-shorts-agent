@@ -123,7 +123,9 @@ def add_constraint(
 def keyframe_matrices(obj, matrices: Sequence, frame0: int = 1) -> None:
     """Key obj's location and rotation on every frame from frame0 from one world matrix per frame (rigid_body_sim's
     output), with linear interpolation. Eulers stay continuous (no 360 degree flips). obj's parent, if any, must
-    not move while these frames play. Scale is left alone."""
+    not move while these frames play. Scale is left alone. The object is put back to the pose it had before
+    (matrix_basis), keys unchanged, so code that reads it next sees the rest pose."""
+    rest = obj.matrix_basis.copy()
     locs: list[tuple[float, ...]] = []
     rots: list[tuple[float, ...]] = []
     quat = obj.rotation_mode == "QUATERNION"
@@ -147,6 +149,7 @@ def keyframe_matrices(obj, matrices: Sequence, frame0: int = 1) -> None:
     path = "rotation_quaternion" if quat else "rotation_euler"
     for axis in range(len(rots[0]) if rots else 0):
         keyframe_series(obj, path, axis, [r[axis] for r in rots], frame0=frame0)
+    obj.matrix_basis = rest
 
 
 def _delete_scene(sc) -> None:

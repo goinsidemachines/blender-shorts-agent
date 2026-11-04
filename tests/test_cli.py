@@ -934,7 +934,8 @@ def test_edit_final_needs_current_checks(home, pendulum, monkeypatch, capsys):
     _fake_edit(monkeypatch, seen)
     monkeypatch.setenv("BSA_HOME", str(home))
     assert bsa_blender.main(["edit", "pendulum", "--preset", "final"]) == 1
-    assert "checks have not run" in capsys.readouterr().err and "built" not in seen
+    err = capsys.readouterr().err
+    assert "checks have not run" in err and "run BLENDER check 01 before the final edit" in err and "built" not in seen
     short = bsa_blender._load(pendulum)
     timeline, tl_hash = bsa_blender._timeline(pendulum, short)
     stamp = freshness.checks_stamp(tl_hash, bsa_blender._check_keys(short, timeline, None), 5)
@@ -1086,7 +1087,7 @@ def test_render_checks_near_label_objects_before_rendering(home, pendulum, monke
     fake.render_range = lambda *a, **k: rendered.append(a) or []
     monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
     monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
-    monkeypatch.setattr(freshness, "require_checks", lambda *a: None)
+    monkeypatch.setattr(freshness, "require_checks", lambda *a, **k: None)
     monkeypatch.setenv("BSA_HOME", str(home))
     assert saved["n_frames"] > 0
     assert bsa_blender.main(["render", "pendulum", "--preset", preset]) == 1
@@ -1147,8 +1148,10 @@ def test_preview_render_warns_of_checks_that_failed_on_this_build(home, pendulum
     assert "on this build" not in capsys.readouterr().err
 
 
-def test_failed_checks_warning_shows_the_first_few_and_counts_the_rest(home, pendulum):
+def test_failed_checks_warning_shows_the_first_few_and_counts_the_rest(home, pendulum, monkeypatch):
     import bsa_blender
+
+    monkeypatch.setenv("BSA_HOME", str(home))  # the workspace setting: the warning names the short by its number
 
     ok(run(home, "timeline", "pendulum"))
     short = bsa_blender._load(pendulum)
@@ -1162,6 +1165,7 @@ def test_failed_checks_warning_shows_the_first_few_and_counts_the_rest(home, pen
     line = bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys, most=1)
     assert line.startswith("review/checks.json has 3 error(s) on this build (Link 1-2 vs Wall: 2 pairs")
     assert "; and 1 more)" in line and "materials" not in line
+    assert line.endswith("checked again (BLENDER check 01)") and "SHORT" not in line
     path.write_text(json.dumps({**report, "errors": 0, "findings": _failed_rows()}), encoding="utf-8")
     assert bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys) is None  # passed: nothing to say
 
@@ -1632,6 +1636,27 @@ def test_preview_chain_rebuilds_after_build_py_changed(home, pendulum, monkeypat
     assert status["state"] == "failed" and {s["name"]: s["state"] for s in status["run"]["steps"]}["build"] == "failed"
     assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
     assert calls[:2] == ["build", "reopen"]
+
+
+def test_preview_chain_rebuilds_after_a_script_build_py_imports_changed(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    blend = _stale_build(pendulum, newer=False)  # build.py itself is older than the .blend
+    (pendulum / "source" / "build.py").write_text("import parts\n", encoding="utf-8")
+    os.utime(pendulum / "source" / "build.py", ns=(blend - 10**9,) * 2)
+    parts = pendulum / "source" / "parts.py"
+    parts.write_text("X = 1\n", encoding="utf-8")
+    os.utime(parts, ns=(blend + 10**9,) * 2)
+    calls = []
+    _fake_chain(monkeypatch, home, pendulum, calls)
+    assert bsa_blender.main(["preview", "pendulum", "--no-build"]) == 1
+    err = capsys.readouterr().err
+    assert "source/parts.py (imported by build.py) changed since the scene was built" in err and calls == []
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    assert calls[:2] == ["build", "reopen"]
+    build = next(s for s in _result(capsys)["steps"] if s["step"] == "build")
+    assert build["why"] == "source/parts.py (imported by build.py) changed since the scene was built"
 
 
 def test_preview_chain_needs_the_stages_before_the_build(home, pendulum, monkeypatch, capsys):

@@ -82,3 +82,21 @@ def test_keyframe_matrices_bakes_the_motion_onto_a_render_object():
         sc.frame_set(10 + k)
         assert (ball.matrix_world.translation - mats[k].translation).length < 1e-5, k
         assert ball.matrix_world.to_quaternion().rotation_difference(mats[k].to_quaternion()).angle < 1e-4, k
+
+
+def test_keyframe_matrices_leaves_the_pose():
+    """Keying the baked motion puts the object back where it was (rest pose), keys unchanged by that."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    mats = _run(0.1, 30)
+    ball = bpy.data.objects.new("Ball", None)
+    sc.collection.objects.link(ball)
+    ball.location = (0.5, -0.25, 2.0)
+    ball.rotation_euler = (0.1, 0.2, 0.3)
+    ball.scale = (2.0, 2.0, 2.0)
+    before = ball.matrix_basis.copy()
+    rigid.keyframe_matrices(ball, mats, frame0=1)
+    after = ball.matrix_basis
+    assert all(abs(after[i][j] - before[i][j]) < 1e-6 for i in range(4) for j in range(4)), (before, after)
+    sc.frame_set(1 + 17)
+    assert (ball.matrix_world.translation - mats[17].translation).length < 1e-5

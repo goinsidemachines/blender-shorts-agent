@@ -1,6 +1,7 @@
 """Stale outputs are refused with a plain message: an old timeline, old frames, old or failed scene checks."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -396,12 +397,78 @@ def test_hard_rules_that_scan_names_are_a_check_input_only_when_set(sdir):
 
 
 def test_require_checks_names_timing_and_code_separately(sdir):
-    _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
-    with pytest.raises(freshness.StaleError, match="the timing changed since the checks ran"):
-        freshness.require_checks(sdir, "h2", {"s01": _inputs()})
-    _checks(sdir, {**freshness.checks_stamp("h", {"s01": _inputs()}, 5), "code": "1:0000000000000000"})
-    with pytest.raises(freshness.StaleError, match="checks code changed since the checks ran"):
-        freshness.require_checks(sdir, "h", {"s01": _inputs()})
+    shots = {"s01": _inputs(), "s02": _inputs(span=Span("s02", 91, 180))}
+    msgs = []
+    _checks(sdir, freshness.checks_stamp("h", shots, 5))
+    with pytest.raises(freshness.StaleError, match="the timing changed since the checks ran") as err:
+        freshness.require_checks(sdir, "h2", shots, key="12")
+    msgs.append(str(err.value))
+    assert "run BLENDER check 12 again" in msgs[-1] and "it re-checks all 2 shots" in msgs[-1]
+    _checks(sdir, {**freshness.checks_stamp("h", shots, 5), "code": "1:0000000000000000"})
+    with pytest.raises(freshness.StaleError, match="checks code changed since the checks ran") as err:
+        freshness.require_checks(sdir, "h", shots, key="12")
+    msgs.append(str(err.value))
+    # every other refusal: too coarse, no --every, a shot changed, errors, an old stamp-less file, no checks
+    for stamp, errors in ((freshness.checks_stamp("h", shots, 50), 0), (freshness.checks_stamp("h", shots), 0),
+                          (freshness.checks_stamp("h", {**shots, "s02": _inputs(fp="x")}, 5), 0),
+                          (freshness.checks_stamp("h", shots, 5), 2), (None, 0)):  # fmt: skip
+        _checks(sdir, stamp, errors)
+        with pytest.raises(freshness.StaleError) as err:
+            freshness.require_checks(sdir, "h", shots, key="12")
+        msgs.append(str(err.value))
+    (sdir / "review" / "checks.json").unlink()
+    with pytest.raises(freshness.StaleError) as err:
+        freshness.require_checks(sdir, "h", shots, key="12")
+    msgs.append(str(err.value))
+    assert all("BLENDER check 12" in m and "SHORT" not in m for m in msgs), msgs
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _touch_newer(path: Path, than: Path) -> None:
+    t = than.stat().st_mtime_ns + 10**9
+    os.utime(path, ns=(t, t))
+
+
+def test_a_newer_imported_script_means_rebuild(sdir):
+    src = sdir / "source"
+    _write(src / "build.py", "import parts\nfrom gears import teeth\n")
+    _write(src / "parts.py", "import helpers\n")
+    helpers = _write(src / "helpers.py", "X = 1\n")
+    _write(src / "gears" / "__init__.py", "")
+    _write(src / "gears" / "teeth.py", "")
+    notes = _write(src / "notes.py", "")
+    blend = _write(sdir / "blend" / "short.blend", "blend")
+    for p in src.rglob("*.py"):  # every script older than the saved .blend
+        t = blend.stat().st_mtime_ns - 10**9
+        os.utime(p, ns=(t, t))
+    assert freshness.stale_build_file(sdir) is None and not freshness.build_changed(sdir)
+    assert freshness.build_inputs(sdir) == [src / "build.py", src / "gears" / "__init__.py", src / "gears" / "teeth.py",
+                                            src / "helpers.py", src / "parts.py"]  # fmt: skip
+    _touch_newer(notes, blend)  # imported by nothing
+    assert not freshness.build_changed(sdir)
+    _touch_newer(helpers, blend)
+    assert freshness.stale_build_file(sdir) == helpers and freshness.build_changed(sdir)
+    msg = "source/helpers.py (imported by build.py) changed since the scene was built: rebuild"
+    assert freshness.build_changed_message(sdir) == msg
+    with pytest.raises(freshness.StaleError, match=r"source/helpers\.py \(imported by build\.py\) changed"):
+        freshness.require_current_build(sdir, "the final edit")
+    _touch_newer(src / "build.py", blend)  # build.py itself comes first and keeps its own message
+    assert freshness.build_changed_message(sdir) == freshness.BUILD_CHANGED
+
+
+def test_build_inputs_skip_non_local_and_survive_cycles_and_syntax_errors(sdir):
+    src = sdir / "source"
+    _write(src / "build.py", "import math\nimport numpy as np\nimport bpy\nfrom bsa.blender import bake\nimport a\n")
+    _write(src / "a.py", "import b\n")
+    _write(src / "b.py", "from . import c\nimport a\n")
+    _write(src / "c.py", "def (:\n")
+    assert freshness.build_inputs(sdir) == [src / "build.py", src / "a.py", src / "b.py", src / "c.py"]
+    assert freshness.build_inputs(sdir.parent / "nowhere") == []
 
 
 def test_checks_from_before_check_inputs_stay_current(sdir):

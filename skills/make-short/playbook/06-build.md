@@ -19,7 +19,8 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - bake motion from a simulation or model with `bsa.blender.bake.keyframe_series` (never eyeballed keyframes for a
   mechanism; see `fields/*.md`), and move anything that travels along a multi-leg path with
   `bsa.blender.bake.keyframe_path(obj, points, f0, f1, ease="smooth")` (by arc length, see "Parts that move against
-  each other");
+  each other"). `keyframe_series`, `keyframe_path` and `keyframe_matrices` put the property back to the value it had
+  before keying, so code that reads it next (a hook's inverse) sees the rest pose;
 - tag objects for the checks with `bsa.blender.bake.tag(obj, ...)`: `"hero"` for the subject(s) each shot is about
   (must stay inside the frame; `"hero:s03,s04"` makes it a hero only in those shots, for a subject the camera leaves
   on purpose elsewhere; `"hero:s07@0.6"` a hero of s07 from 60% of the shot on, for a subject the camera reaches later), `"grounded"` for things that rest on something (must not float or sink),
@@ -58,10 +59,11 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`); to
   point at a spot on it use the label's `"at": [x, y, z]` (local space) or an Empty there, never a helper sphere
   (it would show in the video);
-- save to `blend/short.blend`. Rebuild after every edit to build.py: when `source/build.py` is newer than
-  `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (in its
-  result's `warnings`, or `build_warnings` for `check` and `frame-check`, and on one stderr line), and the final
-  render and edit refuse to run;
+- save to `blend/short.blend`. Rebuild after every edit to build.py or a script it imports: when `source/build.py`,
+  or a local script under `source/` that it imports (followed through their imports), is newer than
+  `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (or
+  "source/parts.py (imported by build.py) changed ...") in its result's `warnings` (`build_warnings` for `check` and
+  `frame-check`) and on one stderr line, `BLENDER preview` rebuilds, and the final render and edit refuse to run;
 - import only `bpy`, the standard library, numpy and the plugin's own `bsa` modules. Blender runs with
   `--factory-startup`, which leaves the user's own site-packages folder off its path: a third-party package such as
   Pillow is not importable inside Blender, even when it is installed for the very Python that Blender ships (it

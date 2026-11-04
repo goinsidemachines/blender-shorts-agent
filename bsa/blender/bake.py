@@ -18,7 +18,10 @@ EASES: dict[str, Callable[[float], float]] = {
 def keyframe_series(
     obj, data_path: str, index: int, values: Sequence[float], frame0: int = 1, step: int = 1
 ) -> None:
-    """One key per `step` frames from frame0, linear interpolation. index < 0 means a scalar property."""
+    """One key per `step` frames from frame0, linear interpolation. index < 0 means a scalar property. The property
+    is put back to the value it had before keying (the keys are unchanged), so code that reads it next, such as a
+    hook's inverse, sees the rest pose rather than the last key's value; keyframe_path inherits this."""
+    before = getattr(obj, data_path) if index < 0 else getattr(obj, data_path)[index]
     for i, v in enumerate(values):
         frame = frame0 + i * step
         if index < 0:
@@ -31,6 +34,10 @@ def keyframe_series(
         if fc.data_path == data_path and (index < 0 or fc.array_index == index):
             for kp in fc.keyframe_points:
                 kp.interpolation = "LINEAR"
+    if index < 0:
+        setattr(obj, data_path, before)
+    else:
+        getattr(obj, data_path)[index] = before
 
 
 def path_positions(

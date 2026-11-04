@@ -15,6 +15,7 @@ def test_scene_render_in_blender(blender_run):
         "test_render_still_jpeg",
         "test_resume_rerenders_empty_placeholders",
         "test_keyframe_series",
+        "test_keyframe_series_leaves_the_value_it_found",
         "test_tags_merge",
         "test_estimate_restores_scene_state",
         "test_render_range_raises_on_failed_render",

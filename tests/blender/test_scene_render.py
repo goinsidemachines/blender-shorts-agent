@@ -79,6 +79,36 @@ def test_keyframe_series():
     assert [kp.co[0] for kp in fcs[0].keyframe_points] == [1, 3, 5]
 
 
+def _keys(obj):
+    return {(fc.data_path, fc.array_index): [tuple(kp.co) for kp in fc.keyframe_points]
+            for fc in bake._fcurves(obj.animation_data.action)}  # fmt: skip
+
+
+def test_keyframe_series_leaves_the_value_it_found():
+    """Keying puts the property back to the value it had before (a hook's inverse read next sees the rest pose); the
+    keys themselves are what they were."""
+    sc = _tiny_scene()
+    o = bpy.data.objects.new("Rest", None)
+    sc.collection.objects.link(o)
+    o.location.x = 0.7
+    bake.keyframe_series(o, "location", 0, [0, 1, 2])
+    assert abs(o.location.x - 0.7) < 1e-6, o.location.x  # before any frame_set
+    assert _keys(o)[("location", 0)] == [(1.0, 0.0), (2.0, 1.0), (3.0, 2.0)]
+    o.empty_display_size = 0.3
+    bake.keyframe_series(o, "empty_display_size", -1, [1.0, 2.0], frame0=5)
+    assert abs(o.empty_display_size - 0.3) < 1e-6, o.empty_display_size
+    assert _keys(o)[("empty_display_size", 0)] == [(5.0, 1.0), (6.0, 2.0)]
+    p = bpy.data.objects.new("Path", None)
+    sc.collection.objects.link(p)
+    p.location = (0.1, 0.2, 0.3)
+    bake.keyframe_path(p, [(0, 0, 0), (1, 0, 0), (1, 1, 0)], 1, 11)
+    assert max(abs(a - b) for a, b in zip(p.location, (0.1, 0.2, 0.3))) < 1e-6, tuple(p.location)
+    keys = _keys(p)
+    assert keys[("location", 0)][0] == (1.0, 0.0) and keys[("location", 1)][-1] == (11.0, 1.0)
+    sc.frame_set(11)
+    assert max(abs(a - b) for a, b in zip(p.location, (1, 1, 0))) < 1e-6, tuple(p.location)
+
+
 def test_tags_merge():
     _tiny_scene()
     obj = bpy.data.objects["Cube"]

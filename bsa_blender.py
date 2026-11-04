@@ -43,6 +43,11 @@ def _short_dir(key: str) -> Path:
     return workspace.resolve_short(key, settings.load_settings().get("workspace"))
 
 
+def _short_key(sdir: Path) -> str:
+    """What the user types for this short in a command a message suggests (workspace.short_key)."""
+    return workspace.short_key(sdir, settings.load_settings().get("workspace"))
+
+
 def _load(sdir: Path):
     from bsa.short import load_short
 
@@ -528,7 +533,8 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     engine = side.engine
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render")
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render",
+                                 key=_short_key(sdir))
         failed = None
     else:  # the preview renders anyway; it says what the checks found on this build (the final refuses on it)
         failed = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
@@ -613,7 +619,7 @@ def _failed_checks_warning(sdir: Path, short, tl_hash: str, keys: dict, most: in
     shown = items[:most] + ([f"and {len(items) - most} more"] if len(items) > most else [])
     what = f" ({'; '.join(shown)})" if shown else ""
     return (f"review/checks.json has {n} error(s) on this build{what}: the final render will refuse until these are "
-            "fixed and checked again (BLENDER check SHORT)")  # fmt: skip
+            f"fixed and checked again (BLENDER check {_short_key(sdir)})")  # fmt: skip
 
 
 def _drop_damaged(root: Path, shots, spans, stamps, redo) -> dict:
@@ -1085,7 +1091,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     fps = _fingerprints(sdir, short, tl, tl_hash, reset_after=True)
     _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
     if args.preset == "final":
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit")
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit",
+                                 key=_short_key(sdir))
     from bsa.short import near_anchors
 
     need = [(shot_id, text, key) for shot_id, text, _name, key, _at in near_anchors(short)]
@@ -1703,7 +1710,7 @@ def _checks_current(sdir: Path, short, tl, tl_hash: str) -> bool:
     """The checks passed on every shot as it is now and this timing (and the checks stage is marked)."""
     try:
         fps = _fingerprints(sdir, short, tl, tl_hash)
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), key=_short_key(sdir))
     except freshness.StaleError:
         return False
     return "checks" in jobstate.load_state(sdir)["stages"]
@@ -1769,8 +1776,8 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         why = "asked" if args.rebuild else "the timing changed"
     elif not _blend(sdir).is_file():
         why = "no blend/short.blend yet"
-    elif freshness.build_changed(sdir):
-        why = "build.py changed since the scene was built"
+    elif freshness.build_changed(sdir):  # build.py, or a script it imports
+        why = freshness.build_changed_message(sdir).removesuffix(": rebuild")
     elif not _scenes_current(sdir, short, tl_hash):
         why = "the .blend's scenes are missing or from another timing"
     else:
@@ -1979,14 +1986,19 @@ def _one_line(text) -> str:
 
 
 def _warn_stale_build(args, out: dict) -> None:
-    """Every command on a short says so (in its result and on one stderr line) when build.py is newer than the .blend.
-    check and frame-check already count their findings under "warnings", so theirs go under "build_warnings"."""
+    """Every command on a short says so (in its result and on one stderr line) when build.py, or a local script it
+    imports (freshness.build_inputs), is newer than the .blend. check and frame-check already count their findings
+    under "warnings", so theirs go under "build_warnings"."""
     short = getattr(args, "short", None)
-    if short is None or not freshness.build_changed(_short_dir(short)):
+    if short is None:
         return
+    sdir = _short_dir(short)
+    if not freshness.build_changed(sdir):
+        return
+    message = freshness.build_changed_message(sdir)
     key = "build_warnings" if isinstance(out.get("warnings"), int) else "warnings"
-    out.setdefault(key, []).append(freshness.BUILD_CHANGED)
-    print(f"warning: {freshness.BUILD_CHANGED}", file=sys.stderr, flush=True)
+    out.setdefault(key, []).append(message)
+    print(f"warning: {message}", file=sys.stderr, flush=True)
 
 
 def _add_page_notes(args, out: dict) -> None:
