@@ -1,4 +1,4 @@
-from bsa.findings import cap_pairs, family, family_lines, not_listed, overlap_families, pair_of
+from bsa.findings import cap_pairs, family, family_lines, not_listed, overlap_families, pair_of, progress_line
 from bsa.image_checks import Finding
 
 
@@ -93,3 +93,9 @@ def test_overlap_summary_groups_every_pair_with_real_clips_first():
 def test_a_depth_under_half_a_millimetre_reads_under_1_mm():
     rows = [_pair("Pin", "Hole", "s01", "deep", 0.0003), _pair("Rod", "Cap", "s01", "deep", 0.0006)]
     assert family_lines(rows, ["s01"]) == ["Cap vs Rod: 1 pair, up to 1 mm, s01", "Hole vs Pin: 1 pair, under 1 mm, s01"]
+
+
+def test_progress_line():
+    assert progress_line("s04", 5, 12, 2) == "checking s04 (5 of 12), 2 errors so far"
+    assert progress_line("s04", 5, 12, 1).endswith("1 error so far")
+    assert progress_line("s04", 5, 12, 0).endswith("0 errors so far")

@@ -180,6 +180,12 @@ def family_lines(rows: list, shot_order: list[str]) -> list[str]:
 FRAMING_PROP = "bsa_framing"  # a scene's custom property: its framing warnings, JSON (bsa.blender.camera)
 
 
+def progress_line(shot_id: str, n: int, of: int, errors: int) -> str:
+    """What the checks say before each shot they check: "checking s04 (5 of 12), 2 errors so far". `n` of `of` count
+    the shots this run checks (kept ones are not counted); `errors` are the error rows gathered so far."""
+    return f"checking {shot_id} ({n} of {of}), {errors} error{'' if errors == 1 else 's'} so far"
+
+
 def framing_notes(scene) -> list[dict]:
     """The framing warnings `scene` keeps (bsa.blender.camera.frame_objects / frame_box): [{"camera", "key", "shot",
     "message"}]; [] when it keeps none or what it keeps is not that."""

@@ -164,7 +164,9 @@ def _write_findings(path: Path, findings, stamp: dict | None = None, **extra) ->
         **extra,
         "findings": rows,
     }
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    from bsa import render_status as rs
+
+    rs.write_atomic(path, json.dumps(data, indent=2) + "\n")  # the page server may read it as it is written
     return {"path": str(path), **data}
 
 
@@ -796,6 +798,7 @@ def _write_checks(path: Path, rows: list[dict], stamp: dict | None, shot_order: 
 
 
 def _cmd_check(args, sdir: Path, short, run) -> dict:
+    from bsa import findings
     from bsa.blender.camera import framing_findings
     from bsa.blender.checks import OVERLAP_MAX_FINDINGS, run_checks
 
@@ -813,6 +816,12 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     run.progress(0, total, current=None, items=progress, force=True)
     rows: list[dict] = []
     checked, kept = [], []
+    to_check = sum(shot.id not in reuse for shot, _ in plan)
+    if reuse:
+        kept_ids = [shot.id for shot, _ in plan if shot.id in reuse]
+        print(f"keeping {len(kept_ids)} shot(s) unchanged since the last checks: {', '.join(kept_ids)}",
+              file=sys.stderr, flush=True)  # fmt: skip
+    line = None
     hard_rules = _hard_rules(short)  # scene names a rule may forbid are warnings (bsa.rules.name_hits)
     for (shot, span), item in zip(plan, progress, strict=True):
         if shot.id in reuse:
@@ -821,7 +830,11 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
             continue
         _, scene = _scene(data, short, shot.id, tl_hash)
         item["state"] = "checking"
-        where = f"shot {shot.id} (scene {scene.name})"
+        errors = sum(r.get("severity") == "error" for r in rows)
+        line = findings.progress_line(shot.id, len(checked) + 1, to_check, errors)
+        print(line, file=sys.stderr, flush=True)
+        where = f"{line} \u00b7 scene {scene.name}"
+        run.progress(counted[0], total, current=line, force=True)
 
         def on_frame(_sid, done, _n, item=item, where=where):
             item["done"] = done
@@ -834,7 +847,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         counted[0] += item["total"]
         rows += [_check_row(f, shot.id, scene.name) for f in found]
         checked.append(shot.id)
-    run.progress(counted[0], total, current=None, force=True)
+    run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
     out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
                         OVERLAP_MAX_FINDINGS, checked=checked, kept=kept)  # fmt: skip
     if out["errors"]:

@@ -5,7 +5,7 @@ them: code checks, and **your own eyes**.
 
 ## Run the code checks
 
-`BLENDER check SHORT` runs every scene check over every shot (every 5th frame plus each shot's last; pops use every
+`BLENDER check SHORT` (it prints one line per shot it checks) runs every scene check over every shot (every 5th frame plus each shot's last; pops use every
 frame, and anything that moves or deforms is checked for overlaps on every frame, so a part that passes through
 another between two samples is still found) and writes `review/checks.json`, errors first. It marks the `checks` stage **only when there are no error
 findings**; with errors it exits non-zero. Warnings do not block, but read each one and fix it unless it is clearly

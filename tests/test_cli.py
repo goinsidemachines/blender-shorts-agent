@@ -2486,3 +2486,40 @@ def test_a_failed_closing_line_gives_no_stretch_warning(home, pendulum, tmp_path
     assert any("closing line couldn't be narrated" in w for w in out["warnings"]), out
     assert STRETCH not in out["warnings"]
     assert (pendulum / "audio" / "vo" / "closing.wav").is_file()  # the tool left a 3.4 s take behind
+
+
+def test_check_prints_one_progress_line_per_shot_it_checks(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa_blender
+    from bsa import render_status as rs
+    from bsa.image_checks import Finding
+
+    ok(run(home, "timeline", "pendulum"))
+    short = bsa_blender._load(pendulum)
+    calls = []
+
+    def run_checks(scene, tl, **kw):
+        calls.append(tl.shots[0].id)
+        return [Finding("lit", "error", "Bob", 1, "Bob is dark")] if len(calls) == 1 else []
+
+    checks = types.ModuleType("bsa.blender.checks")
+    checks.run_checks, checks.OVERLAP_MAX_FINDINGS = run_checks, 20
+    camera = types.ModuleType("bsa.blender.camera")
+    camera.framing_findings = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.checks", checks)
+    monkeypatch.setitem(sys.modules, "bsa.blender.camera", camera)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, s, sid, h: (None, types.SimpleNamespace(name="Workshop")))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["check", "pendulum"]) == 1  # the one error
+    lines = [x for x in capsys.readouterr().err.splitlines() if x.startswith("checking ")]
+    n = len(short.shots)
+    assert n > 1 and len(lines) == n
+    assert lines[0] == f"checking s01 (1 of {n}), 0 errors so far"
+    assert lines[1] == f"checking s02 (2 of {n}), 1 error so far"
+    assert lines[-1] == f"checking s{n:02d} ({n} of {n}), 1 error so far"
+    s = json.loads(rs.status_path(pendulum, "preview").read_text(encoding="utf-8"))
+    (step,) = [x for x in s["run"]["steps"] if x["name"] == "check"]
+    assert step["progress"]["current"] in lines
