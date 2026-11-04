@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from bsa.pops import find_pops
+from bsa.pops import find_pops, reference_frames
 
 
 def test_simulated_cradle_at_30_fps_has_no_pops_until_a_ball_is_teleported():
@@ -138,3 +138,22 @@ def test_limit_reported_is_above_the_jump_distance_threshold():
     xs = [0.02 * i + (2.0 if i >= 14 else 0.0) for i in range(48)]
     ((frame, dist, limit),) = find_pops(_track(xs), size=1.0)
     assert frame == 15 and dist > limit and abs(dist - 2.02) < 1e-6
+
+
+def test_reference_frames_stay_inside_the_short_and_the_scene():
+    """The frame just outside a shot is a reference only when it is in the short and in the same scene."""
+    assert reference_frames(1, 30, 1, 30, True, True) == []
+    assert reference_frames(31, 60, 1, 90, True, True) == [30, 61]
+    assert reference_frames(31, 60, 1, 90, False, True) == [61]
+    assert reference_frames(61, 90, 1, 90, True, True) == [60]
+
+
+def test_last_frame_is_judged_against_the_frames_before_it():
+    """A pose past the short's end (an extrapolated action snapping 3 m) used to be the reference for the last
+    frame; with only the frames of the short, a steady track has no pop and a real jump into the last frame does."""
+    steady = _track([0.02 * i for i in range(30)])
+    assert find_pops(steady, 0.1, judged=(1, 30)) == []
+    jump = _track([0.02 * i + (0.5 if i == 29 else 0.0) for i in range(30)])
+    assert _frames(find_pops(jump, 0.1, judged=(1, 30))) == [30]
+    past_end = (31, np.array([0.02 * 29 + 0.5 + 3.0, 0.0, 0.0]))  # the extrapolated pose hid the jump
+    assert find_pops([*jump, past_end], 0.1, judged=(1, 30)) == []

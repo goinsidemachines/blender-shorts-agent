@@ -21,6 +21,7 @@ def test_checks_in_blender(blender_run):
         "test_per_shot_hero_only_checked_in_its_shots",
         "test_a_hero_entering_at_0_6_is_not_framed_before_it",
         "test_pop_found",
+        "test_a_pop_on_the_last_frame_of_the_short_is_judged",
         "test_floating_found",
         "test_faceted_found",
         "test_clean_scene_has_no_errors",

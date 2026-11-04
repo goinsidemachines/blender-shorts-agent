@@ -643,6 +643,20 @@ def test_pop_found():
     assert [f.frame for f in found] == [15], found
 
 
+def test_a_pop_on_the_last_frame_of_the_short_is_judged():
+    """A jump into the short's last frame is a pop, whatever the action does past the end (no frame outside the
+    short is a reference); a steady move that carries on past the end is none."""
+    sc = _scene()
+    cube = _cube("Ender", (0, 0, 0.5))
+    _move_x(cube, [0.02 * i + (0.6 if i == N - 1 else 0.0) for i in range(N)])
+    assert [f.frame for f in _found(sc, "pops", "Ender", "error")] == [N]
+    for fc in bake._fcurves(cube.animation_data.action):
+        fc.extrapolation = "LINEAR"  # frame N+1 carries the jump on: it used to hide it
+    assert [f.frame for f in _found(sc, "pops", "Ender", "error")] == [N]
+    _move_x(cube, [0.02 * i for i in range(N)])  # same curves: still extrapolated linearly past N, now no jump
+    assert not _found(sc, "pops", "Ender"), _found(sc, "pops", "Ender")
+
+
 def test_fast_tag_lets_a_part_flick_but_still_checks_overlaps():
     """A part that really moves that quickly (a flick, a snap) is tagged "fast": no pop, but still every other check."""
     sc = _scene()

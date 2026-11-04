@@ -421,7 +421,7 @@ _BSA = Path(__file__).resolve().parent
 # words (rules) and the object tags (bake: hero, overlay, may-exit)
 _CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
                 _BSA / "findings.py", _BSA / "blender" / "camera.py", _BSA / "rules.py",
-                _BSA / "blender" / "bake.py")  # fmt: skip
+                _BSA / "blender" / "bake.py", _BSA / "pops.py")  # fmt: skip
 
 
 def checks_code() -> str:

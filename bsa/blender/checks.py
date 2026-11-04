@@ -104,7 +104,9 @@ Tolerances (scene units are metres):
   sides of it (moves under 0.1 mm count as standing still) and over 5 mm or a tenth of the object's largest
   dimension. A teleport, a keyed jump or a one-frame snap pops; a ball that falls fast and then hangs almost still,
   or a still ball struck into motion, does not (its speed changes once and stays changed). The frame before and
-  after each shot are read as references for its first and last moves, not judged (a cut may move anything).
+  after each shot are read as references for its first and last moves, not judged (a cut may move anything), but
+  only when inside the short and next to a shot of the same scene: the first and last frames of the short, and of a
+  shot cut to or from another scene, are judged against the frames inside the shot.
 - set_clearance: a set prop (tagged "set:prop") whose screen box, at a sampled frame, meets the subject's (the
   shot's heroes' boxes; with no hero, every other rendered mesh that is not scenery or an overlay, as placement takes
   it) or a card, caption or label of the edit, or a strip the Shorts player covers, by any positive overlap: the one
@@ -157,7 +159,7 @@ from bsa.blender.styles import BEVEL as STYLE_BEVEL
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
 from bsa.layout import Rect
-from bsa.pops import find_pops
+from bsa.pops import find_pops, reference_frames
 from bsa.short import label_near, label_text, load_short
 from bsa.timeline import Timeline, wide_frames
 
@@ -440,7 +442,9 @@ class _Run:
         self.span = shot
         sizes: dict[str, float] = {}
         seen = {"below": {}, "framing": {}, "parts": {}, "texts": {}, "props": {}}  # what the viewer sees at samples
-        self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
+        refs = self.reference_frames(shot)  # the frames just outside the shot, in the short and in its scene
+        if shot.f0 - 1 in refs:
+            self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
         shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
         for frame in range(shot.f0, shot.f1 + 1):
             self.scene.frame_set(frame)
@@ -461,7 +465,8 @@ class _Run:
             self.track_contacts(frame)
             if progress is not None:
                 progress(shot.id, frame - shot.f0 + 1, shot.f1 - shot.f0 + 1)
-        self.track_positions(shot.f1 + 1, positions)  # and how it leaves it
+        if shot.f1 + 1 in refs:
+            self.track_positions(shot.f1 + 1, positions)  # and how it leaves it
         self.scene.frame_set(shot.f1)
         self.depsgraph.update()
         self.report_swaps(shot)
@@ -664,6 +669,23 @@ class _Run:
                      f"is, so after asking, place it again with sets.dress(..., replace=[{prop!r}]) (or move the "
                      "prop by hand)",
                      key=(name, span.id))  # fmt: skip
+
+    def reference_frames(self, shot) -> list[int]:
+        """The frames just outside a shot that pops read as references (bsa.pops.reference_frames): inside the short
+        (the timeline's frames; without one, the scene's range) and only next to a shot of the same scene (by order in
+        the short's shots; none without a short)."""
+        if self.tl is not None:
+            first, last = 1, self.tl.n_frames
+        else:
+            first, last = self.scene.frame_start, self.scene.frame_end
+        same_before = same_after = False
+        shots = list(getattr(self.short, "shots", None) or [])
+        ids = [s.id for s in shots]
+        if shot.id in ids:
+            i = ids.index(shot.id)
+            same_before = i > 0 and shots[i - 1].scene == shots[i].scene
+            same_after = i + 1 < len(shots) and shots[i + 1].scene == shots[i].scene
+        return reference_frames(shot.f0, shot.f1, first, last, same_before, same_after)
 
     def track_positions(self, frame, positions):
         """Positions at a frame just outside a shot, kept with the shot's own for the pops check only."""
