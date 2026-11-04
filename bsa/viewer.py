@@ -22,6 +22,8 @@ CAMERA_BELOW_TOL = 0.01  # metres: a camera this far under a ground's top surfac
 EDGE_TOL = 0.001  # a hero's box this share or less outside the frame is inside (rounding)
 EDGE_ERROR = 0.5  # more than this share of a hero's box outside the frame ...
 EDGE_ERROR_S = 0.5  # ... for at least this long: error (the shot has lost its subject)
+SWAP_FRAMES = 1  # a swap: the new part switched on at most this many frames from the old one switched off ...
+SWAP_BOX_TOL = 0.02  # ... and its box on screen within this share of the frame's width (x) and height (y) of the old
 
 KIND_NAMES = {"caption": "caption", "badge": "badge", "label": "label", "near": "label"}
 
@@ -192,3 +194,21 @@ def is_ground(lo, hi, subject_lo, subject_hi) -> bool:
     under = lo[0] <= subject_hi[0] and subject_lo[0] <= hi[0] and lo[1] <= subject_hi[1] and subject_lo[1] <= hi[1]
     reach = GROUND_REACH * max(subject_hi[2] - subject_lo[2], 0.0) + CAMERA_BELOW_TOL
     return under and hi[2] <= subject_lo[2] + reach
+
+
+def swap_problem(on: int, off: int | None, new: Rect | None, old: Rect | None) -> str | None:
+    """What is wrong with a part switched on at frame `on` taking over from one switched off at `off` (None: never in
+    the shot), `new` and `old` their boxes on screen (None: behind the camera, not compared), or None for a clean
+    swap: the same frame (within SWAP_FRAMES) and the same place on screen (within SWAP_BOX_TOL)."""
+    if off is None:
+        return "it is never switched off in this shot"
+    if abs(off - on) > SWAP_FRAMES:
+        return f"it is switched off at frame {off}, {abs(off - on)} frames apart"
+    if new is None or old is None:
+        return None
+    dx = max(abs(new.x - old.x), abs(new.right - old.right))
+    dy = max(abs(new.y - old.y), abs(new.bottom - old.bottom))
+    if dx <= SWAP_BOX_TOL * W and dy <= SWAP_BOX_TOL * H:
+        return None
+    pct = round(100 * max(dx / W, dy / H))
+    return f"their boxes on screen differ by {pct}% of the frame"

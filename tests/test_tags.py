@@ -155,3 +155,14 @@ def test_new_tags_end_a_hero_shot_list():
     o["bsa_tags"] = "hero:s03,s04,fast"
     assert bake.tags(o) == ["hero:s03,s04", "fast"]
     assert bake.is_fast(o) and not bake.is_fast(Obj())
+
+
+def test_swap_tag():
+    """swap:<object> names the part this one takes over from on screen."""
+    o = Obj()
+    bake.tag(o, "swap:Tape blade", "hero")
+    assert bake.swap_of(o) == "Tape blade" and bake.swap_of(Obj()) is None
+    with pytest.raises(ValueError):
+        bake.tag(Obj(), "swap:")
+    assert bake.tag_problem("swap:") == "tag 'swap:' names no object"
+    assert bake.tag_problem("swap:Blade A") is None

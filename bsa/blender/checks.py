@@ -144,12 +144,14 @@ from bsa.blender.bake import (
     may_exit,
     merged_contact,
     set_role,
+    swap_of,
     tag_problem,
     tags,
 )
 from bsa.blender.styles import BEVEL as STYLE_BEVEL
 from bsa.findings import cap_pairs, not_listed
 from bsa.image_checks import Finding
+from bsa.layout import Rect
 from bsa.pops import find_pops
 from bsa.short import label_near, label_text, load_short
 from bsa.timeline import Timeline, wide_frames
@@ -375,6 +377,8 @@ class _Run:
         self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
         self.set_objs = {o.name for o in scene.objects if is_set(o)}  # a set's floor, walls and props: scenery
         self.fast: set[str] = {o.name for o in scene.objects if is_fast(o)}  # really moves that quickly: no pops
+        self.swap: dict[str, str] = {o.name: swap_of(o) for o in scene.objects if swap_of(o)}  # new part: the old one
+        self.switches: dict[str, dict[str, list[int]]] = {}  # per shot: {"on": [frames], "off": [frames]} per object
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
         self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
@@ -401,7 +405,7 @@ class _Run:
         sampled = set(range(shot.f0, shot.f1 + 1, max(1, every))) | {shot.f1}
         positions: dict[str, list[tuple[int, np.ndarray]]] = {}
         views: dict[str, dict] = {}  # heroes and overlays: {"overlay", "samples": [(frame, share outside)]}
-        self.cur, self.changed, self.hits, self.drift = {}, {}, {}, {}
+        self.cur, self.changed, self.hits, self.drift, self.switches = {}, {}, {}, {}, {}
         sizes: dict[str, float] = {}
         seen = {"below": {}, "framing": {}, "texts": {}, "props": {}}  # what the viewer sees at sampled frames
         self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
@@ -428,6 +432,7 @@ class _Run:
         self.track_positions(shot.f1 + 1, positions)  # and how it leaves it
         self.scene.frame_set(shot.f1)
         self.depsgraph.update()
+        self.report_swaps(shot)
         self.pops(shot, positions, sizes)
         self.report_overlaps(shot, sampled)
         self.report_contacts(shot)
@@ -439,17 +444,26 @@ class _Run:
     def pop_in(self, shot, frame, objs, before: dict[str, bool]) -> dict[str, bool]:
         """Warn about an object (not an overlay) that switches on inside the camera frame after its shot's first
         frame: it was not rendered (hide_render, a hidden collection) or was scaled to nothing at the frame before,
-        and now part of its box is on screen. It pops into view. Returns what is shown now, for the next frame."""
+        and now part of its box is on screen. It pops into view. A part tagged swap:<other> is left to report_swaps.
+        Records each object's switch frames (on: shown now and not at the frame before; off: the reverse) in
+        self.switches. Returns what is shown now, for the next frame."""
         cam = self.scene.camera
         now = {}
         for obj in objs:
             m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
             scale = float(np.linalg.norm(m[:3, :3], axis=0).max())
             now[obj.name] = scale > POP_IN_SCALE
+        if frame > shot.f0:
+            for name in now.keys() | before.keys():
+                if now.get(name) != bool(before.get(name)):
+                    switch = self.switches.setdefault(name, {"on": [], "off": []})
+                    switch["on" if now.get(name) else "off"].append(frame)
+        for obj in objs:
             if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name):
                 continue
-            if obj.name in self.overlay or obj.name in self.set_objs:
+            if obj.name in self.overlay or obj.name in self.set_objs or obj.name in self.swap:
                 continue
+            m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
             corners = np.array([tuple(c) for c in obj.evaluated_get(self.depsgraph).bound_box], dtype=np.float64)
             world = corners @ m[:3, :3].T + m[:3, 3]
             box = SimpleNamespace(lo=world.min(0), hi=world.max(0))
@@ -462,6 +476,34 @@ class _Run:
                      "at a cut (the shot's first frame) or while something hides it, or fade or grow it in on screen "
                      "on purpose (then say why in your notes)", key=(obj.name, shot.id))  # fmt: skip
         return now
+
+    def report_swaps(self, shot):
+        """A part tagged swap:<other> must take over from the other in place: switched on on the frame the other is
+        switched off (the nearest such frame), its box on screen where the other's was the frame before."""
+        cam = self.scene.camera
+        for new, old in sorted(self.swap.items()):
+            if old not in self.scene.objects:
+                continue  # names reports the missing object
+            offs = self.switches.get(old, {}).get("off", [])
+            for on in self.switches.get(new, {}).get("on", []):
+                if not shot.f0 < on <= shot.f1:
+                    continue
+                off = min(offs, key=lambda f: abs(f - on)) if offs else None
+                problem = viewer.swap_problem(on, off, None, None)
+                if problem is None and cam is not None:
+                    boxes = []
+                    for name, frame in ((new, on), (old, (off or on) - 1)):
+                        self.scene.frame_set(frame)
+                        self.depsgraph.update()
+                        boxes.append(_rect(screen_box(self.scene, cam.evaluated_get(self.depsgraph),
+                                                      self.scene.objects[name], self.depsgraph)))  # fmt: skip
+                    problem = viewer.swap_problem(on, off, *boxes)
+                if problem:
+                    self.add("swap", "warning", new, on, f"{new!r} takes over from {old!r} at frame {on} in shot "
+                             f"{shot.id!r}, but {problem}. Switch {old!r} off on the same frame and put {new!r} "
+                             f"exactly where {old!r} was", key=(new, shot.id, on))  # fmt: skip
+        self.scene.frame_set(shot.f1)
+        self.depsgraph.update()
 
     def short_shot(self, shot_id):
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
@@ -1026,8 +1068,9 @@ class _Run:
                 if problem:  # a typo, or a prefix with nothing after it: the checks would not read it
                     self.add("names", "error", obj.name, None, f"tag {t!r} on {obj.name!r}: {problem}",
                              key=(obj.name, t))  # fmt: skip
-                elif t.startswith("contact:"):
-                    target = contact_tag(t[len("contact:") :], present)[0]
+                elif t.startswith(("contact:", "swap:")):
+                    swap = t.startswith("swap:")
+                    target = t[len("swap:") :] if swap else contact_tag(t[len("contact:") :], present)[0]
                     if target not in present:
                         self.add("names", "error", obj.name, None, f"tag {t!r} names {target!r}, which scene "
                                  f"{self.scene.name!r} does not have{_did_you_mean(target, present)}")  # fmt: skip
@@ -1398,6 +1441,11 @@ def _area(a: float) -> str:
     if a >= 1e-4:
         return f"{a * 1e4:.0f} cm²"
     return f"{a * 1e6:.1f} mm²"
+
+
+def _rect(b) -> Rect | None:
+    """[x0, y0, x1, y1] (screen_box) as a Rect, not cut to the frame, or None."""
+    return None if not b else Rect(b[0], b[1], b[2] - b[0], b[3] - b[1])
 
 
 def _did_you_mean(name: str, present) -> str:

@@ -82,5 +82,6 @@ def test_checks_in_blender(blender_run):
         "test_style_bevels_are_put_back_when_the_checks_fail",
         "test_unknown_tags_are_names_errors",
         "test_fast_tag_lets_a_part_flick_but_still_checks_overlaps",
+        "test_a_swap_that_matches_is_not_a_pop_in_and_one_that_does_not_is_warned",
     ):
         assert f"PASS {name}" in result.stdout

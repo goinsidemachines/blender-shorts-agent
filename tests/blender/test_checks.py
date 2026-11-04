@@ -1598,3 +1598,37 @@ def test_style_bevels_are_put_back_when_the_checks_fail():
     assert not first.modifiers[styles.BEVEL].show_viewport
     checks._restore_modifiers(hidden)
     assert first.modifiers[styles.BEVEL].show_viewport and first.modifiers[styles.BEVEL].show_render
+
+
+def test_a_swap_that_matches_is_not_a_pop_in_and_one_that_does_not_is_warned():
+    """A part tagged swap:<other> that takes over from the other on the same frame at the same place is not a pop-in;
+    one put somewhere else, or switched on frames away from the other going off, is a swap warning."""
+    sc = _scene()
+    a = _cube("Blade A", (0, 0, 0.5), size=0.5)
+    a.hide_render = False
+    a.keyframe_insert("hide_render", frame=1)
+    a.hide_render = True
+    a.keyframe_insert("hide_render", frame=16)  # shown frames 1-15
+    b = _cube("Blade B", (0, 0, 0.5), size=0.5)
+    _switch_on(b, 16)
+    bake.tag(b, "swap:Blade A")
+
+    def found(check):
+        return [f for f in checks.run_checks(sc, _timeline()) if f.check == check]
+
+    assert found("pop_in") == [] and found("swap") == [], (found("pop_in"), found("swap"))
+    b.location.x = 0.4  # moved sideways
+    swaps = found("swap")
+    assert len(swaps) == 1 and swaps[0].obj == "Blade B" and swaps[0].frame == 16, swaps
+    assert swaps[0].severity == "warning" and "differ" in swaps[0].message and "'Blade A'" in swaps[0].message
+    assert "frame 16" in swaps[0].message, swaps
+    b.location.x = 0.0
+    a.keyframe_delete("hide_render", frame=16)  # A goes off at 20 instead
+    a.hide_render = True
+    a.keyframe_insert("hide_render", frame=20)
+    swaps = found("swap")
+    assert len(swaps) == 1 and "4 frames apart" in swaps[0].message, swaps
+    assert found("pop_in") == []
+    b["bsa_tags"] = "swap:Blade C"  # an object the scene does not have
+    names = [f for f in found("names") if f.severity == "error"]
+    assert len(names) == 1 and "'Blade C'" in names[0].message, names

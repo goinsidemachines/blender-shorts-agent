@@ -176,3 +176,18 @@ def test_edge_findings_say_how_much_is_outside_and_where_it_is_worst():
     assert viewer.edge_findings("s02", unknown, 5, 30)[0].severity == "warning"  # the camera inside it: not lost
     assert viewer.edge_findings("s02", {"Far": {"overlay": False, "samples": [(10, 1.0), (15, 1.0)]}}, 5, 30) == []
     assert viewer.edge_findings("s02", {"In": {"overlay": False, "samples": [(10, 0.0)]}}, 5, 30) == []
+
+
+def test_swap_problem():
+    r = Rect(400, 800, 200, 300)
+    assert viewer.SWAP_FRAMES == 1 and viewer.SWAP_BOX_TOL == 0.02
+    assert viewer.swap_problem(40, 40, r, r) is None
+    assert viewer.swap_problem(40, 41, r, r) is None
+    assert "3 frames apart" in viewer.swap_problem(40, 43, r, r)
+    assert "never switched off" in viewer.swap_problem(40, None, r, r)
+    moved = Rect(r.x + 0.03 * W, r.y, r.w, r.h)
+    assert "3%" in viewer.swap_problem(40, 40, moved, r)
+    assert viewer.swap_problem(40, 40, Rect(r.x + 21, r.y, r.w, r.h), r) is None  # under 2% of the width
+    taller = Rect(r.x, r.y, r.w, r.h + 0.05 * H)  # only its bottom edge moves
+    assert "5%" in viewer.swap_problem(40, 40, r, taller)
+    assert viewer.swap_problem(40, 40, None, r) is None and viewer.swap_problem(40, 40, r, None) is None
