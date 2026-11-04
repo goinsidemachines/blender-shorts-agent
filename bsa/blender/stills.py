@@ -77,9 +77,10 @@ def world_mask(scene, frame: int, shape: tuple[int, int]) -> np.ndarray:
 
     One quick Workbench pass (MASK_PERCENT, film transparent, PNG RGBA, no compositor or sequencer, which could
     repaint the alpha) to a temp file; a pixel with alpha 0 is world, so a semi-transparent part (glass, a glow)
-    counts as not world wherever it covers. This is the only place the plugin switches the render engine: it is a measuring pass, never a picture, and the
-    user's engine and every other setting it touches are restored afterwards, also when the render fails. No device
-    or samples are set, the temp file is deleted and the .blend is never saved."""
+    counts as not world wherever it covers. This is the only place the plugin switches the render engine: it is a
+    measuring pass, never a picture, and the user's engine and every other setting it touches are restored
+    afterwards, also when the render fails. No device or samples are set, the temp file is deleted and the .blend
+    is never saved."""
     from bsa.blender.pixels import read_png
 
     r = scene.render

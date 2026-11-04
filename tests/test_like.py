@@ -230,7 +230,7 @@ def test_skipped_questions_and_the_one_line_said():
     assert like.said("Big Ben", ["look", "pace", "closing", "voice"]) == (
         "Started from Big Ben: I copied the look, pace, closing and voice, so I won't ask about those.")
     assert like.said("Big Ben", ["voice"]) == "Started from Big Ben: I copied the voice, so I won't ask about it."
-    assert like.provenance(Path("x/03-big-ben"), ["pace"], now=0) == {"short": "03-big-ben", "copied": ["pace"],
+    assert like.provenance(Path("x/03-how-a-clock-ticks"), ["pace"], now=0) == {"short": "03-how-a-clock-ticks", "copied": ["pace"],
                                                                       "at": "1970-01-01T00:00:00Z"}  # fmt: skip
     assert set(like.SKIP) == set(like.COPY_KEYS) == set(like.LABELS)
 

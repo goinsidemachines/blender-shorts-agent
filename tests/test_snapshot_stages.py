@@ -326,5 +326,5 @@ def test_describe_one_plain_line_per_copied_value():
     assert like.describe("style", now, {}) == "toy style, workbench set, own palette, font Lato"  # old record
     assert like.style_keys({"palette": {"a": 1}, "caption": {"box": 1}, "font": "x"}) == ["palette.a", "caption.box",
                                                                                            "font"]  # fmt: skip
-    p = like.provenance(Path("x/03-big-ben"), ["style"], now=0, title="Big Ben", style={"font": "x"})
-    assert p["title"] == "Big Ben" and p["style_keys"] == ["font"]
+    p = like.provenance(Path("x/03-how-a-clock-ticks"), ["style"], now=0, title="How a clock ticks", style={"font": "x"})
+    assert p["title"] == "How a clock ticks" and p["style_keys"] == ["font"]
