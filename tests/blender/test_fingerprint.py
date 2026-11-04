@@ -272,7 +272,7 @@ def test_fingerprints_are_quick():
     SPANS = {"A": [Span("s01", 1, 150), Span("s01b", 151, 300)], "B": [Span("s02", 31, 60)]}
     try:
         t0 = time.perf_counter()
-        _fp()
+        fingerprints([(bpy.data.scenes[name], spans) for name, spans in SPANS.items()], objects={})  # as the CLI does
         took = time.perf_counter() - t0
     finally:
         SPANS = saved
@@ -301,3 +301,93 @@ def test_a_mesh_stored_in_another_order_is_the_same_mesh():
     assert digest([faces[2], faces[0], faces[1]]) == one  # faces reordered
     assert digest([(2, 3, 0, 1), (5, 4, 0, 1), (5, 1, 2)]) == one  # each face starts elsewhere, same winding
     assert digest([(3, 2, 1, 0), (0, 1, 5, 4), (1, 2, 5)]) != one  # a face flipped: renders differently
+
+
+
+def _keyed_scene():
+    """Two cubes A and B (each its own material) and a camera, one shot of 30 frames."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    import bmesh
+
+    for name, x in (("A", -1.5), ("B", 1.5)):
+        mesh = bpy.data.meshes.new(name)
+        bm = bmesh.new()
+        bmesh.ops.create_cube(bm, size=1.0)
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.materials.append(_material(f"Mat {name}", (0.8, 0.3, 0.1)))
+        obj = bpy.data.objects.new(name, mesh)
+        obj.location = (x, 0, 0)
+        sc.collection.objects.link(obj)
+    _camera(sc, "Cam", 1, 30)
+    return sc
+
+
+def _keys(sc):
+    spans = [Span("s01", 1, 30)]
+    objects: dict = {}
+    fps = fingerprints([(sc, list(spans))], objects=objects)[0]
+    assert fps == fingerprints([(sc, list(spans))])[0]
+    return objects
+
+
+def _changed(before, after, shot="s01"):
+    b, a = before[shot], after[shot]
+    out = sorted(n for n in set(b["objects"]) | set(a["objects"]) if b["objects"].get(n) != a["objects"].get(n))
+    return out + (["rest"] if b["rest"] != a["rest"] else [])
+
+
+def test_object_keys_change_only_for_the_object_that_changed():
+    sc = _keyed_scene()
+    base = _keys(sc)
+    assert set(base["s01"]["objects"]) == {"A", "B"} and base["s01"]["rest"]
+    assert all(len(k) == 16 for k in base["s01"]["objects"].values())
+    a = bpy.data.objects["A"]
+    a.keyframe_insert("location", frame=1)
+    a.location.z = 1.0
+    a.keyframe_insert("location", frame=5)
+    moved = _keys(sc)
+    assert _changed(base, moved) == ["A"]
+    bpy.data.materials["Mat B"].node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0, 1, 0, 1)
+    coloured = _keys(sc)
+    assert _changed(moved, coloured) == ["B"]
+    cam = bpy.data.objects["Cam"]
+    cam.location = (0.5, -6, 0)
+    cam.keyframe_insert("location", frame=30)
+    panned = _keys(sc)
+    assert _changed(coloured, panned) == ["rest"]
+    a["bsa_tags"] = "fast"
+    tagged = _keys(sc)
+    assert _changed(panned, tagged) == ["A"]
+
+
+def test_a_parent_change_changes_the_childs_key():
+    sc = _keyed_scene()
+    empty = bpy.data.objects.new("E", None)
+    sc.collection.objects.link(empty)
+    c = bpy.data.objects.new("C", bpy.data.objects["A"].data.copy())
+    sc.collection.objects.link(c)
+    c.parent = empty
+    base = _keys(sc)
+    empty.keyframe_insert("location", frame=1)
+    empty.location.x = 2.0
+    empty.keyframe_insert("location", frame=10)
+    after = _keys(sc)
+    assert _changed(base, after) == ["C", "rest"]
+
+
+def test_object_keys_do_not_change_the_fingerprints():
+    _two_scenes()
+    groups = [(bpy.data.scenes[name], spans) for name, spans in SPANS.items()]
+    objects: dict = {}
+    assert fingerprints(groups) == fingerprints(groups, objects=objects)
+    assert set(objects) == {"s01", "s02"}
+    assert set(objects["s02"]["objects"]) == {"Cube B", "Sphere B"}
+    sc = bpy.context.scene  # one scene, two shots, a hide_render key: the same with and without the keys
+    spans = [Span("s01", 1, 15), Span("s01b", 16, 30)]
+    obj = bpy.data.objects["Cube A"]
+    obj.keyframe_insert("hide_render", frame=1)
+    obj.hide_render = True
+    obj.keyframe_insert("hide_render", frame=20)
+    assert fingerprints([(sc, spans)]) == fingerprints([(sc, spans)], objects={})

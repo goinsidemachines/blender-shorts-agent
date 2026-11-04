@@ -193,8 +193,9 @@ def _fingerprints(sdir: Path, short, tl, tl_hash: str, data=None, reset_after=Fa
         _, scene = _scene(data, short, items[0][0].id, tl_hash)
         groups.append((scene, [span for _, span in items]))
     parts: dict = {}
-    shots, files = fingerprints(groups, parts)
-    freshness.save_fingerprints(sdir, tl_hash, shots, files, code=_fingerprint_code(), parts=parts)
+    objects: dict = {}  # a key per object and one for the rest of each shot, beside its fingerprint
+    shots, files = fingerprints(groups, parts, objects=objects)
+    freshness.save_fingerprints(sdir, tl_hash, shots, files, code=_fingerprint_code(), parts=parts, objects=objects)
     if reset_after and opened:
         bpy.ops.wm.read_factory_settings(use_empty=True)
     return {i: shots[i] for i in ids}
@@ -214,8 +215,15 @@ def _parts(sdir: Path, fps: dict | None) -> dict:
     return freshness.load_fingerprint_parts(sdir, fps)
 
 
-def _check_keys(short, tl, fps: dict | None, parts: dict | None = None) -> dict:
-    """{shot id: what its scene checks depend on} (freshness.shot_check_inputs)."""
+def _objects(sdir: Path, fps: dict | None) -> dict:
+    """{shot id: {"objects": {name: key}, "rest": key}} (each object's key and the rest's), from the fingerprint
+    cache."""
+    return freshness.load_fingerprint_objects(sdir, fps)
+
+
+def _check_keys(short, tl, fps: dict | None, parts: dict | None = None, objects: dict | None = None) -> dict:
+    """{shot id: what its scene checks depend on} (freshness.shot_check_inputs). `objects` (from the fingerprint
+    cache, freshness.load_fingerprint_objects) adds each shot's object keys, as information."""
     spans = {s.id: s for s in tl.shots}
     ids = [s.id for s in short.shots]
     from bsa.overlays import caption_size
@@ -223,7 +231,8 @@ def _check_keys(short, tl, fps: dict | None, parts: dict | None = None) -> dict:
     rule_key = rules.scene_key(_hard_rules(short), short)
     size = caption_size(short)
     return {s.id: freshness.shot_check_inputs((fps or {}).get(s.id), spans[s.id], asdict(s), ids,
-                                              (parts or {}).get(s.id), rule_key, size) for s in short.shots}  # fmt: skip
+                                              (parts or {}).get(s.id), rule_key, size, (objects or {}).get(s.id))
+            for s in short.shots}  # fmt: skip
 
 
 def _hard_rules(short) -> list[dict]:
@@ -575,7 +584,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     engine = side.engine
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     parts = _parts(sdir, fps)
-    check_keys = _check_keys(short, tl, fps, parts)
+    check_keys = _check_keys(short, tl, fps, parts, _objects(sdir, fps))
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
         freshness.require_checks(sdir, tl_hash, check_keys, "the final render", key=_short_key(sdir))
         failed = None
@@ -839,7 +848,8 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     tl, tl_hash = _timeline(sdir, short)
     data = _open_blend(sdir)
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
-    stamp = freshness.checks_stamp(tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), args.every)
+    keys = _check_keys(short, tl, fps, _parts(sdir, fps), _objects(sdir, fps))  # the object keys: information
+    stamp = freshness.checks_stamp(tl_hash, keys, args.every)
     reuse = {} if getattr(args, "full", False) else freshness.reusable_checks(sdir, stamp)
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,

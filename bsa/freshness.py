@@ -176,8 +176,12 @@ FINGERPRINT_VERSION = 1  # bump when what goes into a fingerprint changes (bsa.b
 FINGERPRINTS = "short.fingerprints.json"
 
 
-def _blend_stat(short_dir: Path) -> list | None:
+def blend_stat(short_dir: Path) -> list | None:
+    """[size, mtime_ns] of blend/short.blend, or None when there is none."""
     return _file_stat(Path(short_dir) / "blend" / "short.blend")
+
+
+_blend_stat = blend_stat  # the old name
 
 
 def _file_stat(path) -> list | None:
@@ -203,16 +207,18 @@ def fingerprint_code(blender: str | None) -> str:
 
 
 def save_fingerprints(short_dir: Path, tl_hash: str, shots: dict, files: dict | None = None, *, code: str | None = None,
-                      parts: dict | None = None) -> None:  # fmt: skip
+                      parts: dict | None = None, objects: dict | None = None) -> None:  # fmt: skip
     """Cache the fingerprints of blend/short.blend as it is on disk now, for this timing (and `code`,
     fingerprint_code). `parts` ({shot id: {part: hash}}) records what each fingerprint is made of, so a later
-    refusal can say which part changed."""
-    blend = _blend_stat(short_dir)
+    refusal can say which part changed; `objects` ({shot id: {"objects": {name: key}, "rest": key}}) a key per
+    object of the shot and one for the rest of it (bsa.blender.fingerprint)."""
+    blend = blend_stat(short_dir)
     if blend is None:
         return
     path = Path(short_dir) / "blend" / FINGERPRINTS
     data = {"version": FINGERPRINT_VERSION, "blend": blend, "timeline": tl_hash, "shots": shots,
-            "files": files or {}, **({"code": code} if code else {}), **({"parts": parts} if parts else {})}  # fmt: skip
+            "files": files or {}, **({"code": code} if code else {}), **({"parts": parts} if parts else {}),
+            **({"objects": objects} if objects else {})}  # fmt: skip
     path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
 
 
@@ -230,7 +236,7 @@ def load_fingerprints(short_dir: Path, tl_hash: str, code: str | None = None) ->
     data = _read_cache(short_dir)
     if data is None or data.get("version") != FINGERPRINT_VERSION or data.get("timeline") != tl_hash:
         return None
-    if data.get("blend") != _blend_stat(short_dir) or not isinstance(data.get("shots"), dict):
+    if data.get("blend") != blend_stat(short_dir) or not isinstance(data.get("shots"), dict):
         return None
     if code is not None and data.get("code") not in (None, code):  # a cache from before the code was recorded holds
         return None
@@ -249,6 +255,17 @@ def load_fingerprint_parts(short_dir: Path, fingerprints: dict | None) -> dict:
         return {}
     return {sid: parts[sid] for sid, fp in (fingerprints or {}).items()
             if fp is not None and shots.get(sid) == fp and isinstance(parts.get(sid), dict)}  # fmt: skip
+
+
+def load_fingerprint_objects(short_dir: Path, fingerprints: dict | None) -> dict:
+    """{shot id: {"objects": {name: key}, "rest": key}} from the cache, for the shots whose cached fingerprint is the
+    one given; {} for a cache from before the object keys were recorded."""
+    data = _read_cache(short_dir) or {}
+    shots, objects = data.get("shots"), data.get("objects")
+    if not isinstance(shots, dict) or not isinstance(objects, dict):
+        return {}
+    return {sid: objects[sid] for sid, fp in (fingerprints or {}).items()
+            if fp is not None and shots.get(sid) == fp and isinstance(objects.get(sid), dict)}  # fmt: skip
 
 
 _PART_WORDS = {"Object": "objects", "Camera": "camera", "Material": "materials", "Mesh": "meshes",
@@ -557,14 +574,17 @@ def shot_check_key(fingerprint: str | None, span: Span, shot: dict) -> str:
 
 
 def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=(), parts: dict | None = None,
-                      rules: list | None = None, caption_size: int | None = None) -> dict:  # fmt: skip
+                      rules: list | None = None, caption_size: int | None = None,
+                      objects: dict | None = None) -> dict:  # fmt: skip
     """What one shot's scene checks depend on, and nothing else: its content (fingerprint), its frames, the fields
     of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture or still_at), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
     text, sound levels and other settings are not in it. `parts` is information (which part of the fingerprint
     changed), not part of the key, except its "tags" part: the objects' tags (contact, hero...) change what the checks
     find but are not in the fingerprint, since they change no pixel. `caption_size` (bsa.overlays.caption_size: the
-    short's style.caption.size) sizes the caption box the covered check measures, so it is in the key too."""
+    short's style.caption.size) sizes the caption box the covered check measures, so it is in the key too.
+    `objects` ({"objects": {name: key}, "rest": key}, load_fingerprint_objects) is information too, recorded under
+    "objects" and "rest": which objects of the shot changed."""
     out = {"fingerprint": fingerprint, "frames": [span.f0, span.f1],
            "entry": {k: shot.get(k) for k in CHECKED_FIELDS}, "shot_ids": sorted(shot_ids),
            "parts": dict(parts or {}), "legacy": shot_check_key(fingerprint, span, shot)}  # fmt: skip
@@ -574,11 +594,14 @@ def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=
         out["caption_size"] = caption_size
     if parts and parts.get("tags") is not None:
         out["tags"] = parts["tags"]
+    if objects:
+        out["objects"] = dict(objects.get("objects") or {})
+        out["rest"] = objects.get("rest")
     return out
 
 
 def _input_key(inputs: dict) -> str:
-    core = {k: v for k, v in inputs.items() if k not in ("parts", "legacy")}
+    core = {k: v for k, v in inputs.items() if k not in ("parts", "legacy", "objects", "rest")}
     text = json.dumps(core, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 

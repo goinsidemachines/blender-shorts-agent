@@ -600,3 +600,26 @@ def test_a_change_shared_by_every_shot_is_said_once(sdir):
     assert msg.count("hard rules") == 1 and "(all 7 shots)" in msg
     assert "shot s03's scene content changed" in msg
     assert "run BLENDER check SHORT" in msg
+
+
+def test_object_keys_are_cached_and_never_part_of_the_check_key(sdir):
+    """The per-object keys and the rest's key are cached beside the fingerprints and recorded in a shot's check
+    inputs as information: the check key stays what it was without them."""
+    blend = sdir / "blend" / "short.blend"
+    blend.parent.mkdir()
+    blend.write_bytes(b"one")
+    objects = {"s01": {"objects": {"Cube": "k1", "Sphere": "k2"}, "rest": "r1"}}
+    freshness.save_fingerprints(sdir, "h", {"s01": "a"}, objects=objects)
+    assert freshness.load_fingerprints(sdir, "h") == {"s01": "a"}
+    assert freshness.load_fingerprint_objects(sdir, {"s01": "a"}) == objects
+    assert freshness.load_fingerprint_objects(sdir, {"s01": "b"}) == {}
+    assert freshness.load_fingerprint_objects(sdir, None) == {}
+    freshness.save_fingerprints(sdir, "h", {"s01": "a"})
+    assert freshness.load_fingerprint_objects(sdir, {"s01": "a"}) == {}  # a cache from before the keys
+    span = Span("s01", 1, 90)
+    plain = freshness.shot_check_inputs("a", span, _shot(), ["s01"])
+    keyed = freshness.shot_check_inputs("a", span, _shot(), ["s01"], objects=objects["s01"])
+    assert keyed["objects"] == {"Cube": "k1", "Sphere": "k2"} and keyed["rest"] == "r1"
+    assert "objects" not in plain and "rest" not in plain
+    assert freshness.checks_stamp("h", {"s01": plain})["shots"] == freshness.checks_stamp("h", {"s01": keyed})["shots"]
+    assert freshness.blend_stat(sdir) == freshness._blend_stat(sdir) == [3, blend.stat().st_mtime_ns]

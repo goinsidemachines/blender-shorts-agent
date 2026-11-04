@@ -21,5 +21,8 @@ def test_fingerprints_in_blender(blender_run):
         "test_animated_material_values_are_sampled_per_frame",
         "test_fingerprints_are_quick",
         "test_a_mesh_stored_in_another_order_is_the_same_mesh",
+        "test_object_keys_change_only_for_the_object_that_changed",
+        "test_a_parent_change_changes_the_childs_key",
+        "test_object_keys_do_not_change_the_fingerprints",
     ):
         assert f"PASS {name}" in result.stdout
