@@ -248,3 +248,95 @@ def test_pace_and_like_are_validated():
     assert any("like" in e for e in validate(_short(like={**ok, "short": ""})))
     assert any("like" in e for e in validate(_short(like={**ok, "at": 5})))
     assert any("like" in e for e in validate(_short(like="03-how-a-clock-ticks")))
+
+
+def _one_take(ats, seconds=12.0, **camera) -> Short:
+    shots = [Shot(f"s{i + 1:02d}", "T", "pic", "Scene", at=a) for i, a in enumerate(ats)]
+    lines = [Line(f"l{i + 1:02d}", "Plain words.", s.id, []) for i, s in enumerate(shots)]
+    return _short(shots=shots, lines=lines, camera={"style": "one-take", "seconds": seconds, **camera})
+
+
+def test_one_take_windows_are_validated():
+    from bsa.short import camera_stage_wanted, one_take
+
+    good = _one_take([0, 4, 9])
+    assert validate(good) == []
+    assert one_take(good) and camera_stage_wanted(good)
+    assert not one_take(_short()) and not camera_stage_wanted(_short())
+    assert camera_stage_wanted(_short(camera={"style": "cuts", "approve": True}))
+
+    def one(short):
+        errs = validate(short)
+        assert len(errs) == 1, errs
+        return errs[0]
+
+    assert one(_one_take([0, None, 9])) == ("shot s02 has no 'at': give it the second its window starts on the "
+                                            "camera path")  # fmt: skip
+    assert one(_one_take([0.5, 4, 9])) == ("shot s01: 'at' 0.5 must be 0: the first window starts the camera "
+                                           "path")  # fmt: skip
+    assert one(_one_take([0, 4.5, 4.0])) == "shot s03: 'at' 4.0 must be after s02's 4.5"
+    assert one(_one_take([0, 4, 4])) == "shot s03: 'at' 4.0 must be after s02's 4.0"
+    assert one(_one_take([0, 4, 4.01])) == ("shot s03: 'at' 4.01 starts on the same frame as s02's 4.0: move it at "
+                                            "least one frame later")  # fmt: skip
+    assert one(_one_take([0, 4, 12])) == ("shot s03: 'at' 12.0 must be before camera.seconds 12.0: move s03's start "
+                                          "earlier or make camera.seconds longer")  # fmt: skip
+    assert one(_one_take([0, 4, 13])).startswith("shot s03: 'at' 13.0 must be before camera.seconds 12.0")
+    assert one(_one_take([0, "4", 9])) == "shot s02: 'at' must be seconds on the camera path (a number), got '4'"
+    for seconds in (None, 0, -1, "12", True):
+        short = _one_take([0, 4, 9], seconds=seconds)
+        if seconds is None:
+            short.camera.pop("seconds")
+        msg = one(short)
+        assert msg.startswith("camera.seconds must be the length of the camera path"), msg
+    # a cuts short with at: one error per shot that has it
+    cuts = _short(shots=[Shot("s01", "T", "p", "S"), Shot("s02", "T", "p", "S", at=4.0)],
+                  lines=[Line("l01", "Plain words.", "s01"), Line("l02", "Plain words.", "s02")])  # fmt: skip
+    assert validate(cuts) == ["shot s02 has 'at' but camera.style is not one-take"]
+    cuts.camera = {"style": "cuts"}
+    assert validate(cuts) == ["shot s02 has 'at' but camera.style is not one-take"]
+    assert one(_short(camera={"style": "orbit"})) == "camera.style must be cuts or one-take, got 'orbit'"
+    assert one(_short(camera={"style": "cuts", "speed": 2})).startswith("camera has unknown keys ['speed']")
+    assert one(_short(camera={"approve": "yes"})).startswith("camera.approve must be true or false")
+    assert one(_short(camera=["one-take"])).startswith("camera must be an object")
+    # the timeline is never built from windows that do not validate
+    import pytest
+
+    from bsa.timeline import build_timeline, window_frames
+
+    for bad in (_one_take([0, 4.5, 4.0]), _one_take([0, None, 9]), _one_take([0, 4, 9], seconds=0)):
+        with pytest.raises(ValueError, match="shot s0|camera.seconds"):
+            build_timeline(bad, None)
+        with pytest.raises(ValueError):
+            window_frames(bad)
+
+
+# The top-level and per-shot keys save_short wrote before one-take shorts existed (pinned on 0fdc655), and the
+# sha256 of the pendulum fixture as it saved it then (text, "\n" line ends).
+OLD_TOP_KEYS = ["slug", "title", "length_s", "version", "topic", "audience", "field", "fps", "width", "height",
+                "style", "facts", "lines", "shots", "sfx", "assets", "sound_policy", "post", "end_card", "closing",
+                "look", "rules", "rules_check", "render", "narrator", "pace", "like", "captions_translations"]  # fmt: skip
+OLD_SHOT_KEYS = ["id", "title", "picture", "scene", "min_s", "still_at", "labels", "badge", "hold", "wide",
+                 "title_card", "category", "step", "bars"]  # fmt: skip
+OLD_PENDULUM_SHA = "13d56fb4eda01d33383d2961bcb1306d0c703fed705e4421352480e4639273c4"
+
+
+def test_save_short_writes_no_new_keys_for_a_cuts_short(tmp_path):
+    import hashlib
+    import json
+
+    out = tmp_path / "short.json"
+    save_short(load_short(SAMPLE), out)
+    text = out.read_text(encoding="utf-8")
+    data = json.loads(text)
+    assert list(data) == OLD_TOP_KEYS
+    assert all(list(s) == OLD_SHOT_KEYS for s in data["shots"])
+    assert hashlib.sha256(text.encode()).hexdigest() == OLD_PENDULUM_SHA
+    # a one-take short round-trips its camera and every shot's at
+    short = _one_take([0, 4, 9], approve=True)
+    save_short(short, out)
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["camera"] == {"style": "one-take", "seconds": 12.0, "approve": True}
+    assert [s["at"] for s in data["shots"]] == [0, 4, 9]
+    back = load_short(out)
+    assert back.camera == short.camera and [s.at for s in back.shots] == [0, 4, 9]
+    assert validate(back) == []

@@ -54,6 +54,9 @@ class Shot:
     category: str | None = None
     step: list | None = None
     bars: dict | None = None
+    # A one-take short's shot: the second its window starts on the camera path (the first is 0). None = a cuts short's
+    # shot, whose length comes from its lines. Not written when None.
+    at: float | None = None
 
 
 @dataclass
@@ -112,6 +115,10 @@ class Short:
     # This short's render choices: {"engine": "cycles" | "eevee"} is the engine the engine stage proposes (the
     # approved engine stays the engine stage's own). Empty = the setting.
     render: dict = dc_field(default_factory=dict)
+    # This short's camera: {"style": "cuts" | "one-take", "seconds": the camera path's length, "approve": true to ask
+    # for the camera stage}. A one-take short is one continuous move: each shot is a fixed window on it (Shot.at) and
+    # the picture sets the clock. Empty = cuts, and not written.
+    camera: dict = dc_field(default_factory=dict)
     # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in (never the
     # provider or command). Empty = the settings. "voice_for" names the provider its voice and speed were chosen for
     # (new-short --like): under another provider they are not used. Without it (older shorts) they always apply.
@@ -145,7 +152,76 @@ def load_short(path: Path) -> Short:
 def save_short(short: Short, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(short), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    data = asdict(short)
+    if not data["camera"]:  # a cuts short's file is written exactly as before one-take shorts
+        del data["camera"]
+    for shot in data["shots"]:
+        if shot["at"] is None:
+            del shot["at"]
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+CAMERA_STYLES = ("cuts", "one-take")
+
+
+def one_take(short) -> bool:
+    """Whether the short is one continuous camera move, each shot a fixed window on it."""
+    camera = getattr(short, "camera", None)
+    return isinstance(camera, dict) and camera.get("style") == "one-take"
+
+
+def camera_stage_wanted(short) -> bool:
+    """Whether the camera approval stage is offered: always for a one-take short, else when camera.approve is true."""
+    camera = getattr(short, "camera", None)
+    return one_take(short) or (isinstance(camera, dict) and camera.get("approve") is True)
+
+
+def camera_problems(short) -> list[str]:
+    """Problems of the short's camera and of its shots' `at` (the windows of a one-take short)."""
+    camera = short.camera
+    if not isinstance(camera, dict):
+        return [f"camera must be an object such as {{\"style\": \"one-take\", \"seconds\": 30}}, got {camera!r}"]
+    out = []
+    extra = sorted(set(camera) - {"style", "seconds", "approve"})
+    if extra:
+        out.append(f"camera has unknown keys {extra}: use style, seconds and approve")
+    if "style" in camera and camera["style"] not in CAMERA_STYLES:
+        out.append(f"camera.style must be {' or '.join(CAMERA_STYLES)}, got {camera['style']!r}")
+    if "approve" in camera and not isinstance(camera["approve"], bool):
+        out.append(f"camera.approve must be true or false, got {camera['approve']!r}")
+    seconds = camera.get("seconds")
+    seconds_ok = _number(seconds) and seconds > 0
+    if not one_take(short):
+        if "seconds" in camera and not seconds_ok:
+            out.append(f"camera.seconds must be the length of the camera path in seconds (a number above 0), got "
+                       f"{seconds!r}")  # fmt: skip
+        out += [f"shot {s.id} has 'at' but camera.style is not one-take" for s in short.shots if s.at is not None]
+        return out
+    if not seconds_ok:
+        out.append(f"camera.seconds must be the length of the camera path in seconds (a number above 0) for a "
+                   f"one-take short, got {seconds!r}: set it to when the last window ends")  # fmt: skip
+    fps = short.fps if _number(short.fps) and short.fps > 0 else FPS
+    prev = None  # (shot id, at) of the last shot with a usable at
+    for i, s in enumerate(short.shots):
+        if s.at is None:
+            out.append(f"shot {s.id} has no 'at': give it the second its window starts on the camera path")
+            continue
+        if not _number(s.at):
+            out.append(f"shot {s.id}: 'at' must be seconds on the camera path (a number), got {s.at!r}")
+            continue
+        at = float(s.at)
+        if i == 0 and at != 0:
+            out.append(f"shot {s.id}: 'at' {at} must be 0: the first window starts the camera path")
+        elif prev is not None and at <= prev[1]:
+            out.append(f"shot {s.id}: 'at' {at} must be after {prev[0]}'s {prev[1]}")
+        elif prev is not None and round(at * fps) <= round(prev[1] * fps):
+            out.append(f"shot {s.id}: 'at' {at} starts on the same frame as {prev[0]}'s {prev[1]}: move it at least "
+                       "one frame later")  # fmt: skip
+        elif seconds_ok and (at >= seconds or round(at * fps) >= round(seconds * fps)):
+            out.append(f"shot {s.id}: 'at' {at} must be before camera.seconds {float(seconds)}: move {s.id}'s start "
+                       "earlier or make camera.seconds longer")  # fmt: skip
+        prev = (s.id, at)
+    return out
 
 
 _LINE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -586,6 +662,7 @@ def validate(short: Short) -> list[str]:
     if short.look not in (None, "fresh", "brand"):
         errors.append(f"look must be \"fresh\" (this short's own style, the brand off) or \"brand\", got {short.look!r}")
     errors += _render_problems(short.render)
+    errors += camera_problems(short)
     errors += _narrator_problems(short.narrator)
     errors += _pace_problems(short.pace)
     errors += _like_problems(short.like)

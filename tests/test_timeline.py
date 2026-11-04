@@ -284,3 +284,103 @@ def test_length_warning_counts_extra_seconds():
     assert length_warning(s, tl, extra_s=10) is None  # 50 s: still within 15% of 45 s
     msg = length_warning(s, tl, extra_s=15)  # the closing card's 15 s on top
     assert "about 55 s" in msg and "over" in msg
+
+
+def _one_take(ats, seconds, lines_per_shot=1, text="Plain words here."):
+    shots = [Shot(f"s{i + 1:02d}", "T", "pic", "Scene", at=a) for i, a in enumerate(ats)]
+    lines = [Line(f"l{i + 1:02d}{chr(97 + k)}", text, s.id) for i, s in enumerate(shots) for k in range(lines_per_shot)]
+    return Short(slug="t", title="T", length_s=seconds, lines=lines, shots=shots,
+                 camera={"style": "one-take", "seconds": seconds})  # fmt: skip
+
+
+def test_one_take_shots_are_the_windows_and_lines_start_in_them():
+    from bsa.timeline import LEAD_IN_S, window_frames
+
+    short = _one_take([0, 4, 9], 12, lines_per_shot=2)
+    spans = {"s01": (1, 120), "s02": (121, 270), "s03": (271, 360)}
+    assert window_frames(short) == spans
+    lead = round(LEAD_IN_S * 30)
+    long = {ln.id: 0.9 for ln in short.lines}  # s03's 3.0 s window needs 2.95 s
+    tl = build_timeline(short, long)
+    assert [(s.id, s.f0, s.f1) for s in tl.shots] == [(k, *v) for k, v in spans.items()]
+    assert tl.n_frames == 360
+    first_s02 = next(ln for ln in tl.lines if ln.id == "l02a")
+    assert first_s02.f0 == 121 + lead and first_s02.f1 - first_s02.f0 + 1 == 27
+    second_s02 = next(ln for ln in tl.lines if ln.id == "l02b")
+    assert second_s02.f0 == first_s02.f1 + 1 + 11  # the usual gap (0.35 s)
+    # every line sits in its window, with its cards
+    for ln in tl.lines:
+        f0, f1 = spans[ln.id[:3].replace("l", "s")]
+        assert f0 <= ln.f0 <= ln.f1 <= f1
+    assert {c.line_id for c in tl.cards} == {ln.id for ln in short.lines}
+    # a window with time left holds: shorter lines never change a span
+    short_takes = build_timeline(short, {ln.id: 0.5 for ln in short.lines})
+    assert [(s.id, s.f0, s.f1) for s in short_takes.shots] == [(s.id, s.f0, s.f1) for s in tl.shots]
+    # min_s is not used: a long min_s does not stretch a window
+    for s in short.shots:
+        s.min_s = 30.0
+    assert [(s.f0, s.f1) for s in build_timeline(short, long).shots] == list(spans.values())
+
+
+def test_redoing_the_narration_never_moves_a_window():
+    short = _one_take([0, 4, 9], 12, lines_per_shot=2)
+    a = build_timeline(short, {ln.id: 0.8 for ln in short.lines})
+    b = build_timeline(short, {ln.id: 0.5 + 0.05 * i for i, ln in enumerate(short.lines)},
+                       onsets={short.lines[0].id: 0.2})  # fmt: skip
+    assert [(s.id, s.f0, s.f1) for s in a.shots] == [(s.id, s.f0, s.f1) for s in b.shots]
+    assert a.n_frames == b.n_frames == 360
+    assert [ln.f1 for ln in a.lines] != [ln.f1 for ln in b.lines]
+
+
+def test_a_window_too_short_says_by_how_much_and_both_fixes():
+    from bsa.timeline import WindowOverrun
+
+    # s04 is 6.0 s; its one line is 6.4 s, so it needs 0.2 lead + 6.4 + 0.6 tail = 7.2 s
+    short = _one_take([0, 2, 4, 6, 12], 16)
+    durs = {ln.id: 1.0 for ln in short.lines}
+    durs["l04a"] = 6.4
+    with pytest.raises(WindowOverrun) as err:
+        build_timeline(short, durs)
+    assert str(err.value) == ("s04's lines need 7.2 s but its window is 6.0 s: shorten them or move s05's start "
+                              "1.2 s later")  # fmt: skip
+    assert isinstance(err.value, ValueError)
+    # the last window: make the camera path longer
+    short = _one_take([0, 2, 4, 6], 12)
+    durs = {ln.id: 1.0 for ln in short.lines}
+    durs["l04a"] = 6.4
+    with pytest.raises(WindowOverrun) as err:
+        build_timeline(short, durs)
+    assert str(err.value).endswith("make camera.seconds 1.2 s longer")
+    assert str(err.value) == ("s04's lines need 7.2 s but its window is 6.0 s: shorten them or make camera.seconds "
+                              "1.2 s longer")  # fmt: skip
+    # every overrun is reported, joined by "; "
+    durs["l01a"] = 3.0
+    with pytest.raises(WindowOverrun) as err:
+        build_timeline(short, durs)
+    parts = str(err.value).split("; ")
+    assert len(parts) == 2 and parts[0].startswith("s01's lines need 3.8 s but its window is 2.0 s")
+    # the end card's hold counts in the last window
+    durs = {ln.id: 1.0 for ln in short.lines}
+    durs["l04a"] = 4.8  # 0.2 + 4.8 + 0.6 = 5.6 s fits 6.0 s; with the 1.5 s end card it needs 7.1 s
+    build_timeline(short, durs)
+    with pytest.raises(WindowOverrun, match=r"s04's lines need 7\.1 s but its window is 6\.0 s"):
+        build_timeline(short, durs, end_card=True)
+    durs["l04a"] = 3.5  # 0.2 + 3.5 + 0.6 + 1.5 = 5.8 s: fits, and the end card never lengthens the short
+    assert build_timeline(short, durs, end_card=True).n_frames == 360
+
+
+# to_json(build_timeline(...)) for cuts shorts as the base commit 0fdc655 built them, before one-take shorts.
+PENDULUM_TIMELINE = {"fps": 30, "n_frames": 420, "shots": [{"id": "s01", "f0": 1, "f1": 120}, {"id": "s02", "f0": 121, "f1": 300}, {"id": "s03", "f0": 301, "f1": 420}], "lines": [{"id": "l01", "f0": 7, "f1": 73}, {"id": "l02", "f0": 127, "f1": 182}, {"id": "l03", "f0": 194, "f1": 260}, {"id": "l04", "f0": 307, "f1": 373}], "cards": [{"text": "A pendulum swings like", "line_id": "l01", "f0": 7, "f1": 52}, {"text": "clockwork.", "line_id": "l01", "f0": 53, "f1": 73}, {"text": "Length sets the beat.", "line_id": "l02", "f0": 127, "f1": 182}, {"text": "Four times longer,", "line_id": "l03", "f0": 194, "f1": 232}, {"text": "twice slower.", "line_id": "l03", "f0": 233, "f1": 260}, {"text": "Clocks kept time this way.", "line_id": "l04", "f0": 307, "f1": 373}]}
+TWO_LINE_TIMELINE = {"fps": 30, "n_frames": 312, "shots": [{"id": "s01", "f0": 1, "f1": 117}, {"id": "s02", "f0": 118, "f1": 312}], "lines": [{"id": "l01", "f0": 7, "f1": 99}, {"id": "l02", "f0": 124, "f1": 165}], "cards": [{"text": "The weight swings down,", "line_id": "l01", "f0": 7, "f1": 64}, {"text": "then up again.", "line_id": "l01", "f0": 65, "f1": 99}, {"text": "Gravity pulls it back.", "line_id": "l02", "f0": 132, "f1": 165}]}
+
+
+def test_cuts_timelines_are_unchanged():
+    assert to_json(build_timeline(load_short(SAMPLE), None)) == PENDULUM_TIMELINE
+    syn = Short(slug="t", title="T", length_s=10,
+                shots=[Shot("s01", "A", "p", "S", min_s=2.0), Shot("s02", "B", "p", "S", min_s=5.0)],
+                lines=[Line("l01", "The weight swings down, then up again.", "s01"),
+                       Line("l02", "Gravity pulls it back.", "s02")])  # fmt: skip
+    got = build_timeline(syn, {"l01": 3.1, "l02": 1.4}, end_card=True, onsets={"l02": 0.25})
+    assert to_json(got) == TWO_LINE_TIMELINE
+    syn.camera = {"style": "cuts", "approve": True}  # a cuts short asking for the camera stage: same timeline
+    assert to_json(build_timeline(syn, {"l01": 3.1, "l02": 1.4}, end_card=True, onsets={"l02": 0.25})) == TWO_LINE_TIMELINE
