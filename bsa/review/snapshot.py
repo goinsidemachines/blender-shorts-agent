@@ -440,6 +440,16 @@ def _run_label(key: str, preset: str) -> str:
     return preset.capitalize() + (f" · {tag}" if tag else "")
 
 
+def _step_row(s: dict) -> dict:
+    """A run step for the page: its name and state, and while it runs what it is on now (its progress's `current`,
+    e.g. the checks beside the render: "checking s02 (2 of 4), 0 errors so far") as `note`."""
+    row = {"name": str(s.get("name")), "state": s.get("state")}
+    p = s.get("progress")
+    if s.get("state") == "running" and isinstance(p, dict) and p.get("current"):
+        row["note"] = str(p["current"])
+    return row
+
+
 def _run(sdir: Path, key: str, status: dict, now: float, short: Short | None) -> dict:
     d = render_status.describe(status, now, ago=False)
     preset = str(status.get("preset") or key.split("-")[0])
@@ -460,7 +470,7 @@ def _run(sdir: Path, key: str, status: dict, now: float, short: Short | None) ->
             timeline = track.build(sdir, short, key)
     except Exception as e:  # noqa: BLE001 - a bad timeline.json hides this run's timeline, not the run
         timeline_problem = _plain(sdir, e)
-    steps = [{"name": str(s.get("name")), "state": s.get("state")} for s in run.get("steps") or [] if isinstance(s, dict)]
+    steps = [_step_row(s) for s in run.get("steps") or [] if isinstance(s, dict)]
     return {
         "key": key,
         "label": _run_label(key, preset),

@@ -640,7 +640,8 @@
       eta ? ctx.el("span", { class: "muted" }, " · about " + eta + " left") : null) : null,
     runTimeline(ctx, r),
     (r.steps || []).length ? section(ctx, "Steps", ctx.el("ol", { class: "steps" }, r.steps.map(function (s) {
-      return ctx.el("li", { class: "step" }, ctx.el("span", { class: "step-name" }, String(s.name)), stateChip(ctx, s.state));
+      return ctx.el("li", { class: "step" }, ctx.el("span", { class: "step-name" }, String(s.name)), stateChip(ctx, s.state),
+        s.note ? ctx.el("span", { class: "muted step-note" }, String(s.note)) : null);
     }))) : null,
     r.latest ? section(ctx, "Latest frame", ctx.el("div", { class: "latest" },
       frameImg(ctx, r.latest, "Latest frame of the " + r.label + " run"))) : null,

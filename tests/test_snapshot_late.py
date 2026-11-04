@@ -49,6 +49,19 @@ def test_render_side_run_label_and_dead_run_is_stopped(tmp_path):
     assert runs[1]["label"] == "Preview · eevee" and runs[1]["state"] == "done"
 
 
+def test_a_running_step_shows_its_note(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "render")
+    path = sdir / "review" / "render-status-preview.json"
+    status = json.loads(path.read_text(encoding="utf-8"))
+    check = next(s for s in status["run"]["steps"] if s["name"] == "check")
+    check.update(state="running", finished=None,
+                 progress={"done": 1, "total": 4, "unit": "shots", "current": "checking s02 (2 of 4), 0 errors so far"})
+    path.write_text(json.dumps(status), encoding="utf-8")
+    steps = _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"][0]["steps"]
+    assert {"name": "check", "state": "running", "note": "checking s02 (2 of 4), 0 errors so far"} in steps
+    assert {"name": "build", "state": "done"} in steps  # a done step has no note
+
+
 def test_render_without_any_run_and_with_a_bad_file(tmp_path):
     sdir = pagefix.make_short(tmp_path, "story")
     assert _stage(snapshot.build(sdir, settings={}), "render")["content"] == {"runs": []}

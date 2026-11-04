@@ -800,3 +800,88 @@ def test_a_run_keeps_one_id_from_starting_to_its_end_and_the_summary_names_it(tm
     _starting(tmp_path, clock, kind="render")
     assert _read(tmp_path)["run_id"] != first["run_id"]
     assert _read(tmp_path)["previous"]["run_id"] == first["run_id"]
+
+
+def test_a_side_step_runs_and_reports_beside_the_current_one(tmp_path):
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        assert run.current is None
+        run.begin("render")
+        run.progress(3, 10, current="checking s02 (2 of 4), 0 errors so far", step="check", force=True)
+        run.progress(5, 50)
+        s = _read(tmp_path)
+        assert _step(s, "check")["state"] == "running" and _step(s, "render")["state"] == "running"
+        assert run.current == "render" and s["run"]["current"] == "render"
+        check, render = _step(s, "check")["progress"], _step(s, "render")["progress"]
+        assert check["done"] == 3 and check["current"] == "checking s02 (2 of 4), 0 errors so far"
+        assert render["done"] == 5
+        run.end("check", "failed", "2 check error(s)")
+        assert run.current == "render"
+        s = _read(tmp_path)
+        assert _step(s, "check")["state"] == "failed" and _step(s, "check")["error"] == "2 check error(s)"
+        assert _step(s, "check")["progress"]["done"] == 3 and _step(s, "render")["state"] == "running"
+        run.progress(4, 10, step="check", force=True)  # a finished step takes no more progress
+        run.progress(1, 2, step="nope", force=True)  # nor does an unknown one
+        s = _read(tmp_path)
+        assert _step(s, "check")["progress"]["done"] == 3 and "nope" not in [x["name"] for x in s["run"]["steps"]]
+        run.end("render")
+    assert _read(tmp_path)["state"] == "done"
+
+
+def test_a_side_step_keeps_its_own_progress_clock(tmp_path):
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        run.progress(0, 10, step="check", force=True)
+        clock.tick(100)
+        run.begin("render")
+        run.progress(0, 10)
+        clock.tick(10)
+        run.progress(5, 10, step="check", force=True)
+        run.progress(5, 10, force=True)
+        s = _read(tmp_path)
+        assert _step(s, "check")["progress"]["elapsed_s"] == 110
+        assert _step(s, "render")["progress"]["elapsed_s"] == 10
+
+
+def test_a_run_that_ends_while_a_side_step_runs_ends_that_step_too(tmp_path):
+    clock = Clock()
+    with pytest.raises(RuntimeError), _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        with run.step("render"):
+            raise RuntimeError("boom")
+    s = _read(tmp_path)
+    assert _step(s, "check")["state"] == "failed" and _step(s, "render")["state"] == "failed"
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        with run.step("render"):
+            pass
+    assert _step(_read(tmp_path), "check")["state"] == "stopped"
+
+
+def test_progress_from_two_threads_never_corrupts_the_file(tmp_path):
+    import threading
+
+    run = _run_obj(tmp_path, Clock(), steps=("check", "render"))
+    with run:
+        run.begin_side("check")
+        run.begin("render")
+        errors = []
+
+        def work(step):
+            try:
+                for i in range(1, 201):
+                    run.progress(i, 200, current=f"{step} {i}", step=step, force=True)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work, args=(n,)) for n in ("check", "render")]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+            assert rs.read_status(rs.status_path(tmp_path, "preview")) is not None
+        assert not errors
+        s = _read(tmp_path)
+        assert _step(s, "check")["progress"]["done"] == 200 and _step(s, "render")["progress"]["done"] == 200

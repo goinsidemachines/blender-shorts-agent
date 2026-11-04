@@ -1,6 +1,7 @@
 """The Render, Final and Post stages in a real browser: live render progress with side runs as tabs, the final video
 and its findings, the acknowledgement, the post text's Copy buttons and the plugin feedback panel."""
 
+import json
 import time
 
 import pagefix
@@ -48,6 +49,21 @@ def test_render_side_runs_are_tabs(view, live_server):
     expect(side).to_have_attribute("aria-selected", "true")
     expect(side).to_be_focused()
     expect(stage.get_by_role("tabpanel").get_by_text("90 of 90 frames", exact=True)).to_be_visible()
+    assert_healthy(p)
+
+
+def test_render_stage_shows_the_check_note_beside_the_render(view, live_server):
+    srv = live_server("render")
+    path = srv.sdir / "review" / "render-status-preview.json"
+    status = json.loads(path.read_text(encoding="utf-8"))
+    check = next(s for s in status["run"]["steps"] if s["name"] == "check")
+    check.update(state="running", finished=None,
+                 progress={"done": 1, "total": 4, "unit": "shots", "current": "checking s02 (2 of 4), 0 errors so far"})
+    path.write_text(json.dumps(status), encoding="utf-8")
+    p = open_short(view, srv, stage="render")
+    note = p.locator("#bsa-stage .step-note")
+    expect(note).to_have_text("checking s02 (2 of 4), 0 errors so far")
+    expect(p.locator("#bsa-stage").get_by_text("checking s02 (2 of 4)")).to_be_visible()
     assert_healthy(p)
 
 
