@@ -30,5 +30,6 @@ def test_camera_and_motion_in_blender(blender_run):
         "test_follow_tracks_a_moving_part_from_a_fixed_place",
         "test_follow_rides_with_a_part_keeping_its_offset",
         "test_follow_refuses_an_unknown_mode",
+        "test_follow_keeps_keys_outside_and_a_fast_part_in_the_band_in_both_modes",
     ):
         assert f"PASS {name}" in result.stdout

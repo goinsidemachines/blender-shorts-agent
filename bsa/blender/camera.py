@@ -423,6 +423,8 @@ def move(cam, objs, f0: int, f1: int, orbit: float = 0.0, tilt: float = 0.0, to=
 
 
 FOLLOW_TRIES = 30  # camera.follow's steps back along the view axis before a key that still does not fit is warned
+TURN_STEPS = 12  # camera.follow's corrections turning the aim point onto the band's centre
+TURN_TOL_PX = 0.5  # ... and how near (px) it must end up, else a warning
 
 
 def _matrices(obj, scene, frames) -> list[np.ndarray]:
@@ -440,26 +442,28 @@ def _matrices(obj, scene, frames) -> list[np.ndarray]:
     return out
 
 
-def _turn_to(project, focal: float, m: np.ndarray, point: np.ndarray, want: np.ndarray) -> np.ndarray:
-    """`m` turned about its own position (world Z up, no roll) so the world `point` projects onto the pixel `want`."""
+def _turn_to(project, focal: float, m: np.ndarray, point: np.ndarray, want: np.ndarray) -> tuple[np.ndarray, bool]:
+    """(`m` turned about its own position (world Z up, no roll) so the world `point` projects onto the pixel `want`,
+    whether it got there: within TURN_TOL_PX, in front of the camera)."""
     m = _look_at(m, point)
-    for _ in range(12):
-        x, y, _depth = project(m, point[None])
+    for step in range(TURN_STEPS + 1):
+        x, y, depth = project(m, point[None])
         off = (float(x[0]) - want[0], float(y[0]) - want[1])
-        if max(abs(off[0]), abs(off[1])) < 0.05:
+        if max(abs(off[0]), abs(off[1])) < 0.05 or step == TURN_STEPS:
             break
         right = m[:3, 0] / np.linalg.norm(m[:3, 0])
         yaw = np.array(Matrix.Rotation(-math.atan2(off[0], focal), 3, "Z"))  # point right of want: turn right
         pitch = np.array(Matrix.Rotation(-math.atan2(off[1], focal), 3, Vector(right.tolist())))  # below: look down
         m = m.copy()
         m[:3, :3] = yaw @ pitch @ m[:3, :3]
-    return m
+    return m, bool(depth[0] > 0 and max(abs(off[0]), abs(off[1])) < TURN_TOL_PX)
 
 
 def _back_off(project, focal: float, m: np.ndarray, pts: np.ndarray, area: Rect, aim: np.ndarray,
-              want: np.ndarray) -> tuple[np.ndarray, bool]:  # fmt: skip
+              want: np.ndarray) -> tuple[np.ndarray, bool, bool]:  # fmt: skip
     """(`m` moved back along its view axis, turned to `aim` again each step, just until the world points `pts` fit
-    `area`; never nearer, whether they fit)."""
+    `area`; never nearer, whether they fit, whether the last turn got there)."""
+    turned = True
     half = np.array([area.w / 2, area.h / 2])
     span = max(float(np.ptp(pts, axis=0).max()), 1e-3)
     for _ in range(FOLLOW_TRIES):
@@ -472,12 +476,12 @@ def _back_off(project, focal: float, m: np.ndarray, pts: np.ndarray, area: Rect,
             reach = max(max(want[0] - x.min(), x.max() - want[0]) / half[0],
                         max(want[1] - y.min(), y.max() - want[1]) / half[1])  # fmt: skip
             if reach <= 1 + 1e-4:
-                return m, True
+                return m, True, turned
             step = max(float((aim - m[:3, 3]) @ -back) * (reach - 1) * 1.01, 1e-4)
         m = m.copy()
         m[:3, 3] += back * step
-        m = _turn_to(project, focal, m, aim, want)
-    return m, False
+        m, turned = _turn_to(project, focal, m, aim, want)
+    return m, False, turned
 
 
 def follow(cam, target, f0: int, f1: int, mode: str = "track", offset=None, smooth: float = MOVE_SMOOTH,
@@ -499,9 +503,11 @@ def follow(cam, target, f0: int, f1: int, mode: str = "track", offset=None, smoo
     none): no jitter from a part that shakes or turns a corner, the first and last keys kept. With `band` (the
     default), a key where the box does not fit the band backs the camera off along its view axis just enough, never
     nearer than the smoothed position, and those backing-off distances are eased too (never nearer than fitted).
-    With `above_ground`, a camera under the ground is lifted as frame_objects does. The camera's keys strictly
-    between `f0` and `f1` are removed first; keys outside stay. A perspective camera only (an orthographic one is
-    refused: it has no distance to back off along).
+    With `above_ground`, a camera under the ground is lifted as frame_objects does, which refits that key into the
+    band (centred, the camera moved and turned) even with `band=False`. Every pose is worked out before any key
+    changes (an error leaves the camera's keys as they were); then its keys strictly between `f0` and `f1` are
+    replaced, and keys outside stay. A perspective camera only (an orthographic one is refused: it has no distance
+    to back off along). A key the camera could not turn to aim at is warned about.
 
     Returns {"keys": the keyed frames, "distances": the camera's distance to the box's centre at each key,
     "warnings": the framing warnings, each once (also issued as FramingWarning and kept on the scene with `shot`
@@ -545,21 +551,25 @@ def follow(cam, target, f0: int, f1: int, mode: str = "track", offset=None, smoo
     project, focal = _projector(cam, scene)
     want = np.array([area.x + area.w / 2, area.y + area.h / 2])
     skip = frozenset(o.name for o in objs)
+    planned = []  # every pose first: an error part way (FramingError from the lift) leaves the camera's keys alone
+    for f, pts, aim, place in zip(frames, boxes, aims, places, strict=True):
+        m = m0.copy()
+        m[:3, 3] = place
+        m, turned = _turn_to(project, focal, m, aim, want)
+        settled = True
+        if band:
+            m, settled, turned_back = _back_off(project, focal, m, pts, area, aim, want)
+            turned = turned and turned_back
+        if above_ground:
+            m, settled, _lifted = _lift(cam, scene, m, pts, area, True, settled, what, shot, False, skip)
+        planned.append((f, pts, aim, place, m, settled, turned))
     _clear_between(cam, f0, f1)
     euler = cam.rotation_mode not in ("QUATERNION", "AXIS_ANGLE")
     prev = None
     found: list[str] = []
     poses = []
     backs = []
-    for f, pts, aim, place in zip(frames, boxes, aims, places, strict=True):
-        m = m0.copy()
-        m[:3, 3] = place
-        m = _turn_to(project, focal, m, aim, want)
-        settled = True
-        if band:
-            m, settled = _back_off(project, focal, m, pts, area, aim, want)
-        if above_ground:
-            m, settled, _lifted = _lift(cam, scene, m, pts, area, True, settled, what, shot, False, skip)
+    for f, pts, aim, place, m, settled, turned in planned:
         back = m[:3, 2] / np.linalg.norm(m[:3, 2])
         backs.append(float((m[:3, 3] - place) @ back))
         cam.matrix_world = Matrix(m.tolist())
@@ -583,6 +593,9 @@ def follow(cam, target, f0: int, f1: int, mode: str = "track", offset=None, smoo
         below = None if above_ground else _under(scene, m[:3, 3], what, pts, skip)
         if below:
             msgs.insert(len(msgs) - (not settled), below)
+        if not turned:
+            msgs.append(f"camera.follow: the camera could not turn to put {what}'s centre on the band's centre at "
+                        f"frame {f} (it aims {_fmt(aim)} from {_fmt(m[:3, 3])}): look at the still")  # fmt: skip
         _note(scene, cam, f, shot, msgs)
         found += msgs
         poses.append((f, m, aim))
