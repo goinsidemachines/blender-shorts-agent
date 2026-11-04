@@ -490,10 +490,11 @@ def test_checks_chapter_documents_every_tag():
         assert f"`{t.rstrip(':')}" in text, t
 
 
-def test_build_chapter_says_relative_paths_resolve_beside_the_blend():
+def test_build_chapter_says_only_slash_slash_means_beside_the_blend():
     text = _flat(_read("playbook/06-build.md"))
     assert 'bpy.path.abspath("//' in text
     assert "beside the .blend" in text
+    assert "drive root" in text and "working folder" in text
 
 
 def test_cutaway_models_are_documented():

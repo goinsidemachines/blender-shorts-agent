@@ -20,7 +20,8 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   mechanism; see `fields/*.md`), and move anything that travels along a multi-leg path with
   `bsa.blender.bake.keyframe_path(obj, points, f0, f1, ease="smooth")` (by arc length, see "Parts that move against
   each other"). `keyframe_series`, `keyframe_path` and `keyframe_matrices` put the property back to the value it had
-  before keying, so code that reads it next (a hook's inverse) sees the rest pose;
+  before keying, so code that reads it next (a hook's inverse) sees the rest pose (rebuilding an older short whose
+  build.py parents or hooks a part right after keying it, reading the last key's pose: check its first preview);
 - tag objects for the checks with `bsa.blender.bake.tag(obj, ...)`: `"hero"` for the subject(s) each shot is about
   (must stay inside the frame; `"hero:s03,s04"` makes it a hero only in those shots, for a subject the camera leaves
   on purpose elsewhere; `"hero:s07@0.6"` a hero of s07 from 60% of the shot on, for a subject the camera reaches later), `"grounded"` for things that rest on something (must not float or sink),
@@ -40,8 +41,9 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   runs); `"swap:<other>"` on a part that takes over from `<other>` in place (a straight blade swapped for a bent
   one: switch the new one on and the old one off on the same frame, at exactly the same place; `swap` checks it,
   not `pop_in`); `"rigid"` on a forged part built from several meshes (a crank and its pin): it and everything
-  under it is one solid, its meshes are not tested against each other, and each is still checked against everything
-  outside (joining the meshes into one is simpler); `"assembly:<name>"` on each member of a group whose parts touch
+  under it that doesn't move on its own is one solid (a keyed or constrained child, and what is under it, is not),
+  its meshes are not tested against each other, and each is still checked against everything outside (joining the
+  meshes into one is simpler); `"assembly:<name>"` on each member of a group whose parts touch
   or mesh with each other only (a gear train, a balance and its arbor; `"assembly:<name>:<max depth m>"` caps how
   deep members may go): a member against anything outside the assembly is checked as usual;
   `"volume"` on gas, flame or smoke round solids (no overlap, z-fighting or floating; `pops` and `pop_in` still
@@ -123,9 +125,11 @@ if __name__ == "__main__" and "--" in sys.argv:
     build(SHORT_DIR)
 ```
 
-Relative paths in a `blender -b` script resolve against the working folder, not beside the .blend. Use absolute
-paths (from `SHORT_DIR`), or `bpy.path.abspath("//textures/wood.png")`, which resolves beside the .blend once the file
-is saved.
+Relative paths in a `blender -b` script do not mean "beside the .blend". Python's own file calls (`open("x")`) use
+the working folder; a plain relative path that Blender itself writes (`scene.render.filepath`, `Image.save` or
+`filepath_raw`, compositor file outputs) resolves to the drive root (`C:\out.png`, which fails without write rights).
+Use absolute paths (from `SHORT_DIR`), or write `//` explicitly to mean beside the .blend (`"//renders/f####"`,
+`bpy.path.abspath("//textures/wood.png")`) once the file is saved.
 
 Run it (script mode):
 
@@ -245,7 +249,8 @@ The checks pass geometry that is wrong to the eye if you excuse it, so build it 
     solids, or it floats in front of the opened part. See `07-checks.md` for the checks a cutaway meets.
     **Rigid parts: join, or tag the parent `rigid`.** A forged part built from several meshes (a crank and its pin)
     is one solid: join the meshes into one (`bpy.ops.object.join()`), or, when they must stay separate objects, tag
-    the parent `rigid` so `overlap` does not test them against each other.
+    the parent `rigid` so `overlap` does not test them against each other. The group is a parent and its children
+    that don't move on their own: a keyed child (a piston under the block) is still checked against the rest.
 14. **Parts in contact share the moving parent.** When two parts touch (a rod in its cylinder, a part on a moving
     deck), parent both to the moving part that carries them. When you replace a part's constructor, keep its
     parenting: have part builders return parented parts. A dropped parent leaves one part standing while the other

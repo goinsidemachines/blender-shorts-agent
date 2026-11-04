@@ -29,7 +29,10 @@ alongside another session's job. Rebuild first after changing `build.py` (it war
 Judge framing on `--guides` frames: they show the caption zone, the top cards and the framing band the edit and the
 checks use. `--guides` (on `test-frames`, `stills` and `grab`) also writes `<name>-guides.png` beside each frame
 with those zones outlined (caption zone yellow, top cards cyan with a kit, framing band magenta) and lists them in
-the result's `guides`; the plain frames are unchanged.
+the result's `guides`; the plain frames are unchanged. The magenta band is the default framing band: a shot's own
+framing (`px_top`, `px_bottom`, `px_left`, `px_right` or `top` given to `camera.frame_objects`) is not drawn, so
+judge such a shot against the band you gave it. `grab --guides` warns when `source/timeline.json` is newer than the
+video (the timing changed after the edit: a grab's shot may be off).
 
 ## Moving parts at their extremes (before the first preview)
 
