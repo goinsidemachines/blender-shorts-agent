@@ -72,6 +72,7 @@ def test_checks_in_blender(blender_run):
         "test_a_label_covering_its_own_part_is_reported",
         "test_a_small_subject_is_framing_unless_the_shot_is_wide",
         "test_a_subject_in_one_half_leaves_the_other_empty",
+        "test_any_part_on_screen_fills_the_top_half",
         "test_the_covered_check_measures_the_kits_cards",
         "test_style_bevels_change_no_floating_or_overlap_finding",
         "test_toon_lever_with_lines_gives_no_new_findings",

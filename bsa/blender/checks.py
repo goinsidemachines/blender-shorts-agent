@@ -542,7 +542,7 @@ class _Run:
 
     def see_frame(self, frame, span, objs, seen):
         """What a viewer sees at a sampled frame: the camera under a ground, the heroes' boxes on screen (framing:
-        only heroes from their start, hero:<shot>@<fraction>), every other part's box on screen (framing's parts)
+        only heroes from their start, hero:<shot>@<fraction>), every other part's box on screen (framing's parts: not a hero from its start, already framed)
         and the edit's text boxes over the heroes and labelled parts (covered)."""
         cam = self.scene.camera
         if cam is None:
@@ -558,7 +558,7 @@ class _Run:
         seen["parts"][frame] = {
             o.name: viewer.box_rect(screen_box(self.scene, cam_ev, o, dg)) for o in objs
             if o.name in geos and o.name not in self.set_objs and o.name not in self.overlay
-            and self.states.get(o.name) != "out"}  # fmt: skip
+            and self.states.get(o.name) != "out" and not self.hero(o, span.id, frame)}  # fmt: skip
         shot = self.short_shot(span.id)
         anchors, hero_track = {}, {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}
         if shot is not None and self.tl is not None:

@@ -379,8 +379,8 @@ def hero_start(frac: float, f0: int, f1: int) -> int:
 
 
 def tag(obj, *new_tags: str) -> None:
-    """Merge tags ("hero", "hero:s03,s04", "hero:s07@0.6", "grounded", "contact:<other>", "overlay", "surface", "set:<role>",
-    "lines:off", "fast", "swap:<other>", "rigid", "assembly:<name>[:<depth>]", "volume": see TAGS) into bsa_tags
+    """Merge tags ("hero", "hero:s03,s04", "hero:s07@0.6", "grounded", "contact:<other>", "overlay", "surface",
+    "set:<role>", "lines:off", "fast", "swap:<other>", "rigid", "assembly:<name>[:<depth>]", "volume": see TAGS) into bsa_tags
     (comma-joined, no duplicates). An unknown or empty tag (a typo) is a ValueError saying why (tag_problem). Only a
     hero:<shot ids> tag may hold commas (between its shot ids). A set object (set:<role>) is never a hero: ValueError."""
     for t in new_tags:

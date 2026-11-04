@@ -1302,6 +1302,18 @@ def test_a_subject_in_one_half_leaves_the_other_empty():
     assert len(found) == 1 and "bottom half" in found[0].message, found
 
 
+def test_any_part_on_screen_fills_the_top_half():
+    """A hero low in the frame leaves the top half empty unless another part reaches it; the warning names the
+    largest parts on screen, never the hero itself."""
+    sc = _scene()
+    bake.tag(_cube("Hero", (0, 0, _z_at_row(sc, 1150)), size=1.6), "hero")  # the bottom half only
+    found = _seen(sc, "framing", _seen_short(sc))
+    assert len(found) == 1 and "top half" in found[0].message, found
+    assert "The largest part" in found[0].message and "'Hero'" not in found[0].message, found[0].message
+    _cube("Frame", (0, 0, _z_at_row(sc, 450)), size=1.6)  # a part of the machine, high in the frame
+    assert not _seen(sc, "framing", _seen_short(sc))
+
+
 def _with_kit(brand):
     """Point BSA_HOME at a folder whose settings hold `brand` (None: no settings): run_checks reads the kit there."""
     import json
