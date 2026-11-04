@@ -103,8 +103,7 @@ def _disk(workspace: Path | None) -> dict:
 def _font(settings: dict, short, cache_dirs: list[Path] | None = None) -> dict:
     from bsa import fonts
 
-    style = getattr(short, "style", None) or {}
-    name = str(style.get("font") or (settings.get("brand") or {}).get("font") or "").strip()
+    name = fonts.caption_font_name(short, settings)  # as the edit and validate read it
     if not name:
         return _check("font", "ok", "No caption font is set: captions use the default.")
     path, used, note = fonts.resolve(name, cache_dirs=cache_dirs)

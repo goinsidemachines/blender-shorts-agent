@@ -98,3 +98,33 @@ def test_advance_em_sums_hmtx(tmp_path):
     assert fonts.advance_em(tmp_path / "missing.ttf", "A") is None
     p.write_bytes(build_font("AB"))  # no hmtx
     assert fonts.advance_em(p, "A") is None
+
+
+def test_captions_fall_back_to_the_brand_font():
+    from bsa.short import Line, Short, Shot
+
+    def short(**kw):
+        return Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Lift", "s1")],
+                     shots=[Shot("s1", "a", "p", "S")], **kw)  # fmt: skip
+
+    s = {"brand": {"font": "Inter"}}
+    assert fonts.caption_font_name(short(), s) == "Inter"
+    assert fonts.caption_font_name(short(style={"font": "Roboto"}), s) == "Roboto"  # the short's own font wins
+    assert fonts.caption_font_name(short(look="fresh"), s) == ""  # the brand off for this short: no brand font
+    assert fonts.caption_font_name(short(), {"brand": {"mode": "fresh", "font": "Inter"}}) == ""
+    assert fonts.caption_font_name(short(), {}) == ""
+
+
+def test_variable_warning_reads_the_caption_font(tmp_path):
+    from fontbuild import build_variable
+
+    from bsa.short import Line, Short, Shot
+
+    d = tmp_path / "fonts"
+    d.mkdir()
+    vf = d / "Varia-VF.ttf"
+    vf.write_bytes(build_variable("Lift", family="Varia"))
+    short = Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Lift", "s1")],
+                  shots=[Shot("s1", "a", "p", "S")])  # fmt: skip
+    warnings = fonts.glyph_warnings(short, {"handle": "", "brand": {"font": str(vf)}}, [d], system="Windows")
+    assert len(warnings) == 1 and "variable" in warnings[0] and "Varia" in warnings[0], warnings

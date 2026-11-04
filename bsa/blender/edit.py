@@ -13,6 +13,7 @@ from pathlib import Path
 import bpy
 
 from bsa.fonts import (  # noqa: F401 - find_font_file, font_dirs re-exported
+    caption_font_name,
     cover_font,
     family_of,
     find_font_file,
@@ -380,15 +381,17 @@ def build_edit(
         card = seq.strips.new_image("Closing card", str(closing["png"]), 1, closing["f0"], fit_method="FIT")
         card.frame_final_duration = closing["n_frames"]
     sdir = Path(out_mp4).parent.parent if Path(out_mp4).parent.name == "out" else None  # <short>/out/<slug>.mp4
-    font, used, note = _load_font(short.style.get("font"), font_caches(sdir))
+    from bsa import kit as kit_mod
+
+    k = kit_mod.kit_for(settings, short)
+    # without a kit the captions fall back to brand.font (a fresh look gets none); a kit keeps its own card font
+    name = short.style.get("font") if k is not None else caption_font_name(short, settings)
+    font, used, note = _load_font(name or None, font_caches(sdir))
     if note:
         scene[FONT_NOTE_PROP] = note
     if used:
         scene[FONT_USED_PROP] = used
     texts = _Texts(seq.strips, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
-    from bsa import kit as kit_mod
-
-    k = kit_mod.kit_for(settings, short)
     if k is None:  # no brand.style: exactly today's text captions, badges and labels
         _add_overlays(short, tl, texts, settings, anchors, label_heroes)
     else:

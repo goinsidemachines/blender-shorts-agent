@@ -160,6 +160,23 @@ def hold(cfg: dict, end: dict, fps: int) -> dict:
     return out
 
 
+def card_seconds(cfg: dict | None, take_s: float | None, fps: int) -> float | None:
+    """How long the card is really held (closing.seconds, or longer when the closing line needs it), in seconds;
+    None without a card."""
+    end = plan(cfg, 1, fps, take_s)
+    return round(end["n_frames"] / fps, 2) if end else None
+
+
+def stretch_warning(cfg: dict | None, take_s: float | None, fps: int) -> str | None:
+    """The warning when the closing line holds the card longer than closing.seconds; None otherwise."""
+    end = plan(cfg, 1, fps, take_s)
+    if not end or end["n_frames"] <= math.ceil(round(cfg["seconds"] * fps, 6)):
+        return None
+    held = end["n_frames"] / fps
+    return (f"the closing card will hold {held:.1f} s, not {cfg['seconds']:g} s: shorten the line or raise "
+            "closing.seconds")  # fmt: skip
+
+
 def take_seconds(takes_dir: Path | None) -> float | None:
     path = take(takes_dir)
     if path is None:

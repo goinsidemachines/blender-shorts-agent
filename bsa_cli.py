@@ -794,12 +794,25 @@ def cmd_validate(args) -> dict:
     tr_errors, tr_warnings = translations.problems(short, settings.load_settings())
     errors += tr_errors
     warnings += tr_warnings
-    rows, source = [], None
+    rows, source, closing_out = [], None, None
     if not errors:
+        from bsa import closing
+
+        card = closing.resolve(settings.load_settings(), short)
+        try:  # the closing take, when narrated, can hold the card longer than closing.seconds
+            take_s = closing.take_seconds(sdir / "audio" / "vo") if card else None
+        except Exception:  # noqa: BLE001 - a broken take: the card as set (narrate reports the takes)
+            take_s = None
+        closing_s = closing.card_seconds(card, take_s, short.fps)
+        if card:
+            closing_out = {"seconds": closing_s, "set_seconds": card["seconds"]}
         if short.length_s > 0:
-            msg = length_warning(short, _reading_timeline(short))
+            msg = length_warning(short, _reading_timeline(short), extra_s=closing_s or 0)
             if msg:
                 warnings.append(msg)
+        stretched = closing.stretch_warning(card, take_s, short.fps)
+        if stretched:
+            warnings.append(stretched)
         try:
             tl, from_takes = current_timeline(sdir, short)
         except Exception:  # noqa: BLE001 - broken takes: pace it at reading speed (narrate reports the takes)
@@ -810,6 +823,8 @@ def cmd_validate(args) -> dict:
     warnings += _font_and_sound_warnings(sdir, short)
     warnings += kit.problems(settings.load_settings(), short)
     out = {"ok": not errors, "errors": errors, "warnings": warnings, "pacing": rows, "pacing_from": source}
+    if closing_out:
+        out["closing"] = closing_out
     if errors:
         raise CliError(f"short.json has {len(errors)} problem(s): " + "; ".join(errors), out)
     return out
@@ -978,6 +993,14 @@ def cmd_narrate(args) -> dict:
         out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
     if closing_note:
         out["warnings"] = [closing_note]
+    if result.status == "ok":
+        try:
+            take_s = closing.take_seconds(sdir / "audio" / "vo")
+        except Exception:  # noqa: BLE001 - a broken take: the timing below reports it
+            take_s = None
+        stretched = closing.stretch_warning(closing.resolve(s, short), take_s, short.fps)
+        if stretched:
+            out.setdefault("warnings", []).append(stretched)
     try:
         out["timeline"] = cmd_timeline(args)
     except Exception as exc:  # noqa: BLE001 - narration never blocks: fall back to captions-only timing

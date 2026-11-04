@@ -585,17 +585,27 @@ def family_of(path) -> str:
     return info["family"] if info else Path(path).stem
 
 
+def caption_font_name(short, settings: dict) -> str:
+    """The font a short's text is drawn in: its own style.font, else the kit's font when a kit is on (brand.style),
+    else brand.font when the short follows the brand (a fresh look gets none), else "" (the default font)."""
+    name = str((getattr(short, "style", None) or {}).get("font") or "").strip()
+    if name:
+        return name
+    from bsa import kit
+    from bsa import settings as bsa_settings
+
+    own = kit.kit_for(settings or {}, short)
+    if own is not None:
+        return str(own.font or "").strip()
+    return str(bsa_settings.brand_for(settings or {}, short).get("font") or "").strip()
+
+
 def glyph_warnings(short, settings: dict, dirs: list[Path] | None = None, system: str | None = None,
                    cache_dirs: list[Path] | None = None) -> list[str]:  # fmt: skip
     """Warnings about the short's style font: a weight ("Family@600") that is neither installed nor cached, a
     variable font (the wrong weight in Blender), and every character of the captions, labels, badges and end card it
     has no glyph for, with the font the edit draws that text in instead."""
-    name = str((short.style or {}).get("font") or "").strip()
-    if not name:
-        from bsa import kit
-
-        own = kit.kit_for(settings, short)
-        name = str(own.font or "").strip() if own is not None else ""
+    name = caption_font_name(short, settings)
     if not name:
         return []
     dirs = font_dirs() if dirs is None else dirs

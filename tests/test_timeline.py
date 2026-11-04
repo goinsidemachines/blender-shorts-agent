@@ -274,3 +274,13 @@ def test_lead_in_takes_put_captions_at_the_voice(tmp_path):
     assert [(s.f0, s.f1) for s in tl.lines] == [(s.f0, s.f1) for s in plain.lines]
     first = next(c for c in tl.cards if c.line_id == "l01")
     assert first.f0 == tl.lines[0].f0 + round(onsets["l01"] * tl.fps)
+
+
+def test_length_warning_counts_extra_seconds():
+    from bsa.timeline import Timeline, length_warning
+
+    s, tl = _short([], length_s=45), Timeline(30, 40 * 30, [], [], [])
+    assert length_warning(s, tl) is None
+    assert length_warning(s, tl, extra_s=10) is None  # 50 s: still within 15% of 45 s
+    msg = length_warning(s, tl, extra_s=15)  # the closing card's 15 s on top
+    assert "about 55 s" in msg and "over" in msg

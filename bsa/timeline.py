@@ -195,16 +195,17 @@ def length_drift(short: Short, tl: Timeline) -> float:
 LENGTH_TOLERANCE = 0.15  # validate warns when the timeline is off the target length by more than this
 
 
-def length_warning(short: Short, tl: Timeline, tolerance: float = LENGTH_TOLERANCE) -> str | None:
-    """The validate warning when the timeline is more than `tolerance` off the short's target length_s, with the
-    estimated seconds and the direction ("about 65 s, 44% over its 45 s target"); None when it is close enough or
-    the short has no target."""
+def length_warning(short: Short, tl: Timeline, tolerance: float = LENGTH_TOLERANCE,
+                   extra_s: float = 0.0) -> str | None:  # fmt: skip
+    """The validate warning when the timeline plus `extra_s` (the closing card after the story) is more than
+    `tolerance` off the short's target length_s, with the estimated seconds and the direction ("about 65 s, 44% over
+    its 45 s target"); None when it is close enough or the short has no target."""
     if short.length_s <= 0:
         return None
-    drift = length_drift(short, tl)
+    seconds = tl.n_frames / tl.fps + extra_s
+    drift = abs(seconds - short.length_s) / short.length_s
     if drift <= tolerance:
         return None
-    seconds = tl.n_frames / tl.fps
     way = "over" if seconds > short.length_s else "under"
     return (f"at reading pace the short runs about {seconds:.0f} s, {drift:.0%} {way} its {short.length_s:g} s "
             "target")  # fmt: skip

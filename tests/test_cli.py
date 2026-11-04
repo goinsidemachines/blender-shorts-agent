@@ -2359,3 +2359,51 @@ def test_style_sample_command_is_registered_with_its_flags():
     assert args.fn is bsa_blender.cmd_style_sample
     with pytest.raises(SystemExit):
         bsa_blender.build_parser().parse_args(["style-sample", "--engine", "workbench", "--out", "x.png"])
+
+
+CLOSING_TOOL = """import json, struct, sys, wave
+a = sys.argv
+items = json.load(open(a[a.index('--lines') + 1], encoding='utf-8'))
+out = a[a.index('--out') + 1]
+for it in items:
+    secs = 3.4 if it['id'] == 'closing' else 1.0
+    w = wave.open(out + '/' + it['id'] + '.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2)
+    w.setframerate(48000)
+    w.writeframes(struct.pack('<h', 3000) * round(secs * 48000))
+    w.close()
+"""
+
+
+def _closing_short(home, pendulum, tmp_path):
+    """The pendulum with a 2.5 s closing card and a closing line, narrated by a tool whose closing take is 3.4 s."""
+    path = pendulum / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["closing"] = {"website": "example.com", "voice_line": "Visit example dot com.", "seconds": 2.5}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    tool = tmp_path / "closing_tool.py"
+    tool.write_text(CLOSING_TOOL, encoding="utf-8")
+    _approve_storyboard(home)
+    ok(run(home, "settings", "set", "narrator.provider", "custom"))
+    ok(run(home, "settings", "set", "narrator.command", f'"{sys.executable}" "{tool}" --lines {{lines}} --out {{out}}'))
+    ok(run(home, "settings", "set", "narrator.verify", "false"))
+
+
+STRETCH = "the closing card will hold 4.1 s, not 2.5 s: shorten the line or raise closing.seconds"
+
+
+def test_narrate_warns_when_the_closing_line_stretches_the_card(home, pendulum, tmp_path):
+    _closing_short(home, pendulum, tmp_path)
+    out = ok(run(home, "narrate", "pendulum"))
+    assert out["status"] == "ok", out
+    assert STRETCH in out["warnings"]
+
+
+def test_validate_counts_the_closing_card(home, pendulum, tmp_path):
+    _closing_short(home, pendulum, tmp_path)
+    before = ok(run(home, "validate", "pendulum"))
+    assert before["closing"] == {"seconds": 2.5, "set_seconds": 2.5}  # not narrated yet: the card as set
+    assert STRETCH not in before["warnings"]
+    ok(run(home, "narrate", "pendulum"))
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["closing"]["seconds"] == 4.1 and out["closing"]["set_seconds"] == 2.5
+    assert STRETCH in out["warnings"]

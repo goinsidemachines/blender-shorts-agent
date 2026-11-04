@@ -296,6 +296,23 @@ def test_font_with_a_weight_loads_the_downloaded_static_file():
     assert 'CLI assets plan SHORT "font:Notinstalledfam@700"' in edit.font_note(sc)
 
 
+def test_plain_captions_use_the_brand_font():
+    """No style.font and no kit: the captions are set in brand.font; a fresh-look short keeps the default font."""
+    import shutil
+
+    short, tl, frames, wav, out = _fixture()
+    src = edit.find_font_file("Arial", edit.font_dirs()) or edit.find_font_file("DejaVu Sans", edit.font_dirs())
+    brand_file = Path(tempfile.mkdtemp()) / "BrandTestSans.ttf"
+    shutil.copy(src, brand_file)
+    settings = {"brand": {"mode": "brand", "font": str(brand_file)}}
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    assert Path(bpy.path.abspath(_captions(sc)[0].font.filepath)) == brand_file
+    short.look = "fresh"
+    sc = edit.build_edit(short, tl, frames, wav, out, settings, preset="preview")
+    font = _captions(sc)[0].font
+    assert font is None or Path(font.filepath).name != brand_file.name
+
+
 def _end_strips(scene):
     return [s for s in _texts(scene) if s.channel >= edit.CH_END]
 

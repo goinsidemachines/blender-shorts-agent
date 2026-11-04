@@ -264,3 +264,13 @@ def test_a_kit_closing_card_with_a_missing_logo_says_so_in_closing_json(tmp_path
     want = kit.logo_missing(made[0].logo)
     assert want and warnings == [want]
     assert json.loads((tmp_path / "stills" / closing.INFO_FILE).read_text(encoding="utf-8"))["warnings"] == [want]
+
+
+def test_card_seconds_and_the_stretch_warning():
+    cfg = {**CARD, "seconds": 2.5}
+    assert closing.card_seconds(cfg, 3.4, 30) == 4.1
+    assert closing.stretch_warning(cfg, 3.4, 30) == ("the closing card will hold 4.1 s, not 2.5 s: shorten the line "
+                                                    "or raise closing.seconds")  # fmt: skip
+    assert closing.card_seconds(cfg, 1.0, 30) == 2.5 and closing.stretch_warning(cfg, 1.0, 30) is None
+    assert closing.card_seconds(cfg, None, 30) == 2.5 and closing.stretch_warning(cfg, None, 30) is None
+    assert closing.card_seconds(None, 3.4, 30) is None and closing.stretch_warning(None, 3.4, 30) is None
