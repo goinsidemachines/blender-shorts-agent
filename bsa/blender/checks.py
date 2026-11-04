@@ -156,7 +156,7 @@ from bsa.blender.bake import (
     tags,
 )
 from bsa.blender.styles import BEVEL as STYLE_BEVEL
-from bsa.findings import cap_pairs, not_listed
+from bsa.findings import cap_pairs, metres, not_listed
 from bsa.image_checks import Finding
 from bsa.layout import Rect
 from bsa.pops import find_pops, reference_frames
@@ -214,6 +214,8 @@ class OverlapFinding(Finding):
     """An overlap finding with the pair of objects it is about (the cap on listed pairs counts pairs)."""
 
     pair: tuple[str, str] = ("", "")
+    kind: str | None = None  # "penetrate", "deep" or "zfight"
+    depth: float | None = None  # how deep, as reported (0 when it cannot be measured); None for z-fighting
 
 
 @dataclass
@@ -425,14 +427,14 @@ class _Run:
         depth = max(stated) if stated else None
         return (f"assembly {ga[0]!r}", depth, depth is None)
 
-    def add(self, check, severity, obj, frame, message, key=None, pair=None):
+    def add(self, check, severity, obj, frame, message, key=None, pair=None, kind=None, depth=None):
         key = (check, obj, message) if key is None else (check, *key)
         if key not in self.seen:
             self.seen.add(key)
             if pair is None:
                 self.findings.append(Finding(check, severity, obj, frame, message))
             else:
-                self.findings.append(OverlapFinding(check, severity, obj, frame, message, pair))
+                self.findings.append(OverlapFinding(check, severity, obj, frame, message, pair, kind, depth))
 
     def shot(self, shot, every, progress=None):
         sampled = set(range(shot.f0, shot.f1 + 1, max(1, every))) | {shot.f1}
@@ -648,7 +650,7 @@ class _Run:
             frame, depth, at = max(hits, key=lambda h: h[1])
             self.add("camera_below_ground", "error", ground, frame,
                      f"the camera{f' {cam.name!r}' if cam else ''} is under {ground!r} in shot {span.id!r} (frames "
-                     f"{viewer.frame_spans(frames, max(1, every))}; at frame {frame} it is at {_point(at)}, {_metres(depth)} below its top): "
+                     f"{viewer.frame_spans(frames, max(1, every))}; at frame {frame} it is at {_point(at)}, {metres(depth)} below its top): "
                      "the shot sees the ground's underside. Raise the camera above the ground's top (frame the "
                      "subject from above its base), or lower the ground", key=(ground, span.id))  # fmt: skip
         shot = self.short_shot(span.id)
@@ -942,7 +944,7 @@ class _Run:
         frame, worst = max(bad, key=lambda b: (b[1].depth, -b[0]))
         more = f" ({len(bad)} pairs of parts in all)" if len(bad) > 1 else ""
         self.add("self_overlap", "warning", name, frame, f"hero mesh has loose parts that pass into each other: the "
-                 f"{worst.inner} is {_metres(worst.depth)} inside the {worst.outer}{more}. They read as one solid: "
+                 f"{worst.inner} is {metres(worst.depth)} inside the {worst.outer}{more}. They read as one solid: "
                  "end one part at the other's surface, or make them separate objects", key=(name,))  # fmt: skip
 
     def track_contacts(self, frame):
@@ -974,7 +976,7 @@ class _Run:
             d, frame = rec["worst"]
             self.add("contact_parent", "warning", a, frame, f"{a!r} and {b!r} are tagged contact but follow "
                      f"different moving parents ({_follows(a, moves_a)}, {_follows(b, moves_b)}), and where they "
-                     f"meet drifts {_metres(d)} apart in shot {shot.id!r} (most at frame {frame}). A part rebuilt "
+                     f"meet drifts {metres(d)} apart in shot {shot.id!r} (most at frame {frame}). A part rebuilt "
                      "with a new constructor may have lost its parent: parent both to the moving part they share. If "
                      "one really moves against the other through its parent (a foot stepping on a floor), ignore "
                      "this", key=(a, b))  # fmt: skip
@@ -1019,7 +1021,7 @@ class _Run:
                 for kind in sorted(res.kinds):
                     self.hit(a, b, kind, frame, res)
             elif res.depth > limit:
-                self.hit(a, b, "deep", frame, res, f"the {exempt[0]} allows ({_metres(limit)})")
+                self.hit(a, b, "deep", frame, res, f"the {exempt[0]} allows ({metres(limit)})")
 
     def zfight_step(self, lo: np.ndarray, hi: np.ndarray) -> int:
         """The z-fight tolerance where the box [lo, hi] is seen by the scene camera now, as a half-octave step
@@ -1060,14 +1062,15 @@ class _Run:
                 where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}"
                 self.add("overlap", "error", a, None if static else first, f"z-fighting: {a!r} ({self.size(a)}) and "
                          f"{b!r} ({self.size(b)}) have coplanar overlapping faces {where}{at}. Move one face 0.5 to "
-                         "1 mm in (or out), or delete the duplicate face", key=key, pair=pair)  # fmt: skip
+                         "1 mm in (or out), or delete the duplicate face", key=key, pair=pair, kind=kind)  # fmt: skip
                 continue
             deepest = max(frames, key=lambda f: (frames[f].depth, -f))
             res = frames[deepest]
-            how = f"{res.inner!r} is {_metres(res.depth)} inside {res.outer!r}" if res.depth > 0 else ""
+            how = f"{res.inner!r} is {metres(res.depth)} inside {res.outer!r}" if res.depth > 0 else ""
             if res.depth > 0 and res.outer_open:
                 how = (f"{res.inner!r} reaches into {res.outer!r}, whose mesh is not closed ({res.outer_open} open "
                        "edges), so how deep cannot be measured. Close it, or keep its open parts as their own object")
+            depth = 0.0 if res.outer_open else float(res.depth)  # an open outer mesh: how deep is not measured
             at = f" (deepest at frame {deepest})" if res.depth > 0 and len(frames) > 1 else ""
             where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}{at}"
             if kind == "penetrate":
@@ -1076,11 +1079,12 @@ class _Run:
                     "the motion; tag contact:<other> only if they really touch at a surface, and write why"
                 )
                 frame = None if static else deepest if how else first
-                self.add("overlap", "error", a, frame, message, key=key, pair=pair)
+                self.add("overlap", "error", a, frame, message, key=key, pair=pair, kind=kind, depth=depth)
             else:
                 self.add("overlap", "error", res.inner, None if static else deepest, f"{how} {where}, deeper than "
                          f"{rec['note']}. End one at the other's surface; if it is deep by design, tag "
-                         "contact:<other>:<max depth in metres> and write why", key=key, pair=pair)  # fmt: skip
+                         "contact:<other>:<max depth in metres> and write why", key=key, pair=pair, kind=kind,
+                         depth=depth)  # fmt: skip
 
     def size(self, name: str) -> str:
         """The object's size (its local box times its scale), such as "6.4 x 6.4 x 1.2 mm"."""
@@ -1534,14 +1538,6 @@ def _rect(b) -> Rect | None:
 def _did_you_mean(name: str, present) -> str:
     close = sorted(n for n in present if RENAMED.sub("", n) == name and n != name)
     return f" (did you mean {close[0]!r}?)" if close else ""
-
-
-def _metres(d: float) -> str:
-    if d >= 1.0:
-        return f"{d:.1f} m"
-    if d >= 0.01:
-        return f"{d * 100:.0f} cm"
-    return f"{d * 1000:.0f} mm"
 
 
 def _spans(frames: list[int]) -> str:

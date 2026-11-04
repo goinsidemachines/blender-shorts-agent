@@ -77,8 +77,11 @@ against each other. A set object against any other part is still tested, so a pr
 style's ink lines are Freestyle and add no geometry, so they change no check, and a style's bevel modifiers are
 switched off while the checks measure (and put back after): the checks see the parts as modelled, in every style.
 
-At most 20 overlap findings are listed per scene; one more finding says how many pairs were left out. Fix the ones
-listed and check again.
+At most 20 overlapping pairs are listed as findings; one more finding says how many pairs were left out. Every pair,
+listed or not, is still in one check run: `overlap_summary` (in review/checks.json and the check's result) groups them
+by name family, real clips first, deepest first, then z-fighting, such as `Tape left vs Tooth left 01-22: 22 pairs, up
+to 1 cm, s01-s05`. Read it to fix a whole family at once (one cause, such as a tape laid through every tooth), then
+check again.
 
 ### Contact tags: only for real contact
 

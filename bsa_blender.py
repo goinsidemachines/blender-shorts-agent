@@ -709,6 +709,18 @@ def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dic
     return [*listed, summary], held
 
 
+def _write_checks(path: Path, rows: list[dict], stamp: dict | None, shot_order: list[str], most: int, **extra) -> dict:
+    """The check rows into review/checks.json: the first `most` overlapping pairs listed, the rest held back
+    (_cap_overlap_rows), and every pair, listed or held back, under "overlap_summary" grouped by name family
+    (bsa.findings.family_lines; no key when no pair overlaps)."""
+    from bsa import findings
+
+    summary = findings.family_lines(rows, shot_order)
+    listed, held = _cap_overlap_rows(rows, most)
+    return _write_findings(path, listed, stamp, **extra, held_back=held,
+                           **({"overlap_summary": summary} if summary else {}))  # fmt: skip
+
+
 def _cmd_check(args, sdir: Path, short, run) -> dict:
     from bsa.blender.camera import framing_findings
     from bsa.blender.checks import OVERLAP_MAX_FINDINGS, run_checks
@@ -749,8 +761,8 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         rows += [_check_row(f, shot.id, scene.name) for f in found]
         checked.append(shot.id)
     run.progress(counted[0], total, current=None, force=True)
-    listed, held = _cap_overlap_rows(_merge_findings(rows), OVERLAP_MAX_FINDINGS)
-    out = _write_findings(sdir / "review" / "checks.json", listed, stamp, checked=checked, kept=kept, held_back=held)
+    out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
+                        OVERLAP_MAX_FINDINGS, checked=checked, kept=kept)  # fmt: skip
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
     jobstate.mark_done(sdir, "checks", warnings=out["warnings"])

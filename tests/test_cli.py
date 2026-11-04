@@ -1748,6 +1748,29 @@ def test_check_lists_a_static_overlap_once_and_caps_over_pairs_in_every_shot():
     assert bsa_blender._cap_overlap_rows(merged, 4) == (merged, [])
 
 
+def test_check_writes_the_overlap_summary(tmp_path):
+    """Every overlapping pair, listed or held back by the cap, is in "overlap_summary" grouped by name family; the
+    row standing for the pairs not listed points there. No overlap rows: no summary key."""
+    import json
+
+    import bsa_blender
+
+    def row(a, b, shot):
+        return {"check": "overlap", "severity": "error", "obj": a, "frame": None, "scene": "W", "shot": shot,
+                "message": f"{a!r} is 2 cm inside {b!r}", "pair": [a, b], "kind": "deep", "depth": 0.02}
+
+    rows = [row(f"Tooth {i:02d}", "Tape", "s01" if i < 13 else "s02") for i in range(1, 26)]
+    path = tmp_path / "review" / "checks.json"
+    out = bsa_blender._write_checks(path, rows, None, ["s01", "s02"], 20, checked=["s01", "s02"], kept=[])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["overlap_summary"] == ["Tape vs Tooth 01-25: 25 pairs, up to 2 cm, s01-s02"] == out["overlap_summary"]
+    assert len(data["held_back"]) == 5
+    assert "overlap_summary" in data["findings"][-1]["message"] and data["findings"][-1]["capped"] == 5
+    names = [{"check": "names", "severity": "warning", "obj": "X.001", "frame": None, "message": "m", "scene": "W",
+              "shot": "s01"}]
+    assert "overlap_summary" not in bsa_blender._write_checks(path, names, None, ["s01"], 20)
+
+
 def test_settings_post_format_shows_it_and_whether_it_was_asked(home):
     from bsa import post
 

@@ -434,6 +434,7 @@ def test_every_offending_pair_is_listed_up_to_a_cap():
     assert len(pairs) == checks.OVERLAP_MAX_FINDINGS, found
     hidden = [f for f in found if "not listed" in f.message]
     assert len(hidden) == 1 and "4 more" in hidden[0].message, hidden
+    assert all(f.kind == "penetrate" and f.depth > 0 for f in pairs), pairs  # 30 cm in: a measured, real clip
 
 
 def test_a_static_overlap_is_one_finding_for_every_shot_it_is_in():
