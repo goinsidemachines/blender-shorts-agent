@@ -66,10 +66,9 @@ class Pipeline:
         assert (short / "blend" / "short.blend").is_file()
 
 
-def test_script_mode_end_to_end(tmp_path):
-    home = tmp_path / "bsa_home"
-    home.mkdir()
-    p = Pipeline(home)
+def _to_build(p: Pipeline, tmp_path: Path) -> Path:
+    """The sample short from a new workspace up to the build marked done (narrated, rebuilt to the final timing,
+    mixed). Returns the short's folder."""
     workspace = tmp_path / "My Shorts é"
     p.cli("settings", "set", "workspace", workspace)
     p.cli("settings", "set", "narrator.provider", "none")
@@ -81,12 +80,11 @@ def test_script_mode_end_to_end(tmp_path):
     shutil.copyfile(SAMPLE / "short.json", short / "source" / "short.json")
     shutil.copyfile(SAMPLE / "build.py", short / "source" / "build.py")
     blend = short / "blend" / "short.blend"
-    findings = []
 
     assert p.cli("validate", "pendulum")["ok"]
     p.cli("state", "pendulum", "done", "interview")
     p.cli("page", "decide", "pendulum", "story", "approve", "--by", "chat")
-    timeline = p.cli("timeline", "pendulum")
+    p.cli("timeline", "pendulum")
     p.build(short)
     stills = p.blender_cmd("stills", "pendulum", blend=blend)["stills"]
     assert len(stills) == 3 and all(Path(s).stat().st_size > 0 for s in stills)
@@ -103,6 +101,21 @@ def test_script_mode_end_to_end(tmp_path):
     mix = p.cli("mix", "pendulum")
     assert mix["n_frames"] == timeline["n_frames"]
     p.cli("state", "pendulum", "done", "build")
+    return short
+
+
+def _pipeline(tmp_path: Path) -> Pipeline:
+    home = tmp_path / "bsa_home"
+    home.mkdir()
+    return Pipeline(home)
+
+
+def test_script_mode_end_to_end(tmp_path):
+    p = _pipeline(tmp_path)
+    short = _to_build(p, tmp_path)
+    blend = short / "blend" / "short.blend"
+    timeline = json.loads((short / "source" / "timeline.json").read_text(encoding="utf-8"))
+    findings = []
 
     check = p.blender_cmd("check", "pendulum", blend=blend)
     findings += check["findings"]
@@ -250,3 +263,21 @@ def test_script_mode_end_to_end(tmp_path):
     (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith(RESULT)]
     result = json.loads(line[len(RESULT) :])
     assert result["ok"] is False and "final" in result["error"] and result["error"] in proc.stderr
+
+
+def test_preview_runs_the_checks_beside_the_render(tmp_path):
+    """BLENDER preview checks in a second Blender while it renders: in its status the check and render steps
+    overlap, the checks are written with their stamp and the checks stage is marked."""
+    p = _pipeline(tmp_path)
+    short = _to_build(p, tmp_path)
+    out = p.blender_cmd("preview", "pendulum")
+    assert [s["step"] for s in out["steps"]][-3:] == ["frame-check", "check", "edit"], out["steps"]
+    assert "warnings" not in out or not any("checks.json" in w for w in out["warnings"]), out.get("warnings")
+    status = json.loads((short / "review" / "render-status-preview.json").read_text(encoding="utf-8"))
+    by = {s["name"]: s for s in status["run"]["steps"]}
+    check, render = by["check"], by["render"]
+    assert status["state"] == "done" and check["state"] == render["state"] == "done", status["run"]["steps"]
+    assert check["started"] < render["finished"] and render["started"] < check["finished"]
+    assert check["progress"]["done"] == check["progress"]["total"] > 0  # its progress came through the chain
+    assert json.loads((short / "review" / "checks.json").read_text(encoding="utf-8"))["stamp"]
+    assert "checks" in p.cli("state", "pendulum")["stages"]

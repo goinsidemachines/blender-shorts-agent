@@ -1142,6 +1142,13 @@ def test_preview_render_warns_of_checks_that_failed_on_this_build(home, pendulum
     assert "materials: geometry in view has no material" in err
     assert "the final render will refuse until these are fixed and checked again" in err
     assert "which scene 'Workshop' does not have" in err  # it went on past the checks: not refused by them
+    import argparse
+
+    beside = argparse.Namespace(short="pendulum", preset="preview", shot=None, frames=None, redo_flagged=False,
+                                no_wait=False, engine=None, tag=None, checks_beside=True)  # fmt: skip
+    with pytest.raises(bsa_blender.CliError, match="does not have"):  # the preview chain says it after its checks
+        bsa_blender.cmd_render(beside)
+    assert "on this build" not in capsys.readouterr().err
     report["stamp"]["timeline"] = "another timing"  # the checks ran on another timing: they say nothing now
     path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
     bsa_blender.main(["render", "pendulum", "--preset", "preview"])
@@ -1499,18 +1506,50 @@ def _past_narration(home, short: Path) -> None:
 FRAMING_NOTE = "scene Tower: camera Cam: frame_objects: the fit for 'Tower' did not settle in 60 steps"
 
 
-def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = None):
-    """Stub the Blender-side steps of BLENDER preview; the CLI steps (timeline, state, mix) run for real."""
+class _FakeSideCheck:
+    """Stands in for the check process beside the preview render (bsa_blender._SideCheck): `join` runs the stubbed
+    cmd_check and returns or raises what it does."""
+
+    def __init__(self, args, calls: list):
+        self.args, self.calls, self.stopped = args, calls, 0
+
+    def join(self) -> dict:
+        import argparse
+
+        import bsa_blender
+
+        self.calls.append("check-join")
+        return bsa_blender.cmd_check(argparse.Namespace(short=self.args.short, every=self.args.every, full=False,
+                                                        preset="preview", in_chain=True))  # fmt: skip
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
+def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = None) -> list:
+    """Stub the Blender-side steps of BLENDER preview; the CLI steps (timeline, state, mix) run for real. The checks
+    run beside the render through a fake side check (`check-start`, `check-join` in `calls`); a failing check leaves
+    review/checks.json with its 2 errors. Returns the side checks started."""
     import bsa_blender
 
     def step(name, out=None):
         def fn(*a, **k):
-            calls.append(name)
+            if name != "check":  # the side check records its start and join instead
+                calls.append(name)
             if name == fail:
+                if name == "check":
+                    _checked(short, errors=2)
                 raise bsa_blender.CliError("2 check error(s); see review/checks.json", {"errors": 2})
             return out or {}
 
         return fn
+
+    sides: list = []
+
+    def start(args, sdir, chain):
+        calls.append("check-start")
+        sides.append(_FakeSideCheck(args, calls))
+        return sides[-1]
 
     def build(sdir):
         calls.append("build")
@@ -1530,7 +1569,9 @@ def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = 
         {"shot": "s02", "frames": 4, "rendered": 4, "kept": 0, "why": "fingerprint changed"}]}))
     monkeypatch.setattr(bsa_blender, "cmd_frame_check", step("frame-check", {"errors": 0, "warnings": 0}))
     monkeypatch.setattr(bsa_blender, "cmd_edit", step("edit", {"mp4": str(short / "out" / "x-preview.mp4")}))
+    monkeypatch.setattr(bsa_blender, "_start_side_check", start)
     monkeypatch.setenv("BSA_HOME", str(home))
+    return sides
 
 
 def _result(capsys) -> dict:
@@ -1547,9 +1588,11 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     _fake_chain(monkeypatch, home, pendulum, calls)
     assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
     out = _result(capsys)
-    assert calls == ["build", "reopen", "check", "render", "frame-check", "edit"]
-    assert [s["step"] for s in out["steps"]] == ["build", "build done", "mix", "check", "render", "frame-check", "edit"]
-    assert out["steps"][0]["why"] == "no blend/short.blend yet" and out["steps"][4]["frames"] == 7
+    assert calls == ["build", "reopen", "check-start", "render", "frame-check", "check-join", "edit"]
+    assert [s["step"] for s in out["steps"]] == ["build", "build done", "mix", "render", "frame-check", "check", "edit"]
+    assert out["steps"][0]["why"] == "no blend/short.blend yet" and out["steps"][3]["frames"] == 7
+    assert out["steps"][5] == {"step": "check", "warnings": 1, "checked": None, "kept": None}
+    assert "checks" in jobstate.load_state(pendulum)["stages"]  # the chain marks them: they passed
     assert (pendulum / "audio" / "mix.wav").is_file()  # the real CLI mix ran
     assert out["mp4"].endswith("x-preview.mp4")
     assert "build" in jobstate.load_state(pendulum)["stages"]
@@ -1581,26 +1624,138 @@ def test_preview_chain_says_when_the_closing_card_is_held_longer(home, pendulum,
     assert out["steps"][-1] == {"step": "edit", "mp4": "x-preview.mp4", "closing_note": hold["note"]}
 
 
+def _preview_status(short: Path) -> tuple[dict, dict]:
+    """(the preview's live status, its steps by name)."""
+    status = json.loads((short / "review" / "render-status-preview.json").read_text(encoding="utf-8"))
+    return status, {s["name"]: s for s in status["run"]["steps"]}
+
+
 def test_preview_chain_stops_at_the_first_failure(home, pendulum, monkeypatch, capsys):
     import bsa_blender
 
     _past_narration(home, pendulum)
     calls = []
-    _fake_chain(monkeypatch, home, pendulum, calls, fail="check")
+    sides = _fake_chain(monkeypatch, home, pendulum, calls, fail="render")
     assert bsa_blender.main(["preview", "pendulum"]) == 1
     io = capsys.readouterr()
-    assert io.err.strip() == "stopped at check: 2 check error(s); see review/checks.json"
+    assert io.err.strip() == "stopped at render: 2 check error(s); see review/checks.json"
     payload = json.loads(io.out.split("BSA_RESULT ", 1)[1])
-    assert payload["stopped_at"] == "check" and payload["errors"] == 2
+    assert payload["stopped_at"] == "render" and payload["errors"] == 2
     assert [s["step"] for s in payload["steps"]] == ["build", "build done", "mix"]
-    assert calls == ["build", "reopen", "check"]  # nothing rendered
-    status = json.loads((pendulum / "review" / "render-status-preview.json").read_text(encoding="utf-8"))
-    states = {s["name"]: s["state"] for s in status["run"]["steps"]}
+    assert calls == ["build", "reopen", "check-start", "render"]  # nothing edited, the checks never joined
+    assert sides[0].stopped == 1  # the check process ends with the chain
+    status, by = _preview_status(pendulum)
     assert status["state"] == "failed" and "check error" in status["error"]
-    assert states["check"] == "failed" and states["mix"] == "done" and states["render"] == "pending"
+    assert by["render"]["state"] == "failed" and by["mix"]["state"] == "done" and by["edit"]["state"] == "pending"
+    assert by["check"]["state"] == "failed" and "the run failed at render" in by["check"]["error"]
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
     out = ok(run(home, "render-status", "pendulum"))
-    assert out["step"]["name"] == "check" and out["last_run"]["state"] == "failed"
-    assert "failed at check" in out["summary"] and "BLENDER preview SHORT" in out["summary"]
+    assert out["step"]["name"] == "render" and out["last_run"]["state"] == "failed"
+    assert "failed at render" in out["summary"] and "BLENDER preview SHORT" in out["summary"]
+
+
+def test_preview_chain_with_check_errors_still_makes_the_preview_and_warns(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    calls, seen = [], {}
+    _fake_chain(monkeypatch, home, pendulum, calls, fail="check")
+
+    def render(ns):
+        calls.append("render")
+        seen["beside"] = getattr(ns, "checks_beside", None)
+        return {"shots": []}
+
+    monkeypatch.setattr(bsa_blender, "cmd_render", render)
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    io = capsys.readouterr()
+    out = json.loads(io.out.split("BSA_RESULT ", 1)[1])
+    assert calls[-2:] == ["check-join", "edit"]  # the preview is made
+    (warning,) = out["warnings"]
+    assert "review/checks.json has 2 error(s) on this build" in warning and "the final render will refuse" in warning
+    assert io.err.count(warning) == 1 and f"warning: {warning}" in io.err
+    assert {"step": "check", "errors": 2} in out["steps"]
+    assert seen["beside"] is True  # the render said nothing of checks.json: the chain says it after the join
+    status, by = _preview_status(pendulum)
+    assert status["state"] == "done" and by["check"]["state"] == "failed" and by["edit"]["state"] == "done"
+    assert "check error" in by["check"]["error"]
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
+
+
+def test_final_render_still_refuses_after_failed_side_checks(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+
+    real_render = bsa_blender.cmd_render
+    _past_narration(home, pendulum)
+    _fake_chain(monkeypatch, home, pendulum, [], fail="check")
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    capsys.readouterr()
+    short = bsa_blender._load(pendulum)
+    _, tl_hash = bsa_blender._timeline(pendulum, short)
+
+    class Scene(dict):
+        def __init__(self, name):
+            super().__init__({freshness.TIMELINE_PROP: tl_hash})
+            self.name, self.objects = name, {}
+
+    rendered = []
+    fake = types.ModuleType("bsa.blender.render")
+    fake.render_range = lambda *a, **k: rendered.append(a) or []
+    monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots}, filepath="")
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
+    monkeypatch.setattr(bsa_blender, "cmd_render", real_render)
+    assert bsa_blender.main(["render", "pendulum", "--preset", "final"]) == 1
+    err = capsys.readouterr().err
+    assert "review/checks.json has 2 error(s): fix them and run BLENDER check" in err
+    assert "before the final render" in err and rendered == []
+
+
+def test_preview_chain_stops_at_check_when_the_check_process_crashes(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    calls = []
+    sides = _fake_chain(monkeypatch, home, pendulum, calls)
+
+    def crashed(ns):
+        raise bsa_blender.CliError("the checks stopped: Segmentation fault")
+
+    monkeypatch.setattr(bsa_blender, "cmd_check", crashed)
+    assert bsa_blender.main(["preview", "pendulum"]) == 1
+    io = capsys.readouterr()
+    assert io.err.strip() == "stopped at check: the checks stopped: Segmentation fault"
+    payload = json.loads(io.out.split("BSA_RESULT ", 1)[1])
+    assert payload["stopped_at"] == "check"
+    assert calls[-1] == "check-join" and "edit" not in calls
+    assert sides[0].stopped == 1  # safe after the join
+    status, by = _preview_status(pendulum)
+    assert status["state"] == "failed" and by["check"]["state"] == "failed" and by["edit"]["state"] == "pending"
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
+
+
+def test_preview_chain_stops_the_side_check_when_interrupted(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    calls = []
+    sides = _fake_chain(monkeypatch, home, pendulum, calls)
+
+    def render(ns):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bsa_blender, "cmd_render", render)
+    with pytest.raises(KeyboardInterrupt):
+        bsa_blender.main(["preview", "pendulum"])
+    assert len(sides) == 1 and sides[0].stopped == 1
+    assert "check-join" not in calls and "edit" not in calls
+    status, by = _preview_status(pendulum)
+    assert status["state"] == "stopped" and by["render"]["state"] == "stopped"
+    assert by["check"]["state"] == "stopped" and "the run stopped at render" in by["check"]["error"]
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
 
 
 def test_preview_chain_skips_a_current_build_and_reruns_the_timeline(home, pendulum, monkeypatch, capsys):
@@ -1613,7 +1768,7 @@ def test_preview_chain_skips_a_current_build_and_reruns_the_timeline(home, pendu
     _fake_chain(monkeypatch, home, pendulum, calls)
     assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
     out = _result(capsys)
-    assert calls == ["check", "render", "frame-check", "edit"]
+    assert calls == ["check-start", "render", "frame-check", "check-join", "edit"]
     assert out["steps"][0] == {"step": "build", "skipped": "the .blend is current"}
     assert "build done" not in [s["step"] for s in out["steps"]]
     # the timing changed: the chain writes the timeline and rebuilds
@@ -2523,3 +2678,102 @@ def test_check_prints_one_progress_line_per_shot_it_checks(home, pendulum, monke
     s = json.loads(rs.status_path(pendulum, "preview").read_text(encoding="utf-8"))
     (step,) = [x for x in s["run"]["steps"] if x["name"] == "check"]
     assert step["progress"]["current"] in lines
+
+
+def test_check_in_chain_reports_progress_on_stdout_and_marks_nothing(home, pendulum, monkeypatch, capsys):
+    """`check --in-chain` is the check process beside the preview render: its progress goes on stdout for the chain
+    to record, it keeps no status of its own and leaves the checks stage to the chain."""
+    import types
+
+    import bsa_blender
+    from bsa import render_status as rs
+
+    ok(run(home, "timeline", "pendulum"))
+    checks = types.ModuleType("bsa.blender.checks")
+    checks.run_checks, checks.OVERLAP_MAX_FINDINGS = lambda scene, tl, **kw: [], 20
+    camera = types.ModuleType("bsa.blender.camera")
+    camera.framing_findings = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.checks", checks)
+    monkeypatch.setitem(sys.modules, "bsa.blender.camera", camera)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, s, sid, h: (None, types.SimpleNamespace(name="Workshop")))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["check", "pendulum", "--in-chain"]) == 0
+    io = capsys.readouterr()
+    progress = [json.loads(x[len(bsa_blender.PROGRESS_PREFIX) :]) for x in io.out.splitlines()
+                if x.startswith(bsa_blender.PROGRESS_PREFIX)]  # fmt: skip
+    n = len(bsa_blender._load(pendulum).shots)
+    assert progress and progress[0]["done"] == 0 and len(progress[0]["items"]) == n
+    assert progress[-1]["done"] == progress[-1]["total"] and progress[-1]["current"].startswith(f"checking s{n:02d}")
+    assert all(i["state"] == "done" for i in progress[-1]["items"])  # every line carries the rows as they are now
+    assert "checking s01 (1 of" in io.err
+    assert json.loads(io.out.split("BSA_RESULT ", 1)[1])["errors"] == 0
+    assert (pendulum / "review" / "checks.json").is_file()
+    assert not rs.status_path(pendulum, "preview").exists()
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
+
+
+def _child(code: str) -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace")  # fmt: skip
+
+
+class _ChainSpy:
+    def __init__(self):
+        self.calls = []
+
+    def progress(self, *a, **k):
+        self.calls.append((a, k))
+
+
+def test_side_check_records_its_progress_and_returns_its_result(capsys):
+    import bsa_blender
+
+    chain = _ChainSpy()
+    code = ("import json\n"
+            "print('Blender 5.2 (startup noise)')\n"
+            "print('BSA_PROGRESS ' + json.dumps({'done': 1, 'total': 4, 'unit': 'frames', 'current': 'checking s01',"
+            " 'items': [{'id': 's01'}]}), flush=True)\n"
+            "import sys; print('checking s01 (1 of 1), 0 errors so far', file=sys.stderr)\n"
+            "print('BSA_RESULT ' + json.dumps({'errors': 0, 'warnings': 2, 'checked': ['s01'], 'kept': []}))\n")  # fmt: skip
+    side = bsa_blender._SideCheck(_child(code), chain)
+    assert side.join() == {"errors": 0, "warnings": 2, "checked": ["s01"], "kept": []}
+    assert chain.calls == [((), {"done": 1, "total": 4, "unit": "frames", "current": "checking s01",
+                                 "items": [{"id": "s01"}], "step": "check", "force": True})]  # fmt: skip
+    assert "checking s01 (1 of 1), 0 errors so far" in capsys.readouterr().err  # its stderr, echoed here
+    side.stop()  # after the join: nothing to do
+
+
+def test_side_check_says_why_it_ended_without_checks():
+    import bsa_blender
+
+    crash = bsa_blender._SideCheck(_child("import sys; print('Segmentation fault', file=sys.stderr); sys.exit(139)"),
+                                   _ChainSpy())  # fmt: skip
+    with pytest.raises(bsa_blender.CliError, match="^the checks stopped: Segmentation fault$"):
+        crash.join()
+    silent = bsa_blender._SideCheck(_child("import sys; sys.exit(3)"), _ChainSpy())
+    with pytest.raises(bsa_blender.CliError, match="^the checks stopped: exit code 3$"):
+        silent.join()
+    code = ("import json, sys\n"
+            "print('BSA_RESULT ' + json.dumps({'errors': 2, 'path': 'checks.json', 'ok': False, "
+            "'error': '2 check error(s); see review/checks.json'}))\nsys.exit(1)\n")  # fmt: skip
+    errors = bsa_blender._SideCheck(_child(code), _ChainSpy())
+    with pytest.raises(bsa_blender.CliError, match="2 check error") as exc:
+        errors.join()
+    assert exc.value.payload == {"errors": 2, "path": "checks.json"}
+
+
+def test_side_check_stop_ends_the_process():
+    import time
+
+    import bsa_blender
+
+    side = bsa_blender._SideCheck(_child("import time; print('BSA_PROGRESS {}', flush=True); time.sleep(120)"),
+                                  _ChainSpy())  # fmt: skip
+    t0 = time.monotonic()
+    side.stop()
+    assert side.proc.poll() is not None and time.monotonic() - t0 < 10
+    side.stop()  # twice: nothing more to do
+    with pytest.raises(bsa_blender.CliError, match="the checks stopped"):
+        side.join()

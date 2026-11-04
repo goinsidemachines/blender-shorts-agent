@@ -57,7 +57,9 @@ status while it runs: `review/render-status-<preset>.json`, which the review pag
 - **The chain.** `BLENDER preview` lists its steps (timeline, build, build done, mix, check, render, frame-check,
   edit), each pending, running, done, skipped (with why: "the .blend is current", "already passed on every shot as
   it is now") or failed (with the error), with start and end times and a summary per step. The current step is
-  highlighted at the top. A standalone `check`, `frame-check`, `edit` or `render` shows as a run of one step.
+  highlighted at the top. The check step runs beside the render: both show running, the check with the shot it is
+  on ("checking s02 (2 of 4), 0 errors so far"); a check that stops moving says "no progress for ..." on its row
+  and in the summary. A standalone `check`, `frame-check`, `edit` or `render` shows as a run of one step.
 - **Progress inside a step.** `check` counts the frames it has checked of those it has to check, the shot (and
   scene) it is on, a row per shot (kept, waiting, checking, done), the elapsed time and the time left from its
   measured speed; `frame-check` counts frames per shot the same way, and `edit` counts the frames it has encoded.
@@ -182,11 +184,17 @@ background) runs everything needed to get back to a checked preview, through the
 the timeline (only if the timing changed), the build in script mode (only if build.py is newer than the .blend, the
 scenes are missing or from another timing, or with `--rebuild`), `state done build` (when the .blend is newer than
 that mark), `mix`, `check` (skipped when it already passed on every shot as it is now; otherwise only changed shots
-are checked again), `render --preset preview` (it resumes; only changed shots render again, and its step says which
-were kept and why the others rendered), `frame-check --preset preview` and `edit --preset preview`. Its
-result's `steps` say what ran or was skipped and why, and its `closing` (as the edit's) has a `note` when the
-closing card holds longer than `closing.seconds` so its voice line fits: tell the user. It stops at the first failure with "stopped at <step>: ..."
-(for example the check errors, with the checks' counts in the result): fix that and run it again. In MCP mode,
+are checked again, in a second Blender beside the render: the checks need no GPU, and the page shows their progress
+on the check step while the render runs), `render --preset preview` (it resumes; only changed shots render again, and
+its step says which were kept and why the others rendered), `frame-check --preset preview`, then (once the checks
+have ended) `edit --preset preview`. Its result's `steps` say what ran or was skipped and why, and its `closing` (as
+the edit's) has a `note` when the closing card holds longer than `closing.seconds` so its voice line fits: tell the
+user. When the checks find errors the preview is still made: the result's `warnings` (and a `warning:` line on
+stderr) say how many and the first few, the check step shows failed and the `checks` stage stays unmarked, so the
+final render and the final edit refuse until they are fixed and checked again; tell the user and fix them. Any other
+failure stops the chain with "stopped at <step>: ..." (a check process that crashed: "stopped at check: the checks
+stopped: ...", before the edit): fix that and run it again. Stopping the chain (or a failure in the render) also
+ends the check process. In MCP mode,
 rebuild through the MCP first and run `BLENDER preview SHORT --no-build`: it never runs build.py and refuses with
 a plain message when the .blend is not current. The chain needs every stage up to narration done. Then do steps 3,
 5 and 6 below (look at the frames, grab frames of the video, review the timing) yourself.

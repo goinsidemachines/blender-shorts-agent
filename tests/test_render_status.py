@@ -853,11 +853,41 @@ def test_a_run_that_ends_while_a_side_step_runs_ends_that_step_too(tmp_path):
             raise RuntimeError("boom")
     s = _read(tmp_path)
     assert _step(s, "check")["state"] == "failed" and _step(s, "render")["state"] == "failed"
+    assert _step(s, "check")["error"] == "the run failed at render: boom"  # the page says why it ended
     with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
         run.begin_side("check")
         with run.step("render"):
             pass
-    assert _step(_read(tmp_path), "check")["state"] == "stopped"
+    check = _step(_read(tmp_path), "check")
+    assert check["state"] == "stopped" and check["error"] == "the run ended before this step said it finished"
+
+
+def test_a_side_step_that_stops_moving_is_flagged_stalled(tmp_path):
+    """The run's own stall time follows the current step (the render); a side step that stops counting while the
+    render goes on is flagged on its own row, and in the summary."""
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        run.begin("render")
+        run.progress(1, 10, current="checking s01", step="check")
+        clock.tick(rs.STALL_MIN_S - 1)
+        run.progress(3, 30)  # the render goes on
+        run.write(force=True)
+        assert "stalled_s" not in _step(_read(tmp_path), "check")
+        clock.tick(10)
+        run.write(force=True)
+        s = _read(tmp_path)
+        assert _step(s, "check")["stalled_s"] == pytest.approx(rs.STALL_MIN_S + 9)
+        assert "stalled_s" not in _step(s, "render")
+        assert "check has not moved for 2 min" in rs.describe(s, clock())["summary"]
+        run.progress(1, 10, current="checking s01", step="check", force=True)  # the same count: not moving
+        assert "stalled_s" in _step(_read(tmp_path), "check")
+        run.progress(2, 10, current="checking s01", step="check", force=True)
+        assert "stalled_s" not in _step(_read(tmp_path), "check")
+        run.end("check")
+        clock.tick(rs.STALL_MIN_S * 2)
+        run.write(force=True)
+        assert "stalled_s" not in _step(_read(tmp_path), "check")  # ended: never stalled
 
 
 def test_progress_from_two_threads_never_corrupts_the_file(tmp_path):

@@ -16,9 +16,13 @@ artifacts. `checks.json` is stamped with the build and the timing: the final ren
 and edit refuse checks that are missing, failed, or ran on an older build or timing, so check again after every
 rebuild. A look at the work may check with a coarse `--every` (`--every 20`), but the final render and edit need
 the default 5 or finer (so a `preview --every 10` chain runs its check step each time rather than skip it: the
-shots it already checked at that `--every` are reused, so it is quick). A preview rendered while the checks found errors on the build as it is still renders, but
-warns with their count and the first few (in its result and render status): read it, as the preview shows them and
-the final render refuses until they are fixed and checked again. If an error is still there after 3 real attempts, stop and tell the user
+shots it already checked at that `--every` are reused, so it is quick). The preview chain (`BLENDER preview`) runs the
+checks in a second Blender beside its render (they need no GPU), so they cost no time of their own; the edit waits for
+both. When those checks find errors the preview is still made, and its result's `warnings` (and one `warning:` line
+on stderr, after the checks end) say how many and the first few; its check step shows as failed and the `checks`
+stage is not marked. A preview rendered on its own (`BLENDER render`) while the checks found errors on the build as it
+is warns the same way before it renders. Read the warning, as the preview shows those errors: the final render and
+the final edit refuse until they are fixed and checked again. If an error is still there after 3 real attempts, stop and tell the user
 what fails, what you tried, and the options (for example: simplify the shot, accept a badge, change the camera).
 
 ### Cutaway models

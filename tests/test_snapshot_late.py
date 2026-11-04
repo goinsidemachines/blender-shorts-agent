@@ -62,6 +62,21 @@ def test_a_running_step_shows_its_note(tmp_path):
     assert {"name": "build", "state": "done"} in steps  # a done step has no note
 
 
+def test_a_stalled_or_ended_step_says_why(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "render")
+    path = sdir / "review" / "render-status-preview.json"
+    status = json.loads(path.read_text(encoding="utf-8"))
+    by = {s["name"]: s for s in status["run"]["steps"]}
+    by["check"].update(state="running", finished=None, stalled_s=300.0,
+                       progress={"done": 1, "total": 4, "unit": "shots", "current": "checking s02 (2 of 4)"})
+    by["edit"].update(state="stopped", error="the run ended before this step said it finished")
+    path.write_text(json.dumps(status), encoding="utf-8")
+    steps = _stage(snapshot.build(sdir, settings={}), "render")["content"]["runs"][0]["steps"]
+    rows = {s["name"]: s for s in steps}
+    assert rows["check"]["note"] == "checking s02 (2 of 4): no progress for 5 min"
+    assert rows["edit"]["note"] == "the run ended before this step said it finished"
+
+
 def test_render_without_any_run_and_with_a_bad_file(tmp_path):
     sdir = pagefix.make_short(tmp_path, "story")
     assert _stage(snapshot.build(sdir, settings={}), "render")["content"] == {"runs": []}

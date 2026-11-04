@@ -441,12 +441,19 @@ def _run_label(key: str, preset: str) -> str:
 
 
 def _step_row(s: dict) -> dict:
-    """A run step for the page: its name and state, and while it runs what it is on now (its progress's `current`,
-    e.g. the checks beside the render: "checking s02 (2 of 4), 0 errors so far") as `note`."""
+    """A run step for the page: its name and state, and as `note` while it runs what it is on now (its progress's
+    `current`, e.g. the checks beside the render: "checking s02 (2 of 4), 0 errors so far") and how long it has not
+    moved when it stalled beside the render (`stalled_s`); once it failed or stopped, why (its `error`)."""
     row = {"name": str(s.get("name")), "state": s.get("state")}
     p = s.get("progress")
-    if s.get("state") == "running" and isinstance(p, dict) and p.get("current"):
-        row["note"] = str(p["current"])
+    if s.get("state") == "running":
+        notes = [str(p["current"])] if isinstance(p, dict) and p.get("current") else []
+        if isinstance(s.get("stalled_s"), (int, float)):
+            notes.append(f"no progress for {render_status.fmt_duration(s['stalled_s'])}")
+        if notes:
+            row["note"] = ": ".join(notes)
+    elif s.get("state") in ("failed", "stopped") and s.get("error"):
+        row["note"] = str(s["error"])
     return row
 
 

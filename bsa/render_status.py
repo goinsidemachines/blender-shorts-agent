@@ -534,6 +534,7 @@ class Run:
         self.current: str | None = None
         self._last_write = float("-inf")
         self._t0s: dict[str, float] = {}  # when each running step's progress started counting
+        self._moved: dict[str, float] = {}  # when each running step began or its count last moved (stall)
         self._side: set[str] = set()  # steps begun beside the current one (begin_side)
         self._prev_active: Run | None = None
         self._lock = threading.RLock()  # a step reported from another thread writes while the render writes
@@ -573,7 +574,16 @@ class Run:
             for st in self.steps:  # a side step still running ends with the run (done: it never said it finished)
                 if st["name"] in self._side and st["state"] == "running" and st["name"] != self.current:
                     self._stop(st, "stopped" if state == "done" else state)
+                    st.setdefault("error", self._side_end_reason(state))
             self.write(force=True)
+
+    def _side_end_reason(self, state: str) -> str:
+        """Why a side step still running ended with the run, for its row on the page."""
+        if state == "done":
+            return "the run ended before this step said it finished"
+        at = f" at {self.current}" if self.current else ""
+        why = f": {self.error}" if self.error else ""
+        return f"the run {state}{at}{why}"[:MAX_ERROR]
 
     def _stop(self, st: dict, state: str) -> None:
         if st["progress"] is not None:
@@ -613,6 +623,7 @@ class Run:
         st = self._step(name)
         st.update(state="running", started=self.clock(), finished=None, progress=None)
         self._t0s.pop(name, None)
+        self._moved[name] = st["started"]
         return st
 
     def begin(self, name: str) -> dict:
@@ -674,6 +685,8 @@ class Run:
             if first:
                 p = st["progress"] = {}
             changed = first or current != p.get("current")
+            if changed or done != p.get("done"):
+                self._moved[name] = now
             p.update(done=done, total=total, unit=unit, current=current)
             if items is not None:
                 p["_items"] = items
@@ -710,6 +723,9 @@ class Run:
             row = dict(st)
             if st["progress"] is not None and st["state"] == "running":
                 row["progress"] = self._progress_out(st["progress"], now, st["name"])
+            quiet = self._side_quiet(st, row.get("progress"), now)
+            if quiet is not None:
+                row["stalled_s"] = round(quiet, 1)
             steps.append(row)
         end = self.finished if self.finished is not None else now
         cur = self._by_name.get(self.current) if self.current else None
@@ -740,6 +756,17 @@ class Run:
             "stall_after_s": stall,
             "throttle_s": THROTTLE_S,
         }
+
+    def _side_quiet(self, st: dict, progress: dict | None, now: float) -> float | None:
+        """How long a running side step (begun beside the current one) has not moved, once that is longer than its
+        stall time (as the current step's: max(STALL_MIN_S, 10 x its time per unit)); else None. The run's own
+        stall_after_s follows the current step, whose writes keep the file fresh while a side step may be stuck."""
+        name = st["name"]
+        if name not in self._side or name == self.current or st["state"] != "running":
+            return None
+        quiet = now - self._moved.get(name, st.get("started") or now)
+        per = (progress or {}).get("s_per_unit")
+        return quiet if quiet > max(STALL_MIN_S, 10 * (per or 0.0)) else None
 
     def write(self, force: bool = False) -> None:
         with self._lock:  # one writer at a time: the temporary file is per process, and a snapshot is taken whole
@@ -985,6 +1012,9 @@ def describe(status: dict, now: float | None = None, ago: bool = True) -> dict:
             summary = f"{label} running: step {step['index']} of {step['of']}, {_step_text(step, render, now)}"
         else:
             summary = f"{label} running: {_step_text(step, render, now, named=False)}"
+        for s in steps:  # a side step beside the current one that stopped counting (Run._side_quiet)
+            if s.get("state") == "running" and isinstance(s.get("stalled_s"), (int, float)):
+                summary += f"; {s['name']} has not moved for {fmt_duration(s['stalled_s'])}"
     elif state == "done":
         took = fmt_duration((status.get("finished") or now) - (status.get("started") or now))
         if kind == "render" and render:

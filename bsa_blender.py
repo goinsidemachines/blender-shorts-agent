@@ -27,6 +27,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 from bsa import freshness, jobstate, messages, rules, settings, workspace  # needs the plugin root on sys.path (above)
 
 RESULT_PREFIX = "BSA_RESULT "
+PROGRESS_PREFIX = "BSA_PROGRESS "  # a progress line of `check --in-chain` on stdout, for the preview chain to record
 ERROR_LIMIT = 600  # the one plain error line is trimmed at a sentence or clause boundary past this
 
 
@@ -578,6 +579,8 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
         freshness.require_checks(sdir, tl_hash, check_keys, "the final render", key=_short_key(sdir))
         failed = None
+    elif getattr(args, "checks_beside", False):  # the preview chain's checks run beside it: it says after they end
+        failed = None
     else:  # the preview renders anyway; it says what the checks found on this build (the final refuses on it)
         failed = _failed_checks_warning(sdir, short, tl_hash, check_keys)
         if failed:
@@ -763,11 +766,42 @@ def cmd_check(args) -> dict:
     on the --preset's live status page."""
     sdir = _short_dir(args.short)
     short = _load(sdir)
+    if getattr(args, "in_chain", False):  # beside the preview render: the chain records it (_start_side_check)
+        return _cmd_check(args, sdir, short, _ChainReport())
     preset = getattr(args, "preset", None) or "preview"
     with _recording(sdir, short, preset, "check", _status_key(sdir, args, preset)) as run:
         out = _cmd_check(args, sdir, short, run)
         run.summarize("check", {"warnings": out.get("warnings"), "checked": out.get("checked"), "kept": out.get("kept")})
     return out
+
+
+class _ChainReport:
+    """The run `check --in-chain` reports to: each progress count is one PROGRESS_PREFIX line of JSON on stdout,
+    which the preview chain's reader thread records as its check step's progress (_SideCheck). The check process
+    never writes the chain's status file (its lock is the chain process's own). Counts are sent at most every
+    THROTTLE_S unless forced or `current` changed; every line carries the shot rows as they are now."""
+
+    def __init__(self, out=None, clock=time.monotonic):
+        self.out, self.clock = out, clock
+        self._items: list[dict] | None = None
+        self._current, self._sent = None, float("-inf")
+
+    def progress(self, done: int, total: int, *, unit: str = "frames", current: str | None = None,
+                 items: list[dict] | None = None, force: bool = False) -> None:  # fmt: skip
+        from bsa import render_status as rs
+
+        if items is not None:
+            self._items = items
+        now = self.clock()
+        if not (force or current != self._current or now - self._sent >= rs.THROTTLE_S):
+            return
+        self._current, self._sent = current, now
+        data = {"done": done, "total": total, "unit": unit, "current": current,
+                **({"items": self._items} if self._items is not None else {})}  # fmt: skip
+        print(PROGRESS_PREFIX + json.dumps(data, default=str), file=self.out or sys.stdout, flush=True)
+
+    def summarize(self, name: str, summary: dict) -> None:
+        pass
 
 
 def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dict]]:
@@ -852,7 +886,8 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
                         OVERLAP_MAX_FINDINGS, checked=checked, kept=kept)  # fmt: skip
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
-    jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
+    if not getattr(args, "in_chain", False):  # beside the preview render the chain marks it (one writer of state)
+        jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
     return out
 
 
@@ -1920,19 +1955,46 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
     run("mix", bsa_cli.cmd_mix, ns(short=args.short),
         summary=lambda o: {"path": o.get("path"), "sfx_notes": (o.get("sfx") or {}).get("notes")})  # fmt: skip
     which = {"engine": getattr(args, "engine", None), "tag": getattr(args, "tag", None)}  # a side run: its own files
-    if _checks_current(sdir, short, tl, tl_hash):
-        skip("check", "already passed on every shot as it is now")
-    else:
-        run("check", cmd_check, ns(short=args.short, every=args.every, full=False, preset="preview", **which),
-            summary=lambda o: {"warnings": o.get("warnings"), "checked": o.get("checked"), "kept": o.get("kept")})
     from bsa import engine_runs
 
     side = _engine_run(sdir, args)
-    run("render", cmd_render, ns(short=args.short, preset="preview", shot=None, frames=None, redo_flagged=False,
-                                 no_wait=getattr(args, "no_wait", False), **which),
-        summary=_render_summary)  # fmt: skip
-    run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
-        summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
+    checking = None  # the check process beside the render
+    if _checks_current(sdir, short, tl, tl_hash):
+        skip("check", "already passed on every shot as it is now")
+    else:
+        _fingerprints(sdir, short, tl, tl_hash)  # once, before the split: the check process only reads the cache
+        chain.begin_side("check")
+        checking = _start_side_check(args, sdir, chain)
+    warnings: list[str] = []
+    try:
+        run("render", cmd_render, ns(short=args.short, preset="preview", shot=None, frames=None, redo_flagged=False,
+                                     no_wait=getattr(args, "no_wait", False), checks_beside=checking is not None,
+                                     **which), summary=_render_summary)  # fmt: skip
+        run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
+            summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
+        if checking is not None:
+            try:
+                checked = checking.join()
+            except CliError as exc:
+                errors = (exc.payload or {}).get("errors")
+                chain.end("check", "failed", str(exc))  # (a side step: begun when it started, not now)
+                if not isinstance(errors, int) or errors <= 0:  # the check process itself failed: no checks
+                    raise CliError(f"stopped at check: {exc}", {"steps": steps, "stopped_at": "check"}) from exc
+                # check errors: the preview is still made, and says so
+                steps.append({"step": "check", "errors": errors})
+                failed = _failed_checks_after(sdir, short, tl, tl_hash, errors)
+                print(f"warning: {failed}", file=sys.stderr, flush=True)
+                warnings.append(failed)
+            else:
+                summary = {"warnings": checked.get("warnings"), "checked": checked.get("checked"),
+                           "kept": checked.get("kept")}  # fmt: skip
+                chain.end("check")
+                chain.summarize("check", summary)
+                steps.append({"step": "check", **summary})
+                jobstate.mark_done(sdir, "checks", warnings=checked.get("warnings"))
+    finally:
+        if checking is not None:  # an error or interrupt anywhere: the check process ends with the chain
+            checking.stop()
     edit = run("edit", cmd_edit, ns(short=args.short, preset="preview", **which),
                summary=lambda o: {"mp4": o.get("mp4"), **({"closing_note": (o.get("closing") or {}).get("note")}
                                                           if (o.get("closing") or {}).get("note") else {})})  # fmt: skip
@@ -1943,9 +2005,110 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         out["tag"] = side.tag
     if edit.get("closing"):  # its "note" says when the voice line held the card past closing.seconds
         out["closing"] = edit["closing"]
-    if edit.get("warnings"):
-        out["warnings"] = edit["warnings"]
+    warnings += edit.get("warnings") or []
+    if warnings:
+        out["warnings"] = warnings
     return out
+
+
+def _failed_checks_after(sdir: Path, short, tl, tl_hash: str, errors: int) -> str:
+    """The warning the preview carries when the checks beside its render found errors: _failed_checks_warning from
+    the review/checks.json they wrote, or (should that not read as this build's) the count alone."""
+    fps = _fingerprints(sdir, short, tl, tl_hash)
+    line = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+    return line or (f"the checks found {errors} error(s) (review/checks.json): the final render will refuse until "
+                    f"these are fixed and checked again (BLENDER check {_short_key(sdir)})")  # fmt: skip
+
+
+def _start_side_check(args, sdir: Path, chain) -> _SideCheck:
+    """`check --in-chain` in a second background Blender beside the preview render (the checks take no GPU and no
+    lock). It writes review/checks.json only: the chain records its progress (read from its stdout) in its own
+    status, and marks the checks stage."""
+    import subprocess
+
+    import bpy
+
+    cmd = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1", "--python",
+           str(PLUGIN_ROOT / "bsa_blender.py"), "--", "check", str(sdir), "--every", str(args.every), "--in-chain"]  # fmt: skip
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace")  # fmt: skip
+    return _SideCheck(proc, chain)
+
+
+class _SideCheck:
+    """The check process beside the preview render: one thread records its progress lines in the chain's status
+    (`chain.progress(..., step="check")`) and keeps its BSA_RESULT line; one echoes its stderr here and keeps the
+    last line (what a crash said)."""
+
+    PROGRESS_KEYS = ("done", "total", "unit", "current", "items")
+
+    def __init__(self, proc, chain):
+        import threading
+
+        self.proc, self.chain = proc, chain
+        self.result: dict | None = None
+        self.last_err: str | None = None
+        self._threads = [threading.Thread(target=self._read_out, daemon=True, name="side-check-out"),
+                         threading.Thread(target=self._read_err, daemon=True, name="side-check-err")]  # fmt: skip
+        for t in self._threads:
+            t.start()
+
+    def _read_out(self) -> None:
+        for raw in self.proc.stdout:
+            line = raw.rstrip("\r\n")
+            if line.startswith(PROGRESS_PREFIX):
+                try:
+                    data = json.loads(line[len(PROGRESS_PREFIX) :])
+                    self.chain.progress(**{k: data[k] for k in self.PROGRESS_KEYS if k in data}, step="check",
+                                        force=True)  # fmt: skip
+                except Exception as exc:  # noqa: BLE001 - status only: the checks go on
+                    print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            elif line.startswith(RESULT_PREFIX):
+                try:
+                    self.result = json.loads(line[len(RESULT_PREFIX) :])
+                except ValueError:
+                    pass
+
+    def _read_err(self) -> None:
+        for raw in self.proc.stderr:
+            line = raw.rstrip("\r\n")
+            print(line, file=sys.stderr, flush=True)
+            if line.strip():
+                self.last_err = line.strip()
+
+    def join(self) -> dict:
+        """The checks' result once the process ends. CliError when it says ok false (check errors carry
+        payload["errors"] > 0), or when it ended without a result (a crash: its last stderr line says why)."""
+        import subprocess
+
+        while True:  # a wait with a timeout, so Ctrl+C reaches this process meanwhile (stop() then ends the checks)
+            try:
+                code = self.proc.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        for t in self._threads:
+            t.join()
+        res = self.result
+        if not isinstance(res, dict):
+            raise CliError(f"the checks stopped: {self.last_err or f'exit code {code}'}")
+        if res.get("ok") is False:
+            payload = {k: v for k, v in res.items() if k not in ("ok", "error")}
+            raise CliError(str(res.get("error") or "the checks failed"), payload)
+        return res
+
+    def stop(self) -> None:
+        """End the check process if it still runs: terminate, then kill after 5 s. Safe twice and after join."""
+        import subprocess
+
+        if self.proc.poll() is not None:
+            return
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
 
 
 def _render_summary(out: dict) -> dict:
@@ -2019,6 +2182,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--preset", choices=("preview", "final"), default="preview",
                     help="the live status it records its progress in (review/render-status-<preset>.json), which "
                     "the review page's Render stage shows")
+    sp.add_argument("--in-chain", action="store_true", help=argparse.SUPPRESS)  # beside the preview render
     sp.set_defaults(fn=cmd_check)
 
     sp = sub.add_parser("frame-check", help="checks on rendered frames")
@@ -2234,7 +2398,7 @@ def _say_starting(args):
     """For a command that records a live status: write "starting" (this process, the command) to it at once,
     before the command reads anything or opens the .blend, so the last run is never shown as current meanwhile.
     Returns the status path, or None. A status problem never stops the command."""
-    if args.command not in RECORDING:
+    if args.command not in RECORDING or getattr(args, "in_chain", False):  # the chain beside it says it started
         return None
     try:
         from bsa import render_status as rs
