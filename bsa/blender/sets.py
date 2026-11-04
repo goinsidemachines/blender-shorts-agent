@@ -595,13 +595,14 @@ def _shots(scene, short, tl) -> list:
     return out
 
 
-def _label_tracks(scene, shots) -> tuple[dict, dict]:
-    """Empty per-shot tracks to fill at the dressed frames (_track_labels): ({shot: {object: {"f0", "points",
-    "category"}}} for each near label's object, {shot: {"f0", "boxes": {hero: [...]}}}), with a slot per frame of the
-    shot, as overlays.shot_boxes reads anchors and heroes."""
-    from bsa.short import label_near
+def _label_tracks(scene, shots) -> tuple[dict, dict, dict]:
+    """Empty per-shot tracks to fill at the dressed frames (_track_labels): ({shot: {anchor key: {"f0", "points",
+    "category"}}} for each near label (keyed by bsa.short.label_anchor), {shot: {"f0", "boxes": {hero: [...]}}}), with
+    a slot per frame of the shot, as overlays.shot_boxes reads anchors and heroes; and {shot: {anchor key: (object
+    name, at point or None)}}, what each anchor projects."""
+    from bsa.short import label_anchor, label_at, label_near
 
-    near_at, heroes_at = {}, {}
+    near_at, heroes_at, targets = {}, {}, {}
     for shot, span, _ in shots:
         if shot is None:
             continue
@@ -610,20 +611,23 @@ def _label_tracks(scene, shots) -> tuple[dict, dict]:
             name = label_near(label)
             obj = scene.objects.get(name) if name else None
             if obj is not None:
-                near_at.setdefault(shot.id, {})[name] = {"f0": span.f0, "points": [None] * n,
-                                                        "category": bake.category(obj)}  # fmt: skip
+                key = label_anchor(label)
+                near_at.setdefault(shot.id, {})[key] = {"f0": span.f0, "points": [None] * n,
+                                                       "category": bake.category(obj)}  # fmt: skip
+                targets.setdefault(shot.id, {})[key] = (name, label_at(label))
         heroes_at[shot.id] = {"f0": span.f0, "boxes": {h: [None] * n for h in anchors.heroes(scene, shot.id)}}
-    return near_at, heroes_at
+    return near_at, heroes_at, targets
 
 
-def _track_labels(scene, cam_ev, dg, frame, shot_id, near_at, heroes_at) -> None:
+def _track_labels(scene, cam_ev, dg, frame, shot_id, near_at, heroes_at, targets) -> None:
     """Fill the near labels' anchor points and the heroes' screen boxes of shot `shot_id` at `frame`."""
     heroes = heroes_at.get(shot_id)
     if heroes is None:
         return
     i = frame - heroes["f0"]
-    for name, rec in near_at.get(shot_id, {}).items():
-        rec["points"][i] = anchors.screen_top(scene, cam_ev, scene.objects[name], dg)
+    for key, rec in near_at.get(shot_id, {}).items():
+        name, at = targets[shot_id][key]
+        rec["points"][i] = anchors.screen_top(scene, cam_ev, scene.objects[name], dg, at)
     for name, boxes in heroes["boxes"].items():
         boxes[i] = anchors.screen_box(scene, cam_ev, scene.objects[name], dg)
 
@@ -804,12 +808,12 @@ def dress(scene, kit, short, tl, sdir, *, save: bool = True, replace: bool | lis
     views: dict[int, _View] = {}
     subj_rects: dict[int, list[Rect]] = {}
     box = [math.inf, math.inf, -math.inf, -math.inf]
-    near_at, heroes_at = _label_tracks(scene, shots)
+    near_at, heroes_at, targets = _label_tracks(scene, shots)
 
     def look_at(frame, cam_ev, dg):
         views[frame] = _View(cam_ev, dg)
         subj_rects[frame] = []
-        _track_labels(scene, cam_ev, dg, frame, frame_shot[frame], near_at, heroes_at)
+        _track_labels(scene, cam_ev, dg, frame, frame_shot[frame], near_at, heroes_at, targets)
         for obj in _subjects(scene, frame_shot[frame]):
             ev = obj.evaluated_get(dg)
             pts = _corners(Vector(ev.bound_box[0]), Vector(ev.bound_box[6]), ev.matrix_world)

@@ -80,6 +80,33 @@ def test_labels_may_be_near_an_object():
     assert [label_near(x) for x in s.shots[0].labels] == [None, "Light bob"]
 
 
+def test_a_near_label_may_point_at_a_local_point():
+    from bsa.short import label_anchor, label_at
+
+    at = {"text": "Stop", "near": "Tape", "at": [0, 0.01, 0.002]}
+    plain = {"text": "Stop", "near": "Tape"}
+    assert validate(_short(shots=[Shot("s01", "Hook", "pic", "Scene", labels=[at])])) == []
+    assert label_at(at) == (0.0, 0.01, 0.002) and label_at(plain) is None and label_at("Stop") is None
+    assert label_anchor(at) == "Tape@0,0.01,0.002"
+    assert label_anchor(plain) == "Tape" and label_anchor("Stop") is None
+    for bad in ({**plain, "at": [0, 1]}, {**plain, "at": "0,0,1"}, {**plain, "at": [0, 1, float("nan")]},
+                {**plain, "at": [0, True, 1]}, {"text": "Stop", "at": [0, 0, 1]}):  # fmt: skip
+        errs = validate(_short(shots=[Shot("s01", "Hook", "pic", "Scene", labels=[bad])]))
+        assert any("s01" in e and "at" in e for e in errs), (bad, errs)
+
+
+def test_labels_with_different_at_points_get_their_own_anchors():
+    from bsa.short import near_anchors
+
+    labels = [{"text": "Stop", "near": "Tape", "at": [0, 0.01, 0]}, {"text": "Pull", "near": "Tape", "at": [0, 0.2, 0]},
+              {"text": "Tape", "near": "Tape"}, "Plain"]  # fmt: skip
+    s = _short(shots=[Shot("s01", "Hook", "pic", "Scene", labels=labels)])
+    got = near_anchors(s)
+    assert got == [("s01", "Stop", "Tape", "Tape@0,0.01,0", (0.0, 0.01, 0.0)),
+                   ("s01", "Pull", "Tape", "Tape@0,0.2,0", (0.0, 0.2, 0.0)),
+                   ("s01", "Tape", "Tape", "Tape", None)]  # fmt: skip
+
+
 def test_bad_labels_are_reported():
     for bad in ({"near": "Ball"}, {"text": "", "near": "Ball"}, {"text": "Ball", "near": ""}, 7, ""):
         s = _short(shots=[Shot("s01", "Hook", "pic", "Scene", labels=[bad])])

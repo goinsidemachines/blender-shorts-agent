@@ -55,7 +55,9 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   `bsa.timeline`). Every `BLENDER` command recomputes the timing from `short.json` and the takes, compares it with
   `source/timeline.json` and with each scene's stamp, and refuses a mismatch with "timing changed: run CLI timeline
   SHORT, then rebuild" (or "built for another timing"): run `CLI timeline SHORT`, rebuild, then carry on;
-- give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`);
+- give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`); to
+  point at a spot on it use the label's `"at": [x, y, z]` (local space) or an Empty there, never a helper sphere
+  (it would show in the video);
 - save to `blend/short.blend`. Rebuild after every edit to build.py: when `source/build.py` is newer than
   `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (in its
   result's `warnings`, or `build_warnings` for `check` and `frame-check`, and on one stderr line), and the final

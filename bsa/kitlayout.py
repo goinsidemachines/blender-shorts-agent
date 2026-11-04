@@ -367,7 +367,7 @@ def _near(shot, span, kit, font, anchors: dict | None, rows, fixed: list[Rect], 
           notes: list[str]) -> list[tuple[Placed, Pointer]]:  # fmt: skip
     """The shot's near labels and near measures, each following its object (overlays.follow with the card's size),
     with its pointer line. A near label without anchors: ValueError when `strict`, else left out."""
-    from bsa.short import label_kind, label_near, label_text
+    from bsa.short import label_anchor, label_kind, label_near, label_text
 
     placed: dict = {}
     out = []
@@ -376,7 +376,7 @@ def _near(shot, span, kit, font, anchors: dict | None, rows, fixed: list[Rect], 
         if not near:
             continue
         text, kind = label_text(label), label_kind(label)
-        points = (anchors or {}).get(near)
+        points = (anchors or {}).get(label_anchor(label))
         if points is None:
             if strict:
                 raise ValueError(f"no anchors for label {text!r} near {near!r} in shot {shot.id}: run BLENDER "

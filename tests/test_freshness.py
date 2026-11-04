@@ -447,7 +447,7 @@ def test_checks_code_covers_every_file_the_findings_come_from():
     root = freshness._CHECKS_CODE[0].parent.parent
     names = {p.relative_to(root).as_posix() for p in freshness._CHECKS_CODE}
     assert {"blender/checks.py", "viewer.py", "overlays.py", "findings.py", "blender/camera.py",
-            "layout.py", "rules.py", "blender/bake.py", "pops.py"} <= names, names  # fmt: skip
+            "layout.py", "rules.py", "blender/bake.py", "pops.py", "blender/anchors.py"} <= names, names  # fmt: skip
     assert all(p.is_file() for p in freshness._CHECKS_CODE)
 
 

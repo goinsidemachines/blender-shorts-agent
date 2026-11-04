@@ -160,7 +160,7 @@ from bsa.findings import cap_pairs, metres, not_listed
 from bsa.image_checks import Finding
 from bsa.layout import Rect
 from bsa.pops import find_pops, reference_frames
-from bsa.short import label_near, label_text, load_short
+from bsa.short import label_anchor, label_at, label_near, label_text, load_short
 from bsa.timeline import Timeline, wide_frames
 
 __all__ = ["Finding", "OverlapFinding", "run_checks"]
@@ -575,8 +575,9 @@ class _Run:
                 obj = self.scene.objects.get(near) if near else None
                 if obj is None:
                     continue
-                anchors[near] = {"f0": frame, "points": [screen_top(self.scene, cam_ev, obj, dg)],
-                                 "category": category(obj)}  # a kit's part label shows its category's dot
+                point = screen_top(self.scene, cam_ev, obj, dg, label_at(label))
+                anchors[label_anchor(label)] = {"f0": frame, "points": [point],
+                                                "category": category(obj)}  # a kit's part label shows its category's dot
                 subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
             try:
                 texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors, hero_track, [frame],

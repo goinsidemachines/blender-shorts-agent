@@ -242,8 +242,9 @@ def load_hero_boxes(short_dir: Path, fingerprints: dict | None, tl_hash: str, sh
 
 
 def load_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str, need=()) -> dict:
-    """source/anchors.json's shots ({shot: {object: {"f0", "points"}}}), which must be from this timing and each
-    needed shot's current fingerprint, and hold every (shot id, label text, object name) in `need`."""
+    """source/anchors.json's shots ({shot: {anchor key: {"f0", "points"}}}), which must be from this timing and each
+    needed shot's current fingerprint, and hold every (shot id, label text, anchor key) in `need` (the key is the
+    object's name for a label without "at": bsa.short.label_anchor)."""
     shots = _read_anchors(short_dir, fingerprints, tl_hash, sorted({s for s, _, _ in need})).get("shots") or {}
     for shot_id, text, name in need:
         if name not in (shots.get(shot_id) or {}):
@@ -421,7 +422,7 @@ _BSA = Path(__file__).resolve().parent
 # words (rules) and the object tags (bake: hero, overlay, may-exit)
 _CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
                 _BSA / "findings.py", _BSA / "blender" / "camera.py", _BSA / "rules.py",
-                _BSA / "blender" / "bake.py", _BSA / "pops.py")  # fmt: skip
+                _BSA / "blender" / "bake.py", _BSA / "pops.py", _BSA / "blender" / "anchors.py")  # fmt: skip
 
 
 def checks_code() -> str:

@@ -2029,7 +2029,7 @@ def test_anchors_record_each_near_objects_category_fresh_every_run(home, pendulu
 
     projected = []
     fake = types.ModuleType("bsa.blender.anchors")
-    fake.project = lambda scene, names, f0, f1: projected.append(names) or {n: {"f0": f0, "points": [[1, 2]]}
+    fake.project = lambda scene, names, f0, f1, at=None: projected.append(names) or {n: {"f0": f0, "points": [[1, 2]]}
                                                                             for n in names}  # fmt: skip
     fake.hero_boxes = lambda scene, names, f0, f1: {"f0": f0, "boxes": {}}
     fake.scenery_boxes = lambda scene, f0, f1, shot_id=None: {"f0": f0, "boxes": []}
@@ -2052,6 +2052,47 @@ def test_anchors_record_each_near_objects_category_fresh_every_run(home, pendulu
     entry = bob_entry()
     assert ["Bob"] in projected and entry == {"f0": entry["f0"], "points": [[1, 2]], "category": "spark"}
 
+
+def test_anchors_of_labels_at_points_on_one_object_are_their_own(home, pendulum, monkeypatch):
+    """Two labels near one object at different "at" points get their own anchors.json entries, each projected at
+    its point; a label without "at" keeps the object's name as its key."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+    from bsa.short import near_labels
+
+    spec = json.loads((pendulum / "source" / "short.json").read_text(encoding="utf-8"))
+    spec["shots"][0]["labels"] = [{"text": "Top", "near": "Bob", "at": [0, 0, 0.5]},
+                                  {"text": "Side", "near": "Bob", "at": [0.5, 0, 0]}, {"text": "Bob", "near": "Bob"}]
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _rendered(home, pendulum, "preview")  # timeline.json
+    (pendulum / "source" / "anchors.json").unlink(missing_ok=True)  # every anchor projected here
+    short = bsa_blender._load(pendulum)
+    tl, tl_hash = bsa_blender._timeline(pendulum, short)
+
+    class Scene:
+        def __init__(self, name):
+            self.name, self.objects = name, {n: {} for _, _, n in near_labels(short)}
+
+        def get(self, key, default=None):
+            return tl_hash if key == freshness.TIMELINE_PROP else default
+
+    calls = []
+    fake = types.ModuleType("bsa.blender.anchors")
+    fake.project = lambda scene, names, f0, f1, at=None: calls.append(at) or {n: {"f0": f0, "points": [list(at or
+                                                                              (0, 0))[:2]]} for n in names}  # fmt: skip
+    fake.hero_boxes = lambda scene, names, f0, f1: {"f0": f0, "boxes": {}}
+    fake.scenery_boxes = lambda scene, f0, f1, shot_id=None: {"f0": f0, "boxes": []}
+    fake.heroes = lambda scene, shot_id: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.anchors", fake)
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots})
+    bsa_blender._write_anchors(pendulum, short, tl, tl_hash, data, fps={})
+    shots = json.loads((pendulum / "source" / "anchors.json").read_text(encoding="utf-8"))["shots"]["s01"]
+    assert sorted(c for c in calls if c) == [(0.0, 0.0, 0.5), (0.5, 0.0, 0.0)] and None in calls
+    assert shots["Bob@0,0,0.5"]["points"] == [[0, 0]] and shots["Bob@0.5,0,0"]["points"] == [[0.5, 0]]
+    assert shots["Bob"]["points"] == [[0, 0]] and set(shots) == {"Bob@0,0,0.5", "Bob@0.5,0,0", "Bob"}
 
 def test_kit_sample_command_paths(home, tmp_path, monkeypatch):
     """BLENDER kit-sample: bad JSON, a non-object, an invalid kit and no kit set are plain errors; a good kit renders

@@ -56,5 +56,6 @@ def test_anchors_in_blender(blender_run):
     for name in ("test_projects_the_top_of_a_known_object", "test_follows_a_moving_object_per_frame",
                  "test_missing_object_and_behind_the_camera", "test_follows_a_camera_switched_by_markers",
                  "test_hero_boxes_of_the_shots_heroes", "test_scenery_boxes_are_the_other_meshes_on_screen",
-                 "test_hero_boxes_at_given_frames"):  # fmt: skip
+                 "test_hero_boxes_at_given_frames", "test_at_point_is_projected_each_frame",
+                 "test_an_empty_anchors_at_its_origin", "test_at_point_behind_the_camera_is_none"):  # fmt: skip
         assert f"PASS {name}" in result.stdout

@@ -33,7 +33,10 @@ and (for no-brand users) a choice of look. Read `craft-short-form.md` and `hones
   fast-paced, see `craft-short-form.md` "Pacing"); `still_at` (0 to 1) is where in the shot the
   storyboard still is taken (pick the most telling moment); `labels` are on-screen words: a plain string is stacked in the top-left corner for
   the whole shot; `{"text": "Light", "near": "Light bob"}` sits just above that object and follows it (`near` is the
-  object's exact name in build.py, so label the things the picture shows by name); `badge` is the honesty
+  object's exact name in build.py, so label the things the picture shows by name). To point at one spot on an
+  object, add `"at": [x, y, z]`, that point in the object's local space (`{"text": "Stop", "near": "Tape", "at":
+  [0, 0.01, 0.002]}`), or name an Empty placed there (it anchors at its origin): either instead of a helper sphere,
+  which would show in the video; `badge` is the honesty
   badge ("Motion exaggerated", "Simplified") or `null`; `hold` (optional) marks a deliberate freeze, `true` for the
   whole shot or `[[from_s, to_s], ...]` seconds from its start, so frame-check does not call it stuck.
 - **Sound:** plan effects per shot now (`sound.md`); no music.

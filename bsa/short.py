@@ -177,6 +177,25 @@ def label_near(label) -> str | None:
     return str(label.get("near") or "").strip() or None
 
 
+def label_at(label) -> tuple[float, float, float] | None:
+    """The point a near label points at ("at": [x, y, z] in its object's local space), or None (the object's top,
+    or an Empty's origin)."""
+    at = label.get("at") if isinstance(label, dict) else None
+    if not (isinstance(at, list | tuple) and len(at) == 3 and all(_number(v) for v in at)):
+        return None
+    return float(at[0]), float(at[1]), float(at[2])
+
+
+def label_anchor(label) -> str | None:
+    """The key of a near label's anchor in anchors.json: its object's name, or "name@x,y,z" with an "at" point (two
+    labels near one object at different points get their own anchors). None for a plain label."""
+    name = label_near(label)
+    at = label_at(label)
+    if name is None or at is None:
+        return name
+    return f"{name}@{at[0]:g},{at[1]:g},{at[2]:g}"
+
+
 def label_kind(label) -> str:
     """"measure" for a label object with "kind": "measure" (a measure label), else "label"."""
     return "measure" if isinstance(label, dict) and label.get("kind") == "measure" else "label"
@@ -192,6 +211,11 @@ def _label_problem(label) -> str | None:
     if label.get("kind") not in (None, "measure"):
         return f"{label!r} has an unknown kind: the only kind is \"measure\""
     near = label.get("near")
+    if "at" in label:
+        if near is None:
+            return f"{label!r} has at but no near: at is a point on the near object"
+        if label_at(label) is None:
+            return f"{label!r} at must be three numbers [x, y, z], a point in the near object's local space"
     if near is None and label.get("kind") == "measure":
         return None  # a measure label without near is stacked
     if not isinstance(near, str) or not near.strip():
@@ -311,6 +335,12 @@ def _bars_problem(bars) -> str | None:
 def near_labels(short) -> list[tuple[str, str, str]]:
     """(shot id, label text, object name) for every label placed next to an object."""
     return [(s.id, label_text(lb), label_near(lb)) for s in short.shots for lb in s.labels if label_near(lb)]
+
+
+def near_anchors(short) -> list[tuple[str, str, str, str, tuple | None]]:
+    """(shot id, label text, object name, anchor key, at point or None) for every label placed next to an object."""
+    return [(s.id, label_text(lb), label_near(lb), label_anchor(lb), label_at(lb))
+            for s in short.shots for lb in s.labels if label_near(lb)]  # fmt: skip
 
 
 def spoken_text(line) -> str:

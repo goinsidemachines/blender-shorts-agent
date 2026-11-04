@@ -155,14 +155,14 @@ def _anchors(short, tl, scenes: dict, shown: set[str], warnings: list) -> tuple:
     anchors.json, projected now for the shown shots (nothing is written)."""
     from bsa.blender.anchors import hero_boxes, heroes, project
     from bsa.blender.bake import category
-    from bsa.short import label_near
+    from bsa.short import label_anchor, label_at, label_near
 
     spans = {s.id: s for s in tl.shots}
     anchors: dict[str, dict] = {}
     label_heroes: dict[str, dict] = {}
     shots = []
     for shot in short.shots:
-        near = [label_near(lb) for lb in shot.labels if label_near(lb)]
+        near = {label_anchor(lb): (label_near(lb), label_at(lb)) for lb in shot.labels if label_near(lb)}
         if not near:
             shots.append(shot)
             continue
@@ -171,16 +171,16 @@ def _anchors(short, tl, scenes: dict, shown: set[str], warnings: list) -> tuple:
             continue
         scene, span = scenes[shot.id], spans[shot.id]
         keep = []
-        for name in dict.fromkeys(near):
+        for key, (name, at) in near.items():
             try:
-                entry = project(scene, [name], span.f0, span.f1)[name]
+                entry = project(scene, [name], span.f0, span.f1, at)[name]
             except ValueError as exc:
                 warnings.append(f"shot {shot.id}: the label near {name!r} is left out of the look ({exc})")
                 continue
             entry["category"] = category(scene.objects.get(name))
-            anchors.setdefault(shot.id, {})[name] = entry
-            keep.append(name)
-        labels = [lb for lb in shot.labels if not label_near(lb) or label_near(lb) in keep]
+            anchors.setdefault(shot.id, {})[key] = entry
+            keep.append(key)
+        labels = [lb for lb in shot.labels if not label_near(lb) or label_anchor(lb) in keep]
         shots.append(dataclasses.replace(shot, labels=labels))
         try:
             label_heroes[shot.id] = hero_boxes(scene, heroes(scene, shot.id), span.f0, span.f1)

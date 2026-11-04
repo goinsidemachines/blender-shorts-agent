@@ -349,16 +349,17 @@ def _check_near_objects(data, short, tl_hash: str) -> None:
 
 
 def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None = None) -> dict:
-    """Project every near label's object for its shot and write source/anchors.json, stamped with each shot's
-    fingerprint and the timing; shots unchanged since the last anchors keep theirs. Also the screen boxes of the
-    heroes of every shot with a near label (labels keep off them) and of the last shot, with the last shot's other
-    meshes during the end card ("scenery": the end card keeps off them after the heroes). Each near label's object
-    records its "category" tag (bsa.blender.bake.category, or None), read again on every run. Returns its path, how
-    many labels it places and which shots it projected again."""
+    """Project every near label's object (its "at" point, if it has one) for its shot and write source/anchors.json,
+    each under the label's anchor key (bsa.short.label_anchor), stamped with each shot's fingerprint and the timing;
+    shots unchanged since the last anchors keep theirs. Also the screen boxes of the heroes of every shot with a
+    near label (labels keep off them) and of the last shot, with the last shot's other meshes during the end card
+    ("scenery": the end card keeps off them after the heroes). Each near label's object records its "category" tag
+    (bsa.blender.bake.category, or None), read again on every run. Returns its path, how many labels it places and
+    which shots it projected again."""
     from bsa.blender.anchors import hero_boxes, project, scenery_boxes
     from bsa.blender.anchors import heroes as hero_names
     from bsa.blender.bake import category
-    from bsa.short import near_labels
+    from bsa.short import near_anchors
     from bsa.timeline import end_card_start
 
     _check_near_objects(data, short, tl_hash)
@@ -368,21 +369,21 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
     spans = {s.id: s for s in tl.shots}
     shots: dict[str, dict] = {}
     projected: set[str] = set()
-    for shot_id, _text, name in near_labels(short):
-        if name in shots.get(shot_id, {}):
+    for shot_id, _text, name, key, at in near_anchors(short):
+        if key in shots.get(shot_id, {}):
             continue
         _, scene = _scene(data, short, shot_id, tl_hash)
         prior = reuse["shots"].get(shot_id) or {}
-        if isinstance(prior.get(name), dict):
-            entry = dict(prior[name])
+        if isinstance(prior.get(key), dict):
+            entry = dict(prior[key])
         else:
             projected.add(shot_id)
             try:
-                entry = project(scene, [name], spans[shot_id].f0, spans[shot_id].f1)[name]
+                entry = project(scene, [name], spans[shot_id].f0, spans[shot_id].f1, at)[name]
             except ValueError as exc:
                 raise CliError(str(exc)) from exc
         entry["category"] = category(scene.objects.get(name))  # read fresh every run: a retag needs no projection
-        shots.setdefault(shot_id, {})[name] = entry
+        shots.setdefault(shot_id, {})[key] = entry
     last = short.shots[-1]  # the end card shows over the last shot: it must stay off that shot's heroes
     heroes: dict[str, dict] = {}
     for shot_id in [*sorted(shots), last.id]:  # near labels keep off the other heroes of their shot
@@ -1085,9 +1086,9 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
     if args.preset == "final":
         freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit")
-    from bsa.short import near_labels
+    from bsa.short import near_anchors
 
-    need = near_labels(short)
+    need = [(shot_id, text, key) for shot_id, text, _name, key, _at in near_anchors(short)]
     anchors = freshness.load_anchors(sdir, fps, tl_hash, need) if need else None
     label_heroes = _label_heroes(sdir, fps, tl_hash, need)
     warnings, heroes = [], None

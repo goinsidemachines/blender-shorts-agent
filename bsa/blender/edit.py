@@ -48,7 +48,7 @@ from bsa.overlays import est_lines as _est_lines
 from bsa.overlays import est_width as _est_width
 from bsa.overlays import hex_colour as _hex_colour  # noqa: F401 - moved to overlays; closing_card imports it here
 from bsa.settings import end_card
-from bsa.short import Short, label_near, label_text
+from bsa.short import Short, label_anchor, label_near, label_text
 from bsa.timeline import Timeline, end_card_start
 
 END_SIZE = 72
@@ -229,7 +229,7 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
             text, near = label_text(label), label_near(label)
             if not near:
                 continue
-            points = ((anchors or {}).get(shot.id) or {}).get(near)
+            points = ((anchors or {}).get(shot.id) or {}).get(label_anchor(label))
             if points is None:
                 raise ValueError(f"no anchors for label {text!r} near {near!r} in shot {shot.id}: run BLENDER "
                                  "anchors SHORT")  # fmt: skip
