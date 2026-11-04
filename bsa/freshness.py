@@ -590,10 +590,34 @@ def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     return out
 
 
+FINAL_MAX_EVERY = 5  # the final needs checks that sampled at least every 5th frame (BLENDER check's default)
+
+
+def _nth(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def failed_checks(short_dir: Path, tl_hash: str, shots: dict) -> int:
+    """How many errors review/checks.json found on the build and timing as they are now (`shots` as for
+    require_checks; any --every): 0 when there are no checks, or they ran on another timing, checks code or shot.
+    The preview render refuses on these: a preview made after the checks failed shows the failures to whoever
+    watches it, and they are found again only by the final's checks."""
+    data = read_checks(short_dir) or {}
+    stamp = data.get("stamp")
+    if not isinstance(stamp, dict) or stamp.get("timeline") != tl_hash or not _code_current(stamp.get("code")):
+        return 0
+    if not all(_shot_current(stamp, sid, now) for sid, now in shots.items()):
+        return 0
+    try:
+        return max(0, int(data.get("errors") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def require_checks(short_dir: Path, tl_hash: str, shots: dict, command: str = "the final render") -> None:
     """`command` (the final render or edit) needs checks that ran on every shot as it is now (`shots`: {shot id:
-    shot_check_inputs}) and on this timing and checks code, and found no errors. A refusal says which input
-    changed."""
+    shot_check_inputs}) and on this timing and checks code, sampled every FINAL_MAX_EVERY frames or finer
+    (`--every`), and found no errors. A refusal says which input changed."""
     again = f"run BLENDER check SHORT again before {command}"
     data = read_checks(short_dir)
     if data is None:
@@ -608,6 +632,14 @@ def require_checks(short_dir: Path, tl_hash: str, shots: dict, command: str = "t
     if not _code_current(stamp.get("code")):
         raise StaleError(f"the checks code changed since the checks ran (the plugin was updated): {again} (it checks "
                          "every shot once)")  # fmt: skip
+    every = stamp.get("every")
+    if not isinstance(every, int) or isinstance(every, bool):
+        raise StaleError(f"the checks can't say how finely they checked (review/checks.json records no --every): "
+                         f"{command} needs --every {FINAL_MAX_EVERY} or finer: run BLENDER check SHORT --every "
+                         f"{FINAL_MAX_EVERY} again")  # fmt: skip
+    if every > FINAL_MAX_EVERY:
+        raise StaleError(f"the checks ran on every {_nth(every)} frame (--every {every}): {command} needs --every "
+                         f"{FINAL_MAX_EVERY} or finer: run BLENDER check SHORT --every {FINAL_MAX_EVERY} again")  # fmt: skip
     changed = {sid: _changes(stamp, sid, now) for sid, now in shots.items() if not _shot_current(stamp, sid, now)}
     if changed:
         raise StaleError(f"{_summarise(changed, len(shots))} since the checks ran: {again} (it re-checks only those)")

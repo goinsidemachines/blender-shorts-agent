@@ -528,6 +528,9 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
         freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render")
+    elif n := freshness.failed_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps))):
+        raise CliError(f"review/checks.json has {n} error(s) on this build: fix them and run BLENDER check SHORT "
+                       f"again before the preview render (a preview made now shows them)")  # fmt: skip
     _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
     parts = _parts(sdir, fps)
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))

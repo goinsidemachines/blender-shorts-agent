@@ -937,7 +937,7 @@ def test_edit_final_needs_current_checks(home, pendulum, monkeypatch, capsys):
     assert "checks have not run" in capsys.readouterr().err and "built" not in seen
     short = bsa_blender._load(pendulum)
     timeline, tl_hash = bsa_blender._timeline(pendulum, short)
-    stamp = freshness.checks_stamp(tl_hash, bsa_blender._check_keys(short, timeline, None))
+    stamp = freshness.checks_stamp(tl_hash, bsa_blender._check_keys(short, timeline, None), 5)
     report = {"stamp": stamp, "errors": 1, "warnings": 0, "findings": []}
     (pendulum / "review" / "checks.json").write_text(json.dumps(report), encoding="utf-8")
     assert bsa_blender.main(["edit", "pendulum", "--preset", "final"]) == 1
@@ -1094,6 +1094,44 @@ def test_render_checks_near_label_objects_before_rendering(home, pendulum, monke
     assert err.strip() == ("shot s01 label 'Bob' is near 'Pendulum Z bob', which scene 'Workshop' does not have (use "
                            "the object's exact name)")  # fmt: skip
     assert rendered == []  # nothing rendered
+
+
+def test_preview_render_refuses_checks_that_failed_on_this_build(home, pendulum, monkeypatch, capsys):
+    """A preview rendered after the checks found errors on this very build shows those errors to the viewer, and
+    the clip is found again only by the final's checks: the preview render refuses until they are fixed. Checks
+    from another build or timing (or none) don't stop it."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+
+    ok(run(home, "timeline", "pendulum"))
+    short = bsa_blender._load(pendulum)
+    _, tl_hash = bsa_blender._timeline(pendulum, short)
+
+    class Scene(dict):
+        def __init__(self, name):
+            super().__init__({freshness.TIMELINE_PROP: tl_hash})
+            self.name, self.objects = name, {}
+
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots}, filepath="")
+    rendered = []
+    fake = types.ModuleType("bsa.blender.render")
+    fake.render_range = lambda *a, **k: rendered.append(a) or []
+    monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _checked(pendulum, errors=3)
+    assert bsa_blender.main(["render", "pendulum", "--preset", "preview"]) == 1
+    err = capsys.readouterr().err
+    assert "3 error(s) on this build" in err and "before the preview render" in err
+    assert rendered == []  # nothing rendered
+    report = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
+    report["stamp"]["timeline"] = "another timing"  # the checks ran on another timing: they say nothing now
+    (pendulum / "review" / "checks.json").write_text(json.dumps(report), encoding="utf-8")
+    assert bsa_blender.main(["render", "pendulum", "--preset", "preview"]) == 1
+    err = capsys.readouterr().err  # past the checks: the next step's own refusal (this fake scene has no objects)
+    assert "on this build" not in err and "which scene 'Workshop' does not have" in err
 
 
 def test_end_card_uses_hero_boxes_and_only_warns_without_anchors(home, pendulum, monkeypatch, capsys):

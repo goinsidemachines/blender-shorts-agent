@@ -197,12 +197,45 @@ def test_require_checks(sdir):
     _checks(sdir, None)  # written before checks were stamped
     with pytest.raises(freshness.StaleError, match="changed since the checks ran"):
         freshness.require_checks(sdir, "h1", keys)
-    _checks(sdir, {**freshness.checks_stamp("h1", keys), "code": "0:old"})  # the checks' code changed
+    _checks(sdir, {**freshness.checks_stamp("h1", keys, 5), "code": "0:old"})  # the checks' code changed
     with pytest.raises(freshness.StaleError, match="the checks code changed"):
         freshness.require_checks(sdir, "h1", keys)
-    _checks(sdir, freshness.checks_stamp("h1", keys), errors=2)
+    _checks(sdir, freshness.checks_stamp("h1", keys, 5), errors=2)
     with pytest.raises(freshness.StaleError, match="2 error"):
         freshness.require_checks(sdir, "h1", keys)
+
+
+def test_the_final_needs_checks_every_5_frames_or_finer(sdir):
+    """A check run with a coarse --every samples 1 frame in N: fine for a look at the preview, not for the final."""
+    keys = {"s01": "k1", "s02": "k2"}
+    _checks(sdir, freshness.checks_stamp("h1", keys, 50))
+    with pytest.raises(freshness.StaleError, match="--every 5 or finer") as err:
+        freshness.require_checks(sdir, "h1", keys, "the final edit")
+    assert "every 50th frame (--every 50)" in str(err.value) and "the final edit needs" in str(err.value)
+    assert "run BLENDER check SHORT --every 5 again" in str(err.value)
+    for every in (5, 1):  # the default and finer pass, nothing else changed
+        _checks(sdir, freshness.checks_stamp("h1", keys, every))
+        freshness.require_checks(sdir, "h1", keys)
+    _checks(sdir, freshness.checks_stamp("h1", keys))  # a stamp that does not say how finely it checked
+    with pytest.raises(freshness.StaleError, match="can't say how finely") as err:
+        freshness.require_checks(sdir, "h1", keys)
+    assert "--every 5 or finer" in str(err.value)
+    assert freshness.FINAL_MAX_EVERY == 5
+
+
+def test_failed_checks_count_only_when_they_ran_on_this_build(sdir):
+    """The errors review/checks.json found on the build and timing as they are now (what the preview render
+    refuses on); none when there are no checks, or they ran on another build, timing or checks code."""
+    keys = {"s01": "k1", "s02": "k2"}
+    assert freshness.failed_checks(sdir, "h1", keys) == 0
+    _checks(sdir, freshness.checks_stamp("h1", keys, 50), errors=3)  # any --every: the preview may check coarsely
+    assert freshness.failed_checks(sdir, "h1", keys) == 3
+    assert freshness.failed_checks(sdir, "h2", keys) == 0  # another timing
+    assert freshness.failed_checks(sdir, "h1", {**keys, "s02": "k2b"}) == 0  # a shot rebuilt since
+    _checks(sdir, {**freshness.checks_stamp("h1", keys, 5), "code": "0:old"}, errors=3)
+    assert freshness.failed_checks(sdir, "h1", keys) == 0  # older checks code
+    _checks(sdir, freshness.checks_stamp("h1", keys, 5))
+    assert freshness.failed_checks(sdir, "h1", keys) == 0
 
 
 def test_reusable_checks_keep_unchanged_shots_findings(sdir):
