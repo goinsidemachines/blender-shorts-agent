@@ -134,12 +134,15 @@ from bsa import kitlayout, overlays, setplace, viewer
 from bsa.blender.anchors import screen_box, screen_top
 from bsa.blender.bake import (
     category,
+    contact_tag,
+    follow_differs,
     is_fast,
     is_hero,
     is_overlay,
     is_set,
     is_surface,
     may_exit,
+    merged_contact,
     set_role,
     tag_problem,
     tags,
@@ -1024,7 +1027,7 @@ class _Run:
                     self.add("names", "error", obj.name, None, f"tag {t!r} on {obj.name!r}: {problem}",
                              key=(obj.name, t))  # fmt: skip
                 elif t.startswith("contact:"):
-                    target = _contact_target(t[len("contact:") :], present)
+                    target = contact_tag(t[len("contact:") :], present)[0]
                     if target not in present:
                         self.add("names", "error", obj.name, None, f"tag {t!r} names {target!r}, which scene "
                                  f"{self.scene.name!r} does not have{_did_you_mean(target, present)}")  # fmt: skip
@@ -1324,27 +1327,43 @@ def _moving_ancestors(obj, skip) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _follows_set(obj, skip) -> frozenset[str]:
+    """The names of the moving things the object follows, leaving out the objects in `skip`: its animated
+    ancestors, and for a Hook or Armature modifier its hook object or armature (when animated) and their animated
+    ancestors (a mesh deformed by them moves with them)."""
+    out = set(_moving_ancestors(obj, skip))
+    for mod in getattr(obj, "modifiers", ()):
+        driver = getattr(mod, "object", None) if mod.type in ("HOOK", "ARMATURE") else None
+        if driver is None:
+            continue
+        if driver not in skip and _animated(driver):
+            out.add(driver.name)
+        out.update(_moving_ancestors(driver, skip))
+    return frozenset(out)
+
+
 def _contact_pairs(scene) -> list[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
-    """Each contact-tagged pair whose two parts follow different moving ancestors: (tagged, other, its moving
-    ancestors, the other's). Each pair once, however many tags name it."""
+    """Each contact-tagged pair whose two parts follow different moving things (bake.follow_differs): (tagged,
+    other, what moves the tagged part, what moves the other), each sorted. Each pair once, its tags merged; a pair
+    whose tags say it moves against each other by design is left out."""
     names = {o.name for o in scene.objects}
     out, seen = [], set()
     for obj in sorted(scene.objects, key=lambda o: o.name):
         for t in tags(obj):
             if not t.startswith("contact:"):
                 continue
-            target, _, moves = _contact_tag(t[len("contact:") :], names)
-            other = scene.objects.get(target)
+            other = scene.objects.get(contact_tag(t[len("contact:") :], names)[0])
             pair = frozenset((obj.name, getattr(other, "name", "")))
             if other is None or other == obj or pair in seen:
                 continue
             seen.add(pair)
-            if moves or _moves_tagged(other, obj.name):
+            merged = merged_contact(obj.name, tags(obj), other.name, tags(other))
+            if merged is None or merged.moves:
                 continue  # designed to move against each other
             skip = {obj, other}
-            ma, mb = _moving_ancestors(obj, skip), _moving_ancestors(other, skip)
-            if set(ma) != set(mb):
-                out.append((obj.name, other.name, ma, mb))
+            fa, fb = _follows_set(obj, skip), _follows_set(other, skip)
+            if follow_differs(obj.name, fa, other.name, fb):
+                out.append((obj.name, other.name, tuple(sorted(fa)), tuple(sorted(fb))))
     return out
 
 
@@ -1354,68 +1373,12 @@ def _follows(name: str, moves: tuple[str, ...]) -> str:
     return f"{name!r} moves with " + " and ".join(repr(m) for m in moves)
 
 
-MOVES = "moves"  # contact:<other>:moves - the pair moves against each other by design
-
-
-def _contact_tag(rest: str, names) -> tuple[str, float | None, bool]:
-    """(the object a contact tag names, the depth it sets or None, whether it says "moves"): "Yoke" in
-    "contact:Yoke", "contact:Yoke:0.05", "contact:Yoke:moves" and "contact:Yoke:0.05:moves" (unless an object is
-    really called "Yoke:0.05")."""
-    if rest in names:
-        return rest, None, False
-    target, depth, moves = rest, None, False
-    for _ in range(2):  # at most a depth and the qualifier, in either order
-        head, sep, tail = target.rpartition(":")
-        if not sep or target in names:
-            break
-        if tail == MOVES and not moves:
-            moves, target = True, head
-        elif depth is None and _metres_value(tail) is not None:
-            depth, target = _metres_value(tail), head
-        else:
-            break
-    return target, depth, moves
-
-
-def _contact_target(rest: str, names) -> str:
-    """The object a contact tag names (see `_contact_tag`)."""
-    return _contact_tag(rest, names)[0]
-
-
-def _moves_tagged(obj, other: str) -> bool:
-    """Does obj carry "contact:<other>:moves" (with or without a depth)?"""
-    for t in tags(obj):
-        if t.startswith("contact:"):
-            target, _, moves = _contact_tag(t[len("contact:") :], ())
-            if moves and target == other:
-                return True
-    return False
-
-
-def _metres_value(text: str) -> float | None:
-    try:
-        value = float(text)
-    except ValueError:
-        return None
-    return value if value >= 0 and math.isfinite(value) else None
-
-
 def _exemption(a, b) -> tuple[str, float | None] | None:
-    """Why the pair may overlap a little ("contact:B tag on 'A'", "parent/child pair") and the depth a contact tag
-    sets (None for the default), or None when it may not overlap at all."""
-    found = []
-    for x, y in ((a, b), (b, a)):
-        for t in tags(x):
-            if t.startswith("contact:"):
-                rest = t[len("contact:") :]
-                if rest == y.name:
-                    found.append((f"{t} tag on {x.name!r}", None))
-                else:
-                    target, depth, _ = _contact_tag(rest, ())
-                    if target == y.name:
-                        found.append((f"{t} tag on {x.name!r}", depth))
-    if found:
-        return max(found, key=lambda w: -1.0 if w[1] is None else w[1])
+    """Why the pair may overlap a little ("contact:B tag on 'A'", "parent/child pair") and the depth its merged
+    contact tags set (None for the default), or None when it may not overlap at all."""
+    merged = merged_contact(a.name, tags(a), b.name, tags(b))
+    if merged is not None:
+        return (merged.why, merged.depth)
     if a.parent == b or b.parent == a:
         return ("parent/child pair", None)
     return None

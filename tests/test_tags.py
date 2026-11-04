@@ -128,6 +128,28 @@ def test_tag_typos_are_refused_with_a_suggestion():
         assert bake.tag_problem(t) is None, t
 
 
+def test_contact_tags_on_a_pair_merge():
+    """Every contact tag on either part that names the other counts: the deepest depth, and moves if any says so."""
+    c = bake.merged_contact("A", ["contact:B", "contact:B:0.004:moves"], "B", ["contact:A:0.01"])
+    assert c is not None and c.depth == 0.01 and c.moves is True
+    assert "'B'" in c.why and "contact:A:0.01" in c.why
+    c = bake.merged_contact("A", ["contact:B"], "B", [])
+    assert c == bake.Contact("contact:B tag on 'A'", None, False)
+    assert bake.merged_contact("A", ["contact:C", "grounded"], "B", ["contact:D:moves", "hero"]) is None
+    assert bake.merged_contact("A", [], "B:0.05", ["contact:A"]).why == "contact:A tag on 'B:0.05'"
+    assert bake.merged_contact("A", ["contact:B:0.05"], "B:0.05", []).depth is None  # an object really named so
+    assert bake.contact_tag("Body:moves:0.001") == ("Body", 0.001, True)
+    assert bake.metres_value("-1") is None and bake.metres_value("0.5") == 0.5 and bake.MOVES == "moves"
+
+
+def test_follow_differs():
+    """A contact pair is flagged only when neither part follows the other and they follow different things."""
+    assert not bake.follow_differs("Tape", frozenset({"Slider"}), "Slider", frozenset())
+    assert bake.follow_differs("A", frozenset({"P1"}), "B", frozenset({"P2"}))
+    assert not bake.follow_differs("A", frozenset({"P0"}), "B", frozenset({"P0"}))
+    assert bake.follow_differs("A", frozenset({"P1", "P0"}), "B", frozenset({"P0"}))
+
+
 def test_new_tags_end_a_hero_shot_list():
     o = Obj()
     o["bsa_tags"] = "hero:s03,s04,fast"

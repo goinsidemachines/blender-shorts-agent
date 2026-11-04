@@ -50,6 +50,8 @@ def test_checks_in_blender(blender_run):
         "test_live_boolean_modifier_warned",
         "test_contact_parts_with_different_moving_parents_warned",
         "test_contact_parent_check_allows_sliding_and_hinged_parts",
+        "test_a_later_moves_tag_on_the_same_pair_is_read",
+        "test_a_hooked_mesh_follows_its_hooks",
         "test_arc_length_path_moves_without_pops",
         "test_coplanar_faces_inside_one_mesh_found",
         "test_coplanar_check_ignores_flat_surfaces_shared_edges_and_bevels",

@@ -339,6 +339,61 @@ def test_contact_parent_check_allows_sliding_and_hinged_parts():
     assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
 
 
+def test_a_later_moves_tag_on_the_same_pair_is_read():
+    """Every contact tag on the pair counts: a later contact:<other>:moves is not hidden by an earlier contact:<other>."""
+    sc = _scene()
+    left, right = _empty(sc, "Left"), _empty(sc, "Right")
+    a = _cube("A", (0, 0, 1.0), size=0.1)
+    b = _cube("B", (0, 0, 1.3), size=0.5)
+    _parent(a, left)
+    _parent(b, right)
+    _move_x(left, [0.4 * math.sin(i / 4) for i in range(N)])
+    _move_x(right, [-0.4 * math.sin(i / 4) for i in range(N)])
+    bake.tag(a, "contact:B", "contact:B:moves")
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+
+def test_a_hooked_mesh_follows_its_hooks():
+    """A mesh deformed by a Hook modifier follows the hook object and its moving parents; one with an Armature
+    modifier follows the armature. Two parts under different moving parents are still warned."""
+    sc = _scene()
+    carriage = _empty(sc, "Carriage")
+    slider = _cube("Slider", (0, 0, 1.0), size=0.3)
+    _parent(slider, carriage)
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0, 0, 1.15))
+    tape = bpy.context.object
+    tape.name = "Tape"
+    _material(tape)
+    hook = _empty(sc, "Hook", (0, 0, 1.15))
+    _parent(hook, slider)
+    tape.vertex_groups.new(name="all").add(range(len(tape.data.vertices)), 1.0, "REPLACE")
+    mod = tape.modifiers.new("Hook", "HOOK")
+    mod.object, mod.vertex_group = hook, "all"
+    bake.tag(slider, "contact:Tape")
+    _move_x(carriage, [0.5 * i / (N - 1) for i in range(N)])  # the slider runs 0.5 m and takes the tape along
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+    tape.modifiers.remove(mod)
+    rig = bpy.data.objects.new("Rig", bpy.data.armatures.new("Rig"))
+    sc.collection.objects.link(rig)
+    slider.parent = None
+    _parent(slider, rig)
+    tape.modifiers.new("Armature", "ARMATURE").object = rig
+    _move_x(rig, [0.5 * i / (N - 1) for i in range(N)])
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+    sc2 = _scene()
+    deck, other = _empty(sc2, "Deck"), _empty(sc2, "Other")
+    rod = _cube("Rod", (0, 0, 1.0), size=0.1)
+    body = _cube("Body", (0, 0, 1.3), size=0.5)
+    _parent(rod, deck)
+    _parent(body, other)
+    bake.tag(rod, "contact:Body")
+    _move_x(deck, [0.4 * math.sin(i / 4) for i in range(N)])
+    _move_x(other, [-0.4 * math.sin(i / 4) for i in range(N)])
+    assert len(_found(sc2, "contact_parent", severity="warning")) == 1
+
+
 def test_arc_length_path_moves_without_pops():
     """keyframe_path: one easing over the whole polyline, so a long leg and a short leg move at one speed."""
     sc = _scene()
@@ -1138,9 +1193,9 @@ def test_contact_moves_tag_allows_designed_motion_but_keeps_the_depth_limit():
     assert not _found(sc, "overlap"), _found(sc, "overlap")  # still a contact pair: touching is fine
     rod["bsa_tags"] = ""
     bake.tag(rod, "contact:Body:0.001:moves")  # depth and qualifier together, either order
-    assert checks._contact_target("Body:0.001:moves", ()) == "Body"
-    assert checks._contact_target("Body:moves:0.001", ()) == "Body"
-    assert checks._contact_target("Body:moves", ()) == "Body"
+    assert bake.contact_tag("Body:0.001:moves")[0] == "Body"
+    assert bake.contact_tag("Body:moves:0.001")[0] == "Body"
+    assert bake.contact_tag("Body:moves")[0] == "Body"
     assert not _found(sc, "contact_parent")
     sunk = _cube("Sunk", (3, 0, 0.5), size=1.0)
     pin = _cube("Pin", (3, 0, 1.0), size=0.3)  # 15 cm into Sunk: deeper than any allowance

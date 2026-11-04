@@ -6,6 +6,7 @@ import difflib
 import math
 from collections.abc import Callable, Sequence
 from itertools import pairwise
+from typing import NamedTuple
 
 EASES: dict[str, Callable[[float], float]] = {
     "linear": lambda t: t,
@@ -142,6 +143,68 @@ def tag_problem(t: str) -> str | None:
     if not close and ":" in t:  # a long name after a misspelt prefix: compare the prefix alone
         close = difflib.get_close_matches(t.split(":", 1)[0] + ":", TAG_PREFIXES, n=1, cutoff=0.6)
     return f"unknown tag {t!r}" + (f" (did you mean {close[0]!r}?)" if close else "")
+
+
+MOVES = "moves"  # contact:<other>:moves - the pair moves against each other by design
+
+
+def metres_value(text: str) -> float | None:
+    """The text as a length in metres (a finite number, 0 or more), or None."""
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if value >= 0 and math.isfinite(value) else None
+
+
+def contact_tag(rest: str, names=()) -> tuple[str, float | None, bool]:
+    """(the object a contact tag names, the depth it sets or None, whether it says "moves"): "Yoke" in
+    "contact:Yoke", "contact:Yoke:0.05", "contact:Yoke:moves" and "contact:Yoke:0.05:moves" (unless an object in
+    `names` is really called "Yoke:0.05"). `rest` is the text after "contact:"."""
+    if rest in names:
+        return rest, None, False
+    target, depth, moves = rest, None, False
+    for _ in range(2):  # at most a depth and the qualifier, in either order
+        head, sep, tail = target.rpartition(":")
+        if not sep or target in names:
+            break
+        if tail == MOVES and not moves:
+            moves, target = True, head
+        elif depth is None and metres_value(tail) is not None:
+            depth, target = metres_value(tail), head
+        else:
+            break
+    return target, depth, moves
+
+
+class Contact(NamedTuple):
+    """The contact tags on a pair, merged: why it may touch (the tag giving the depth), the deepest stated depth
+    (None when no tag states one) and whether any tag says the pair moves against each other."""
+
+    why: str
+    depth: float | None
+    moves: bool
+
+
+def merged_contact(a_name: str, a_tags: list[str], b_name: str, b_tags: list[str]) -> Contact | None:
+    """Every contact tag on either part that names the other, merged (see Contact); None when no tag names it."""
+    found = []  # (why, depth, moves) in tag order, a's tags first
+    for owner, own, other in ((a_name, a_tags, b_name), (b_name, b_tags, a_name)):
+        for t in own:
+            if t.startswith("contact:"):
+                target, depth, moves = contact_tag(t[len("contact:") :], (other,))
+                if target == other:
+                    found.append((f"{t} tag on {owner!r}", depth, moves))
+    if not found:
+        return None
+    why, depth, _ = max(found, key=lambda f: -1.0 if f[1] is None else f[1])  # the first of the deepest
+    return Contact(why, depth, any(f[2] for f in found))
+
+
+def follow_differs(a_name: str, fa: frozenset[str], b_name: str, fb: frozenset[str]) -> bool:
+    """Do two contact parts follow different moving things (fa, fb: the names each follows)? Not when one follows
+    the other (a tape hooked to its slider) or both follow the same."""
+    return fa != fb and a_name not in fb and b_name not in fa
 
 
 def set_role(obj) -> str | None:
