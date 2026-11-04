@@ -600,8 +600,8 @@ def _nth(n: int) -> str:
 def failed_checks(short_dir: Path, tl_hash: str, shots: dict) -> int:
     """How many errors review/checks.json found on the build and timing as they are now (`shots` as for
     require_checks; any --every): 0 when there are no checks, or they ran on another timing, checks code or shot.
-    The preview render refuses on these: a preview made after the checks failed shows the failures to whoever
-    watches it, and they are found again only by the final's checks."""
+    The preview render warns of these (it still renders): a preview made after the checks failed shows the
+    failures to whoever watches it, and the final render refuses until they are fixed."""
     data = read_checks(short_dir) or {}
     stamp = data.get("stamp")
     if not isinstance(stamp, dict) or stamp.get("timeline") != tl_hash or not _code_current(stamp.get("code")):

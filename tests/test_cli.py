@@ -1096,10 +1096,21 @@ def test_render_checks_near_label_objects_before_rendering(home, pendulum, monke
     assert rendered == []  # nothing rendered
 
 
-def test_preview_render_refuses_checks_that_failed_on_this_build(home, pendulum, monkeypatch, capsys):
-    """A preview rendered after the checks found errors on this very build shows those errors to the viewer, and
-    the clip is found again only by the final's checks: the preview render refuses until they are fixed. Checks
-    from another build or timing (or none) don't stop it."""
+def _failed_rows() -> list[dict]:
+    """Error rows as review/checks.json keeps them: two parts of one family through a wall, and a missing material."""
+    def clip(n, shot):
+        return {"check": "overlap", "severity": "error", "obj": "Wall", "frame": 12, "shot": shot, "kind": "penetrate",
+                "depth": 0.09, "pair": ["Wall", f"Link {n}"], "message": f"'Wall' and 'Link {n}' interpenetrate"}
+
+    grey = {"check": "materials", "severity": "error", "obj": "Bracket", "frame": 1, "shot": "s01",
+            "message": "geometry in view has no material (renders grey)"}
+    return [clip(1, "s01"), clip(2, "s02"), grey]
+
+
+def test_preview_render_warns_of_checks_that_failed_on_this_build(home, pendulum, monkeypatch, capsys):
+    """A preview rendered while the checks found errors on this very build goes ahead (the checks may still be
+    running, or the fixes are on their way), but says how many and which, overlaps grouped by family, and that the
+    final render refuses until they are fixed and checked again. Checks from another timing say nothing."""
     import types
 
     import bsa_blender
@@ -1115,23 +1126,52 @@ def test_preview_render_refuses_checks_that_failed_on_this_build(home, pendulum,
             self.name, self.objects = name, {}
 
     data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots}, filepath="")
-    rendered = []
     fake = types.ModuleType("bsa.blender.render")
-    fake.render_range = lambda *a, **k: rendered.append(a) or []
+    fake.render_range = lambda *a, **k: []
     monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
     monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
     monkeypatch.setenv("BSA_HOME", str(home))
     _checked(pendulum, errors=3)
-    assert bsa_blender.main(["render", "pendulum", "--preset", "preview"]) == 1
-    err = capsys.readouterr().err
-    assert "3 error(s) on this build" in err and "before the preview render" in err
-    assert rendered == []  # nothing rendered
-    report = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
+    path = pendulum / "review" / "checks.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
+    bsa_blender.main(["render", "pendulum", "--preset", "preview"])
+    err = capsys.readouterr().err  # the warning comes before anything renders; this fake scene stops it after
+    assert "review/checks.json has 3 error(s) on this build (Link 1-2 vs Wall: 2 pairs, up to 9 cm, s01-s02" in err
+    assert "materials: geometry in view has no material" in err
+    assert "the final render will refuse until these are fixed and checked again" in err
+    assert "which scene 'Workshop' does not have" in err  # it went on past the checks: not refused by them
     report["stamp"]["timeline"] = "another timing"  # the checks ran on another timing: they say nothing now
-    (pendulum / "review" / "checks.json").write_text(json.dumps(report), encoding="utf-8")
-    assert bsa_blender.main(["render", "pendulum", "--preset", "preview"]) == 1
-    err = capsys.readouterr().err  # past the checks: the next step's own refusal (this fake scene has no objects)
-    assert "on this build" not in err and "which scene 'Workshop' does not have" in err
+    path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
+    bsa_blender.main(["render", "pendulum", "--preset", "preview"])
+    assert "on this build" not in capsys.readouterr().err
+
+
+def test_failed_checks_warning_shows_the_first_few_and_counts_the_rest(home, pendulum):
+    import bsa_blender
+
+    ok(run(home, "timeline", "pendulum"))
+    short = bsa_blender._load(pendulum)
+    timeline, tl_hash = bsa_blender._timeline(pendulum, short)
+    keys = bsa_blender._check_keys(short, timeline, None, bsa_blender._parts(pendulum, None))
+    assert bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys) is None  # no checks yet
+    _checked(pendulum, errors=3)
+    path = pendulum / "review" / "checks.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
+    line = bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys, most=1)
+    assert line.startswith("review/checks.json has 3 error(s) on this build (Link 1-2 vs Wall: 2 pairs")
+    assert "; and 1 more)" in line and "materials" not in line
+    path.write_text(json.dumps({**report, "errors": 0, "findings": _failed_rows()}), encoding="utf-8")
+    assert bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys) is None  # passed: nothing to say
+
+
+def test_render_summary_carries_the_render_warnings():
+    import bsa_blender
+
+    out = {"shots": [{"shot": "s01", "rendered": 0}], "warnings": ["review/checks.json has 1 error(s) on this build"]}
+    assert bsa_blender._render_summary(out)["warnings"] == out["warnings"]  # render-status shows it
+    assert "warnings" not in bsa_blender._render_summary({"shots": []})
 
 
 def test_end_card_uses_hero_boxes_and_only_warns_without_anchors(home, pendulum, monkeypatch, capsys):

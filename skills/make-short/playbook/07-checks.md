@@ -15,8 +15,9 @@ Fix, rebuild (`06-build.md`), check again, after every fix: a fix moves parts, a
 artifacts. `checks.json` is stamped with the build and the timing: the final render
 and edit refuse checks that are missing, failed, or ran on an older build or timing, so check again after every
 rebuild. A look at the work may check with a coarse `--every` (`--every 20`), but the final render and edit need
-the default 5 or finer. The preview render refuses while the checks found errors on the build as it is: fix them
-first, or the preview shows them and only the final's checks find them again. If an error is still there after 3 real attempts, stop and tell the user
+the default 5 or finer. A preview rendered while the checks found errors on the build as it is still renders, but
+warns with their count and the first few (in its result and render status): read it, as the preview shows them and
+the final render refuses until they are fixed and checked again. If an error is still there after 3 real attempts, stop and tell the user
 what fails, what you tried, and the options (for example: simplify the shot, accept a badge, change the camera).
 
 ## Every check, and how to fix the usual causes

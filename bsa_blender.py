@@ -528,9 +528,11 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
         freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render")
-    elif n := freshness.failed_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps))):
-        raise CliError(f"review/checks.json has {n} error(s) on this build: fix them and run BLENDER check SHORT "
-                       f"again before the preview render (a preview made now shows them)")  # fmt: skip
+        failed = None
+    else:  # the preview renders anyway; it says what the checks found on this build (the final refuses on it)
+        failed = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+        if failed:
+            print(f"warning: {failed}", file=sys.stderr, flush=True)
     _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
     parts = _parts(sdir, fps)
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))
@@ -539,7 +541,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     key = engine_runs.status_key(args.preset, side)  # a side run's status, page and thumbnails are its own
     tracker, watch, plan = _render_watch(sdir, short, args.preset, engine, shots, spans, stamps, fps, tl_hash, redo,
                                          run=run, root=root, key=key)  # fmt: skip
-    done, warnings = [], _damaged_warnings(damaged)
+    done, warnings = [], [*([failed] if failed else []), *_damaged_warnings(damaged)]
     with watch:
         tracker.start()
         try:
@@ -588,6 +590,29 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     if warnings:
         out["warnings"] = warnings
     return out
+
+
+def _failed_checks_warning(sdir: Path, short, tl_hash: str, keys: dict, most: int = 3) -> str | None:
+    """One line when review/checks.json found errors on this very build and timing (freshness.failed_checks): how
+    many, the first `most` of them (overlaps grouped by name family, as overlap_summary does, then the others), and
+    that the final render refuses until they are fixed. None when there are none, or the checks are not current."""
+    from bsa import findings
+
+    n = freshness.failed_checks(sdir, tl_hash, keys)
+    if not n:
+        return None
+    data = freshness.read_checks(sdir) or {}
+    rows = [r for r in [*(data.get("findings") or []), *(data.get("held_back") or [])]
+            if isinstance(r, dict) and r.get("severity") == "error" and "capped" not in r]  # fmt: skip
+    items = findings.family_lines([r for r in rows if findings.pair_of(r)], [s.id for s in short.shots])
+    for r in rows:
+        if not findings.pair_of(r):
+            text = _one_line(f"{r.get('check')}: {r.get('message')}")
+            items.append(text if len(text) <= 160 else text[:157] + "...")
+    shown = items[:most] + ([f"and {len(items) - most} more"] if len(items) > most else [])
+    what = f" ({'; '.join(shown)})" if shown else ""
+    return (f"review/checks.json has {n} error(s) on this build{what}: the final render will refuse until these are "
+            "fixed and checked again (BLENDER check SHORT)")  # fmt: skip
 
 
 def _drop_damaged(root: Path, shots, spans, stamps, redo) -> dict:
@@ -1797,7 +1822,8 @@ def _render_summary(out: dict) -> dict:
     return {"frames": sum(s.get("rendered", 0) for s in shots),
             "kept": [s["shot"] for s in shots if s.get("rendered") == 0],
             "rendered": [{"shot": s["shot"], "frames": s.get("rendered"), "why": s.get("why")}
-                         for s in shots if s.get("rendered")]}  # fmt: skip
+                         for s in shots if s.get("rendered")],
+            **({"warnings": out["warnings"]} if out.get("warnings") else {})}  # fmt: skip
 
 
 def cmd_probe(args) -> dict:
