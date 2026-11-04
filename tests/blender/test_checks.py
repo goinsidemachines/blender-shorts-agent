@@ -4,6 +4,7 @@ import sys
 import tempfile
 from itertools import pairwise
 from pathlib import Path
+from types import SimpleNamespace
 
 import bmesh
 import bpy
@@ -394,6 +395,42 @@ def test_a_hooked_mesh_follows_its_hooks():
     assert len(_found(sc2, "contact_parent", severity="warning")) == 1
 
 
+
+def _hooked_tape(hook):
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0, 0, 1.15))
+    tape = bpy.context.object
+    tape.name = "Tape"
+    _material(tape)
+    tape.vertex_groups.new(name="all").add(range(len(tape.data.vertices)), 1.0, "REPLACE")
+    mod = tape.modifiers.new("Hook", "HOOK")
+    mod.object, mod.vertex_group = hook, "all"
+    return tape
+
+
+def test_a_mesh_hooked_to_a_keyed_hook_follows_it_and_one_hooked_elsewhere_is_warned():
+    """A Hook object keyed itself (no moving parent) carries its mesh: a slider under that hook, in contact with the
+    tape, is fine. The same tape hooked to a hook that moves another way than the slider's carrier is warned."""
+    sc = _scene()
+    hook = _empty(sc, "Hook", (0, 0, 1.15))
+    slider = _cube("Slider", (0, 0, 1.0), size=0.3)
+    _parent(slider, hook)
+    _hooked_tape(hook)
+    bake.tag(slider, "contact:Tape")
+    _move_x(hook, [0.5 * i / (N - 1) for i in range(N)])
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+    sc = _scene()
+    carriage, hook = _empty(sc, "Carriage"), _empty(sc, "Hook", (0, 0, 1.15))
+    slider = _cube("Slider", (0, 0, 1.0), size=0.3)
+    _parent(slider, carriage)
+    _hooked_tape(hook)
+    bake.tag(slider, "contact:Tape")
+    _move_x(carriage, [0.4 * math.sin(i / 4) for i in range(N)])
+    _move_x(hook, [-0.4 * math.sin(i / 4) for i in range(N)])
+    found = _found(sc, "contact_parent", severity="warning")
+    assert len(found) == 1 and "'Hook'" in found[0].message and "'Carriage'" in found[0].message, found
+
+
 def test_arc_length_path_moves_without_pops():
     """keyframe_path: one easing over the whole polyline, so a long leg and a short leg move at one speed."""
     sc = _scene()
@@ -658,6 +695,28 @@ def test_a_pop_on_the_last_frame_of_the_short_is_judged():
     assert [f.frame for f in _found(sc, "pops", "Ender", "error")] == [N]
     _move_x(cube, [0.02 * i for i in range(N)])  # same curves: still extrapolated linearly past N, now no jump
     assert not _found(sc, "pops", "Ender"), _found(sc, "pops", "Ender")
+
+
+def test_a_pose_across_a_cut_to_another_scene_hides_no_pop():
+    """The frame before a shot is a reference for its first moves only when the shot before is in the same scene:
+    where a part stood during another scene's shot (2 m away) does not hide a jump just after the cut."""
+    from bsa.short import Short, Shot
+
+    sc = _scene()
+    cube = _cube("Mover", (0, 0, 0.5))
+    half = N // 2
+    xs = [0.02 * i + (2.0 if i < half else 0.0) + (0.6 if i > half else 0.0) for i in range(N)]
+    _move_x(cube, xs)  # 2 m away in s1; in s2 steady, but for a 0.6 m jump into its second frame
+    tl = Timeline(30, N, [Span("s1", 1, half), Span("s2", half + 1, N)], [], [])
+
+    def pops(scene_of_s1):
+        shots = [Shot(id="s1", title="t", picture="p", scene=scene_of_s1),
+                 Shot(id="s2", title="t", picture="p", scene=sc.name)]  # fmt: skip
+        short = Short(slug="t", title="T", length_s=1, shots=shots)
+        return [f for f in checks.run_checks(sc, tl, short=short) if f.check == "pops" and f.obj == "Mover"]
+
+    assert [f.frame for f in pops("Other scene")] == [half + 2], pops("Other scene")
+    assert pops(sc.name) == [], pops(sc.name)  # same scene: the 2 m move into the shot is its reference
 
 
 def test_fast_tag_lets_a_part_flick_but_still_checks_overlaps():
@@ -1681,6 +1740,30 @@ def test_a_swap_that_matches_is_not_a_pop_in_and_one_that_does_not_is_warned():
     assert len(names) == 1 and "'Blade C'" in names[0].message, names
 
 
+def test_report_swaps_leaves_the_shot_s_last_frame_even_when_it_fails():
+    sc = _scene()
+    _cube("Blade A", (0, 0, 0.5), size=0.5)
+    bake.tag(_cube("Blade B", (0, 0, 0.5), size=0.5), "swap:Blade A")
+    run = checks._Run(sc)
+    run.switches = {"Blade B": {"on": [16], "off": []}, "Blade A": {"on": [], "off": [16]}}
+    shot = SimpleNamespace(id="s01", f0=1, f1=N)
+    real = checks._rect
+
+    def broken(_box):
+        raise RuntimeError("measuring failed")
+
+    checks._rect = broken
+    try:
+        try:
+            run.report_swaps(shot)
+            raise AssertionError("report_swaps should have raised")
+        except RuntimeError:
+            pass
+    finally:
+        checks._rect = real
+    assert sc.frame_current == N, sc.frame_current
+
+
 def test_a_rigid_parent_and_its_children_are_one_solid():
     """A forged part built from several meshes (its parent tagged rigid) is one solid: its meshes may sink into each
     other, but a part outside the group clipping any of them is an overlap."""
@@ -1696,6 +1779,39 @@ def test_a_rigid_parent_and_its_children_are_one_solid():
     found = _found(sc, "overlap", severity="error")
     assert found and all("'Case'" in f.message for f in found), found
     assert any("'Pin'" in f.message for f in found), found
+
+
+def test_a_keyed_child_under_a_rigid_parent_is_not_in_its_group():
+    """A rigid group is a parent and its children that don't move on their own: a keyed child (a piston under an
+    engine block tagged rigid) clipping its parent is still an error; a static child sunk as deep is not."""
+    sc = _scene()
+    block = _cube("Block", (0, 0, 0.5))
+    bake.tag(block, "rigid")
+    boss = _cube("Boss", (0.6, 0, 0.5), size=0.5)  # 15 cm into Block, static: one solid with it
+    _parent(boss, block)
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+    piston = _cube("Piston", (-0.6, 0, 0.5), size=0.5)  # 15 cm into Block, keyed: moves on its own
+    _parent(piston, block)
+    _move_x(piston, [-0.6] * N)
+    found = _found(sc, "overlap", severity="error")
+    assert found and all("'Piston'" in f.message for f in found), found
+    assert any("'Block'" in f.message for f in found), found
+
+
+def test_two_rigid_groups_are_still_tested_against_each_other():
+    sc = _scene()
+    bake.tag(_cube("CrankA", (0, 0, 0.5)), "rigid")
+    bake.tag(_cube("CrankB", (0.9, 0, 0.5)), "rigid")  # 10 cm into CrankA
+    found = [f for f in _found(sc, "overlap", severity="error") if f.kind == "penetrate"]
+    assert len(found) == 1 and "'CrankA'" in found[0].message and "'CrankB'" in found[0].message, found
+
+
+def test_two_assemblies_are_still_tested_against_each_other():
+    sc = _scene()
+    bake.tag(_cube("Plate", (0, 0, 0.5)), "assembly:Train")
+    bake.tag(_cube("Bridge", (0.9, 0, 0.5)), "assembly:Escapement")  # 10 cm into Plate
+    found = [f for f in _found(sc, "overlap", severity="error") if f.kind == "penetrate"]
+    assert len(found) == 1 and "'Plate'" in found[0].message and "'Bridge'" in found[0].message, found
 
 
 def _cylinder(name, radius, depth, location, rotation=(0, 0, 0)):
@@ -1726,6 +1842,7 @@ def test_assembly_depth_caps_how_deep_members_go():
     bake.tag(bridge, "assembly:Train:0.002")
     found = _found(sc, "overlap", severity="error")
     assert len(found) == 1 and "assembly 'Train'" in found[0].message and "2 mm" in found[0].message, found
+    assert "assembly:Train:<max depth m>" in found[0].message, found  # how to allow it by design
     bridge.location = (0.999, 0.2, 0.6)  # 1 mm in
     assert not _found(sc, "overlap"), _found(sc, "overlap")
 
@@ -1743,3 +1860,20 @@ def test_volume_fills_round_solids_but_still_pops():
     _move_x(gas, [0.0] * 10 + [1.5] * (N - 10))
     found = _found(sc, "pops", "Gas", "error")
     assert len(found) == 1, found
+
+
+def test_a_volume_still_pops_in_and_must_stay_in_the_frame():
+    """volume leaves only the solid checks: steam switched on mid-shot on screen pops in, and a hero flame that
+    drifts out of the camera frame is a frame_edge error."""
+    sc = _scene()
+    steam = _cube("Steam", (0, 0, 1.0), size=0.5)
+    bake.tag(steam, "volume")
+    _switch_on(steam, 16)
+    assert [f.obj for f in _found(sc, "pop_in")] == ["Steam"], _found(sc, "pop_in")
+    sc = _scene()
+    flame = _cube("Flame", (0, 0, 1.0), size=0.5)
+    bake.tag(flame, "volume", "hero")
+    _move_x(flame, [10 * i / (N - 1) for i in range(N)])
+    found = _found(sc, "frame_edge", "Flame", "error")
+    assert len(found) == 1, found
+

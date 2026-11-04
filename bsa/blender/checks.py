@@ -494,7 +494,7 @@ class _Run:
             now[obj.name] = scale > POP_IN_SCALE
         if frame > shot.f0:
             for name in now.keys() | before.keys():
-                if now.get(name) != bool(before.get(name)):
+                if bool(now.get(name)) != bool(before.get(name)):
                     switch = self.switches.setdefault(name, {"on": [], "off": []})
                     switch["on" if now.get(name) else "off"].append(frame)
         for obj in objs:
@@ -518,7 +518,15 @@ class _Run:
 
     def report_swaps(self, shot):
         """A part tagged swap:<other> must take over from the other in place: switched on on the frame the other is
-        switched off (the nearest such frame), its box on screen where the other's was the frame before."""
+        switched off (the nearest such frame), its box on screen where the other's was the frame before. The scene is
+        left at the shot's last frame, as the reports after it expect, even when this fails."""
+        try:
+            self._report_swaps(shot)
+        finally:
+            self.scene.frame_set(shot.f1)
+            self.depsgraph.update()
+
+    def _report_swaps(self, shot):
         cam = self.scene.camera
         for new, old in sorted(self.swap.items()):
             if old not in self.scene.objects:
@@ -541,16 +549,15 @@ class _Run:
                     self.add("swap", "warning", new, on, f"{new!r} takes over from {old!r} at frame {on} in shot "
                              f"{shot.id!r}, but {problem}. Switch {old!r} off on the same frame and put {new!r} "
                              f"exactly where {old!r} was", key=(new, shot.id, on))  # fmt: skip
-        self.scene.frame_set(shot.f1)
-        self.depsgraph.update()
 
     def short_shot(self, shot_id):
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
 
     def see_frame(self, frame, span, objs, seen):
         """What a viewer sees at a sampled frame: the camera under a ground, the heroes' boxes on screen (framing:
-        only heroes from their start, hero:<shot>@<fraction>), every other part's box on screen (framing's parts: not a hero from its start, already framed)
-        and the edit's text boxes over the heroes and labelled parts (covered)."""
+        only heroes from their start, hero:<shot>@<fraction>), every other part's box on screen (framing's parts: not
+        a hero from its start, already framed) and the edit's text boxes over the heroes and labelled parts
+        (covered)."""
         cam = self.scene.camera
         if cam is None:
             return
@@ -1010,8 +1017,10 @@ class _Run:
             if group is not None and group[2]:  # one solid, or members free to mesh: not tested
                 continue
             exempt = _exemption(by_name[a], by_name[b])
+            deeper = "tag contact:<other>:<max depth in metres>"
             if group is not None and (exempt is None or _allowance(ga, gb, group[1]) > _allowance(ga, gb, exempt[1])):
                 exempt = group[:2]  # the assembly's depth, when it is the deeper allowance
+                deeper = f"raise the assembly's depth on its members (assembly:{self.assemblies[a][0]}:<max depth m>)"
             limit = None if exempt is None else _allowance(ga, gb, exempt[1])
             step = None if exempt is not None else self.zfight_step(np.maximum(ga.lo, gb.lo), np.minimum(ga.hi, gb.hi))
             rule = ("strict", step) if exempt is None else ("contact", exempt[1])  # not the allowance: it jitters
@@ -1022,7 +1031,7 @@ class _Run:
                 for kind in sorted(res.kinds):
                     self.hit(a, b, kind, frame, res)
             elif res.depth > limit:
-                self.hit(a, b, "deep", frame, res, f"the {exempt[0]} allows ({metres(limit)})")
+                self.hit(a, b, "deep", frame, res, f"the {exempt[0]} allows ({metres(limit)})", deeper)
 
     def zfight_step(self, lo: np.ndarray, hi: np.ndarray) -> int:
         """The z-fight tolerance where the box [lo, hi] is seen by the scene camera now, as a half-octave step
@@ -1033,8 +1042,10 @@ class _Run:
         pos = np.array(cam.evaluated_get(self.depsgraph).matrix_world.translation, dtype=np.float64)
         return _tol_step(_zfight_tol(cam.data, pos, lo, hi))
 
-    def hit(self, a, b, kind, frame, res, note=None):
-        rec = self.hits.setdefault((a, b, kind), {"frames": {}, "note": note})
+    def hit(self, a, b, kind, frame, res, note=None, deeper=None):
+        """Record a pair's finding at a frame; `note` (what allows it) and `deeper` (how to allow more, when it is
+        deep by design) are for the deep-overlap message."""
+        rec = self.hits.setdefault((a, b, kind), {"frames": {}, "note": note, "deeper": deeper})
         rec["frames"][frame] = res
 
     def report_overlaps(self, shot, sampled):
@@ -1083,8 +1094,9 @@ class _Run:
                 self.add("overlap", "error", a, frame, message, key=key, pair=pair, kind=kind, depth=depth)
             else:
                 self.add("overlap", "error", res.inner, None if static else deepest, f"{how} {where}, deeper than "
-                         f"{rec['note']}. End one at the other's surface; if it is deep by design, tag "
-                         "contact:<other>:<max depth in metres> and write why", key=key, pair=pair, kind=kind,
+                         f"{rec['note']}. End one at the other's surface; if it is deep by design, "
+                         f"{rec['deeper'] or 'tag contact:<other>:<max depth in metres>'} and write why", key=key,
+                         pair=pair, kind=kind,
                          depth=depth)  # fmt: skip
 
     def size(self, name: str) -> str:
@@ -1491,13 +1503,18 @@ def _follows(name: str, moves: tuple[str, ...]) -> str:
 
 
 def _rigid_roots(scene) -> dict[str, str]:
-    """Every object at or under a rigid-tagged object (bake.is_rigid): the name of the outermost such object."""
+    """Every object at or under a rigid-tagged object (bake.is_rigid): the name of the outermost such object. A rigid
+    group is a parent and its children that don't move on their own: the walk up stops at the first object that moves
+    by itself (_animated), so a keyed child, and everything under it, is not in its rigid parent's group (it is checked
+    against the group as usual, and may be tagged rigid to start a group of its own)."""
     roots = {}
     for obj in scene.objects:
         root, up = None, obj
         while up is not None:
             if is_rigid(up):
                 root = up.name
+            if _animated(up):
+                break  # moves on its own: nothing above it is in one solid with it
             up = up.parent
         if root is not None:
             roots[obj.name] = root

@@ -183,7 +183,8 @@ def shot_boxes(short, tl, shot, span, anchors: dict | None = None, heroes: dict 
                frames=None, kit=None, font=None) -> dict[int, list[tuple[str, str, str | None, Rect]]]:  # fmt: skip
     """{frame: [(kind, text, near object or None, box)]}: every text box the edit puts on screen at each frame of
     `shot` (`frames`, default all of its span): "caption", "badge", "label" (stacked) and "near" labels.
-    `anchors`: {anchor key (bsa.short.label_anchor): {"f0", "points"}} for this shot's near labels (a near label without them is left out);
+    `anchors`: {anchor key (bsa.short.label_anchor): {"f0", "points"}} for this shot's near labels (a near label
+    without them is left out);
     `heroes`: this shot's {"f0", "boxes"} (near labels keep off them, as in the edit). With a brand `kit` (and its
     card `font`) the kit's cards instead: bsa.kitlayout.shot_rects."""
     if kit is not None:
