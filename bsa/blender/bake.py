@@ -84,7 +84,8 @@ def _fcurves(action):
     return out
 
 
-# Every tag the checks read (07-checks.md documents each): "hero" / "hero:<shot ids>", "grounded",
+# Every tag the checks read (07-checks.md documents each): "hero" / "hero:<shot ids>" (an id may end "@<fraction>":
+# "hero:s07@0.6" is a hero of s07 from 60% of the shot on, a subject the camera reaches later), "grounded",
 # "contact:<other>[:<max depth m>][:moves]" (moves: the pair moves against each other by design), "overlay" (a glow,
 # a guide line: not physical geometry), "overlay:may-exit" (an overlay that may leave the frame on purpose, such as
 # a falling stream: no frame_edge warning), "surface" (an open fluid surface, such as water: things may cross it),
@@ -109,8 +110,23 @@ TAG_WORDS: tuple[str, ...] = tuple(t for t in TAGS if not t.endswith(":"))
 TAG_PREFIXES: tuple[str, ...] = tuple(t for t in TAGS if t.endswith(":"))
 
 
+def hero_fraction(text: str) -> float | None:
+    """The fraction after "@" in a hero tag's shot id ("0.6" in "s07@0.6") as a number 0 < f < 1, or None."""
+    try:
+        f = float(text)
+    except ValueError:
+        return None
+    return f if 0 < f < 1 else None
+
+
 def _hero_shape(t: str, rest: str) -> str | None:
-    return None if any(i.strip() for i in rest.split(",")) else f"tag {t!r} lists no shot"
+    if not any(i.strip() for i in rest.split(",")):
+        return f"tag {t!r} lists no shot"
+    for i in rest.split(","):
+        sid, at, frac = i.partition("@")
+        if at and (not sid.strip() or hero_fraction(frac) is None):
+            return f"tag {t!r}: {i!r} needs a shot id and a fraction 0 < f < 1 after '@' (hero:s07@0.6)"
+    return None
 
 
 def _contact_shape(t: str, rest: str) -> str | None:
@@ -327,19 +343,43 @@ def tags(obj) -> list[str]:
     return out
 
 
+def _hero_shots(t: str) -> dict[str, float]:
+    """{shot id: the fraction of the shot it is a hero from} for a "hero:..." tag: "hero:s07@0.6,s08" ->
+    {"s07": 0.6, "s08": 0.0} (a fraction that is not a number 0 < f < 1 counts as 0)."""
+    out: dict[str, float] = {}
+    for i in t[5:].split(","):
+        sid, _, frac = i.partition("@")
+        out.setdefault(sid, hero_fraction(frac) or 0.0)
+    return out
+
+
 def is_hero(obj, shot_id: str | None = None) -> bool:
-    """Whether the object is a hero in shot `shot_id` ("hero" = every shot, "hero:s03,s04" = those shots); with no
-    shot, whether it is a hero in any shot."""
+    """Whether the object is a hero in shot `shot_id` ("hero" = every shot, "hero:s03,s04" = those shots,
+    "hero:s07@0.6" = s07 from 60% of it on: still a hero of s07); with no shot, whether it is a hero in any shot."""
+    if shot_id is None:
+        return any(t == "hero" or t.startswith("hero:") for t in tags(obj))
+    return hero_from(obj, shot_id) is not None
+
+
+def hero_from(obj, shot_id: str) -> float | None:
+    """The fraction of shot `shot_id` the object is a hero from: 0.0 for "hero" or "hero:s07", 0.6 for
+    "hero:s07@0.6" (a subject the camera reaches later), None when it is not a hero of that shot."""
+    found = None
     for t in tags(obj):
         if t == "hero":
-            return True
-        if t.startswith("hero:") and (shot_id is None or shot_id in t[5:].split(",")):
-            return True
-    return False
+            return 0.0
+        if t.startswith("hero:") and shot_id in (shots := _hero_shots(t)):
+            found = shots[shot_id] if found is None else min(found, shots[shot_id])
+    return found
+
+
+def hero_start(frac: float, f0: int, f1: int) -> int:
+    """The first frame a hero tagged hero:<shot>@<frac> is framed in a shot of frames f0-f1."""
+    return f0 + round(frac * (f1 - f0))
 
 
 def tag(obj, *new_tags: str) -> None:
-    """Merge tags ("hero", "hero:s03,s04", "grounded", "contact:<other>", "overlay", "surface", "set:<role>",
+    """Merge tags ("hero", "hero:s03,s04", "hero:s07@0.6", "grounded", "contact:<other>", "overlay", "surface", "set:<role>",
     "lines:off", "fast", "swap:<other>", "rigid", "assembly:<name>[:<depth>]", "volume": see TAGS) into bsa_tags
     (comma-joined, no duplicates). An unknown or empty tag (a typo) is a ValueError saying why (tag_problem). Only a
     hero:<shot ids> tag may hold commas (between its shot ids). A set object (set:<role>) is never a hero: ValueError."""

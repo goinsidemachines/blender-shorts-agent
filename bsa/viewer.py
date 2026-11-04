@@ -143,13 +143,16 @@ def union(rects) -> Rect | None:
     return Rect(x0, y0, max(r.right for r in rects) - x0, max(r.bottom for r in rects) - y0)
 
 
-def framing_findings(shot_id: str, boxes: dict, skip=frozenset()) -> list[Finding]:
+def framing_findings(shot_id: str, boxes: dict, skip=frozenset(),
+                     parts: dict[int, dict[str, Rect | None]] | None = None) -> list[Finding]:  # fmt: skip
     """Warnings for a shot whose subject (the union of its heroes' boxes on screen, cut to the frame) is under
     SMALL_SHARE of the frame, or (not small) leaves the top or bottom half of the frame empty (reaches less than
     EMPTY_REACH of the frame height into it), for MOST of its sampled frames. The halves split at the centre of the
     default framing band (bsa.layout.target_area, where camera.frame_objects / frame_box put the subject), not at
     H/2: a subject centred in that band always reaches both. `boxes`: {frame: [Rect or None per hero]}; frames in
-    `skip` (the shot's `wide`) and frames with no hero on screen are not counted."""
+    `skip` (the shot's `wide`) and frames with no hero on screen are not counted. `parts`: {frame: {name: Rect or
+    None}}, the boxes of every part on screen (not scenery or an overlay): any of them reaching the top half fills it
+    (the machine around a small hero), and a top-half warning names the largest of them to tag as hero."""
     seen = {f: union(clip(r) for r in rs) for f, rs in boxes.items() if f not in skip}
     seen = {f: u for f, u in seen.items() if u is not None}
     if not seen:
@@ -168,8 +171,13 @@ def framing_findings(shot_id: str, boxes: dict, skip=frozenset()) -> list[Findin
     reach = EMPTY_REACH * H
     band = target_area()
     mid = band.y + band.h / 2  # the band's own centre (about row 731), not H/2
-    for half, empty in (("top", lambda u: u.y > mid - reach), ("bottom", lambda u: u.bottom < mid + reach)):
-        frames = [f for f, u in seen.items() if empty(u) and f not in small]  # a small subject is reported as such
+    on = {f: [c for c in (clip(r) for r in (parts or {}).get(f, {}).values()) if c is not None] for f in seen}
+
+    def top_empty(f, u):  # neither the heroes nor any part on screen reaches the top half
+        return u.y > mid - reach and not any(c.y <= mid - reach for c in on[f])
+
+    for half, empty in (("top", top_empty), ("bottom", lambda f, u: u.bottom < mid + reach)):
+        frames = [f for f, u in seen.items() if empty(f, u) and f not in small]  # a small subject is reported as such
         if len(frames) >= MOST * n:
             out.append(Finding(
                 "framing", "warning", None, frames[0],
@@ -177,8 +185,24 @@ def framing_findings(shot_id: str, boxes: dict, skip=frozenset()) -> list[Findin
                 "the subject sits in one half and the other is empty. Centre it in the band between the top cards and "
                 "the captions (bsa.layout.target_area, where camera.frame_objects / frame_box frame by default) or "
                 "move the camera; give the shot \"wide\": true (or the reason) if the "
-                "space is deliberate"))  # fmt: skip
+                f"space is deliberate{_largest_parts(shot_id, parts, seen) if half == 'top' else ''}"))  # fmt: skip
     return out
+
+
+def _largest_parts(shot_id: str, parts: dict | None, frames) -> str:
+    """". The largest parts on screen are ...: tag the subject hero" (up to 3 names, by mean box area on screen over
+    `frames`), or "" with no parts on screen."""
+    area: dict[str, float] = {}
+    for f in frames:
+        for name, r in ((parts or {}).get(f) or {}).items():
+            c = clip(r)
+            area[name] = area.get(name, 0.0) + (c.w * c.h if c is not None else 0.0)
+    names = [n for n in sorted(area, key=lambda n: -area[n]) if area[n] > 0][:3]
+    if not names:
+        return ""
+    listed = repr(names[0]) if len(names) == 1 else ", ".join(map(repr, names[:-1])) + f" and {names[-1]!r}"
+    are = "part on screen is" if len(names) == 1 else "parts on screen are"
+    return f". The largest {are} {listed}: tag the subject hero (or hero:{shot_id})"
 
 
 def is_ground(lo, hi, subject_lo, subject_hi) -> bool:

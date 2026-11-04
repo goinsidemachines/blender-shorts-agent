@@ -155,6 +155,27 @@ def test_new_tags_end_a_hero_shot_list():
     o["bsa_tags"] = "hero:s03,s04,fast"
     assert bake.tags(o) == ["hero:s03,s04", "fast"]
     assert bake.is_fast(o) and not bake.is_fast(Obj())
+    o["bsa_tags"] = "hero:s07@0.6,s08,rigid"
+    assert bake.tags(o) == ["hero:s07@0.6,s08", "rigid"]
+
+
+def test_hero_from_a_fraction_of_the_shot():
+    """hero:s07@0.6 is a hero of s07 from 60% of the shot on (a subject the camera reaches later)."""
+    o = Obj()
+    bake.tag(o, "hero:s07@0.6,s08")
+    assert bake.hero_from(o, "s07") == 0.6
+    assert bake.hero_from(o, "s08") == 0.0
+    assert bake.hero_from(o, "s01") is None
+    assert bake.is_hero(o, "s07") and bake.is_hero(o, "s08") and not bake.is_hero(o, "s01")
+    plain = Obj()
+    bake.tag(plain, "hero")
+    assert bake.hero_from(plain, "s07") == 0.0
+    assert bake.hero_start(0.6, 101, 201) == 161
+    for bad in ("hero:s07@1.2", "hero:s07@x", "hero:s07@0", "hero:s07@1", "hero:s07@"):
+        assert bake.tag_problem(bad)
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), bad)
+    assert bake.tag_problem("hero:s07@0.6,s08") is None
 
 
 def test_swap_tag():

@@ -108,6 +108,25 @@ def test_an_empty_half_is_reported():
     assert not viewer.framing_findings("s1", some)  # only for a part of the shot
 
 
+def test_any_part_fills_the_top_half():
+    """A part on screen that is not a hero (the machine the hero sits in) fills the top half; when the top half is
+    still empty, the warning names the largest parts on screen to tag as hero."""
+    frames = range(1, 60, 5)
+    boxes = {f: [Rect(200, 900, 600, 600)] for f in frames}  # rows 900-1500: all in the bottom half
+    today = viewer.framing_findings("s1", boxes)
+    assert [f.message.split(" half")[0] for f in today] == ["the top"], today
+    assert viewer.framing_findings("s1", boxes, parts=None) == today
+    high = {f: {"Frame": Rect(100, 300, 800, 400), "Hero": Rect(200, 900, 600, 600)} for f in frames}
+    assert not viewer.framing_findings("s1", boxes, parts=high)
+    low = {f: {"Small": Rect(0, 1000, 100, 100), "Big": Rect(0, 900, 1000, 900), "Mid": Rect(0, 1000, 500, 500),
+               "Tiny": Rect(0, 1000, 10, 10), "Gone": None} for f in frames}  # fmt: skip
+    found = viewer.framing_findings("s1", boxes, parts=low)
+    assert len(found) == 1 and found[0].message.startswith("the top half"), found
+    assert found[0].message.startswith(today[0].message)
+    assert found[0].message.endswith(
+        "The largest parts on screen are 'Big', 'Mid' and 'Small': tag the subject hero (or hero:s1)")
+
+
 def test_a_wide_subject_centred_in_the_framing_band_passes():
     from bsa.layout import target_area
 

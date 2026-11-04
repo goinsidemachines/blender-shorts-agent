@@ -490,7 +490,7 @@ def test_near_labels_and_hero_shots_must_exist():
     from types import SimpleNamespace
 
     sc = _scene()
-    bake.tag(_cube("Person.001", (0, 0, 0.5)), "hero:s1,s9")
+    bake.tag(_cube("Person.001", (0, 0, 0.5)), "hero:s1@0.5,s9")
     shot = SimpleNamespace(id="s1", labels=["plain", {"text": "You", "near": "Person"}])
     short = SimpleNamespace(shots=[shot])
     found = [f for f in checks.run_checks(sc, _timeline(), short=short) if f.check == "names" and f.severity == "error"]
@@ -569,6 +569,24 @@ def test_hero_leaving_frame_found():
     assert len(found) == 1, found
     assert found[0].frame > 1
     assert found[0].severity == "error" and "% of 'Hero' is outside the camera frame at frame" in found[0].message
+
+
+def test_a_hero_entering_at_0_6_is_not_framed_before_it():
+    """hero:s1@0.6: a subject the camera reaches later is framed from 60% of the shot on (frame 18 of 1-30)."""
+    sc = _scene()
+    hero = _cube("Hero", (0, 0, 0.5))
+    bake.tag(hero, "hero:s1@0.6")
+    _move_x(hero, [10.0] * 17 + [0.0] * (N - 17))  # outside the frame for frames 1-17, centred from 18 on
+    assert bake.hero_start(0.6, 1, N) == 18
+    assert _found(sc, "frame_edge", "Hero") == []
+    hero["bsa_tags"] = "hero:s1"
+    found = _found(sc, "frame_edge", "Hero")
+    assert len(found) == 1 and found[0].frame < 18, found
+    hero["bsa_tags"] = "hero:s1@0.6"  # still a hero of s1 from frame 18: leaving the frame then is found
+    hero.animation_data_clear()
+    _move_x(hero, [10.0] * 17 + [0.0] * 8 + [10.0] * (N - 25))
+    found = _found(sc, "frame_edge", "Hero")
+    assert len(found) == 1 and found[0].frame >= 26, found
 
 
 def _switch_on(obj, frame):

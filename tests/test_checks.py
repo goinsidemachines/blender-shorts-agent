@@ -19,6 +19,7 @@ def test_checks_in_blender(blender_run):
         "test_depth_into_a_mesh_that_is_not_closed_is_not_given",
         "test_hero_leaving_frame_found",
         "test_per_shot_hero_only_checked_in_its_shots",
+        "test_a_hero_entering_at_0_6_is_not_framed_before_it",
         "test_pop_found",
         "test_floating_found",
         "test_faceted_found",

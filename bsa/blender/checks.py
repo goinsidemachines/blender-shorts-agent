@@ -137,6 +137,8 @@ from bsa.blender.bake import (
     category,
     contact_tag,
     follow_differs,
+    hero_from,
+    hero_start,
     is_fast,
     is_hero,
     is_overlay,
@@ -385,14 +387,22 @@ class _Run:
         self.assemblies: dict[str, tuple[str, float | None]] = {o.name: assembly(o) for o in scene.objects if assembly(o)}
         self.volume: set[str] = {o.name for o in scene.objects if is_volume(o)}  # gas, flame round solids: not solid
         self.switches: dict[str, dict[str, list[int]]] = {}  # per shot: {"on": [frames], "off": [frames]} per object
+        self.span = None  # the shot span shot() is on
+        self.states: dict[str, str] = {}  # each object's _box_state at the last sampled frame ("in", "partial", "out")
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
         self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
         self.kit_font = None
 
-    def hero(self, obj, shot_id=None) -> bool:
-        """is_hero, but a set object is never a hero (scenery, whatever it is tagged)."""
-        return obj.name not in self.set_objs and is_hero(obj, shot_id)
+    def hero(self, obj, shot_id=None, frame=None) -> bool:
+        """is_hero, but a set object is never a hero (scenery, whatever it is tagged). With `frame` and `shot_id` (the
+        shot `shot()` is on), also not before the hero's start: hero:s07@0.6 is framed from 60% of s07 on."""
+        if obj.name in self.set_objs or not is_hero(obj, shot_id):
+            return False
+        span = self.span
+        if frame is None or shot_id is None or span is None or span.id != shot_id:
+            return True
+        return frame >= hero_start(hero_from(obj, shot_id) or 0.0, span.f0, span.f1)
 
     def solid(self, name) -> bool:
         """Checked for grounding: not an overlay, not a volume, not scenery (a set:floor still holds others up)."""
@@ -427,8 +437,9 @@ class _Run:
         positions: dict[str, list[tuple[int, np.ndarray]]] = {}
         views: dict[str, dict] = {}  # heroes and overlays: {"overlay", "samples": [(frame, share outside)]}
         self.cur, self.changed, self.hits, self.drift, self.switches = {}, {}, {}, {}, {}
+        self.span = shot
         sizes: dict[str, float] = {}
-        seen = {"below": {}, "framing": {}, "texts": {}, "props": {}}  # what the viewer sees at sampled frames
+        seen = {"below": {}, "framing": {}, "parts": {}, "texts": {}, "props": {}}  # what the viewer sees at samples
         self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
         shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
         for frame in range(shot.f0, shot.f1 + 1):
@@ -530,7 +541,8 @@ class _Run:
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
 
     def see_frame(self, frame, span, objs, seen):
-        """What a viewer sees at a sampled frame: the camera under a ground, the heroes' boxes on screen (framing)
+        """What a viewer sees at a sampled frame: the camera under a ground, the heroes' boxes on screen (framing:
+        only heroes from their start, hero:<shot>@<fraction>), every other part's box on screen (framing's parts)
         and the edit's text boxes over the heroes and labelled parts (covered)."""
         cam = self.scene.camera
         if cam is None:
@@ -542,7 +554,11 @@ class _Run:
         self.below_ground(frame, np.array(cam_ev.matrix_world.translation), [geos[o.name] for o in heroes], geos,
                           seen["below"])  # fmt: skip
         boxes = {o.name: screen_box(self.scene, cam_ev, o, dg) for o in heroes}
-        seen["framing"][frame] = [viewer.box_rect(b) for b in boxes.values()]
+        seen["framing"][frame] = [viewer.box_rect(boxes[o.name]) for o in heroes if self.hero(o, span.id, frame)]
+        seen["parts"][frame] = {
+            o.name: viewer.box_rect(screen_box(self.scene, cam_ev, o, dg)) for o in objs
+            if o.name in geos and o.name not in self.set_objs and o.name not in self.overlay
+            and self.states.get(o.name) != "out"}  # fmt: skip
         shot = self.short_shot(span.id)
         anchors, hero_track = {}, {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}
         if shot is not None and self.tl is not None:
@@ -632,7 +648,7 @@ class _Run:
                      "subject from above its base), or lower the ground", key=(ground, span.id))  # fmt: skip
         shot = self.short_shot(span.id)
         skip = wide_frames(shot, span, self.tl.fps) if shot is not None and self.tl is not None else set()
-        for f in viewer.framing_findings(span.id, seen["framing"], skip):
+        for f in viewer.framing_findings(span.id, seen["framing"], skip, seen["parts"]):
             self.add(f.check, f.severity, f.obj, f.frame, f.message, key=(span.id, f.message.split(":")[0]))
         if seen["texts"]:
             fps = self.tl.fps if self.tl is not None else 30
@@ -680,13 +696,16 @@ class _Run:
         depsgraph = self.depsgraph
         cam = self.scene.camera
         geos = {}
+        self.states = {}
         for obj in objs:
             geo = self.geo(obj)
             if geo is None:
                 continue
             geos[obj.name] = geo
             state, share, seen = _view(self.scene, cam, geo) if cam else ("in", 0.0, None)
-            if cam and (self.hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
+            self.states[obj.name] = state
+            framed = self.hero(obj, shot_id, frame) or obj.name in self.overlay  # a hero from its start; overlays too
+            if cam and framed and not may_exit(obj):
                 views.setdefault(obj.name, {"overlay": obj.name in self.overlay, "samples": []})["samples"].append(
                     (frame, share, seen))
             if obj.name not in self.static_done:
@@ -1103,7 +1122,7 @@ class _Run:
                         self.add("names", "error", obj.name, None, f"tag {t!r} names {target!r}, which scene "
                                  f"{self.scene.name!r} does not have{_did_you_mean(target, present)}")  # fmt: skip
                 elif t.startswith("hero:") and shot_ids is not None:
-                    for sid in t[len("hero:") :].split(","):
+                    for sid in (i.partition("@")[0] for i in t[len("hero:") :].split(",")):
                         if sid not in shot_ids:
                             self.add("names", "error", obj.name, None, f"tag {t!r} names shot {sid!r}, which "
                                      "short.json does not have")  # fmt: skip

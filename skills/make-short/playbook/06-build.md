@@ -22,7 +22,7 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   each other");
 - tag objects for the checks with `bsa.blender.bake.tag(obj, ...)`: `"hero"` for the subject(s) each shot is about
   (must stay inside the frame; `"hero:s03,s04"` makes it a hero only in those shots, for a subject the camera leaves
-  on purpose elsewhere), `"grounded"` for things that rest on something (must not float or sink),
+  on purpose elsewhere; `"hero:s07@0.6"` a hero of s07 from 60% of the shot on, for a subject the camera reaches later), `"grounded"` for things that rest on something (must not float or sink),
   `"contact:<other object name>"` for parts that really touch (a foot on a floor, a ball in its cradle, a cable at
   its anchor; `"contact:<other>:<max_depth_m>"` for the rare part that sits deeper by design;
   `"contact:<other>:moves"` for parts that touch and move against each other by design), with a comment next to
