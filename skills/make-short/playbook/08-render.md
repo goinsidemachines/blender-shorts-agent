@@ -10,9 +10,9 @@ memory"); suggest closing it, but never stop a program yourself.
 
 ## One GPU job at a time
 
-`BLENDER render`, the preview chain's render step, `BLENDER extremes`, `BLENDER test-frames` and `BLENDER estimate` take the workspace's
+`BLENDER render`, the preview chain's render step, `BLENDER extremes`, `BLENDER test-frames`, `BLENDER stills` and `BLENDER estimate` take the workspace's
 GPU lock (`<workspace>/.gpu.lock`: pid, short, command, start time), so two sessions never render at once. A second
-command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr, and `render-status` and
+command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr (and again every 30 s: "still waiting for ...: waited 1 min 30 s"), and `render-status` and
 the page say "final render waiting for the GPU: ...". It starts by itself when the first ends, or at once when the
 first's Blender is gone (a crashed or killed run leaves a stale lock, which is cleared). Tell the user what it waits
 for. With `--no-wait` it fails at once instead, naming the holder: use that when the user would rather not queue.
@@ -223,7 +223,8 @@ The single steps, when you need one on its own:
    `--sheet [--count 12] [--columns 4]` makes one quarter-size contact sheet of evenly spaced frames,
    `review/grabs/preview-sheet.png`, for an overview. Grabs of an older edit of the same video are removed first
    (the result's `cleared` counts them), so the folder only ever holds frames of the video as it is now; a side
-   run's grabs are its own. No .blend is needed. The grabs use the Standard view
+   run's grabs are its own. The result's `older` counts this video's other grabs still in the folder (with an
+   `older_note`); `--clear` removes them before grabbing. No .blend is needed. The grabs use the Standard view
    transform, so their colours match the video (pulling frames through a default scene's AgX washes them out). Check
    captions, labels, badges and the end card where they really sit, and grab the moments where parts move against
    each other at full size: a contact sheet is too small to show thin parts passing through each other.

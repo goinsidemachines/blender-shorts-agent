@@ -1713,6 +1713,46 @@ def test_grab_maps_seconds_to_frames(home, pendulum, monkeypatch, capsys):
     assert "outside the video" in capsys.readouterr().err
 
 
+def test_grab_lists_only_this_calls_grabs_and_counts_older_ones(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa.blender
+    import bsa_blender
+
+    mp4 = pendulum / "out" / "pendulum-preview.mp4"
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"mp4")
+    grabs = pendulum / "review" / "grabs"
+    fake_edit = types.ModuleType("bsa.blender.edit")
+    fake_edit.probe = lambda p: {"width": 1080, "height": 1920, "fps": 30.0, "frames": 60, "has_audio": True}
+    fake_grab = types.ModuleType("bsa.blender.grab")
+    fake_grab.frame_at = lambda t, fps, n: int(t * fps) + 1
+
+    def grab_frames(mp4, frames, folder, stem):
+        folder.mkdir(parents=True, exist_ok=True)
+        for f in frames:
+            (folder / f"{stem}-f{f:04d}.png").write_bytes(b"new")
+
+    fake_grab.grab_frames = grab_frames
+    monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake_edit)
+    monkeypatch.setitem(sys.modules, "bsa.blender.grab", fake_grab)
+    monkeypatch.setattr(bsa.blender, "grab", fake_grab, raising=False)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    argv = ["grab", "pendulum", "--preset", "preview"]
+    assert bsa_blender.main([*argv, "--at", "0"]) == 0
+    first = _result(capsys)
+    assert first["older"] == 0 and "older_note" not in first
+    assert bsa_blender.main([*argv, "--at", "1"]) == 0
+    out = _result(capsys)
+    assert [g["frame"] for g in out["grabs"]] == [31]
+    assert out["older"] == 1
+    assert out["older_note"] == "1 older grabs of this video are in review/grabs: --clear removes them"
+    assert bsa_blender.main([*argv, "--at", "0.5", "--clear"]) == 0
+    out = _result(capsys)
+    assert out["older"] == 0 and "older_note" not in out and out["cleared"] == 2
+    assert [p.name for p in grabs.glob("*.png")] == ["preview-f0016.png"]
+
+
 def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys):
     """Grabs from an earlier edit of the video are removed before new ones are written (a requested second that
     lands on another frame would leave an old frame beside the new ones); a side run's grabs are its own."""

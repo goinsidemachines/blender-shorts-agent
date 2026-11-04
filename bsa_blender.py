@@ -1526,29 +1526,51 @@ def cmd_grab(args) -> dict:
     stem = f"{args.preset}{side.suffix}"  # a side run's grabs never replace the approved run's
     if args.sheet:
         frames = grab.sheet_frames(n, args.count)
-        cleared = _fresh_grabs(folder, stem, mp4)
+        cleared = _fresh_grabs(folder, stem, mp4, clear=args.clear)
         sheet = grab.contact_sheet(mp4, frames, folder / f"{stem}-sheet.png", columns=args.columns)
         return {"mp4": str(mp4), "sheet": str(sheet), "frames": frames, "cleared": cleared,
-                "seconds": [round((f - 1) / fps, 2) for f in frames]}  # fmt: skip
+                "seconds": [round((f - 1) / fps, 2) for f in frames],
+                **_older_grabs(folder, stem, {Path(sheet)})}  # fmt: skip
     try:
         frames = [grab.frame_at(t, fps, n) for t in args.at]
     except ValueError as exc:
         raise CliError(str(exc)) from exc
-    cleared = _fresh_grabs(folder, stem, mp4)
+    cleared = _fresh_grabs(folder, stem, mp4, clear=args.clear)
     grab.grab_frames(mp4, list(dict.fromkeys(frames)), folder, stem)
+    mine = [folder / f"{stem}-f{f:04d}.png" for f in frames]
     return {"mp4": str(mp4), "cleared": cleared,
-            "grabs": [{"seconds": t, "frame": f, "path": str(folder / f"{stem}-f{f:04d}.png")}
-                      for t, f in zip(args.at, frames, strict=True)]}  # fmt: skip
+            "grabs": [{"seconds": t, "frame": f, "path": str(p)}
+                      for t, f, p in zip(args.at, frames, mine, strict=True)],
+            **_older_grabs(folder, stem, set(mine))}  # fmt: skip
 
 
 _GRAB = re.compile(r"-(f\d{4}|sheet)\.png$")
 
 
-def _fresh_grabs(folder: Path, stem: str, mp4: Path) -> int:
+def _stem_grabs(folder: Path, stem: str) -> list[Path]:
+    """This stem's grab PNGs in the folder (the one place the grab file pattern lives). Other presets' and side runs'
+    grabs, and anything else in the folder, are not matched."""
+    if not folder.is_dir():
+        return []
+    return [p for p in folder.glob(f"{glob.escape(stem)}-*.png")
+            if p.name[len(stem):] and _GRAB.fullmatch(p.name[len(stem):])]  # fmt: skip
+
+
+def _older_grabs(folder: Path, stem: str, mine: set[Path]) -> dict:
+    """{"older": n, "older_note": ...}: this stem's grab PNGs left in the folder that this call did not write."""
+    n = sum(1 for p in _stem_grabs(folder, stem) if p not in mine)
+    out = {"older": n}
+    if n:
+        out["older_note"] = f"{n} older grabs of this video are in review/grabs: --clear removes them"
+    return out
+
+
+def _fresh_grabs(folder: Path, stem: str, mp4: Path, clear: bool = False) -> int:
     """Remove this preset's (or side run's) grabs when they came from another video than `mp4` (another edit of it:
     its size or time changed), so frames of an older video never sit beside new ones. The video they came from is
     noted in `<folder>/<stem>.source.json`; grabs with no note are older than the note, so they go too. Returns how
-    many files were removed. Other presets' and side runs' grabs are left alone."""
+    many files were removed. With `clear`, every grab of this stem goes, whatever video it came from. Other presets'
+    and side runs' grabs are left alone."""
     st = mp4.stat()
     source = {"mp4": mp4.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
     note = folder / f"{stem}.source.json"
@@ -1557,11 +1579,10 @@ def _fresh_grabs(folder: Path, stem: str, mp4: Path) -> int:
     except (OSError, ValueError):
         same = False
     removed = 0
-    if not same and folder.is_dir():
-        for path in folder.glob(f"{glob.escape(stem)}-*.png"):
-            if path.name[len(stem):] and _GRAB.fullmatch(path.name[len(stem):]):
-                path.unlink()
-                removed += 1
+    if not same or clear:
+        for path in _stem_grabs(folder, stem):
+            path.unlink()
+            removed += 1
     folder.mkdir(parents=True, exist_ok=True)
     note.write_text(json.dumps(source), encoding="utf-8")
     return removed
@@ -1861,6 +1882,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("short")
     sp.add_argument("--shot")
     sp.add_argument("--out")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
     sp.set_defaults(fn=cmd_stills)
 
     sp = sub.add_parser("anchors", help="where each near label's object is on screen, into source/anchors.json")
@@ -1913,6 +1935,7 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--sheet", action="store_true", help="evenly spaced frames, a quarter size, in one image")
     sp.add_argument("--count", type=int, default=12, help="frames on the contact sheet")
     sp.add_argument("--columns", type=int, default=4, help="contact sheet columns")
+    sp.add_argument("--clear", action="store_true", help="remove this video's older grabs first")
     _engine_args(sp)
     sp.set_defaults(fn=cmd_grab)
 
@@ -2048,7 +2071,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
-GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample"}  # one at a time per workspace (gpulock); preview via render
+GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample", "stills"}  # one at a time per workspace (gpulock); preview via render
 
 
 def _gpu_place(args) -> Path | None:
@@ -2070,10 +2093,12 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
 
     status = rs.status_path(sdir, preset) if preset else None
     said = []
+    beat = gpulock.Heartbeat()
 
     def on_wait(text: str) -> None:
-        if not said:
-            print(f"{short} {command} is {text}", file=sys.stderr, flush=True)
+        line = beat.line(text)
+        if line is not None:
+            print(f"{short} {command} is {line}" if not said else line, file=sys.stderr, flush=True)
         said.append(text)
         if status is not None:
             rs.note_waiting(status, text)

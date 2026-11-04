@@ -19,11 +19,33 @@ from pathlib import Path
 
 NAME = ".gpu.lock"
 POLL_S = 2.0
+HEARTBEAT_S = 30.0  # a waiting command says who it waits for this often
 PARTIAL_S = 10.0  # an empty or unreadable lock file younger than this is being written: wait, don't clear it
 
 
 class GpuBusy(Exception):
     """The GPU lock is held by another live process and the caller would not wait."""
+
+
+class Heartbeat:
+    """Which wait lines to print: the first, then one every `every` seconds ("still waiting for ...: waited 0 min
+    30 s"). The clock is injectable so it is tested without sleeping."""
+
+    def __init__(self, clock: Callable[[], float] = time.time, every: float = HEARTBEAT_S):
+        self._clock, self._every = clock, every
+        self._start: float | None = None
+        self._last = 0.0
+
+    def line(self, text: str) -> str | None:
+        now = self._clock()
+        if self._start is None:
+            self._start = self._last = now
+            return text
+        if now - self._last < self._every:
+            return None
+        self._last = now
+        mins, secs = divmod(int(now - self._start), 60)
+        return f"still {text}: waited {mins} min {secs} s"
 
 
 def lock_path(workspace: Path) -> Path:

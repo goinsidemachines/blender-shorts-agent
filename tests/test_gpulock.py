@@ -84,9 +84,26 @@ def test_heavy_commands_take_no_wait():
 
     p = bsa_blender.build_parser()
     for argv in (["render", "x", "--preset", "final", "--no-wait"], ["preview", "x", "--no-wait"],
-                 ["extremes", "x", "--no-wait"], ["estimate", "x", "--no-wait"]):  # fmt: skip
+                 ["extremes", "x", "--no-wait"], ["estimate", "x", "--no-wait"],
+                 ["stills", "x", "--no-wait"]):  # fmt: skip
         assert p.parse_args(argv).no_wait is True
-    assert bsa_blender.GPU_COMMANDS >= {"render", "extremes", "estimate", "test-frames"}
+    assert bsa_blender.GPU_COMMANDS >= {"render", "extremes", "estimate", "test-frames", "stills"}
+
+
+def test_the_wait_says_who_holds_it_every_30_seconds():
+    text = "waiting for watch render (pid 1234, since 14:02:31)"
+    now = [0.0]
+    beat = gpulock.Heartbeat(clock=lambda: now[0])
+    got = []
+    for t in range(0, 66, 2):
+        now[0] = float(t)
+        line = beat.line(text)
+        if line is not None:
+            got.append((t, line))
+    assert [t for t, _ in got] == [0, 30, 60]
+    assert got[0][1] == text
+    assert got[1][1] == f"still {text}: waited 0 min 30 s"
+    assert got[2][1] == f"still {text}: waited 1 min 0 s"
 
 
 def test_test_frames_arguments():
