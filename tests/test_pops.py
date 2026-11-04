@@ -155,5 +155,8 @@ def test_last_frame_is_judged_against_the_frames_before_it():
     assert find_pops(steady, 0.1, judged=(1, 30)) == []
     jump = _track([0.02 * i + (0.5 if i == 29 else 0.0) for i in range(30)])
     assert _frames(find_pops(jump, 0.1, judged=(1, 30))) == [30]
-    past_end = (31, np.array([0.02 * 29 + 0.5 + 3.0, 0.0, 0.0]))  # the extrapolated pose hid the jump
+    past_end = (31, np.array([0.02 * 29 + 0.5 + 3.0, 0.0, 0.0]))  # an extrapolated pose would hide the jump
     assert find_pops([*jump, past_end], 0.1, judged=(1, 30)) == []
+    refs = reference_frames(1, 30, 1, 30, True, True)  # the last shot of a 30-frame short: frame 31 is no reference
+    track = jump + [past_end for f in refs if f == 31]
+    assert _frames(find_pops(track, 0.1, judged=(1, 30))) == [30]
