@@ -126,7 +126,7 @@ def test_short_rules_must_be_well_formed_and_never_clash(short):
 
 def test_keyword_hits_are_warnings_until_answered(short):
     short.shots[0].picture = "A man's hand lets go of the brass bob."
-    short.lines[3].text = "Clock faces kept time this way."
+    short.lines[3].text = "Painted faces kept time this way."
     short.rules_check = {"r1": "No people"}
     errors, warnings = rules.problems(short, _s(NO_PEOPLE))
     assert errors == []
@@ -316,6 +316,41 @@ def test_phrases_in_scene_names():
     found = [(h["rule"]["id"], h["obj"]) for h in rules.name_hits(eff, short, names)]
     assert found == [("r1", "BodyPanel"), ("r1", "Badge")], found
     assert rules.hits("no_humans", "rigid bodies and a body") == ["body"]
+
+
+MACHINE_TERMS = ["Cylinder head", "Piston head", "Bolt head", "Print head", "Head gasket", "Head bolt 1", "Head unit",
+                 "Clock hand", "Hour hand", "Second hand", "Rocker arm", "Robot arm", "Swing arm", "Clock face",
+                 "Valve face", "Gear tooth", "Saw tooth", "Table leg", "Tripod leg", "Valve body", "Throttle body",
+                 "Car body", "Needle eye", "Eye bolt", "Hook eye", "Cylinder heads", "Clock hands", "Cylinder_head.001",
+                 "CylinderHead", "HourHand.001", "Rocker arms"]  # fmt: skip
+
+
+def test_machine_terms_do_not_trip_no_humans():
+    """A body-part word inside a known machine term is not a person: not in scene names, not in viewer text."""
+    short = SimpleNamespace(rules=[], rules_check={})
+    eff = rules.effective(_s(NO_PEOPLE), short)
+    names = [("object", n, n) for n in MACHINE_TERMS]
+    assert rules.name_hits(eff, short, names) == []
+    for n in MACHINE_TERMS:
+        assert rules.hits("no_humans", n) == [], n
+        assert rules.hits("no_humans", f"the {n.replace('_', ' ')} turns") == [], n
+    no_faces = {"id": "r2", "text": "No faces", "kind": "no_faces"}
+    eff = rules.effective(_s(no_faces), short)
+    assert rules.name_hits(eff, short, [("object", "Clock face", "Clock face")]) == []
+    assert rules.INNOCENT_PHRASES == tuple(sorted(rules.INNOCENT_PHRASES))
+
+
+def test_machine_terms_alone_or_with_people_still_flag():
+    """The bare word, a name that is no known machine term, and a person's body part all still warn."""
+    short = SimpleNamespace(rules=[], rules_check={})
+    eff = rules.effective(_s(NO_PEOPLE), short)
+    for text, words in [("head", ["head"]), ("a head", ["head"]), ("hand", ["hand"]), ("Head white plastic", ["head"]),
+                        ("worker's hand", ["worker", "hand"]), ("man's head", ["man", "head"]),
+                        ("a head on the cylinder head", ["head"]), ("hand of the clock hand", ["hand"]),
+                        ("BodyPanel", ["body"]), ("Human arm", ["human", "arm"])]:  # fmt: skip
+        assert rules.hits("no_humans", text) == words, text
+        found = rules.name_hits(eff, short, [("object", text, text)])
+        assert [h["words"] for h in found] == [words], text
 
 
 def test_hard_rules_read_the_post_and_thumbnail_text(short):
