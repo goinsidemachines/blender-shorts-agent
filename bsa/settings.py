@@ -14,7 +14,7 @@ DEFAULTS = {
     "workspace": None,
     "blender_exe": None,
     "narrator": {"provider": None, "voice": None, "speed": 1.0, "command": None, "label": None,
-                 "take_mode": "line", "lead_in": 0.0},
+                 "take_mode": "line", "lead_in": 0.0, "params": {}},
     "render": {"engine": "ask"},
     "brand": {"mode": None},
     "handle": None,
@@ -58,6 +58,17 @@ def lead_in_ok(seconds: float) -> bool:
 
 def lead_in_error(value) -> str:
     return f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to {LEAD_IN_RANGE_S[1]:g}, got {value!r}"
+
+
+# narrator.params: the voice engine's own parameters (bsa.narrate.params), given to it last; {} = its defaults.
+
+
+def narrator_problems(s: dict) -> list[str]:
+    """Why the narrator settings can't be used as they are: engine params the provider doesn't take."""
+    from bsa.narrate import params
+
+    narrator = s.get("narrator") if isinstance(s.get("narrator"), dict) else {}
+    return params.problems(narrator.get("provider"), narrator.get("params"))
 
 
 # Settings that are true or false (JSON booleans on the command line).
@@ -175,6 +186,18 @@ def check_value(path: str, value):
             return post.format_value(value)
         key = path.split(".", 1)[1]
         return post.format_value({key: value})[key]
+    if path == "narrator.params" or path.startswith("narrator.params."):
+        from bsa.narrate import params
+
+        if path == "narrator.params":
+            wrong = params.shape_problems(value)
+        elif value is None:  # null removes the key
+            return None
+        else:
+            wrong = params.shape_problems({path.split(".", 2)[2]: value})
+        if wrong:
+            raise ValueError("; ".join(wrong))
+        return {k: float(v) for k, v in value.items()} if path == "narrator.params" else float(value)
     if path == "narrator.lead_in":
         seconds = None
         if not isinstance(value, bool):
@@ -211,7 +234,8 @@ def set_value(path: str, value) -> dict:
         if not isinstance(node.get(k), dict):
             node[k] = {}
         node = node[k]
-    if value is None and path.startswith("brand."):  # brand.style none, brand.logo null: the key is removed
+    if value is None and path.startswith(("brand.", "narrator.params.")):  # brand.style none, brand.logo null,
+        # narrator.params.temperature null: the key is removed
         node.pop(keys[-1], None)
     else:
         node[keys[-1]] = value

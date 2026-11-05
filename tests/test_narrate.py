@@ -1274,3 +1274,111 @@ def test_retake_take_only_deletes_files_inside_the_takes_folder(tmp_path):
     (vo / nrun.RECORD_FILE).write_text(json.dumps(record), encoding="utf-8")
     nrun.retake_take(vo, "l02")
     assert not inside.exists() and outside.is_file()
+
+
+# --- narrator.params: engine parameters given to the runner last ---------------------------------------------------
+
+CHATTER = {"narrator": {"provider": "chatterbox", "voice": "george", "speed": 1.0, "verify": False}}
+
+
+def _runner_cmds(tmp_path, settings, short=None):
+    """The runner commands narrate() starts for `settings` (a fake runner that writes good takes)."""
+    cmds = []
+
+    def run(cmd, **kw):
+        cmds.append(cmd)
+        out = Path(cmd[cmd.index("--out") + 1])
+        for item in json.loads(Path(cmd[cmd.index("--lines") + 1]).read_text("utf-8")):
+            write_wav(out / f"{item['id']}.wav", 1.0)
+        return completed(0, '{"ok": true}\n')
+
+    fake = SimpleNamespace(generate=lambda *a, **k: local.generate(*a, run=run, **k), verify=lambda *a: None)
+    res = nrun.narrate(tmp_path, short or make_short("l01"), settings, local=fake)
+    return res, cmds
+
+
+def test_empty_params_leave_the_runner_call_unchanged(tmp_path, bsa_home):
+    base, base_cmds = _runner_cmds(tmp_path / "a", CHATTER)
+    empty = {"narrator": {**CHATTER["narrator"], "params": {}}}
+    got, cmds = _runner_cmds(tmp_path / "b", empty)
+    assert base.status == got.status == "ok"
+    strip = lambda cs: [[str(p).replace(str(tmp_path / "a"), "X").replace(str(tmp_path / "b"), "X") for p in c]
+                        for c in cs]  # fmt: skip
+    assert strip(cmds) == strip(base_cmds) and not any("--param" in c for c in cmds)
+    assert (tmp_path / "a" / "audio" / "vo" / "l01.wav").read_bytes() == (tmp_path / "b" / "audio" / "vo" /
+                                                                            "l01.wav").read_bytes()  # fmt: skip
+
+
+def test_params_reach_the_runner_with_the_short_over_the_settings(tmp_path, bsa_home):
+    s = {"narrator": {**CHATTER["narrator"], "params": {"exaggeration": 0.7, "temperature": 0.6}}}
+    short = make_short("l01")
+    short.narrator = {"params": {"exaggeration": 0.9}}
+    res, cmds = _runner_cmds(tmp_path, s, short)
+    assert res.status == "ok"
+    cmd = cmds[0]
+    got = {cmd[i + 1] for i, p in enumerate(cmd) if p == "--param"}
+    assert got == {"exaggeration=0.9", "temperature=0.6"}
+    assert nrun.narrator_for(s, short)["params"] == {"exaggeration": 0.9, "temperature": 0.6}
+    assert s["narrator"]["params"] == {"exaggeration": 0.7, "temperature": 0.6}  # the settings are not touched
+
+
+@pytest.mark.parametrize(
+    "provider, params, words",
+    [
+        ("chatterbox", {"pitch": 1.0}, ["pitch", "exaggeration, cfg_weight, temperature"]),
+        ("chatterbox", {"exaggeration": 3.0}, ["exaggeration", "0.25", "2"]),
+        ("chatterbox-turbo", {"exaggeration": 0.8}, ["exaggeration", "temperature"]),
+        ("kokoro", {"temperature": 0.5}, ["kokoro takes no engine parameters", "chatterbox: exaggeration"]),
+        ("elevenlabs", {"temperature": 0.5}, ["elevenlabs takes no engine parameters"]),
+        ("chatterbox", {"temperature": "hot"}, ["must be a number"]),
+    ],
+)
+def test_bad_params_never_reach_the_runner(tmp_path, bsa_home, provider, params, words):
+    from bsa.narrate import params as nparams
+
+    problems = nparams.problems(provider, params)
+    assert problems
+    for w in words:
+        assert any(w in p for p in problems), (w, problems)
+    if provider in nrun.LOCAL_ENGINES:
+        s = {"narrator": {**CHATTER["narrator"], "provider": provider, "params": params}}
+        res, cmds = _runner_cmds(tmp_path, s)
+        assert res.status == "captions-only" and cmds == [] and "narrator.params" in res.message
+
+
+def test_params_problems_accept_good_values_and_empty():
+    from bsa.narrate import params as nparams
+
+    assert nparams.problems("chatterbox", {"exaggeration": 0.8, "cfg_weight": 0.5, "temperature": 0.8}) == []
+    assert nparams.problems("chatterbox-turbo", {"temperature": 0.05}) == []
+    assert nparams.problems("kokoro", {}) == nparams.problems("elevenlabs", None) == []
+    assert nparams.as_args({"exaggeration": 0.8}) == ["--param", "exaggeration=0.8"]
+
+
+def test_changing_params_throws_the_takes_away(tmp_path):
+    vo = tmp_path / "vo"
+    vo.mkdir()
+    short = _take_short()
+    base = nrun.narrator_for(CHATTER, short)
+    assert "params" not in nrun._takes_record(short, base)  # older records stay current
+    nrun.clear_stale_takes(vo, short, base)
+    (vo / "l01.wav").write_bytes(b"x")
+    assert nrun.clear_stale_takes(vo, short, {**base, "params": {}}) == []  # empty = none
+    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.8}}) == ["l01"]
+    (vo / "l01.wav").write_bytes(b"x")
+    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.8}}) == []
+    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.9}}) == ["l01"]
+
+
+def test_params_for_another_narrator_are_dropped_with_its_voice():
+    short = _take_short()
+    short.narrator = {"voice": "george", "params": {"exaggeration": 0.8}, "voice_for": "chatterbox"}
+    got = nrun.narrator_for({"narrator": {"provider": "kokoro", "voice": "am_michael"}}, short)
+    assert got["voice"] == "am_michael" and "params" not in got
+
+
+def test_an_old_runner_without_params_says_how_to_update(tmp_path, bsa_home):
+    err = "usage: bsa-tts ...\nbsa-tts: error: unrecognized arguments: --param exaggeration=0.8\n"
+    with pytest.raises(contract.NarrationError, match="voice install chatterbox"):
+        local.generate("chatterbox", lines("l01"), "george", 1.0, tmp_path, run=lambda c, **k: completed(2, "", err),
+                       params={"exaggeration": 0.8})  # fmt: skip

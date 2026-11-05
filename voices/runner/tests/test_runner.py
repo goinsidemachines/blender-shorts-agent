@@ -206,3 +206,61 @@ def test_verify_without_words_is_unchanged(root, tmp_path, capsys, monkeypatch):
     code, out, seen = _verify_words(root, tmp_path, capsys, monkeypatch)
     assert code == 0 and not seen.get("words")
     assert set(out["line1"]) == {"text", "wer"}
+
+
+def _speak_job(root, tmp_path, capsys, monkeypatch, model, *extra, voice="default"):
+    fake_install(root, model)
+    seen = {}
+
+    def fake_worker(m, job, workdir):
+        seen.update(job)
+        return {}
+
+    monkeypatch.setattr(cli, "run_worker", fake_worker)
+    monkeypatch.setattr(cli, "pick_device", lambda *a, **k: "cuda")
+    monkeypatch.setattr(cli, "to_48k_mono", lambda src, dst: 1.0)
+    code, out = speak(tmp_path, capsys, model, "--voice", voice, *extra)
+    return code, out, seen
+
+
+def test_speak_without_params_uses_the_model_and_voice_defaults(root, tmp_path, capsys, monkeypatch):
+    code, _, seen = _speak_job(root, tmp_path, capsys, monkeypatch, "chatterbox")
+    assert code == 0
+    assert seen["params"] == cli.load_registry()["models"]["chatterbox"]["params"]
+
+
+def test_speak_params_go_last_over_the_model_and_voice(root, tmp_path, capsys, monkeypatch):
+    reg = cli.load_registry()
+    reg["models"]["chatterbox"]["voices"]["default"]["params"] = {"exaggeration": 0.6, "cfg_weight": 0.3}
+    monkeypatch.setattr(cli, "load_registry", lambda: reg)
+    code, _, seen = _speak_job(root, tmp_path, capsys, monkeypatch, "chatterbox", "--param", "exaggeration=0.9")
+    assert code == 0
+    # user over voice over model
+    assert seen["params"] == {"exaggeration": 0.9, "cfg_weight": 0.3, "temperature": 0.8}
+
+
+@pytest.mark.parametrize(
+    "model, arg, words",
+    [
+        ("chatterbox", "pitch=1", ["pitch", "exaggeration, cfg_weight, temperature"]),
+        ("chatterbox", "exaggeration=5", ["exaggeration", "0.25", "2"]),
+        ("chatterbox", "temperature=nan", ["temperature"]),
+        ("chatterbox", "temperature", ["KEY=VALUE"]),
+        ("chatterbox-turbo", "exaggeration=0.8", ["exaggeration", "temperature"]),
+        ("kokoro", "temperature=0.5", ["kokoro", "no engine parameters"]),
+    ],
+)
+def test_speak_refuses_bad_params(root, tmp_path, capsys, monkeypatch, model, arg, words):
+    voice = "am_michael" if model == "kokoro" else "default"
+    code, out, seen = _speak_job(root, tmp_path, capsys, monkeypatch, model, "--param", arg, voice=voice)
+    assert code == 2 and not seen
+    for w in words:
+        assert w in out["message"], (w, out["message"])
+
+
+def test_registry_param_ranges_cover_every_param():
+    for name, m in cli.load_registry()["models"].items():
+        ranges = m.get("param_ranges", {})
+        assert set(ranges) == set(m.get("params", {})), name
+        for key, (lo, hi) in ranges.items():
+            assert lo <= m["params"][key] <= hi, (name, key)

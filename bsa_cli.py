@@ -179,6 +179,21 @@ def cmd_rule(args) -> dict:
     return {"rule": rule, **_rules_out(), "summary": settings.summary_line(settings.load_settings())}
 
 
+def _check_narrator_params(key: str, value) -> None:
+    """Refuse (nothing saved) engine params the narrator set now doesn't take, or out of its ranges."""
+    narrator = settings.load_settings().get("narrator") or {}
+    params = dict(narrator.get("params") or {})
+    if key == "narrator.params":
+        params = value
+    elif value is None:
+        params.pop(key.split(".", 2)[2], None)
+    else:
+        params[key.split(".", 2)[2]] = value
+    wrong = settings.narrator_problems({"narrator": {**narrator, "params": params}})
+    if wrong:
+        raise CliError("; ".join(wrong))
+
+
 def cmd_settings(args) -> dict:
     if args.action == "show":
         s = settings.load_settings()
@@ -206,7 +221,7 @@ def cmd_settings(args) -> dict:
         from bsa import kit
 
         s = settings.load_settings()
-        return {"advice": kit.advice(s), "problems": kit.problems(s)}
+        return {"advice": kit.advice(s), "problems": kit.problems(s) + settings.narrator_problems(s)}
     # set
     if not args.key or args.value is None:
         raise CliError("usage: settings set KEY VALUE (for example: settings set render.engine cycles)")
@@ -214,6 +229,8 @@ def cmd_settings(args) -> dict:
         value = settings.check_value(args.key, _parse_value(args.key, args.value))
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    if args.key == "narrator.params" or args.key.startswith("narrator.params."):
+        _check_narrator_params(args.key, value)
     if args.key == "closing.image" and isinstance(value, str) and value.strip():
         path = Path(value.strip()).expanduser().resolve()
         if not path.is_file() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
@@ -994,6 +1011,12 @@ def cmd_narrate(args) -> dict:
         check_line_ids(voiced)  # before anything is deleted or spoken
     except ValueError as exc:
         raise CliError(_one_line(exc)) from exc
+    from bsa.narrate import params as nparams
+
+    wrong = nparams.problems(narrator.get("provider"), narrator.get("params"))
+    if wrong:  # before anything is deleted or spoken: engine params this narrator doesn't take
+        raise CliError("; ".join(wrong) + " (CLI settings set narrator.params {} clears them; a short's own are "
+                       "its short.json narrator.params)")  # fmt: skip
     retaken = _prepare_retake(sdir, short, voiced, s, args)
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
     from bsa.narrate import custom
@@ -1333,7 +1356,8 @@ def cmd_voice(args) -> dict:
         raise CliError(f"unknown voice model {model!r}; have: elevenlabs, {', '.join(reg)}")
     m = reg[model]
     voices = [{"voice": k, **v} for k, v in m.get("voices", {}).items()]
-    return {"model": model, "default_voice": m.get("default_voice"), "voices": voices}
+    return {"model": model, "default_voice": m.get("default_voice"), "voices": voices,
+            "params": m.get("params") or {}, "param_ranges": m.get("param_ranges") or {}}  # narrator.params
 
 
 def cmd_fonts(args) -> dict:

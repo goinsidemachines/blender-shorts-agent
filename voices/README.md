@@ -69,7 +69,7 @@ uv run --project ~/.blender-shorts-agent/voices/runner bsa-tts voices
 
 ```
 bsa-tts speak --model kokoro|chatterbox|chatterbox-turbo --voice NAME --lines LINES.json --out DIR
-              [--speed 0.5-2.0] [--seed INT] [--cpu] [--cpu-fallback]
+              [--speed 0.5-2.0] [--seed INT] [--cpu] [--cpu-fallback] [--param KEY=VALUE ...]
 bsa-tts voices [--model NAME]
 bsa-tts check
 bsa-tts verify --lines LINES.json --takes DIR
@@ -78,6 +78,8 @@ bsa-tts verify --lines LINES.json --takes DIR
 `speak` writes `<id>.wav` (48 kHz mono 16-bit), `durations.json` and `render.json`. The last line it prints is a JSON
 summary. `--speed` is native for Kokoro and a time-stretch afterwards for Chatterbox (1.0 sounds best). The same
 text, voice and seed give the same take. `--cpu-fallback` uses the CPU when the GPU is busy (Kokoro only).
+`--param KEY=VALUE` (repeatable) sets one of the model's own `params` over the model's and the voice's, within its
+`param_ranges` in `registry.json` (the plugin passes `narrator.params` this way).
 `check` prints free video memory and which models are installed. `verify` transcribes each take with Whisper and
 prints the word error rate per line.
 

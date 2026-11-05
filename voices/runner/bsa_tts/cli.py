@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -129,6 +130,34 @@ def resolve_voice(name: str, model: dict, voice_name: str | None) -> tuple[str, 
     return voice_name, voice
 
 
+def user_params(name: str, model: dict, items: list[str] | None) -> dict[str, float]:
+    """The `--param KEY=VALUE` engine parameters: each KEY one of the model's own params, each VALUE a finite number
+    within the model's `param_ranges` for it."""
+    out: dict[str, float] = {}
+    if not items:
+        return out
+    allowed = model.get("params") or {}
+    if not allowed:
+        raise CliError(f"{name} takes no engine parameters", EXIT_USAGE)
+    ranges = model.get("param_ranges") or {}
+    for item in items:
+        key, sep, raw = item.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise CliError(f"--param must be KEY=VALUE, got {item!r}", EXIT_USAGE)
+        if key not in allowed:
+            raise CliError(f"unknown parameter {key!r} for {name}; have: {', '.join(allowed)}", EXIT_USAGE)
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        lo, hi = ranges.get(key, (-math.inf, math.inf))
+        if not math.isfinite(value) or not lo <= value <= hi:
+            raise CliError(f"{key} must be a number from {lo:g} to {hi:g}, got {raw.strip()!r}", EXIT_USAGE)
+        out[key] = value
+    return out
+
+
 def pick_device(model: dict, name: str, force_cpu: bool, cpu_fallback: bool) -> str:
     cpu_ok = "cpu" in model["devices"]
     if force_cpu:
@@ -197,13 +226,14 @@ def cmd_speak(a: argparse.Namespace) -> dict:
     lines = load_lines(Path(a.lines))
     if not 0.5 <= a.speed <= 2.0:
         raise CliError("--speed must be between 0.5 and 2.0", EXIT_USAGE)
+    mine = user_params(a.model, model, a.param)
     require_installed(a.model, model)
     voice_name, voice = resolve_voice(a.model, model, a.voice)
     device = pick_device(model, a.model, a.cpu, a.cpu_fallback)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     weights = weights_dir(a.model)
-    params = {**model.get("params", {}), **voice.get("params", {})}
+    params = {**model.get("params", {}), **voice.get("params", {}), **mine}  # the user's own go last
     t0 = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="bsa-tts-", dir=out) as tmp:
         job = {
@@ -413,6 +443,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", required=True, help="output folder")
     s.add_argument("--speed", type=float, default=1.0, help="0.5-2.0 (default 1.0)")
     s.add_argument("--seed", type=int, default=0, help="same text, voice and seed give the same take (default 0)")
+    s.add_argument("--param", action="append", metavar="KEY=VALUE",
+                   help="an engine parameter over the model's and voice's (repeatable; see the model's params)")
     s.add_argument("--cpu", action="store_true", help="force the CPU (Kokoro only)")
     s.add_argument("--cpu-fallback", action="store_true", help="use the CPU if the GPU is busy (Kokoro only)")
     s.set_defaults(fn=cmd_speak)

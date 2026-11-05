@@ -119,8 +119,9 @@ class Short:
     # for the camera stage}. A one-take short is one continuous move: each shot is a fixed window on it (Shot.at) and
     # the picture sets the clock. Empty = cuts, and not written.
     camera: dict = dc_field(default_factory=dict)
-    # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in (never the
-    # provider or command). Empty = the settings. "voice_for" names the provider its voice and speed were chosen for
+    # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in, params (the
+    # engine's parameters, merged key by key over narrator.params; never the provider or command). Empty = the
+    # settings. "voice_for" names the provider its voice and speed were chosen for
     # (new-short --like): under another provider they are not used. Without it (older shorts) they always apply.
     narrator: dict = dc_field(default_factory=dict)
     # Guidance for the storyboard copied from an earlier short (`new-short --like`): {"shots": count, "min_s": the
@@ -133,7 +134,7 @@ class Short:
     captions_translations: dict | None = None
 
 
-NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "voice_for")
+NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "params", "voice_for")
 
 
 def _build(cls, data: dict):
@@ -512,6 +513,10 @@ def _narrator_problems(narrator) -> list[str]:
     lead = narrator.get("lead_in")
     if "lead_in" in narrator and (isinstance(lead, bool) or not isinstance(lead, (int, float)) or not lead_in_ok(lead)):
         out.append(lead_in_error(lead))
+    if "params" in narrator:  # the keys and ranges are the engine's: checked against the provider when narrating
+        from bsa.narrate.params import shape_problems
+
+        out += shape_problems(narrator["params"])
     if "voice_for" in narrator and (not isinstance(narrator["voice_for"], str) or not narrator["voice_for"].strip()):
         out.append(f"narrator.voice_for must name the narrator its voice was chosen for, such as \"kokoro\", got "
                    f"{narrator['voice_for']!r}")  # fmt: skip

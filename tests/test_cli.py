@@ -167,6 +167,26 @@ def test_the_kit_is_turned_off_from_the_command_line_keeping_the_rest_of_the_bra
     assert ok(run(home, "settings", "check"))["problems"] == []
 
 
+def test_narrator_params_are_checked_against_the_engine(home):
+    settings_file = home / "settings.json"
+    proc = run(home, "settings", "set", "narrator.params.temperature", "0.7")  # no narrator yet
+    assert proc.returncode != 0 and "takes no engine parameters" in proc.stderr and not settings_file.exists()
+    ok(run(home, "settings", "set", "narrator.provider", "chatterbox"))
+    ok(run(home, "settings", "set", "narrator.params.temperature", "0.7"))
+    ok(run(home, "settings", "set", "narrator.params", '{"temperature": 0.6, "cfg_weight": 0.4}'))
+    assert json.loads(settings_file.read_text("utf-8"))["narrator"]["params"] == {"temperature": 0.6, "cfg_weight": 0.4}
+    before = settings_file.read_bytes()
+    for key, value, words in (("narrator.params.pitch", "1", "exaggeration, cfg_weight, temperature"),
+                              ("narrator.params.temperature", "5", "0.05 to 2"),
+                              ("narrator.params", '{"temperature": "hot"}', "must be a number")):  # fmt: skip
+        proc = run(home, "settings", "set", key, value)
+        assert proc.returncode != 0 and words in proc.stderr, proc.stderr
+    assert settings_file.read_bytes() == before  # a refused value is never saved
+    assert ok(run(home, "settings", "check"))["problems"] == []
+    ok(run(home, "settings", "set", "narrator.provider", "kokoro"))  # params left for another engine: reported
+    assert any("kokoro takes no engine parameters" in p for p in ok(run(home, "settings", "check"))["problems"])
+
+
 def test_new_short_needs_workspace(home):
     proc = run(home, "new-short", "Pendulum")
     assert proc.returncode != 0

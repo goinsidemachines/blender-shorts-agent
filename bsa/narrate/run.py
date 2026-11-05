@@ -23,6 +23,7 @@ from bsa import jobstate
 from bsa.narrate import custom as _custom
 from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
+from bsa.narrate import params as _params
 from bsa.narrate import takes as _takes
 from bsa.narrate.contract import NarrationError, check_take, forget_durations, pad_lead, read_durations, voice_onset
 from bsa.narrate.local import RETRIES, WER_LIMIT
@@ -479,7 +480,12 @@ def _words(mod):
 
 def _local_narrate(provider: str, short: Short, narrator: dict, out_dir: Path, mod) -> NarrationResult:
     voice, speed = narrator.get("voice"), float(narrator.get("speed") or 1.0)
-    gen = _fn(mod, "generate")
+    params = narrator.get("params")
+    extra = {"params": params} if params else {}  # none: the engine is called exactly as before narrator.params
+    raw = _fn(mod, "generate")
+
+    def gen(*args, **kw):
+        return raw(*args, **kw, **extra)
 
     def take(take_line, seed, lines):
         gen(provider, [take_line], voice, speed, out_dir / TAKES_DIR, seed=seed)
@@ -578,27 +584,37 @@ def check_line_ids(short: Short) -> None:
 
 def own_voice_dropped(settings: dict, short) -> str | None:
     """The provider this short's own voice and speed were chosen for (its narrator's `voice_for`) when the settings'
-    narrator is another one now, so they are not used; None otherwise. A short with no `voice_for` (made before it
-    was recorded) keeps its voice and speed as before."""
+    narrator is another one now, so they are not used (nor its engine params); None otherwise. A short with no
+    `voice_for` (made before it was recorded) keeps its voice and speed as before."""
     own = getattr(short, "narrator", None)
-    if not isinstance(own, dict) or not own.get("voice_for") or not ("voice" in own or "speed" in own):
+    if not isinstance(own, dict) or not own.get("voice_for") or not ({"voice", "speed", "params"} & set(own)):
         return None
     meant = own["voice_for"]
     return meant if meant != (settings.get("narrator") or {}).get("provider") else None
 
 
+def _as_dict(value) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def narrator_for(settings: dict, short) -> dict:
-    """The narrator settings with this short's own choices (voice, speed, take_mode, lead_in) over them. The
-    provider, command and label are never per short."""
+    """The narrator settings with this short's own choices (voice, speed, take_mode, lead_in, params) over them; the
+    short's params merge key by key over the settings' (`params` is left out when there are none). The provider,
+    command and label are never per short."""
     from bsa.short import NARRATOR_KEYS
 
     own = dict(getattr(short, "narrator", None) or {})
     if own_voice_dropped(settings, short):  # its voice and speed were for another narrator: the settings' apply
         own.pop("voice", None)
         own.pop("speed", None)
+        own.pop("params", None)
     own.pop("voice_for", None)
     out = dict(settings.get("narrator") or {})
+    params = {**_as_dict(out.get("params")), **_as_dict(own.pop("params", None))}
     out.update({k: v for k, v in own.items() if k in NARRATOR_KEYS})
+    out.pop("params", None)
+    if params:
+        out["params"] = params
     out["take_mode"] = out.get("take_mode") or "line"
     out["lead_in"] = float(out.get("lead_in") or 0.0)
     return out
@@ -614,6 +630,9 @@ def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> Narra
         result = NarrationResult("captions-only")
     else:
         try:
+            wrong = _params.problems(provider, narrator.get("params"))
+            if wrong:
+                raise NarrationError("; ".join(wrong))
             if provider == "elevenlabs":
                 if not narrator.get("voice"):
                     raise NarrationError("no ElevenLabs voice has been chosen")
@@ -652,6 +671,8 @@ def _takes_record(short: Short, narrator: dict) -> dict:
         extra["take_mode"] = "paragraph"
     if float(narrator.get("lead_in") or 0.0) > 0:
         extra["lead_in"] = float(narrator["lead_in"])
+    if narrator.get("params"):  # the engine's params: a change re-speaks the takes (none = no key, as before)
+        extra["params"] = dict(narrator["params"])
     return {
         **extra,
         "command": (narrator.get("command") or None) if narrator.get("provider") == "custom" else None,
@@ -663,9 +684,9 @@ def _takes_record(short: Short, narrator: dict) -> dict:
 
 
 def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
-    """Delete takes made by another narrator, voice or speed, or for a line whose text has changed since, and
-    record what the takes left on disk are for. Takes still current are kept, so an interrupted run resumes.
-    Returns the ids of the takes deleted."""
+    """Delete takes made by another narrator, voice, speed or engine params, or for a line whose text has changed
+    since, and record what the takes left on disk are for. Takes still current are kept, so an interrupted run
+    resumes. Returns the ids of the takes deleted."""
     check_line_ids(short)
     out_dir = Path(out_dir)
     record_path = out_dir / RECORD_FILE
@@ -675,7 +696,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     except (OSError, ValueError):
         had = None
     same_voice = isinstance(had, dict) and all(had.get(k) == want[k] for k in ("provider", "voice", "speed", "command"))
-    same_voice = same_voice and all(had.get(k) == want.get(k) for k in ("take_mode", "lead_in"))
+    same_voice = same_voice and all(had.get(k) == want.get(k) for k in ("take_mode", "lead_in", "params"))
     old_lines = had.get("lines", {}) if same_voice else {}
     removed = []
     waiting = {lid for lid in take_seeds(out_dir) if not (out_dir / f"{lid}.wav").is_file()}  # a re-take's line

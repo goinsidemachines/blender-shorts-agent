@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -232,6 +233,16 @@ def test_short_narrator_override_is_validated():
     assert any("speed" in e for e in validate(_short(narrator={"speed": 3})))
     assert any("narrator" in e for e in validate(_short(narrator="paragraph")))
     assert _short().narrator == {}
+
+
+def test_short_narrator_params_are_numbers_and_saved_only_when_set(tmp_path):
+    assert validate(_short(narrator={"params": {"temperature": 0.7}})) == []
+    assert any("narrator.params.temperature" in e for e in validate(_short(narrator={"params": {"temperature": "x"}})))
+    assert any("narrator.params" in e for e in validate(_short(narrator={"params": [0.7]})))
+    save_short(_short(), tmp_path / "a.json")
+    assert "params" not in json.loads((tmp_path / "a.json").read_text("utf-8"))["narrator"]
+    save_short(_short(narrator={"params": {"temperature": 0.7}}), tmp_path / "b.json")
+    assert load_short(tmp_path / "b.json").narrator == {"params": {"temperature": 0.7}}
 
 
 def test_pace_and_like_are_validated():

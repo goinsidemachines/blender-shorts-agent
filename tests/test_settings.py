@@ -272,3 +272,34 @@ def test_take_mode_and_lead_in_settings():
     assert v == 0.3 and isinstance(v, float)
     assert settings.check_value("narrator.lead_in", 1) == 1.0
     assert settings.DEFAULTS["narrator"]["take_mode"] == "line" and settings.DEFAULTS["narrator"]["lead_in"] == 0.0
+
+
+def test_narrator_params_values_are_numbers():
+    assert settings.DEFAULTS["narrator"]["params"] == {}
+    assert settings.check_value("narrator.params", {"temperature": 1}) == {"temperature": 1.0}
+    assert settings.check_value("narrator.params.temperature", 0.7) == 0.7
+    assert settings.check_value("narrator.params.temperature", None) is None  # removes the key
+    for path, bad in (("narrator.params", [0.7]), ("narrator.params", {"temperature": "hot"}),
+                      ("narrator.params.temperature", True), ("narrator.params.temperature", float("inf"))):  # fmt: skip
+        with pytest.raises(ValueError, match="narrator.params"):
+            settings.check_value(path, bad)
+
+
+def test_narrator_params_problems_follow_the_provider():
+    s = copy.deepcopy(settings.DEFAULTS)
+    assert settings.narrator_problems(s) == []
+    s["narrator"].update(provider="chatterbox", params={"exaggeration": 0.8})
+    assert settings.narrator_problems(s) == []
+    s["narrator"]["params"] = {"pitch": 1.0}
+    assert "exaggeration, cfg_weight, temperature" in settings.narrator_problems(s)[0]
+    s["narrator"]["params"] = {"exaggeration": 9.0}
+    assert "0.25 to 2" in settings.narrator_problems(s)[0]
+    s["narrator"].update(provider="kokoro", params={"temperature": 0.5})
+    assert "kokoro takes no engine parameters" in settings.narrator_problems(s)[0]
+
+
+def test_set_value_removes_a_narrator_param_set_to_null(bsa_home):
+    settings.set_value("narrator.params.temperature", 0.7)
+    assert settings.load_settings()["narrator"]["params"] == {"temperature": 0.7}
+    settings.set_value("narrator.params.temperature", None)
+    assert settings.load_settings()["narrator"]["params"] == {}

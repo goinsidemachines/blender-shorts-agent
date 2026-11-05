@@ -8,6 +8,7 @@ from pathlib import Path
 from bsa import proc as _proc
 from bsa.messages import trim
 from bsa.narrate import contract, install
+from bsa.narrate import params as _params
 from bsa.narrate.contract import NarrationError
 from bsa.settings import bsa_home
 
@@ -43,8 +44,10 @@ def _tail(proc) -> str:
 
 
 def generate(
-    model: str, lines, voice, speed: float, out_dir: Path, run=_proc.run, seed: int = 7
+    model: str, lines, voice, speed: float, out_dir: Path, run=_proc.run, seed: int = 7, params: dict | None = None
 ) -> dict[str, float]:
+    """Speak `lines` into out_dir/<id>.wav. `params` (narrator.params) go to the runner as `--param KEY=VALUE`, over
+    the model's and the voice's own; without them the command is exactly as before."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     lines_file = out_dir / "lines.json"
@@ -53,9 +56,14 @@ def generate(
     if voice:
         cmd += ["--voice", str(voice)]
     cmd += ["--speed", str(speed), "--lines", str(lines_file), "--out", str(out_dir)]
-    cmd += ["--seed", str(seed), "--cpu-fallback"]
+    cmd += ["--seed", str(seed), "--cpu-fallback", *_params.as_args(params)]
     proc = run(cmd, check=False, capture_output=True, text=True)
     code = proc.returncode
+    if code == 2 and params and "--param" in (proc.stderr or ""):  # a runner installed before narrator.params
+        raise NarrationError(
+            f"the installed voice runner is older than the plugin and doesn't take narrator.params; update it with "
+            f"CLI voice install {model}"
+        )
     if code == 5:
         raise NarrationError(f"the {model} voice engine is not installed")
     if code in (3, 4):

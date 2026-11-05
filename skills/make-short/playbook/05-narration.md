@@ -86,10 +86,22 @@ retry and the closing line are spoken alone, like before.
 `narrator.lead_in` is the quiet before the voice in each take, from 0 to 1 second (default 0). The captions start
 with the voice, not with the quiet.
 
-A short can have its own `narrator` in `short.json` (`voice`, `speed`, `take_mode`, `lead_in`) that wins over the
-settings for that short only. With neither set, narration is exactly as it was. `voice_for` names the narrator
-its `voice` and `speed` were chosen for (`new-short --like` records it): when the settings' narrator is a different
-one now, the short's own voice and speed are not used, the settings' are, and `narrate` says so in `notes`. A short
+## Engine parameters
+
+`narrator.params` holds the local voice engine's own parameters, over the engine's and the voice's defaults
+(default `{}`: the engine's own). Only an engine that has parameters takes them: Chatterbox and Chatterbox Turbo do
+(`CLI voice list MODEL` shows its `params` and their `param_ranges`); Kokoro, ElevenLabs and a custom voice tool take
+none. Set one with, for example, `CLI settings set narrator.params.temperature 0.7`, or all at once with
+`CLI settings set narrator.params '{"temperature": 0.7}'`; `null` removes one and `{}` clears them. A name the
+engine doesn't have, or a number outside its range, is refused with the names and ranges it takes, and
+`CLI settings check` reports parameters left over for another engine. Changing them re-speaks the takes. Only set
+them when the user asks for a different delivery; never guess values.
+
+A short can have its own `narrator` in `short.json` (`voice`, `speed`, `take_mode`, `lead_in`, `params`) that wins
+over the settings for that short only (its `params` merge key by key over the settings'). With neither set,
+narration is exactly as it was. `voice_for` names the narrator its `voice` and `speed` were chosen for
+(`new-short --like` records it): when the settings' narrator is a different one now, the short's own voice, speed
+and params are not used, the settings' are, and `narrate` says so in `notes`. A short
 with its own `voice` but no `voice_for` (made before it was recorded) keeps using its voice.
 
 The result says where each line's audio came from in `sources`: `take`, `line` (spoken alone) or `fallback` (its take
