@@ -110,12 +110,45 @@ def _pipeline(tmp_path: Path) -> Pipeline:
     return Pipeline(home)
 
 
+def _render_settings(p: Pipeline, blend: Path) -> dict:
+    """Each scene's render engine and resolution percentage, read from the saved .blend in a fresh Blender."""
+    code = ("import bpy, json; print('BSA_SETTINGS ' + json.dumps({s.name: [s.render.engine, "
+            "s.render.resolution_percentage] for s in bpy.data.scenes}))")  # fmt: skip
+    proc = subprocess.run([p.blender, "-b", str(blend), "--factory-startup", "--python-expr", code], check=False,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=p.env,
+                          timeout=300)  # fmt: skip
+    line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("BSA_SETTINGS "))
+    return json.loads(line[len("BSA_SETTINGS ") :])
+
+
+def _camtest(p: Pipeline, short: Path, blend: Path, timeline: dict) -> None:
+    """BLENDER camtest on the built short, the real way: a Workbench grey clip of s01 at 5 % (54x96), its sheet and a
+    current record; the .blend is never saved, and its engine and resolution are as they were."""
+    from bsa import camtest, freshness
+    from bsa.timeline import timeline_hash
+
+    settings, stamp = _render_settings(p, blend), blend.stat().st_mtime_ns
+    out = p.blender_cmd("camtest", "pendulum", "--scale", "0.05", "--shots", "s01")
+    s01 = next(s for s in timeline["shots"] if s["id"] == "s01")
+    n = s01["f1"] - s01["f0"] + 1
+    assert out["shots"] == ["s01"] and out["frames"] == n and out["percent"] == 5
+    info = p.blender_cmd("probe", out["mp4"])
+    assert (info["width"], info["height"], info["frames"]) == (54, 96, n), info
+    assert Path(out["sheet"]).is_file() and Path(out["sheet"]).stat().st_size > 0
+    rec = json.loads((short / camtest.FOLDER / camtest.RECORD).read_text(encoding="utf-8"))
+    assert camtest.stale(rec, freshness.blend_stat(short), timeline_hash(timeline)) is None
+    assert blend.stat().st_mtime_ns == stamp
+    assert _render_settings(p, blend) == settings
+    assert all(engine != "BLENDER_WORKBENCH" for engine, _ in settings.values())
+
+
 def test_script_mode_end_to_end(tmp_path):
     p = _pipeline(tmp_path)
     short = _to_build(p, tmp_path)
     blend = short / "blend" / "short.blend"
     timeline = json.loads((short / "source" / "timeline.json").read_text(encoding="utf-8"))
     findings = []
+    _camtest(p, short, blend, timeline)
 
     check = p.blender_cmd("check", "pendulum", blend=blend)
     findings += check["findings"]

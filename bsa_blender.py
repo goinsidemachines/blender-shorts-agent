@@ -1875,13 +1875,14 @@ def cmd_camtest(args) -> dict:
         part.unlink(missing_ok=True)
         shutil.rmtree(tmp, ignore_errors=True)
     n = sum(f1 - f0 + 1 for _, f0, f1 in parts)
+    # tiles at the clip's own size up to 35 % (378 px wide at most); above that shrunk by a whole factor (216-324 px)
     sheet = grab.contact_sheet(mp4, grab.sheet_frames(n, camtest.SHEET_FRAMES), folder / camtest.SHEET,
-                               scale=max(0.25, min(1.0, 25 / pct)))  # tiles about a quarter of 1080 wide
+                               scale=max(0.25, min(1.0, 25 / pct)))
     shots = [shot.id for shot, _, _ in todo]
     rec = camtest.record(blend, tl_hash, shots, args.scale, n)
     (folder / camtest.RECORD).write_text(json.dumps(rec, indent=2), encoding="utf-8")
     return {"mp4": str(mp4), "sheet": str(sheet), "shots": shots, "frames": n, "percent": pct,
-            "seconds": round(n / tl.fps, 2)}  # fmt: skip
+            "clip_seconds": round(n / tl.fps, 2)}  # fmt: skip
 
 
 # ----- the preview chain: everything after an edit to build.py or short.json, up to a checked preview

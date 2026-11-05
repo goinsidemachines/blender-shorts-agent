@@ -19,25 +19,38 @@ GREY = (0.8, 0.8, 0.8)
 SCENE = "BSA Camtest"
 
 
+def _touched(scene) -> list[tuple[object, str]]:
+    """Every (owner, property) a camera test pass may change on the user's scene, in the order they are restored:
+    the media type before the file format, the view transform before its look (Blender resets the dependent
+    enum). Properties this Blender lacks are left out."""
+    r = scene.render
+    ims, ff, vs, sh = r.image_settings, r.ffmpeg, scene.view_settings, scene.display.shading
+    props = [(r, "film_transparent"), (r, "filepath"), (r, "use_file_extension"), (ims, "media_type"),
+             (ims, "file_format"), (ims, "color_mode"), (ims, "color_depth"), (ims, "color_management"),
+             (ff, "format"), (ff, "codec"), (r, "use_compositing"), (r, "use_sequencer"), (vs, "view_transform"),
+             (vs, "look"), (vs, "exposure"), (vs, "gamma"), (sh, "light"), (sh, "color_type"), (sh, "single_color"),
+             (sh, "show_shadows"), (sh, "show_cavity"), (sh, "show_xray"), (sh, "show_object_outline"),
+             (scene, "frame_start"), (scene, "frame_end"), (scene, "frame_step")]  # fmt: skip
+    return [(o, a) for o, a in props if hasattr(o, a)]
+
+
+def _value(v):
+    return tuple(v) if hasattr(v, "__len__") and not isinstance(v, str) else v
+
+
 @contextlib.contextmanager
 def workbench_pass(scene, percent: int):
-    """Inside: `scene` in Workbench at `percent`, studio light, one grey, PNG RGB 8-bit, no compositor or sequencer,
-    the Standard view, film not transparent. Afterwards every one of those settings, the output path, the image and
-    video settings and the frame range and current frame are as they were (preserved_render_state restores the
-    engine and resolution percentage)."""
+    """Inside: `scene` in Workbench at `percent`, studio light, one grey, no shadows, cavity, x-ray or outline, PNG
+    RGB 8-bit following the scene's colour management, no compositor or sequencer, the Standard view at exposure 0
+    and gamma 1, film not transparent, every frame (step 1). Afterwards every one of those settings, the output path,
+    the image and video settings and the frame range and current frame are as they were (preserved_render_state
+    restores the engine and resolution percentage). Each one is restored even when another fails to; the first
+    failure is raised after all were tried (the render's own error, when there was one, wins)."""
     r = scene.render
-    ims = r.image_settings
-    ff = r.ffmpeg
-    vs = scene.view_settings
-    sh = scene.display.shading
-    media = getattr(ims, "media_type", None)
-    saved = {
-        "film": r.film_transparent, "path": r.filepath, "ext": r.use_file_extension,
-        "fmt": ims.file_format, "mode": ims.color_mode, "depth": ims.color_depth,
-        "ffmpeg": (ff.format, ff.codec), "frames": (scene.frame_start, scene.frame_end, scene.frame_current),
-        "comp": r.use_compositing, "seq": r.use_sequencer, "view": (vs.view_transform, vs.look),
-        "shading": (sh.light, sh.color_type, tuple(sh.single_color)),
-    }  # fmt: skip
+    ims, vs, sh = r.image_settings, scene.view_settings, scene.display.shading
+    saved = [(o, a, _value(getattr(o, a))) for o, a in _touched(scene)]
+    current = scene.frame_current
+    failed = False
     try:
         with _window_scene(scene), preserved_render_state(scene):
             r.engine = "BLENDER_WORKBENCH"
@@ -46,29 +59,39 @@ def workbench_pass(scene, percent: int):
             r.use_compositing = r.use_sequencer = False
             vs.view_transform = "Standard"
             vs.look = "None"
+            vs.exposure, vs.gamma = 0.0, 1.0
             sh.light = "STUDIO"
             sh.color_type = "SINGLE"
             sh.single_color = GREY
-            if media is not None:
+            for flag in ("show_shadows", "show_cavity", "show_xray", "show_object_outline"):
+                if hasattr(sh, flag):
+                    setattr(sh, flag, False)
+            if hasattr(ims, "media_type"):
                 ims.media_type = "IMAGE"
             ims.file_format = "PNG"
             ims.color_mode = "RGB"
             ims.color_depth = "8"
+            if hasattr(ims, "color_management"):
+                ims.color_management = "FOLLOW_SCENE"
+            scene.frame_step = 1
             yield
+    except BaseException:
+        failed = True
+        raise
     finally:
-        r.film_transparent, r.filepath, r.use_file_extension = saved["film"], saved["path"], saved["ext"]
-        if media is not None:
-            ims.media_type = media
-        ims.file_format = saved["fmt"]
-        ims.color_mode = saved["mode"]
-        ims.color_depth = saved["depth"]
-        ff.format, ff.codec = saved["ffmpeg"]
-        r.use_compositing, r.use_sequencer = saved["comp"], saved["seq"]
-        vs.view_transform = saved["view"][0]
-        vs.look = saved["view"][1]
-        sh.light, sh.color_type, sh.single_color = saved["shading"]
-        scene.frame_start, scene.frame_end = saved["frames"][0], saved["frames"][1]
-        scene.frame_set(saved["frames"][2])
+        errors = []
+        for o, a, v in saved:
+            try:
+                if _value(getattr(o, a)) != v:
+                    setattr(o, a, v)
+            except Exception as exc:  # noqa: BLE001 - the others are restored first, then the first is raised
+                errors.append(exc)
+        try:
+            scene.frame_set(current)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+        if errors and not failed:
+            raise errors[0]
 
 
 def render_frames(scene, f0: int, f1: int, folder: Path, percent: int) -> list[Path]:

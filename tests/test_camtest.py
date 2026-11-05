@@ -122,7 +122,7 @@ def test_camtest_writes_the_clip_the_sheet_and_the_record(home, pendulum, monkey
                      ("encode", [(spans["s01"].f0, spans["s01"].f1), (spans["s03"].f0, spans["s03"].f1)], 35, 30),
                      ("sheet", [n, camtest.SHEET_FRAMES], camtest.MP4)]  # fmt: skip
     assert out == {"mp4": str(folder / camtest.MP4), "sheet": str(folder / camtest.SHEET), "shots": ["s01", "s03"],
-                   "frames": n, "percent": 35, "seconds": round(n / 30, 2)}  # fmt: skip
+                   "frames": n, "percent": 35, "clip_seconds": round(n / 30, 2)}  # fmt: skip
     assert (folder / camtest.MP4).read_bytes() == b"mp4"
     assert not list(folder.glob("*.part*"))
     rec = json.loads((folder / camtest.RECORD).read_text(encoding="utf-8"))
@@ -142,5 +142,6 @@ def test_camtest_is_a_gpu_command():
 def test_camtest_in_blender(blender_run):
     result = blender_run(HERE / "blender" / "test_camtest.py", timeout=900)
     assert result.returncode == 0, result.stdout + result.stderr
-    for name in ("test_camtest_makes_an_mp4_and_a_sheet", "test_camtest_restores_every_setting_it_touches"):
+    for name in ("test_camtest_makes_an_mp4_and_a_sheet", "test_camtest_restores_every_setting_it_touches",
+                 "test_camtest_restores_the_rest_when_one_restore_fails"):
         assert f"PASS {name}" in result.stdout

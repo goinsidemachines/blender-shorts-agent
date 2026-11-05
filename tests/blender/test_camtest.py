@@ -50,6 +50,8 @@ def _state(sc) -> dict:
         "start": sc.frame_start, "end": sc.frame_end, "current": sc.frame_current, "comp": r.use_compositing,
         "seq": r.use_sequencer, "view": vs.view_transform, "look": vs.look, "light": sh.light,
         "color": sh.color_type, "single": tuple(sh.single_color), "ff": (r.ffmpeg.format, r.ffmpeg.codec),
+        "step": sc.frame_step, "exposure": vs.exposure, "gamma": vs.gamma, "cm": ims.color_management,
+        "flags": (sh.show_shadows, sh.show_cavity, sh.show_xray, sh.show_object_outline),
     }  # fmt: skip
     if hasattr(ims, "media_type"):
         out["media"] = ims.media_type
@@ -86,7 +88,11 @@ def test_camtest_restores_every_setting_it_touches():
     sc.display.shading.light = "FLAT"
     sc.display.shading.color_type = "MATERIAL"
     sc.display.shading.single_color = (0.1, 0.5, 0.2)
-    sc.frame_start, sc.frame_end = 5, 20
+    sc.display.shading.show_shadows = sc.display.shading.show_cavity = True
+    sc.display.shading.show_xray = sc.display.shading.show_object_outline = True
+    sc.view_settings.exposure, sc.view_settings.gamma = 0.5, 1.2
+    r.image_settings.color_management = "OVERRIDE"
+    sc.frame_start, sc.frame_end, sc.frame_step = 5, 20, 2
     sc.frame_set(7)
     before = _state(sc)
     assert before["engine"] == "CYCLES" and before["view"] == "AgX" and before["film"] and before["look"] != "None"
@@ -97,7 +103,9 @@ def test_camtest_restores_every_setting_it_touches():
         assert not r.film_transparent and not r.use_compositing and not r.use_sequencer
         assert sc.view_settings.view_transform == "Standard"
         assert (sc.display.shading.light, sc.display.shading.color_type) == ("STUDIO", "SINGLE")
-        assert r.image_settings.file_format == "PNG"
+        assert r.image_settings.file_format == "PNG" and r.image_settings.color_management == "FOLLOW_SCENE"
+        assert (sc.frame_step, sc.view_settings.exposure, sc.view_settings.gamma) == (1, 0.0, 1.0)
+        assert not any((sc.display.shading.show_shadows, sc.display.shading.show_xray))
         sc.frame_start, sc.frame_end = 1, 2
         sc.frame_set(2)
     assert _state(sc) == before
@@ -115,3 +123,45 @@ def test_camtest_restores_every_setting_it_touches():
     camtest.render_frames(sc, 1, 3, tmp / "frames", 20)  # a real pass on this scene
     assert _state(sc) == before
     assert blend.stat().st_mtime_ns == stamp  # the .blend is never saved
+
+
+def test_camtest_restores_the_rest_when_one_restore_fails():
+    sc = _scene()
+    sc.render.engine = "CYCLES"
+    sc.view_settings.exposure = 0.5
+    sc.frame_start, sc.frame_end = 5, 20
+
+    class Stuck:
+        """A setting that changes during the pass and can't be set back."""
+
+        n = 0
+
+        @property
+        def value(self):
+            Stuck.n += 1
+            return Stuck.n
+
+        @value.setter
+        def value(self, v):
+            raise RuntimeError("can't restore this one")
+
+    real = camtest._touched
+    camtest._touched = lambda scene: [(Stuck(), "value"), *real(scene)]
+    try:
+        before = _state(sc)
+        try:
+            with camtest.workbench_pass(sc, 35):
+                pass
+        except RuntimeError as exc:
+            assert "can't restore" in str(exc)
+        else:
+            raise AssertionError("the failed restore was swallowed")
+        assert _state(sc) == before  # every other setting came back
+        try:
+            with camtest.workbench_pass(sc, 35):
+                raise ValueError("render failed")
+        except ValueError:
+            pass  # the render's own error wins over the failed restore
+        assert _state(sc) == before
+    finally:
+        camtest._touched = real
