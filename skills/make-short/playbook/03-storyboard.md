@@ -3,6 +3,19 @@
 Goal: a still from Blender for **every** shot, in order, with its narration line, timing and captions, so the user
 sees how the scene progresses and where every line lands before anything long is rendered.
 
+**Cuts or one take.** A short is cuts by default: each shot has its own camera and its length comes from its lines.
+One take is the user's choice, like every camera style: offer it when the story is one continuous journey round or
+through one machine (the camera never cuts, so the joins are invisible), and use it only on their yes. A one-take
+short sets `"camera": {"style": "one-take", "seconds": 24}` (`seconds`: the camera path's length) and gives every
+shot `"at"`: the second its window starts on the camera path (the first is 0, each later one after the last, all
+before `seconds`; the last window ends at `seconds`). The picture sets the clock: each shot is exactly its window,
+each line starts in it (after the usual lead) and a window with time left over holds, so redoing the narration never
+moves the camera. Give each window its lines' reading time plus about a second (and the last one 1.5 s more when
+there is an end card); when a window is too short, `CLI validate` and `CLI timeline` say by how much ("s04's lines
+need 7.2 s but its window is 6.0 s: shorten them or move s05's start 1.2 s later") and the page shows it on the
+storyboard. Give every shot the same `scene`: build.py drives its one camera from the windows (`06-build.md`,
+"One-take shorts"). The camera stage is always offered for a one-take short.
+
 1. **Time it.** `CLI timeline SHORT` writes `source/timeline.json` at reading pace (narration comes later and
    re-times it). Each shot has `f0`/`f1` in the short's frame numbers (1-based, 30 fps).
 2. **Build it.** Write `source/build.py` for every scene (`06-build.md` has the contract, read it now) and run it.

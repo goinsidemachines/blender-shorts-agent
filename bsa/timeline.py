@@ -190,15 +190,31 @@ def build_timeline(short: Short, durations: dict[str, float] | None, end_card: b
 
 
 class WindowOverrun(ValueError):
-    """A one-take short's lines need more time than their window on the camera path."""
+    """A one-take short's lines need more time than their window on the camera path. `timeline` is the timeline it
+    would have been (the windows, with the overlong lines running past their window's end): a page can still show
+    the shots while it says what to fix."""
+
+    def __init__(self, message: str, timeline: Timeline | None = None):
+        super().__init__(message)
+        self.timeline = timeline
+
+
+def _up(seconds: float) -> float:
+    """Seconds rounded up to a tenth, so a one-frame shortfall never reads as 0.0 s."""
+    return math.ceil(seconds * 10 - 1e-6) / 10
 
 
 def window_frames(short: Short) -> dict[str, tuple[int, int]]:
     """A one-take short's windows: shot id -> (f0, f1), 1-based and inclusive. A window starts on the frame of its
     shot's `at` and runs to the frame before the next one; the last ends at camera.seconds. ValueError when the
-    windows do not validate (the timeline is never built from them)."""
+    windows do not validate, or two shots share an id (the timeline is never built from them)."""
     if not one_take(short):
         raise ValueError("not a one-take short: its shots have no windows (set camera.style to one-take)")
+    seen: set[str] = set()
+    for s in short.shots:
+        if s.id in seen:
+            raise ValueError(f"shot id {s.id!r} is used twice: give every shot its own id, each window is one shot's")
+        seen.add(s.id)
     problems = camera_problems(short)
     if problems:
         raise ValueError("; ".join(problems))
@@ -237,8 +253,8 @@ def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_car
         have = f1 - f0 + 1
         if need > have:
             fix = "make camera.seconds {d:.1f} s longer" if last else f"move {ids[i + 1]}'s start {{d:.1f}} s later"
-            overruns.append(f"{shot.id}'s lines need {need / fps:.1f} s but its window is {have / fps:.1f} s: shorten "
-                            "them or " + fix.format(d=(need - have) / fps))  # fmt: skip
+            overruns.append(f"{shot.id}'s lines need {_up(need / fps):.1f} s but its window is {have / fps:.1f} s: "
+                            "shorten them or " + fix.format(d=_up((need - have) / fps)))  # fmt: skip
         shots.append(Span(shot.id, f0, f1))
         pos = f0 + lead
         for ln, n in zip(mine, lens, strict=True):
@@ -246,9 +262,10 @@ def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_car
             wait = min(round(float((onsets or {}).get(ln.id) or 0.0) * fps), max(n - 1, 0))
             cards += _split_cards(ln.text, ln.id, pos + max(wait, 0), pos + n - 1)
             pos += n + gap
+    tl = Timeline(fps, windows[ids[-1]][1] if ids else 0, shots, lines, cards)
     if overruns:
-        raise WindowOverrun("; ".join(overruns))
-    return Timeline(fps, windows[ids[-1]][1] if ids else 0, shots, lines, cards)
+        raise WindowOverrun("; ".join(overruns), tl)
+    return tl
 
 
 def length_drift(short: Short, tl: Timeline) -> float:

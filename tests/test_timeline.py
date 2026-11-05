@@ -369,6 +369,29 @@ def test_a_window_too_short_says_by_how_much_and_both_fixes():
     assert build_timeline(short, durs, end_card=True).n_frames == 360
 
 
+def test_a_one_frame_overrun_never_says_zero_seconds():
+    from bsa.timeline import WindowOverrun
+
+    short = _one_take([0, 2], 4)  # s01's window is 60 frames; 6 lead + 37 + 18 tail = 61
+    with pytest.raises(WindowOverrun) as err:
+        build_timeline(short, {"l01a": 37 / 30, "l02a": 1.0})
+    assert str(err.value) == ("s01's lines need 2.1 s but its window is 2.0 s: shorten them or move s02's start "
+                              "0.1 s later")  # fmt: skip
+    # the timeline it would have been rides on the error (the page still shows the storyboard)
+    assert [(s.id, s.f0, s.f1) for s in err.value.timeline.shots] == [("s01", 1, 60), ("s02", 61, 120)]
+
+
+def test_duplicate_shot_ids_never_collapse_windows():
+    from bsa.timeline import window_frames
+
+    short = _one_take([0, 2, 4], 6)
+    short.shots[2].id = "s02"
+    with pytest.raises(ValueError, match=r"shot id 's02' is used twice"):
+        window_frames(short)
+    with pytest.raises(ValueError, match=r"shot id 's02' is used twice"):
+        build_timeline(short, None)
+
+
 # to_json(build_timeline(...)) for cuts shorts as the base commit 0fdc655 built them, before one-take shorts.
 PENDULUM_TIMELINE = {"fps": 30, "n_frames": 420, "shots": [{"id": "s01", "f0": 1, "f1": 120}, {"id": "s02", "f0": 121, "f1": 300}, {"id": "s03", "f0": 301, "f1": 420}], "lines": [{"id": "l01", "f0": 7, "f1": 73}, {"id": "l02", "f0": 127, "f1": 182}, {"id": "l03", "f0": 194, "f1": 260}, {"id": "l04", "f0": 307, "f1": 373}], "cards": [{"text": "A pendulum swings like", "line_id": "l01", "f0": 7, "f1": 52}, {"text": "clockwork.", "line_id": "l01", "f0": 53, "f1": 73}, {"text": "Length sets the beat.", "line_id": "l02", "f0": 127, "f1": 182}, {"text": "Four times longer,", "line_id": "l03", "f0": 194, "f1": 232}, {"text": "twice slower.", "line_id": "l03", "f0": 233, "f1": 260}, {"text": "Clocks kept time this way.", "line_id": "l04", "f0": 307, "f1": 373}]}
 TWO_LINE_TIMELINE = {"fps": 30, "n_frames": 312, "shots": [{"id": "s01", "f0": 1, "f1": 117}, {"id": "s02", "f0": 118, "f1": 312}], "lines": [{"id": "l01", "f0": 7, "f1": 99}, {"id": "l02", "f0": 124, "f1": 165}], "cards": [{"text": "The weight swings down,", "line_id": "l01", "f0": 7, "f1": 64}, {"text": "then up again.", "line_id": "l01", "f0": 65, "f1": 99}, {"text": "Gravity pulls it back.", "line_id": "l02", "f0": 132, "f1": 165}]}

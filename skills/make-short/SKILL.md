@@ -278,7 +278,8 @@ chapter for the topic (`playbook/fields/physics.md` for mechanisms, structures, 
 ```
 <workspace>/03-watch-escapement/
   state.json            stages done (CLI state)
-  source/short.json     the spec: facts, lines, shots, sfx, assets, post (you write it; the user never reads it)
+  source/short.json     the spec: facts, lines, shots, camera (one-take: each shot's `at`), sfx, assets, post (you
+                        write it; the user never reads it)
   source/timeline.json  frames per shot, line and caption card (CLI timeline / narrate write it)
   source/build.py       builds every scene into blend/short.blend (you write it)
   source/anchors.json   where each near label's object is on screen (BLENDER render / anchors write it)

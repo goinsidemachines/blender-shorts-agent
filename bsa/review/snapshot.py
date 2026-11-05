@@ -23,7 +23,7 @@ from bsa.layout import H, W, caption_rect, safe_rect
 from bsa.narrate.run import HEARD_FILE
 from bsa.review import decisions, facts, notes, pages, stages, store, track, versions, voice
 from bsa.short import Short, label_text, load_short
-from bsa.timeline import build_timeline, pacing
+from bsa.timeline import WindowOverrun, build_timeline, pacing
 
 SCHEMA = 1
 VERSIONED = ("interview", "story", "storyboard", "engine", "narration", "final", "post")
@@ -123,7 +123,18 @@ def _read_list(path: Path) -> list[dict]:
 def _reading_timeline(ctx: Ctx, short: Short):
     """The short at reading pace. The story and storyboard are approved before narration exists, so their pacing and
     times are not read from takes: that keeps their versions steady once the voice is made."""
-    return build_timeline(short, None, settings_mod.has_end_card(ctx.settings, short))
+    return _reading_timeline_and_problem(ctx, short)[0]
+
+
+def _reading_timeline_and_problem(ctx: Ctx, short: Short):
+    """(the timeline at reading pace, None), or for a one-take short whose lines overrun a window (the timeline it
+    would be, the WindowOverrun's one line): the shots still show while the storyboard says what to fix."""
+    try:
+        return build_timeline(short, None, settings_mod.has_end_card(ctx.settings, short)), None
+    except WindowOverrun as e:
+        if e.timeline is None:
+            raise
+        return e.timeline, _plain(ctx.sdir, e)
 
 
 def _asset_rows(assets: list) -> list[dict]:
@@ -323,7 +334,7 @@ def _look(ctx: Ctx, short: Short) -> dict | None:
 
 def _storyboard(ctx: Ctx) -> dict | None:
     short = _short(ctx)
-    tl = _reading_timeline(ctx, short)
+    tl, timing_problem = _reading_timeline_and_problem(ctx, short)
     fps = tl.fps
     spans = {s.id: s for s in tl.shots}
     line_spans = {s.id: s for s in tl.lines}
@@ -358,7 +369,7 @@ def _storyboard(ctx: Ctx) -> dict | None:
                 "labels": [label_text(t) for t in shot.labels],
             }
         )
-    return {
+    out = {
         "lead": f"{len(shots)} shots, {total:.1f} s in total. Check the pictures and the captions.",
         "total_s": round(total, 1),
         "shots": shots,
@@ -371,6 +382,9 @@ def _storyboard(ctx: Ctx) -> dict | None:
             "cap_px": size,
         },
     }
+    if timing_problem:  # a one-take window too short for its lines: the stage's problem (_stage), the shots still show
+        out["timing_problem"] = timing_problem
+    return out
 
 
 def _estimate(sdir: Path, engine: str) -> float | None:
@@ -756,6 +770,8 @@ def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[s
         out["content"] = BUILDERS[stage](ctx)
     except Exception as e:  # noqa: BLE001 - a bad input must never break the page
         out["problem"] = _plain(ctx.sdir, e)
+    if isinstance(out["content"], dict) and out["content"].get("timing_problem"):
+        out["problem"] = out["content"]["timing_problem"]  # the storyboard's one-take window overrun
     if out["content"] is not None and stage in VERSIONED:
         try:
             out["version"] = _version_of(ctx.sdir, stage, out["content"])

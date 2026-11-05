@@ -141,6 +141,43 @@ For a style thumbnail, set `BSA_STYLE=<n>` in that command's environment. In MCP
 MCP instead, always with `import runpy; runpy.run_path(r"<root>/bsa_mcp_build.py")["build_short"](r"<short>")` so the
 open Blender uses the plugin's current code (`mcp-mode.md`).
 
+### One-take shorts: the camera from the windows
+
+A short with `"camera": {"style": "one-take", "seconds": ...}` is one continuous camera move, and each shot is a
+fixed window on it (its `at`, `03-storyboard.md`). The picture sets the clock, so build.py drives the camera from
+the windows, never from the narration:
+
+- read the frames with `bsa.timeline.window_frames(short)` (shot id -> `(f0, f1)`, 1-based, inclusive). It rounds
+  exactly as the timeline does, so the camera path and the shot spans in `timeline.json` always agree. Never
+  recompute frames from `at` or `camera.seconds` yourself, and never from line times: redoing the narration must not
+  move the camera;
+- key the camera per window, one stretch each, with `camera.move` (a push-in, an orbit) or `camera.follow` (track
+  or ride a moving part), from that window's `f0` to its `f1`: each call keys the window's start, so every window
+  starts on a key;
+- start each stretch where the last one ended: before `camera.follow` (or `camera.move`) set the scene to the
+  window's first frame (`sc.frame_set(f0)`), so the call starts from the pose the camera holds there. No jump, no
+  cut;
+- one scene and one camera for the whole short (every shot's `scene` is the same); stamp it with the timeline as
+  for cuts.
+
+```python
+from bsa.blender import camera
+from bsa.timeline import window_frames
+
+windows = window_frames(short)
+(a0, a1), (b0, b1), (c0, c1) = windows["s01"], windows["s02"], windows["s03"]
+camera.frame_objects(cam, [rod, bob], frames=list(range(a0, a1 + 1, 6)), key=a0, shot="s01")  # the whole swing
+camera.move(cam, [rod, bob], a0, a1, orbit=-15, to=[bob], shot="s01")  # push in to the bob
+for shot, (f0, f1) in (("s02", (b0, b1)), ("s03", (c0, c1))):
+    sc.frame_set(f0)  # the pose the last stretch ended on
+    camera.follow(cam, bob, f0, f1, mode="track", shot=shot)  # turn to keep the swinging bob in the band
+```
+
+The windows are contiguous frame ranges, so the stills, render, checks, edit, captions, labels and cards work per
+shot exactly as for cuts; the joins are invisible because the camera never cuts. When `CLI timeline SHORT` refuses
+with "s02's lines need ... but its window is ...", shorten that shot's lines or move the next shot's `at` later (the
+last window: make `camera.seconds` longer), then rebuild: the camera follows the new windows.
+
 ### Sets, styles and kit materials (brand kit only)
 
 With a brand kit (`brand.style`, `look-and-brand.md`) build.py also makes the short's set and puts the style on it.

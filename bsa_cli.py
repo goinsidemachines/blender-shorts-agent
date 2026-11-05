@@ -55,14 +55,18 @@ def load(sdir: Path):
 
 
 def current_timeline(sdir: Path, short):
-    """The timeline from the takes when narration finished with a voice, else from reading time."""
+    """The timeline from the takes when narration finished with a voice, else from reading time. A one-take short's
+    window too short for its lines is a CliError (its cause the WindowOverrun): one plain line saying what to fix."""
     from bsa.narrate.run import takes_durations, takes_onsets
-    from bsa.timeline import build_timeline
+    from bsa.timeline import WindowOverrun, build_timeline
 
     durations = takes_durations(sdir, short)
     end_card = settings.has_end_card(settings.load_settings(), short)
     onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
-    return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
+    try:
+        return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
+    except WindowOverrun as exc:
+        raise CliError(str(exc)) from exc
 
 
 def _closing_take_s(sdir: Path, short) -> float | None:
@@ -794,7 +798,7 @@ def _reading_timeline(short):
 def cmd_validate(args) -> dict:
     from bsa import post
     from bsa.short import spoken_warnings, validate
-    from bsa.timeline import length_warning
+    from bsa.timeline import WindowOverrun, length_warning
 
     sdir = short_dir(args.short)
     short = load(sdir)
@@ -811,6 +815,11 @@ def cmd_validate(args) -> dict:
     tr_errors, tr_warnings = translations.problems(short, settings.load_settings())
     errors += tr_errors
     warnings += tr_warnings
+    if not errors:  # a one-take short's window too short for its lines, at reading pace
+        try:
+            _reading_timeline(short)
+        except WindowOverrun as exc:
+            errors.append(str(exc))
     rows, source, closing_out = [], None, None
     if not errors:
         from bsa import closing
@@ -829,7 +838,9 @@ def cmd_validate(args) -> dict:
             warnings.append(stretched)
         try:
             tl, from_takes = current_timeline(sdir, short)
-        except Exception:  # noqa: BLE001 - broken takes: pace it at reading speed (narrate reports the takes)
+        except Exception as exc:  # noqa: BLE001 - broken takes: pace it at reading speed (narrate reports the takes)
+            if isinstance(exc.__cause__, WindowOverrun):  # the takes overrun a window: CLI timeline would refuse
+                errors.append(f"with the narration's takes, {exc}")
             tl, from_takes = _reading_timeline(short), False
         rows, pace_warnings = _pacing(short, tl)
         warnings += pace_warnings

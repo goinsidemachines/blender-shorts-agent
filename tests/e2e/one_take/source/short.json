@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "slug": "pendulum-one-take",
+  "title": "How a pendulum swings",
+  "topic": "simple pendulum",
+  "audience": "curious general viewers",
+  "field": "physics",
+  "length_s": 15,
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "style": {
+    "name": "workshop dusk",
+    "palette": {"accent": "#E8B33A"},
+    "font": "Segoe UI",
+    "caption": {"size": 64}
+  },
+  "camera": {"style": "one-take", "seconds": 9},
+  "facts": [
+    {
+      "id": "f-period",
+      "claim": "For small swings, a pendulum's period depends on its length and gravity, not on its mass",
+      "source": "https://en.wikipedia.org/wiki/Pendulum_(mechanics)"
+    }
+  ],
+  "lines": [
+    {"id": "l01", "text": "Hang a brass weight.", "shot": "s01", "facts": []},
+    {"id": "l02", "text": "Gravity pulls it back.", "shot": "s02", "facts": []},
+    {"id": "l03", "text": "Length sets the beat.", "shot": "s03", "facts": ["f-period"]}
+  ],
+  "shots": [
+    {
+      "id": "s01",
+      "title": "The bob",
+      "picture": "One take: the camera pushes in from the whole stand to the brass bob as it swings.",
+      "scene": "Workshop",
+      "at": 0,
+      "still_at": 0.5,
+      "labels": [],
+      "badge": null
+    },
+    {
+      "id": "s02",
+      "title": "Swinging back",
+      "picture": "The same take: the camera turns to keep the swinging bob in view.",
+      "scene": "Workshop",
+      "at": 3,
+      "still_at": 0.5,
+      "labels": [],
+      "badge": null
+    },
+    {
+      "id": "s03",
+      "title": "The beat",
+      "picture": "The same take: the camera keeps tracking the bob through its next swings.",
+      "scene": "Workshop",
+      "at": 6,
+      "still_at": 0.5,
+      "labels": [],
+      "badge": null
+    }
+  ],
+  "sfx": [],
+  "assets": [],
+  "post": {
+    "title": "How a pendulum swings",
+    "description": "One take round a swinging pendulum. Made in Blender.",
+    "hashtags": ["#physics", "#pendulum", "#blender", "#science"]
+  }
+}

@@ -278,6 +278,41 @@ def test_timeline_written(home, pendulum):
     assert data["takes"] is False
 
 
+def test_timeline_refuses_a_window_too_short_in_one_line(home, pendulum):
+    path = pendulum / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["camera"] = {"style": "one-take", "seconds": 13}
+    for shot, at in zip(data["shots"], (0, 3.5, 4), strict=True):  # s02's two lines in half a second
+        shot["at"] = at
+    path.write_text(json.dumps(data), encoding="utf-8")
+    proc = run(home, "timeline", "pendulum")
+    assert proc.returncode == 1
+    (line,) = proc.stderr.strip().splitlines()
+    assert line.startswith("s02's lines need ") and "its window is 0.5 s" in line and "move s03's start" in line
+    assert "Traceback" not in proc.stderr
+    assert not (pendulum / "source" / "timeline.json").exists()
+    # validate says the same, at reading pace, as an error
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and "Traceback" not in proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["ok"] is False and any(e.startswith("s02's lines need ") for e in out["errors"]), out["errors"]
+    # with time to spare, the timeline is the windows
+    data["shots"][2]["at"] = 9
+    path.write_text(json.dumps(data), encoding="utf-8")
+    tl = ok(run(home, "timeline", "pendulum"))
+    assert [(s["id"], s["f0"], s["f1"]) for s in tl["shots"]] == [("s01", 1, 105), ("s02", 106, 270),
+                                                                    ("s03", 271, 390)]  # fmt: skip
+    assert ok(run(home, "validate", "pendulum"))["ok"] is True
+    # takes too long for s02's window: validate says so (the timeline would refuse them too)
+    for lid, secs in (("l01", 1.0), ("l02", 3.0), ("l03", 3.0), ("l04", 1.0)):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", secs)
+    jobstate.mark_done(pendulum, "narration", status="ok", provider="kokoro")
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and "Traceback" not in proc.stderr
+    assert any(e.startswith("with the narration's takes, s02's lines need ") for e in json.loads(proc.stdout)["errors"])
+    assert run(home, "timeline", "pendulum").stderr.strip().startswith("s02's lines need ")
+
+
 def test_timeline_holds_the_end_card_only_with_a_handle(home, pendulum):
     ok(run(home, "settings", "set", "handle", ""))
     plain = ok(run(home, "timeline", "pendulum"))["n_frames"]

@@ -281,3 +281,45 @@ def test_preview_runs_the_checks_beside_the_render(tmp_path):
     assert check["progress"]["done"] == check["progress"]["total"] > 0  # its progress came through the chain
     assert json.loads((short / "review" / "checks.json").read_text(encoding="utf-8"))["stamp"]
     assert "checks" in p.cli("state", "pendulum")["stages"]
+
+
+def test_one_take_short_builds_and_edits(tmp_path):
+    """A one-take short through the pipeline: its shots are the windows on the camera path (build.py drives the
+    camera from them), and check, render and edit work per shot as for cuts."""
+    from bsa.short import load_short
+    from bsa.timeline import window_frames
+
+    p = _pipeline(tmp_path)
+    workspace = tmp_path / "My Shorts é"
+    p.cli("settings", "set", "workspace", workspace)
+    p.cli("settings", "set", "narrator.provider", "none")
+    p.cli("settings", "set", "render.engine", "eevee")
+    p.cli("settings", "set", "handle", "")  # no end card: three 3 s windows have no room for one
+    short = Path(p.cli("new-short", "Pendulum")["short"])
+    for name in ("short.json", "build.py"):
+        shutil.copyfile(ROOT / "tests" / "e2e" / "one_take" / "source" / name, short / "source" / name)
+    blend = short / "blend" / "short.blend"
+
+    assert p.cli("validate", "pendulum")["ok"]
+    p.cli("state", "pendulum", "done", "interview")
+    p.cli("page", "decide", "pendulum", "story", "approve", "--by", "chat")
+    out = p.cli("timeline", "pendulum")
+    windows = window_frames(load_short(short / "source" / "short.json"))
+    assert {s["id"]: (s["f0"], s["f1"]) for s in out["shots"]} == windows == {
+        "s01": (1, 90), "s02": (91, 180), "s03": (181, 270)}  # fmt: skip
+    assert out["n_frames"] == 270
+    p.build(short)
+    p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
+    p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
+    timeline = p.cli("narrate", "pendulum")["timeline"]
+    assert timeline["n_frames"] == 270  # the picture sets the clock: narration never moves a window
+    p.build(short)
+    p.cli("mix", "pendulum")
+    p.cli("state", "pendulum", "done", "build")
+
+    findings = p.blender_cmd("check", "pendulum", "--every", "5", blend=blend)["findings"]
+    p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)
+    edit = p.blender_cmd("edit", "pendulum", "--preset", "preview")
+    probe = p.blender_cmd("probe", edit["mp4"])
+    assert probe["frames"] == 270 and (probe["width"], probe["height"]) == (1080, 1920)
+    assert [f for f in findings if f["severity"] == "error"] == [], findings

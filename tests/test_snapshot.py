@@ -114,3 +114,22 @@ def test_an_unchanged_snapshot_never_rewrites_versions_json(tmp_path):
     os.utime(path, ns=(1_000_000_000, 1_000_000_000))
     snapshot.build(sdir, settings={})
     assert path.stat().st_mtime_ns == 1_000_000_000
+
+
+def test_storyboard_shows_a_window_overrun_as_its_problem(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["camera"] = {"style": "one-take", "seconds": 13}
+    for shot, at in zip(data["shots"], (0, 3.5, 4), strict=True):  # s02's two lines in half a second
+        shot["at"] = at
+    path.write_text(json.dumps(data), encoding="utf-8")
+    snap = snapshot.build(sdir, settings={})
+    by = {s["id"]: s for s in snap["stages"]}
+    board = by["storyboard"]
+    assert board["problem"].startswith("s02's lines need ") and "move s03's start" in board["problem"]
+    assert board["content"]["timing_problem"] == board["problem"]
+    assert [s["id"] for s in board["content"]["shots"]] == ["s01", "s02", "s03"]  # the shots still show
+    assert board["content"]["shots"][1]["time"] == "3.5 s to 4.0 s"  # its window
+    assert by["story"]["problem"] is None and by["story"]["content"] is not None  # other stages unaffected
+    assert "Traceback" not in json.dumps(snap)
