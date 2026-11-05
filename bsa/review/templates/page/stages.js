@@ -474,6 +474,57 @@
       rulesPanel(ctx, content.rules, "Check every picture against these too, the closing card included."));
   };
 
+  // ------------------------------------------------------------------ Camera
+
+  var camPlayer = null; // {key, node}: the camera test's video element, kept across live updates
+
+  function camVideo(ctx, ref) {
+    var url = ctx.fileUrl(ref, ref.tag); // a new clip under the same name: its tag gives it a new URL
+    var key = url + "#" + ref.tag;
+    if (camPlayer && camPlayer.key === key) return camPlayer.node;
+    if (camPlayer) release(camPlayer.node);
+    var node = ctx.el("video", { class: "player", controls: true, playsinline: true, preload: "metadata", src: url,
+      "aria-label": "The camera test" }, "Your browser cannot play this video.");
+    camPlayer = { key: key, node: node };
+    return node;
+  }
+
+  function camMade(made) {
+    if (!made) return null;
+    var parts = [];
+    if ((made.shots || []).length) parts.push("shots " + made.shots.join(", "));
+    if (typeof made.frames === "number") parts.push(made.frames + " frames");
+    if (typeof made.percent === "number") parts.push("at " + made.percent + "% size");
+    return parts.length ? "Made for " + parts.join(", ") + "." : null;
+  }
+
+  BSA.stages.camera = function (content, ctx) {
+    var command = String(content.command || "");
+    if (!content.video) {
+      if (camPlayer) release(camPlayer.node);
+      camPlayer = null;
+    }
+    var made = content.video ? camMade(content.made) : null;
+    return ctx.el("div", { class: "st-camera" },
+      ctx.el("p", { class: "lead" }, String(content.lead || "")),
+      content.video && content.stale ? ctx.el("p", { class: "problem" },
+        "This clip is out of date: " + content.stale + ". Run ", ctx.el("code", null, command),
+        " to see the camera as it is now. You can still approve this one.") : null,
+      content.video ? ctx.el("div", { class: "video-wrap" }, camVideo(ctx, content.video),
+        made ? ctx.el("p", { class: "muted" }, made) : null)
+        : ctx.el("p", { class: "muted" }, "No camera test yet. Claude makes it with ", ctx.el("code", null, command),
+          "; it shows here when it is done."),
+      content.sheet ? section(ctx, "Contact sheet", ctx.el("img", { class: "cam-sheet",
+        src: ctx.fileUrl(content.sheet, content.sheet.tag),
+        alt: "Contact sheet of the camera test: 12 frames across the short", loading: "lazy" })) : null);
+  };
+
+  // Approve needs a clip to approve: a stale one may still be approved (its notice says why it is out of date).
+  BSA.stages.camera.choice = function (content) {
+    if (content && content.video) return {};
+    return { error: "Make the camera test first: " + String((content || {}).command || "") };
+  };
+
   // ------------------------------------------------------------------ Engine
 
   var picked = {}; // "stage@version" -> the engine picked on this page, kept across live updates

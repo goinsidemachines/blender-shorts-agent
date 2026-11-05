@@ -319,6 +319,9 @@ fieldset.choices legend { font-weight: 800; margin-bottom: 8px; padding: 0; }
 .player { display: block; width: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: var(--r-sm);
   border: var(--ink-border); }
 .video-wrap p { margin: 6px 0 0; font-size: 13px; }
+.cam-sheet { display: block; width: 100%; height: auto; border-radius: 10px; border: var(--ink-border);
+  background: var(--chip); }
+.st-camera p { overflow-wrap: anywhere; }
 
 /* the timeline under a video (review.js) */
 .tl-track { margin-top: 4px; min-width: 0; }

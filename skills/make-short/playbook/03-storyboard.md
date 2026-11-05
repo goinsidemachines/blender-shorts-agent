@@ -56,6 +56,16 @@ storyboard. Give every shot the same `scene`: build.py drives its one camera fro
 A yes in chat instead: `CLI page decide SHORT storyboard approve --by chat`. Story changes at this point mean `CLI
 state SHORT reset story` and back to `02-story.md` (ask the user first when the note is on the approved story).
 
+**The camera stage, after the storyboard.** A one-take short always has it, and a cuts short has it when the user
+asks to see the camera's move first (`"camera": {"approve": true}` in short.json). Once the storyboard is approved
+(the scene is already built for the stills), run `BLENDER camtest SHORT` (`06-build.md`, "Test the camera first"),
+look at the clip and the contact sheet yourself, then `CLI page SHORT --stage camera` and wait on it as above (`CLI
+page wait SHORT --stage camera`). The page plays the clip and shows the sheet; Approve needs a clip (with none it
+names the camtest command and sends nothing). A clip that no longer matches the short (made for some shots only, or
+before the windows or build.py changed) is marked out of date with the reason; run camtest again before asking,
+though the user may still approve it. Notes on the camera mean fix the move in build.py, run camtest again, show it
+and wait again. A yes in chat: `CLI page decide SHORT camera approve --by chat`.
+
 Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage storyboard`
 lists them. Decisions first, before you change anything: an unapplied decision is applied by `CLI page wait SHORT
 --stage storyboard`, which returns at once; one on an older version of the storyboard is dropped automatically

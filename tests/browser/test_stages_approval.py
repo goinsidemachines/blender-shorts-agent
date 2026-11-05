@@ -233,3 +233,72 @@ def test_narration_renders(view, live_server):
     expect(stage.get_by_role("button")).to_have_count(0)  # an overall note only, beside the stage
     expect(p.get_by_role("button", name="Add a note on Narration")).to_be_visible()
     assert_healthy(p)
+
+
+# --------------------------------------------------------------------------- the camera stage
+
+
+def test_camera_stage_shows_the_clip_and_the_sheet(view, live_server):
+    srv = live_server("camera", one_take=True)
+    p = open_short(view, srv)
+    stage = p.locator("#bsa-stage")
+    expect(p.locator("#bsa-stage-h")).to_have_text("Camera")
+    video = stage.locator("video.player")
+    expect(video).to_have_attribute("src", re.compile(r"/review/camtest/camtest\.mp4\?"))
+    expect(video).to_have_attribute("aria-label", "The camera test")
+    sheet = stage.get_by_role("img", name="Contact sheet of the camera test: 12 frames across the short")
+    expect(sheet).to_have_attribute("src", re.compile(r"/review/camtest/camtest-sheet\.png\?"))
+    expect(stage.locator(".problem")).to_have_count(0)  # a current clip: nothing out of date
+    expect(p.get_by_role("button", name="Approve")).to_be_visible()
+    assert_healthy(p)
+
+
+def test_camera_stage_approve_needs_a_current_clip(view, live_server):
+    from bsa import camtest
+
+    srv = live_server("camera", one_take=True)
+    p = open_short(view, srv)
+    stage = p.locator("#bsa-stage")
+    expect(stage.locator("video.player")).to_have_count(1)
+    mp4 = srv.sdir / camtest.FOLDER / camtest.MP4
+    clip = mp4.read_bytes()
+    mp4.unlink()  # no clip: the page names the command and Approve sends nothing
+    expect(stage.locator("video")).to_have_count(0, timeout=3000)
+    expect(stage.locator("code")).to_have_text(re.compile(r"^BLENDER camtest .*01-pendulum"))  # the short's path
+    p.get_by_role("button", name="Approve").click()
+    expect(p.get_by_role("alert")).to_have_text(re.compile(r"^Make the camera test first: BLENDER camtest .*01-pendulum"))
+    assert not [d for d in decisions.load(srv.sdir) if d["stage"] == "camera"]
+    assert_healthy(p)
+    mp4.write_bytes(clip)
+    expect(stage.locator("video.player")).to_have_count(1, timeout=3000)
+    p.get_by_role("button", name="Approve").click()
+    expect(p.get_by_text("Sent · waiting for Claude")).to_be_visible()
+    d = decisions.load(srv.sdir)[-1]
+    assert (d["stage"], d["decision"], d["by"]) == ("camera", "approve", "page")
+
+
+def test_camera_stage_stale_clip_says_why_and_can_still_be_approved(view, live_server):
+    from bsa import camtest
+
+    srv = live_server("camera", one_take=True)
+    rec_path = srv.sdir / camtest.FOLDER / camtest.RECORD
+    rec = json.loads(rec_path.read_text("utf-8"))
+    rec["spans"] = {k: [v[0], v[1] + 1] for k, v in rec["spans"].items()}  # made on other shot windows
+    rec_path.write_text(json.dumps(rec), "utf-8")
+    p = open_short(view, srv)
+    notice = p.locator("#bsa-stage .problem")
+    expect(notice).to_contain_text("the shot windows changed since the camera test")
+    expect(notice.locator("code")).to_have_text(re.compile(r"^BLENDER camtest .*01-pendulum"))
+    expect(p.locator("#bsa-stage video.player")).to_have_count(1)
+    assert_healthy(p)
+    p.get_by_role("button", name="Approve").click()
+    expect(p.get_by_text("Sent · waiting for Claude")).to_be_visible()
+    assert decisions.load(srv.sdir)[-1]["stage"] == "camera"
+
+
+def test_plain_short_has_no_camera_stage(view, live_server):
+    srv = live_server("storyboard")
+    p = open_short(view, srv)
+    nav = p.get_by_role("navigation", name="Stages")
+    expect(nav.get_by_role("button", name=re.compile("Storyboard"))).to_be_visible()
+    expect(nav.get_by_role("button", name=re.compile("Camera"))).to_have_count(0)

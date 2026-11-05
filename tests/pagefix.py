@@ -185,19 +185,58 @@ def record_edit(sdir: Path, key: str, *, stale: bool = False, closing: int = 0) 
     path.write_text(json.dumps(runs, indent=2), encoding="utf-8")
 
 
-def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: str | None = None) -> Path:
+def make_one_take(sdir: Path) -> None:
+    """Make the short at `sdir` a one-take short: a 20 s camera path, its shots' windows starting at 0, 6 and 13 s."""
+    path = Path(sdir) / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["camera"] = {"style": "one-take", "seconds": 20}
+    for shot, at in zip(data["shots"], (0, 6, 13), strict=True):
+        shot["at"] = at
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def write_camtest(sdir: Path) -> None:
+    """review/camtest/ as `BLENDER camtest` leaves it for every shot, made from this .blend (a stand-in, made when
+    missing), build.py and the timing at reading pace: the MP4 (a test pattern when ffmpeg is there), the contact
+    sheet and camtest.json, so the clip is current."""
+    from bsa import camtest, freshness
+    from bsa import settings as settings_mod
+
+    sdir = Path(sdir)
+    short = load_short(sdir / "source" / "short.json")
+    blend = sdir / "blend" / "short.blend"
+    blend.parent.mkdir(parents=True, exist_ok=True)
+    if not blend.exists():
+        blend.write_bytes(b"BLENDER-v400")
+    tl = build_timeline(short, None, settings_mod.has_end_card({}, short))
+    tl_hash = timeline_hash(json.loads(json.dumps(to_json(tl))))
+    folder = sdir / camtest.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    if not make_mp4(folder / camtest.MP4):
+        (folder / camtest.MP4).write_bytes(bytes(2000))  # no ffmpeg: a stand-in, enough for the snapshot
+    write_png(folder / camtest.SHEET, np.full((40, 120, 3), 128, np.uint8))
+    rec = camtest.record(freshness.blend_stat(sdir), tl_hash, [s.id for s in short.shots], 0.33, tl.n_frames,
+                         spans=camtest.shot_spans(tl), fps=tl.fps, build=camtest.build_stamp(sdir))  # fmt: skip
+    (folder / camtest.RECORD).write_text(json.dumps(rec), encoding="utf-8")
+
+
+def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: str | None = None,
+               one_take: bool = False) -> Path:
     """A pendulum short (NN-pendulum) whose current page stage is `stage` ("done" = everything finished).
 
     Every page stage before it is marked done in state.json, with an applied approve decision for each approval
     stage. From Render on it has the preview's render status (running while Render is current, else done) and,
     with `side_run`, a finished side run's (`preview-<side_run>`), on a 30-frame timeline; after Render, the checks,
     the frame checks and the final MP4 (a 30-frame counter video, when ffmpeg is there). The post text comes with
-    the short.json."""
-    page = stages.page_stages(False)  # the pendulum is a cuts short: no camera stage
+    the short.json. With `one_take` it is a one-take short (make_one_take), so it has the Camera stage, and from
+    Camera on a current camera test (write_camtest)."""
+    page = stages.page_stages(one_take)  # the pendulum is a cuts short: no camera stage unless one-take
     if stage != "done" and stage not in page:
         raise ValueError(f"unknown stage {stage!r}")
     sdir = workspace.new_short(Path(workspace_dir), "Pendulum", number)
     shutil.copyfile(SOURCE, sdir / "source" / "short.json")
+    if one_take:
+        make_one_take(sdir)
     for i in (1, 2, 3):  # a still per shot, each its own colour, and a render-time estimate
         write_png(sdir / "stills" / f"s0{i}.png", np.full((8, 8, 3), 40 * i, np.uint8))
     (sdir / "review").mkdir(exist_ok=True)
@@ -205,6 +244,8 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
         json.dumps({"frames": 450, "eevee_s": 300.0, "cycles_s": 1200.0, "per_scene": []}), encoding="utf-8"
     )
     upto = len(page) if stage == "done" else page.index(stage)
+    if one_take and upto >= page.index("camera"):
+        write_camtest(sdir)
     ctx = snapshot.load_ctx(sdir, {})
     for page_stage in page[:upto]:
         for job_stage in stages.COVERS.get(page_stage, (page_stage,)):
