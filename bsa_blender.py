@@ -1842,7 +1842,7 @@ def cmd_camtest(args) -> dict:
     if not _scenes_current(sdir, short, tl_hash):
         raise CliError("blend/short.blend was not built for this timing (or misses a scene short.json names): "
                        "build first (source/build.py)")  # fmt: skip
-    blend = freshness.blend_stat(sdir)
+    blend, stamp = freshness.blend_stat(sdir), camtest.build_stamp(sdir)  # what it is made from, before it renders
     data = _open_blend(sdir)
     spans = {s.id: s for s in tl.shots}
     todo = []
@@ -1879,7 +1879,8 @@ def cmd_camtest(args) -> dict:
     sheet = grab.contact_sheet(mp4, grab.sheet_frames(n, camtest.SHEET_FRAMES), folder / camtest.SHEET,
                                scale=max(0.25, min(1.0, 25 / pct)))
     shots = [shot.id for shot, _, _ in todo]
-    rec = camtest.record(blend, tl_hash, shots, args.scale, n)
+    rec = camtest.record(blend, tl_hash, shots, args.scale, n, spans=camtest.shot_spans(tl), fps=tl.fps,
+                         build=stamp)  # fmt: skip
     (folder / camtest.RECORD).write_text(json.dumps(rec, indent=2), encoding="utf-8")
     return {"mp4": str(mp4), "sheet": str(sheet), "shots": shots, "frames": n, "percent": pct,
             "clip_seconds": round(n / tl.fps, 2)}  # fmt: skip

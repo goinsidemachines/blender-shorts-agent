@@ -542,6 +542,8 @@ def _page_decide(args, sdir: Path) -> dict:
     if current is None:
         raise CliError(f"The {stages.LABELS[stage]} has nothing to answer yet.")
     version = args.version if args.version is not None else current
+    if stage == "camera" and decision == "approve" and (problem := snapshot.camera_problem(sdir)):
+        raise CliError(problem)  # a camera with no test clip has nothing to approve; a stale one is the user's call
     if decision == "changes":
         open_notes = [n for n in notes.load(sdir) if n["stage"] == stage and n["status"] in ("open", "sent")]
         if not open_notes and not args.note:

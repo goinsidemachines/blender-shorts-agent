@@ -260,6 +260,31 @@ def test_decision_round_trip_and_version_mismatch(srv):
                "decision": "approve"}).status == 409  # fmt: skip
 
 
+def test_a_camera_without_a_test_clip_is_not_approved(srv):
+    from bsa import jobstate
+    from bsa.review import snapshot
+
+    def approve():
+        version = snapshot.stage_version(srv.sdir, "camera")
+        return api(srv, "POST", "/api/01-pendulum/decision", body={"stage": "camera", "version": version,
+                   "decision": "approve"})  # fmt: skip
+
+    path = srv.sdir / "source" / "short.json"
+    data = json.loads(path.read_text("utf-8"))
+    data["camera"] = {"approve": True}
+    path.write_text(json.dumps(data), "utf-8")
+    for stage in ("story", "storyboard"):
+        jobstate.mark_done(srv.sdir, stage)
+    r = approve()
+    assert r.status == 409 and "no test clip yet: run BLENDER camtest" in body(r)["error"]
+    assert not [d for d in decisions.load(srv.sdir) if d["stage"] == "camera"]
+    clip = srv.sdir / "review" / "camtest" / "camtest.mp4"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(b"mp4")
+    r = approve()
+    assert r.status == 200, body(r)
+
+
 def test_changes_sends_the_open_notes(srv):
     target = {"kind": "overall", "id": None, "version": 1}
     api(srv, "POST", "/api/01-pendulum/notes", body={"op": "add", "stage": "story", "target": target, "text": "x"})

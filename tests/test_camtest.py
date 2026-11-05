@@ -34,6 +34,45 @@ def test_stale_says_why():
     assert camtest.stale(None, [10, 20], "abc") == "no camera test yet"
 
 
+def test_path_stale_follows_the_shot_windows_and_build_py_not_the_lines_or_the_blend():
+    spans = {"s01": [1, 90], "s02": [91, 180], "s03": [181, 270]}
+    rec = json.loads(json.dumps(camtest.record([10, 20], "abc", ["s01", "s02"], 0.33, 180, spans=spans, fps=30.0,
+                                               build="b1")))  # fmt: skip
+    assert rec["spans"] == {"s01": [1, 90], "s02": [91, 180]} and rec["fps"] == 30.0 and rec["build"] == "b1"
+    assert camtest.path_stale(rec, spans, 30.0, "b1", [10, 20], "abc") is None
+    # narration moved the lines (another timeline hash) and the .blend was rebuilt: the camera path is the same
+    assert camtest.path_stale(rec, spans, 30.0, "b1", [11, 99], "xyz") is None
+    assert camtest.path_stale(rec, {**spans, "s03": [181, 300]}, 30.0, "b1", None, "xyz") is None  # untested shot
+    moved = {**spans, "s02": [91, 200]}
+    windows = "the shot windows changed since the camera test"
+    assert camtest.path_stale(rec, moved, 30.0, "b1", [10, 20], "abc") == windows
+    assert camtest.path_stale(rec, spans, 25.0, "b1", [10, 20], "abc") == windows
+    assert camtest.path_stale(rec, spans, 30.0, "b2", [10, 20], "abc") == "build.py changed since the camera test"
+    assert camtest.path_stale(None, spans, 30.0, "b1", [10, 20], "abc") == "no camera test yet"
+    old = camtest.record([10, 20], "abc", ["s01", "s02"], 0.33, 180)  # an older record: the whole-timeline check
+    assert "spans" not in old
+    assert camtest.path_stale(old, spans, 30.0, "b1", [10, 21], "abc") == "the scene changed since the camera test"
+    assert camtest.path_stale(old, spans, 30.0, "b1", [10, 20], "abc") is None
+
+
+def test_build_stamp_moves_when_build_py_or_a_module_it_imports_changes(tmp_path):
+    import os
+
+    assert camtest.build_stamp(tmp_path) == ""
+    src = tmp_path / "source"
+    src.mkdir()
+    (src / "build.py").write_text("import rig\n", encoding="utf-8")
+    (src / "rig.py").write_text("X = 1\n", encoding="utf-8")
+    one = camtest.build_stamp(tmp_path)
+    assert one and camtest.build_stamp(tmp_path) == one
+    st = (src / "rig.py").stat()
+    os.utime(src / "rig.py", ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert camtest.build_stamp(tmp_path) != one
+    (src / "other.py").write_text("Y = 2\n", encoding="utf-8")  # not imported: not a build input
+    two = camtest.build_stamp(tmp_path)
+    assert camtest.build_stamp(tmp_path) == two
+
+
 def _faked(pendulum, monkeypatch, home, cameras: dict):  # noqa: F811
     """bsa_blender with the .blend, its scenes and the render module faked: `cameras` maps scene name to its
     camera (None for none). Returns (bsa_blender, the list of render calls)."""
@@ -128,6 +167,9 @@ def test_camtest_writes_the_clip_the_sheet_and_the_record(home, pendulum, monkey
     rec = json.loads((folder / camtest.RECORD).read_text(encoding="utf-8"))
     assert camtest.stale(rec, freshness.blend_stat(pendulum), tl_hash) is None
     assert rec["shots"] == ["s01", "s03"] and rec["frames"] == n
+    assert rec["spans"] == {k: [spans[k].f0, spans[k].f1] for k in ("s01", "s03")} and rec["fps"] == 30
+    assert rec["build"] == camtest.build_stamp(pendulum)
+    assert camtest.path_stale(rec, camtest.shot_spans(tl), tl.fps, rec["build"], None, "other") is None
 
 
 def test_camtest_is_a_gpu_command():

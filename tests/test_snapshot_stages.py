@@ -348,23 +348,34 @@ def _one_take(sdir, approve=None):
     path.write_text(json.dumps(data), "utf-8")
 
 
-def _camtest(sdir, shots=None):
-    """review/camtest/ as BLENDER camtest leaves it, made from this .blend and this timing."""
-    from bsa import camtest, freshness, settings
+def _timing(sdir):
+    """The short's timeline now (reading pace, no end card) and its hash, as BLENDER camtest sees it."""
+    from bsa import settings
     from bsa.timeline import build_timeline, timeline_hash, to_json
+
+    short = load_short(sdir / "source" / "short.json")
+    tl = build_timeline(short, None, settings.has_end_card({}, short))
+    return tl, timeline_hash(json.loads(json.dumps(to_json(tl))))
+
+
+def _camtest(sdir, shots=None, legacy=False):
+    """review/camtest/ as BLENDER camtest leaves it, made from this .blend, build.py and timing (`legacy`: a record
+    from before spans and the build stamp were kept)."""
+    from bsa import camtest, freshness
 
     short = load_short(sdir / "source" / "short.json")
     blend = sdir / "blend" / "short.blend"
     blend.parent.mkdir(parents=True, exist_ok=True)
     if not blend.exists():
         blend.write_bytes(b"BLENDER-v400")
-    tl = build_timeline(short, None, settings.has_end_card({}, short))
+    tl, tl_hash = _timing(sdir)
     folder = sdir / camtest.FOLDER
     folder.mkdir(parents=True, exist_ok=True)
     (folder / camtest.MP4).write_bytes(b"\0\0\0 ftypisom")
     pagefix.write_png(folder / camtest.SHEET, np.full((8, 8, 3), 128, np.uint8))
-    rec = camtest.record(freshness.blend_stat(sdir), timeline_hash(json.loads(json.dumps(to_json(tl)))),
-                         shots or [s.id for s in short.shots], 0.33, tl.n_frames)  # fmt: skip
+    path = {} if legacy else {"spans": camtest.shot_spans(tl), "fps": tl.fps, "build": camtest.build_stamp(sdir)}
+    rec = camtest.record(freshness.blend_stat(sdir), tl_hash, shots or [s.id for s in short.shots], 0.33,
+                         tl.n_frames, **path)  # fmt: skip
     (folder / camtest.RECORD).write_text(json.dumps(rec), "utf-8")
 
 
@@ -407,12 +418,55 @@ def test_the_camera_stage_shows_the_clip_and_says_when_it_is_stale(tmp_path):
     assert c["made"]["shots"] == ["s01", "s02", "s03"] and c["made"]["percent"] == 35 and c["made"]["frames"] > 0
     assert c["stale"] is None
     version = snapshot.stage_version(sdir, "camera")
-    blend = sdir / "blend" / "short.blend"
-    st = blend.stat()
-    os.utime(blend, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))  # the scene was saved again
+    _later(sdir / "blend" / "short.blend")  # the scene was rebuilt (narration does that): the same camera path
+    assert _stage(snapshot.build(sdir, settings=ws), "camera")["content"]["stale"] is None
+    build = sdir / "source" / "build.py"
+    if not build.exists():
+        build.write_text("import bpy\n", encoding="utf-8")
+    else:
+        _later(build)
     c = _stage(snapshot.build(sdir, settings=ws), "camera")["content"]
-    assert "scene changed" in c["stale"]
+    assert c["stale"] == "build.py changed since the camera test"
     assert snapshot.stage_version(sdir, "camera") == version  # stale is said, never a new version
+    assert _stage(snapshot.build(sdir, settings={"workspace": str(tmp_path / "elsewhere")}), "camera")["version"] == (
+        version)  # the command names the short another way: not a new version
+
+
+def _later(path):
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+
+
+def test_a_one_take_clip_stays_current_when_only_the_lines_move(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    _one_take(sdir)
+    _camtest(sdir)
+    _, before = _timing(sdir)
+    path = sdir / "source" / "short.json"
+    path.write_text(path.read_text("utf-8").replace("Length sets the beat.", "Length sets the beat, not weight."),
+                    "utf-8")  # fmt: skip
+    assert _timing(sdir)[1] != before  # the whole timeline moved...
+    assert _stage(snapshot.build(sdir, settings={}), "camera")["content"]["stale"] is None  # ...the windows did not
+
+
+def test_an_older_camera_record_falls_back_to_the_whole_timeline_and_the_blend(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    _one_take(sdir)
+    _camtest(sdir, legacy=True)
+    assert _stage(snapshot.build(sdir, settings={}), "camera")["content"]["stale"] is None
+    _later(sdir / "blend" / "short.blend")
+    assert "scene changed" in _stage(snapshot.build(sdir, settings={}), "camera")["content"]["stale"]
+
+
+def test_no_camera_test_yet_even_when_the_timing_cant_be_worked_out(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    _one_take(sdir)
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text("utf-8"))
+    data["shots"][1]["at"] = 0.5  # s01's window too short for its line
+    path.write_text(json.dumps(data), "utf-8")
+    c = _stage(snapshot.build(sdir, settings={}), "camera")["content"]
+    assert c["stale"] == "no camera test yet"
 
 
 def test_a_camera_test_of_some_shots_does_not_cover_the_short(tmp_path):
@@ -432,4 +486,5 @@ def test_camera_approve_on_a_cuts_short_adds_the_stage_and_the_timing_moves_it_s
     assert _stage(snapshot.build(sdir, settings=ws), "camera")["content"]["stale"] is None
     path = sdir / "source" / "short.json"
     path.write_text(path.read_text("utf-8").replace("beat.", "beat, and more words to say here."), "utf-8")
-    assert "timing changed" in _stage(snapshot.build(sdir, settings=ws), "camera")["content"]["stale"]
+    assert _stage(snapshot.build(sdir, settings=ws), "camera")["content"]["stale"] == (
+        "the shot windows changed since the camera test")  # a cuts short's shots follow the lines

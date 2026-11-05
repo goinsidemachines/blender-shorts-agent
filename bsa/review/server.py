@@ -519,6 +519,9 @@ class _Handler(BaseHTTPRequestHandler):
         current = snapshot.stage_version(sdir, stage)
         if current is None:
             raise decisions.DecisionRefused(f"The {label} has nothing to answer yet.")
+        problem = snapshot.camera_problem(sdir) if stage == "camera" and decision == "approve" else None
+        if problem:
+            raise decisions.DecisionRefused(problem)
         if decision == "changes" and not any(n["stage"] == stage and n["status"] == "open" for n in notes.load(sdir)):
             raise ValueError("Add a note saying what to change first.")
         entry = decisions.record(sdir, stage, version, decision, "page", current=current, choice=body.get("choice"))

@@ -143,9 +143,15 @@ def _cli_one_take(home, short, one_take):
 def test_approving_the_camera_marks_it_done(home, pendulum):
     _cli_one_take(home, pendulum, True)
     assert ok(run(home, "state", "pendulum"))["next"] == "camera"
+    proc = run(home, "page", "decide", "pendulum", "camera", "approve", "--by", "chat")  # no clip: nothing to approve
+    assert proc.returncode == 1 and "no test clip yet: run BLENDER camtest 01 first." in proc.stderr, proc.stderr
+    assert "camera" not in jobstate.load_state(pendulum)["stages"] and not decisions.load(pendulum)[2:]
+    clip = pendulum / "review" / "camtest" / "camtest.mp4"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(b"mp4")  # a stale clip (no record) is the user's call: approving it is allowed
     out = ok(run(home, "page", "decide", "pendulum", "camera", "approve", "--by", "chat"))
     assert out["decision"]["applied"] is True and out["state"]["next"] == "engine"
-    assert jobstate.load_state(pendulum)["stages"]["camera"]["version"] == 1
+    assert jobstate.load_state(pendulum)["stages"]["camera"]["version"] == out["decision"]["version"] == 2  # the clip
 
 
 def test_the_camera_of_a_short_without_the_stage_is_refused(home, pendulum):

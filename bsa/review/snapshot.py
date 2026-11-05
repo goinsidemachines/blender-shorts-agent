@@ -414,23 +414,26 @@ def _camera_record(sdir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _camera_timing(ctx: Ctx, short: Short) -> str:
-    """The hash of the timeline as it is now (what source/timeline.json holds once CLI timeline has run): the takes'
-    timing once narration made them, else reading pace, as BLENDER camtest works it out."""
+def _camera_stale(ctx: Ctx, short: Short, rec: dict) -> str | None:
+    """Why the clip of `rec` no longer shows the camera path (bsa.camtest.path_stale), against the timeline as it is
+    now: the takes' timing once narration made them, else reading pace, as BLENDER camtest works it out."""
+    from bsa import camtest, freshness
     from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import timeline_hash, to_json
 
     durations = takes_durations(ctx.sdir, short)
     tl = build_timeline(short, durations, settings_mod.has_end_card(ctx.settings, short),
                         onsets=takes_onsets(ctx.sdir, short) if durations is not None else None)  # fmt: skip
-    return timeline_hash(json.loads(json.dumps(to_json(tl))))
+    tl_hash = timeline_hash(json.loads(json.dumps(to_json(tl))))
+    return camtest.path_stale(rec, camtest.shot_spans(tl), tl.fps, camtest.build_stamp(ctx.sdir),
+                              freshness.blend_stat(ctx.sdir), tl_hash)  # fmt: skip
 
 
 def _camera(ctx: Ctx) -> dict | None:
     """The camera test (BLENDER camtest) for the optional Camera stage: None for a short without the stage. `stale`
     (left out of the version) says why the clip no longer shows the short: none yet, made for only some shots, or
     made before the timing or the scene changed."""
-    from bsa import camtest, freshness
+    from bsa import camtest
     from bsa import workspace as workspace_mod
 
     short = _short(ctx)
@@ -444,15 +447,15 @@ def _camera(ctx: Ctx) -> dict | None:
         made = {k: rec.get(k) for k in ("shots", "frames", "percent")}
     tested = rec.get("shots") if rec is not None else None
     missing = [s.id for s in short.shots if not isinstance(tested, list) or s.id not in tested]
-    if rec is not None and missing:  # a clip of some shots (--shots) does not show the short
+    if rec is None:
+        stale = "no camera test yet"
+    elif missing:  # a clip of some shots (--shots) does not show the short
         stale = f"the camera test has no {', '.join(missing)}: run {command} for every shot"
     else:
         try:
-            timing = _camera_timing(ctx, short)
+            stale = _camera_stale(ctx, short, rec)
         except Exception as e:  # noqa: BLE001 - a bad input must never break the page
             stale = _plain(ctx.sdir, f"the timing can't be worked out: {e}")
-        else:
-            stale = camtest.stale(rec, freshness.blend_stat(ctx.sdir), timing)
     return {
         "lead": CAMERA_LEAD,
         "video": video,
@@ -461,6 +464,22 @@ def _camera(ctx: Ctx) -> dict | None:
         "stale": stale,
         "command": command,
     }
+
+
+def camera_problem(sdir: Path) -> str | None:
+    """Why the camera stage can't be approved yet (no test clip), else None. A stale clip is only a warning: the
+    user may still approve it."""
+    from bsa import camtest
+    from bsa import workspace as workspace_mod
+
+    if _camera_file(Path(sdir), camtest.MP4) is not None:
+        return None
+    try:
+        workspace = settings_mod.load_settings().get("workspace")
+    except Exception:  # noqa: BLE001 - the refusal still says what to run, with the short's path
+        workspace = None
+    key = workspace_mod.short_key(Path(sdir), workspace)
+    return f"The camera has no test clip yet: run BLENDER camtest {key} first."
 
 
 def _estimate(sdir: Path, engine: str) -> float | None:
@@ -795,7 +814,8 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",), "camera": ("stale",),
+_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
+                "camera": ("stale", "command"),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
                          "checklist_problem", "thumbnail_problems")}

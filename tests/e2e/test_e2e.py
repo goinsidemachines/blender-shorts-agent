@@ -343,6 +343,10 @@ def test_one_take_short_builds_and_edits(tmp_path):
     assert out["n_frames"] == 270
     p.build(short)
     p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
+    assert p.cli("state", "pendulum")["next"] == "camera"  # a one-take short's camera is approved before the engine
+    clip = p.blender_cmd("camtest", "pendulum", "--scale", "0.1", blend=blend)
+    assert clip["shots"] == ["s01", "s02", "s03"] and clip["frames"] == 270
+    p.cli("page", "decide", "pendulum", "camera", "approve", "--by", "chat")
     p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
     timeline = p.cli("narrate", "pendulum")["timeline"]
     assert timeline["n_frames"] == 270  # the picture sets the clock: narration never moves a window
