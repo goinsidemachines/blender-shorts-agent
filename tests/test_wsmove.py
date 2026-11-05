@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 
 from bsa import gpulock, wsmove
 
@@ -117,3 +118,66 @@ def test_live_holder_is_a_live_lock_only(tmp_path):
         assert gpulock.live_holder(path)["pid"] == os.getpid()
     finally:
         gpulock.release(path)
+
+
+def test_size_mismatches_covers_empty_folders_and_broken_links(tmp_path):
+    old, new = tmp_path / "old", tmp_path / "new"
+    (old / "a" / "empty").mkdir(parents=True)
+    (old / "a" / "f.txt").write_text("x", encoding="utf-8")
+    new.mkdir()
+    (new / "a").mkdir()
+    (new / "a" / "f.txt").write_text("x", encoding="utf-8")
+    assert wsmove.size_mismatches(old, new) == ["a/empty/"]  # an empty folder the copy lost
+    (new / "a" / "empty").mkdir()
+    assert wsmove.size_mismatches(old, new) == []
+    try:
+        os.symlink(old / "gone.txt", old / "a" / "link.txt")
+    except (OSError, NotImplementedError):
+        return  # no symlinks without privileges on this machine: the folder part is tested
+    assert wsmove.size_mismatches(old, new) == ["a/link.txt"]  # a broken link with nothing at its place
+    os.symlink(new / "gone.txt", new / "a" / "link.txt")
+    assert wsmove.size_mismatches(old, new) == []
+
+
+def test_missing_drive_names_a_drive_that_is_not_there(tmp_path):
+    assert wsmove.missing_drive(tmp_path) is None
+    if os.name == "nt":
+        free = next((f"{c}:" for c in "QRSTUVWXYZ" if not os.path.exists(f"{c}:\\")), None)
+        if free:
+            assert wsmove.missing_drive(Path(free + "\\Shorts")) == free
+
+
+def test_busy_names_the_server_a_job_or_the_gpu(tmp_path):
+    assert wsmove.busy(server=None, running=False, gpu=None) is None
+    assert "page server" in wsmove.busy(server={"pid": 7}, running=False, gpu=None)
+    assert "job is running" in wsmove.busy(server=None, running=True, gpu=None)
+    assert "GPU is in use" in wsmove.busy(server=None, running=False, gpu={"pid": 7, "short": "x", "command": "render"})
+
+
+def test_plugin_files_are_state_and_review_json_only(tmp_path):
+    sdir = tmp_path / "01-x"
+    for rel in ("state.json", "state.json.bak", "review/checks.json", "review/camtest/camtest.json",
+                "review/notes.txt", "source/short.json", "frames/final/s01/.render.json"):  # fmt: skip
+        (sdir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (sdir / rel).write_text("{}", encoding="utf-8")
+    got = [p.relative_to(sdir).as_posix() for p in wsmove.plugin_files(sdir)]
+    assert sorted(got) == ["review/camtest/camtest.json", "review/checks.json", "state.json", "state.json.bak"]
+
+
+def test_refusal_sees_a_folder_inside_the_workspace_through_a_junction(tmp_path):
+    old = tmp_path / "Shorts"
+    old.mkdir()
+    link = tmp_path / "alias"
+    import subprocess
+
+    from bsa import proc
+
+    try:
+        if os.name == "nt":
+            proc.run(["cmd", "/c", "mklink", "/J", str(link), str(old)], check=True, capture_output=True)
+        else:
+            os.symlink(old, link)
+    except (OSError, subprocess.SubprocessError):
+        return
+    why = wsmove.refusal(old, link / "inner", server=None, running=False, gpu=None)
+    assert why and "inside the workspace" in why

@@ -73,6 +73,15 @@ def _request(info: dict, method: str, path: str, body: dict | None = None, timeo
     return reply if isinstance(reply, dict) else {}
 
 
+def server_process(workspace: Path) -> dict | None:
+    """The workspace's server as SERVER_FILE names it while that process is still running (same pid and process
+    token), whether or not it answers in time: for a caller that must not act while a server may still be serving."""
+    info = _read_file(workspace)
+    if info is None or render_status.process_token(info["pid"]) != info["process_token"]:
+        return None
+    return info
+
+
 def server_info(workspace: Path, *, timeout_s: float = 3.0, tries: int = 2) -> dict | None:
     """The workspace's running server as SERVER_FILE names it, or None when that file is missing or damaged, its pid
     is gone or now another process, or its port doesn't answer /api/health with its token in time (`tries` asks,
@@ -98,10 +107,8 @@ def _spawn(workspace: Path, lan: bool):
         cmd.append("--lan")
     kw: dict = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
                 "cwd": str(ROOT), "close_fds": True}  # fmt: skip
-    if sys.platform == "win32":
-        kw["creationflags"] = (
-            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        )
+    if sys.platform == "win32":  # (proc.py adds CREATE_NO_WINDOW to every launch; it does nothing beside these)
+        kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kw["start_new_session"] = True
     return _proc.popen(cmd, **kw)  # our own CLI, no shell
@@ -113,7 +120,7 @@ def _kill_tree(proc) -> None:
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         if sys.platform == "win32":
             _proc.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True,
-                           timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)  # fmt: skip
+                      timeout=10)  # fmt: skip
         else:
             os.killpg(proc.pid, signal.SIGKILL)  # start_new_session made it a group leader
     with contextlib.suppress(OSError):

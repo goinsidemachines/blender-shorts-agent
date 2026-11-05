@@ -2979,10 +2979,65 @@ def test_workspace_move_renames_and_fixes_settings_and_statuses(tmp_path, bsa_ho
     assert status["short"]["dir"] == str(new / sdir.name)
     assert "settings: workspace" in out["changed"] and "settings: closing.image" in out["changed"]
     assert f"{sdir.name}/review/render-status-final.json: short.dir" in out["changed"]
-    whats = " ".join(n["what"] for n in out["not_fixed"])
-    assert "notes.json" in whats and "seen" in whats  # a leftover old path, with how to fix it
+    notes = json.loads((new / sdir.name / "review" / "notes.json").read_text(encoding="utf-8"))
+    assert notes["seen"] == str(new / sdir.name / "stills" / "a.png")  # the plugin's own file: rewritten
+    assert f"{sdir.name}/review/notes.json: seen" in out["changed"]
+    assert not any("notes.json" in n["what"] for n in out["not_fixed"])
     assert any("relink" in n["fix"] for n in out["not_fixed"])  # Blender couldn't start: the .blend is listed
     assert "re-render" in out["note"]
+    assert "reopens checks, preview, final and post" in out["note"]
+    assert not (new / ".gpu.lock").exists() and not (old / ".gpu.lock").exists()  # the move's own lock is gone
+
+
+def test_workspace_move_rewrites_the_plugins_own_files_so_the_page_keeps_its_videos(tmp_path, bsa_home, capsys):
+    from bsa import engine_runs
+    from bsa.review import track
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    mp4 = sdir / "out" / "how-a-gear-train-works-final.mp4"
+    mp4.parent.mkdir()
+    mp4.write_bytes(b"mp4")
+    runs = {"final": {"preset": "final", "engine": None, "tag": None, "frames_dir": str(sdir / "frames" / "final"),
+                      "mp4": str(mp4)}}  # fmt: skip
+    (sdir / "review" / "engine-runs.json").write_text(json.dumps(runs, indent=2) + "\n", encoding="utf-8")
+    state = {"stages": {"final": {"done": True, "mp4": str(mp4)}}}
+    (sdir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    (sdir / "state.json.bak").write_text(json.dumps(state), encoding="utf-8")
+    status = {"state": "done", "short": {"dir": str(sdir)}, "preset": "final",
+              "steps": [{"name": "edit", "summary": {"mp4": str(mp4)}}, {"name": "mix",
+                        "summary": {"path": str(sdir / "audio" / "mix.wav")}}]}  # fmt: skip
+    (sdir / "review" / "render-status-final.json").write_text(json.dumps(status), encoding="utf-8")
+    (sdir / "review" / "camtest").mkdir()
+    (sdir / "review" / "camtest" / "camtest.json").write_text(json.dumps({"mp4": str(sdir / "review" / "camtest" /
+                                                                         "camtest.mp4")}), encoding="utf-8")  # fmt: skip
+    (sdir / "source").mkdir()
+    (sdir / "source" / "short.json").write_text(json.dumps({"closing": {"image": str(old / "brand" / "end.png")}}),
+                                                encoding="utf-8")  # fmt: skip
+    assert track._video(sdir, "final") is not None
+
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    nsdir = new / sdir.name
+    nmp4 = nsdir / "out" / mp4.name
+    assert track._video(nsdir, "final") == {"file": f"out/{mp4.name}", "tag": track._video(nsdir, "final")["tag"]}
+    assert [r["mp4"] for r in engine_runs.compare(nsdir, "final")] == [str(nmp4)]
+    assert json.loads((nsdir / "review" / "engine-runs.json").read_text(encoding="utf-8"))["final"]["frames_dir"] ==         str(nsdir / "frames" / "final")  # fmt: skip
+    assert (nsdir / "review" / "engine-runs.json").read_text(encoding="utf-8").endswith("}\n")
+    for name in ("state.json", "state.json.bak"):
+        assert json.loads((nsdir / name).read_text(encoding="utf-8"))["stages"]["final"]["mp4"] == str(nmp4)
+    status = json.loads((nsdir / "review" / "render-status-final.json").read_text(encoding="utf-8"))
+    assert status["short"]["dir"] == str(nsdir)
+    assert status["steps"][0]["summary"]["mp4"] == str(nmp4)
+    assert status["steps"][1]["summary"]["path"] == str(nsdir / "audio" / "mix.wav")
+    camtest = json.loads((nsdir / "review" / "camtest" / "camtest.json").read_text(encoding="utf-8"))
+    assert camtest["mp4"] == str(nsdir / "review" / "camtest" / "camtest.mp4")
+    assert f"{sdir.name}/state.json: stages.final.mp4" in out["changed"]
+    assert f"{sdir.name}/review/render-status-final.json: steps[0].summary.mp4" in out["changed"]
+    left = [n for n in out["not_fixed"] if "short.json" in n["what"]]  # the user's own file: only reported
+    assert len(left) == 1 and "closing.image" in left[0]["what"]
+    assert json.loads((nsdir / "source" / "short.json").read_text(encoding="utf-8"))["closing"]["image"] ==         str(old / "brand" / "end.png")  # fmt: skip
+    assert not any("engine-runs" in n["what"] or "state.json" in n["what"] for n in out["not_fixed"])
 
 
 def test_workspace_move_relinks_every_short_with_a_blend(tmp_path, bsa_home, capsys, monkeypatch):
@@ -3090,6 +3145,85 @@ def test_workspace_move_refuses_a_folder_inside_the_workspace(tmp_path, bsa_home
     code, _out, err = _move(capsys, inner)
     assert code == 1 and "inside the workspace" in err
     assert old.is_dir() and not (old / "inner").exists()
+
+
+def test_workspace_move_refuses_a_live_server_that_is_slow_to_answer(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import render_status
+    from bsa.review import launch
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+    info = {"pid": os.getpid(), "port": 1, "token": "t", "process_token": render_status.process_token(os.getpid())}
+    (old / launch.SERVER_FILE).write_text(json.dumps(info), encoding="utf-8")
+    monkeypatch.setattr(launch, "server_info", lambda *a, **k: None)  # /api/health didn't answer in time
+    code, _out, err = _move(capsys, tmp_path / "Moved")
+    assert code == 1 and "page server" in err
+    assert old.is_dir() and not (tmp_path / "Moved").exists()
+
+
+def test_workspace_move_holds_the_gpu_lock_and_stops_when_a_job_starts_during_the_copy(tmp_path, bsa_home, capsys,
+                                                                                         monkeypatch):  # fmt: skip
+    import shutil
+
+    from bsa import gpulock, render_status, wsmove
+    from bsa import settings as bsa_settings
+
+    monkeypatch.setattr(wsmove, "same_drive", lambda a, b: False)
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    real_copy = shutil.copytree
+    seen = {}
+
+    def copy_and_start_a_job(src, dst, *a, **kw):
+        if "lock" in seen:  # copytree calls itself for each sub-folder
+            return real_copy(src, dst, *a, **kw)
+        seen["lock"] = gpulock.read(gpulock.lock_path(old))
+        running = {"state": "running", "pid": os.getpid(), "pid_token": render_status.process_token(os.getpid()),
+                   "short": {"dir": str(sdir)}, "preset": "preview"}  # fmt: skip
+        (sdir / "review" / "render-status-preview.json").write_text(json.dumps(running), encoding="utf-8")
+        return real_copy(src, dst, *a, **kw)
+
+    monkeypatch.setattr(shutil, "copytree", copy_and_start_a_job)
+    new = tmp_path / "Other drive" / "Shorts"
+    code, _out, err = _move(capsys, new)
+    assert seen["lock"]["pid"] == os.getpid() and seen["lock"]["command"] == "move"  # held while the files moved
+    assert code == 1 and "started during the copy" in err and "still" in err
+    assert bsa_settings.load_settings()["workspace"] == str(old)
+    assert not gpulock.lock_path(old).exists() and not gpulock.lock_path(new).exists()
+
+
+def test_workspace_move_refuses_while_another_command_holds_the_gpu(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import gpulock
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+    monkeypatch.setattr(gpulock, "acquire", lambda *a, **k: (_ for _ in ()).throw(gpulock.GpuBusy("the GPU is busy")))
+    code, _out, err = _move(capsys, tmp_path / "Moved")
+    assert code == 1 and "the GPU is busy" in err and "Nothing was changed" in err
+    assert old.is_dir() and not (tmp_path / "Moved").exists()
+
+
+def test_workspace_move_names_where_the_folder_is_when_a_later_step_fails(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import wsmove
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+
+    def broken(*a, **k):
+        raise RuntimeError("disk said no")
+
+    monkeypatch.setattr(wsmove, "plugin_files", broken)
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 1 and f"was renamed to {new}" in err and "disk said no" in err
+    assert "BLENDER relink" in err and out["to"] == str(new)
+    assert new.is_dir() and not old.exists()
+
+
+def test_workspace_move_says_plainly_when_a_drive_is_not_there(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import wsmove
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+    monkeypatch.setattr(wsmove, "missing_drive", lambda p: "Q:" if "Moved" in str(p) else None)
+    code, _out, err = _move(capsys, tmp_path / "Moved")
+    assert code == 1 and "The drive Q: of" in err and "Nothing was changed" in err
+    assert old.is_dir()
 
 
 def test_workspace_move_needs_a_workspace(bsa_home, capsys, tmp_path):

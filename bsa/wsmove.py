@@ -15,6 +15,7 @@ from pathlib import Path
 from bsa import gpulock
 
 FINGERPRINTS = "blend/short.fingerprints.json"  # rebuilt on the next run: its old paths are not leftovers
+PLUGIN_STATE = ("state.json", "state.json.bak")
 
 
 def _norm(text: str) -> str:
@@ -51,6 +52,14 @@ def same_folder(a: Path, b: Path) -> bool:
     return _norm(str(a)) == _norm(str(b))
 
 
+def missing_drive(path: Path) -> str | None:
+    """The drive (or network share) of `path` when it is not there at all (unplugged, unmapped), else None."""
+    drive = os.path.splitdrive(os.path.abspath(str(path)))[0]
+    if not drive:
+        return None
+    return None if os.path.exists(drive + os.sep) else drive
+
+
 def same_drive(a: Path, b: Path) -> bool:
     """Both on one drive (case-insensitive drive letters or UNC shares), so a rename can move it."""
     da = os.path.splitdrive(os.path.abspath(str(a)))[0]
@@ -58,15 +67,18 @@ def same_drive(a: Path, b: Path) -> bool:
     return da.lower() == db.lower()
 
 
-def refusal(old: Path, new: Path, *, server: dict | None, running: bool, gpu: dict | None) -> str | None:
-    """Why the workspace OLD can't move to NEW right now, or None when it can."""
-    old, new = Path(old), Path(new)
-    if same_folder(old, new):
-        return f"{new} is the same folder as the workspace: nothing to move"
-    if under(str(new), old):
-        return f"{new} is inside the workspace {old}: pick a folder outside it"
-    if under(str(old), new):
-        return f"the workspace {old} is inside the new folder {new}: pick a folder that is not one of its parents"
+def _forms(path: Path) -> list[Path]:
+    """The path as written and as it really is (a junction or a link resolved), so a folder reached through a
+    junction is still seen as inside or around the workspace."""
+    try:
+        real = Path(os.path.realpath(path))
+    except (OSError, ValueError):
+        return [path]
+    return [path] if same_folder(real, path) else [path, real]
+
+
+def busy(*, server: dict | None, running: bool, gpu: dict | None) -> str | None:
+    """Why the workspace is in use right now (its page server, a job, the GPU lock), or None."""
     if server:
         return (f"the review page server for this workspace is running (pid {server.get('pid')}): close its tabs and "
                 "let it stop, then move")  # fmt: skip
@@ -74,6 +86,22 @@ def refusal(old: Path, new: Path, *, server: dict | None, running: bool, gpu: di
         return "a render or another job is running in this workspace: wait for it to finish"
     if gpu:
         return f"the GPU is in use by {gpulock.describe_holder(gpu)} in this workspace: wait for it to finish"
+    return None
+
+
+def refusal(old: Path, new: Path, *, server: dict | None, running: bool, gpu: dict | None) -> str | None:
+    """Why the workspace OLD can't move to NEW right now, or None when it can."""
+    old, new = Path(old), Path(new)
+    olds, news = _forms(old), _forms(new)
+    if any(same_folder(o, n) for o in olds for n in news):
+        return f"{new} is the same folder as the workspace: nothing to move"
+    if any(under(str(n), o) for o in olds for n in news):
+        return f"{new} is inside the workspace {old}: pick a folder outside it"
+    if any(under(str(o), n) for o in olds for n in news):
+        return f"the workspace {old} is inside the new folder {new}: pick a folder that is not one of its parents"
+    why = busy(server=server, running=running, gpu=gpu)
+    if why:
+        return why
     if new.exists():
         if not new.is_dir():
             return f"{new} is a file: pick a new or empty folder"
@@ -113,15 +141,41 @@ def _files(root: Path):
 
 
 def size_mismatches(old: Path, new: Path) -> list[str]:
-    """Relative paths (sorted, with /) of the files of OLD that are missing in NEW or of another size there."""
+    """Relative paths (sorted, with /) of what of OLD is missing in NEW or differs there: a file of another size, a
+    folder (empty ones too, as "rel/") that is not a folder there, a broken link with nothing at its place."""
+    old, new = Path(old), Path(new)
     bad = []
-    for path, rel in _files(Path(old)):
+    for dirpath, dirs, _names in os.walk(old):
+        for name in dirs:
+            rel = (Path(dirpath) / name).relative_to(old).as_posix()
+            if not (new / rel).is_dir():
+                bad.append(rel + "/")
+    for path, rel in _files(old):
         try:
-            if (Path(new) / rel).stat().st_size != path.stat().st_size:
+            size = path.stat().st_size
+        except OSError:  # a broken link: there is nothing to size, only its place to keep
+            if not os.path.lexists(new / rel):
+                bad.append(rel)
+            continue
+        try:
+            if (new / rel).stat().st_size != size:
                 bad.append(rel)
         except OSError:
             bad.append(rel)
     return sorted(bad)
+
+
+def plugin_files(short_dir: Path) -> list[Path]:
+    """The JSON files the plugin itself writes in a short's folder and may store absolute paths in: state.json and
+    its backup, and every `*.json` under review/ (render status, engine runs, checks, notes, the camera test
+    record, the page's history). A move rewrites these; the user's own files (source/short.json ...) are only
+    reported. Sorted."""
+    sdir = Path(short_dir)
+    found = [sdir / name for name in PLUGIN_STATE if (sdir / name).is_file()]
+    review = sdir / "review"
+    if review.is_dir():
+        found += [p for p in review.rglob("*.json") if p.is_file()]
+    return sorted(found)
 
 
 def leftovers(root: Path, old: Path) -> list[tuple[str, str]]:

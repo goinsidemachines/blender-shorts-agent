@@ -1509,14 +1509,12 @@ def _relink(exe: Path, sdir: Path, old: Path) -> tuple[dict | None, str]:
 
 def cmd_workspace(args) -> dict:
     """`workspace move NEW`: move the whole workspace and repoint the paths stored for it. Refuses while its page
-    server, a render or the GPU lock is live, and never deletes the old folder (another drive: it is copied, every
-    file's size checked, and the old folder kept for the user to delete)."""
-    import errno
+    server, a render or the GPU lock is live (and holds the GPU lock itself while the files move), and never deletes
+    the old folder (another drive: it is copied, every file's size checked, and the old folder kept for the user to
+    delete)."""
     import os
-    import shutil
-    import time
 
-    from bsa import gpulock, locate, render_status, wsmove
+    from bsa import gpulock, wsmove
     from bsa.review import launch, server
 
     s = settings.load_settings()
@@ -1524,15 +1522,68 @@ def cmd_workspace(args) -> dict:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
     old = Path(s["workspace"])
     new = Path(args.new).expanduser().resolve()
+    gone = wsmove.missing_drive(old)
+    if gone:
+        raise CliError(f"The drive {gone} of the workspace {old} is not there: plug it in (or map it again) and run "
+                       "it again. Nothing was changed.")  # fmt: skip
     if not old.is_dir():
         raise CliError(f"the workspace {old} is not there: if it was moved by hand, run settings set workspace "
                        "PATH with where it is now")  # fmt: skip
-    why = wsmove.refusal(old, new, server=launch.server_info(old), running=server.jobs_running(old),
+    gone = wsmove.missing_drive(new)
+    if gone:
+        raise CliError(f"The drive {gone} of {new} is not there: plug it in (or pick another folder) and run it "
+                       "again. Nothing was changed.")  # fmt: skip
+
+    def live() -> str | None:  # asked again right before the move and after a copy: a job may start meanwhile
+        gpu = gpulock.live_holder(gpulock.lock_path(old))
+        if gpu and gpu.get("pid") == os.getpid():
+            gpu = None  # the lock this move holds itself
+        return wsmove.busy(server=launch.server_process(old), running=server.jobs_running(old), gpu=gpu)
+
+    why = wsmove.refusal(old, new, server=launch.server_process(old), running=server.jobs_running(old),
                          gpu=gpulock.live_holder(gpulock.lock_path(old)))  # fmt: skip
     if why:
         raise CliError(f"Can't move the workspace: {why}. Nothing was changed.")
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise CliError(f"Couldn't make the folder {new.parent}: {exc.strerror or exc}. Nothing was changed.") from None
+    lock = gpulock.lock_path(old)
+    try:  # no render starts in the workspace while its files move
+        took = gpulock.acquire(lock, short="workspace", command="move", wait=False)
+    except gpulock.GpuBusy as exc:
+        raise CliError(f"Can't move the workspace: {exc}. Nothing was changed.") from None
+    try:
+        how = _move_folder(old, new, live)
+    except BaseException:
+        if took:
+            gpulock.release(lock)
+            gpulock.release(gpulock.lock_path(new))  # a rename that went through before the failure took it along
+        raise
+    if took:
+        gpulock.release(lock)  # a copy keeps the old folder: its lock goes
+        gpulock.release(gpulock.lock_path(new))  # the lock was renamed or copied along with the folder
+    try:
+        return _repoint_moved(old, new, how)
+    except CliError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the folder has moved: say where it is, whatever failed
+        raise CliError(f"The workspace was {how} to {new}, but repointing its paths failed: {_one_line(exc)}. Run "
+                       f'settings set workspace "{new}" if settings show still names {old}, then BLENDER relink '
+                       f'SHORT --from "{old}" for each short.', {"from": str(old), "to": str(new), "how": how}) from None  # fmt: skip
 
-    new.parent.mkdir(parents=True, exist_ok=True)
+
+def _move_folder(old: Path, new: Path, live) -> str:
+    """Rename OLD to NEW (one drive) or copy it and check every size (another drive): "renamed" or "copied".
+    `live()` says why the move can't go on now (a job that started meanwhile): asked before, and after a copy."""
+    import errno
+    import shutil
+
+    from bsa import wsmove
+
+    why = live()
+    if why:
+        raise CliError(f"Can't move the workspace: {why}. Nothing was changed.")
     how = "renamed" if wsmove.same_drive(old, new) else "copied"
     if how == "renamed":
         made_empty = new.is_dir()
@@ -1561,13 +1612,49 @@ def cmd_workspace(args) -> dict:
                            f"size, e.g. {bad[0]}). Nothing was repointed and the workspace is still {old}; check the "
                            "disk, delete the copy and run it again.", {"from": str(old), "to": str(new),
                            "mismatched": bad})  # fmt: skip
+        why = live()
+        if why:
+            raise CliError(f"Can't finish the move: {why} (it started during the copy). Nothing was repointed and "
+                           f"the workspace is still {old}; delete the copy in {new} and run it again once it ends.")  # fmt: skip
+    return how
+
+
+def _rewrite_plugin_json(path: Path, old: Path, new: Path) -> list[str]:
+    """Repoint every path under OLD in one of the plugin's own JSON files, written atomically; the dotted keys
+    changed. A file that isn't JSON is left as it is."""
+    from bsa import wsmove
+
+    raw = path.read_bytes()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return []
+    data, keys = wsmove.rewrite(data, old, new)
+    if keys:
+        text = json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if raw.endswith(b"\n") else "")
+        jobstate.write_atomic(path, text.encode("utf-8"))
+    return keys
+
+
+def _repoint_moved(old: Path, new: Path, how: str) -> dict:
+    """After the folder moved: repoint the settings, relink each .blend, rewrite the plugin's own JSON in each
+    short, and list what is left for the user (their own files)."""
+    import time
+
+    from bsa import locate, wsmove
 
     changed: list[str] = []
     not_fixed: list[dict] = []
     relinked: list[dict] = []
+    s = settings.load_settings()  # read again: another command may have saved the settings while the files moved
     s, keys = wsmove.rewrite(s, old, new)
     if keys:
-        settings.save_settings(s)
+        try:
+            settings.save_settings(s)
+        except OSError as exc:
+            raise CliError(f"The workspace was {how} to {new}, but the settings couldn't be saved: "
+                           f'{exc.strerror or exc}. Run settings set workspace "{new}", then BLENDER relink SHORT '
+                           f'--from "{old}" for each short.', {"from": str(old), "to": str(new), "how": how}) from None  # fmt: skip
         changed += [f"settings: {k}" for k in keys]
 
     try:
@@ -1592,25 +1679,25 @@ def cmd_workspace(args) -> dict:
         not_fixed.append({"what": f"{sdir.name}: its .blend still points at {old} for its images, sounds and linked "
                                   f"files ({why})",
                           "fix": f'BLENDER relink {workspace.short_key(sdir, new)} --from "{old}"'})  # fmt: skip
-    for path in sorted(new.glob("*/review/render-status-*.json")):
-        status = render_status.read_status(path)
-        short = status.get("short") if status else None
-        moved = wsmove.repoint(short.get("dir"), old, new) if isinstance(short, dict) else None
-        if moved is None:
-            continue
-        short["dir"] = moved
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-        changed.append(f"{path.relative_to(new).as_posix()}: short.dir")
-    for rel, key in wsmove.leftovers(new, old):
+    for sdir in sorted(p for p in new.iterdir() if p.is_dir()):
+        for path in wsmove.plugin_files(sdir):
+            rel = path.relative_to(new).as_posix()
+            try:
+                keys = _rewrite_plugin_json(path, old, new)
+            except OSError as exc:
+                not_fixed.append({"what": f"{rel}: couldn't be repointed ({exc.strerror or exc})",
+                                  "fix": f"edit {path}: change {old} to {new}"})  # fmt: skip
+                continue
+            changed += [f"{rel}: {k}" for k in keys]
+    for rel, key in wsmove.leftovers(new, old):  # the user's own files (source/short.json ...): only reported
         not_fixed.append({"what": f"{rel}: {key} still names a path in {old}",
                           "fix": f"edit {new / rel}: change {old} to {new} in {key}"})  # fmt: skip
 
     out = {"from": str(old), "to": str(new), "how": how, "changed": changed, "relinked": relinked,
            "not_fixed": not_fixed, "old_folder": None,
            "note": "A short's stored fingerprints include its files' paths, so a short in progress re-renders and its "
-                   "checks run once more on its next run."}  # fmt: skip
+                   "checks run once more on its next run. Relinking saved each .blend, so its next preview marks the "
+                   "build again and reopens checks, preview, final and post for that short: approve them again then."}  # fmt: skip
     if how == "copied":
         out["old_folder"] = f"kept at {old}: delete it yourself once you have checked {new}"
         try:
