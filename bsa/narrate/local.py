@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
+from bsa import proc as _proc
 from bsa.messages import trim
 from bsa.narrate import contract, install
 from bsa.narrate.contract import NarrationError
@@ -43,7 +43,7 @@ def _tail(proc) -> str:
 
 
 def generate(
-    model: str, lines, voice, speed: float, out_dir: Path, run=subprocess.run, seed: int = 7
+    model: str, lines, voice, speed: float, out_dir: Path, run=_proc.run, seed: int = 7
 ) -> dict[str, float]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -82,7 +82,7 @@ def hear(lines, out_dir: Path, run=None) -> dict[str, dict] | None:
     installed. Nothing is started when it isn't (a `uv run` on a missing runner could sync, i.e. download)."""
     if not whisper_installed():
         return None
-    run = run or subprocess.run
+    run = run or _proc.run
     out_dir = Path(out_dir)
     lines_file = out_dir / "lines.json"
     contract.write_lines(lines_file, lines)
@@ -106,7 +106,7 @@ def word_times(lines, takes_dir: Path, run=None) -> dict[str, list[tuple[str, fl
     try:
         if not whisper_installed():
             return None
-        run = run or subprocess.run
+        run = run or _proc.run
         takes_dir = Path(takes_dir)
         lines_file = takes_dir / "lines.json"
         contract.write_lines(lines_file, lines)

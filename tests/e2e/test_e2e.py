@@ -5,10 +5,11 @@ stderr on failure. Integration bugs are fixed in the owning modules, never here.
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source"
@@ -39,7 +40,7 @@ class Pipeline:
             import sys
 
             cmd = [sys.executable, *cmd[1:]]
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env=self.env, cwd=str(self.home), timeout=timeout)  # fmt: skip
         assert proc.returncode == 0, f"{cmd[-4:]} failed:\n{proc.stdout[-4000:]}\n{proc.stderr[-4000:]}"
         return json.loads(proc.stdout)
@@ -50,7 +51,7 @@ class Pipeline:
     def blender_cmd(self, *args, blend: Path | None = None, timeout=1800) -> dict:
         cmd = [self.blender, "-b", *([str(blend)] if blend else []), "--factory-startup", "--python-exit-code", "1",
                "--python", str(ROOT / "bsa_blender.py"), "--", *map(str, args)]  # fmt: skip
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env=self.env, cwd=str(self.home), timeout=timeout)  # fmt: skip
         assert proc.returncode == 0, f"{args} failed:\n{proc.stdout[-4000:]}\n{proc.stderr[-4000:]}"
         lines = [ln for ln in proc.stdout.splitlines() if ln.startswith(RESULT)]
@@ -60,7 +61,7 @@ class Pipeline:
     def build(self, short: Path) -> None:
         cmd = [self.blender, "-b", "--factory-startup", "--python-exit-code", "1",
                "--python", str(short / "source" / "build.py"), "--", str(ROOT), str(short)]  # fmt: skip
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env=self.env, cwd=str(self.home), timeout=600)  # fmt: skip
         assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
         assert (short / "blend" / "short.blend").is_file()
@@ -114,7 +115,7 @@ def _render_settings(p: Pipeline, blend: Path) -> dict:
     """Each scene's render engine and resolution percentage, read from the saved .blend in a fresh Blender."""
     code = ("import bpy, json; print('BSA_SETTINGS ' + json.dumps({s.name: [s.render.engine, "
             "s.render.resolution_percentage] for s in bpy.data.scenes}))")  # fmt: skip
-    proc = subprocess.run([p.blender, "-b", str(blend), "--factory-startup", "--python-expr", code], check=False,
+    proc = _proc.run([p.blender, "-b", str(blend), "--factory-startup", "--python-expr", code], check=False,
                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=p.env,
                           timeout=300)  # fmt: skip
     line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("BSA_SETTINGS "))
@@ -225,7 +226,7 @@ def test_script_mode_end_to_end(tmp_path):
     tweak = tmp_path / "tweak.py"  # move only shot s03's camera (the Clock scene)
     tweak.write_text("import bpy\nbpy.data.objects['Clock camera'].data.lens = 55.0\nbpy.ops.wm.save_mainfile()\n",
                      encoding="utf-8")  # fmt: skip
-    proc = subprocess.run([p.blender, "-b", str(blend), "--factory-startup", "--python-exit-code", "1", "--python",
+    proc = _proc.run([p.blender, "-b", str(blend), "--factory-startup", "--python-exit-code", "1", "--python",
                            str(tweak)], check=False, capture_output=True, text=True, timeout=300)  # fmt: skip
     assert proc.returncode == 0, proc.stderr[-2000:]
     changed = p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)
@@ -290,7 +291,7 @@ def test_script_mode_end_to_end(tmp_path):
     # ---- a refusal still prints its BSA_RESULT, with the error
     cmd = [p.blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", str(ROOT / "bsa_blender.py"),
            "--", "edit", "pendulum", "--preset", "final"]  # fmt: skip
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env=p.env, cwd=str(p.home), timeout=600)  # fmt: skip
     assert proc.returncode != 0
     (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith(RESULT)]

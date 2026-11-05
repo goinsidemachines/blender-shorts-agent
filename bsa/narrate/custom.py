@@ -30,6 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bsa import proc as _proc
 from bsa.messages import trim
 from bsa.narrate import contract
 from bsa.narrate.contract import SR, NarrationError
@@ -113,7 +114,7 @@ def generate(
     seed: int = 7,
     voice=None,
     speed: float = 1.0,
-    run=subprocess.run,
+    run=_proc.run,
     take: str | None = None,
     parts=None,
 ) -> dict[str, float]:

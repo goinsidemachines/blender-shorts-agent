@@ -53,19 +53,20 @@ def test_suggestions_are_installed_fonts(tmp_path):
 
 def test_cli_fonts(tmp_path):
     import json
-    import subprocess
     import sys
     from pathlib import Path
 
+    from bsa import proc as _proc
+
     cli = Path(__file__).resolve().parent.parent / "bsa_cli.py"
-    out = subprocess.run([sys.executable, str(cli), "fonts", "No Such Font Anywhere"], capture_output=True, text=True,
+    out = _proc.run([sys.executable, str(cli), "fonts", "No Such Font Anywhere"], capture_output=True, text=True,
                          check=True).stdout  # fmt: skip
     data = json.loads(out)
     assert data["name"] == "No Such Font Anywhere" and data["installed"] is False and data["file"] is None
     assert isinstance(data["suggestions"], list)
     if platform.system() == "Windows":
         assert "Segoe UI" in data["suggestions"]
-        data = json.loads(subprocess.run([sys.executable, str(cli), "fonts", "Segoe UI"], capture_output=True,
+        data = json.loads(_proc.run([sys.executable, str(cli), "fonts", "Segoe UI"], capture_output=True,
                                          text=True, check=True).stdout)  # fmt: skip
         assert data["installed"] is True and data["file"].lower().endswith("segoeui.ttf")
 

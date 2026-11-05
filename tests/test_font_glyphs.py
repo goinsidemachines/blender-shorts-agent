@@ -2,7 +2,6 @@
 
 import json
 import platform
-import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 from fontbuild import build_font, build_variable
 
 from bsa import fonts
+from bsa import proc as _proc
 from bsa.short import Line, Short, Shot
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -173,7 +173,7 @@ def _cli(*args, env_home):
     import os
 
     env = {**os.environ, "BSA_HOME": str(env_home)}
-    return subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *args], capture_output=True, text=True, env=env,
+    return _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), *args], capture_output=True, text=True, env=env,
                           check=False)  # fmt: skip
 
 

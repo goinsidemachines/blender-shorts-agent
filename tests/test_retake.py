@@ -3,12 +3,12 @@
 import json
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from bsa import proc as _proc
 from bsa.narrate import run as nrun
 from bsa.short import Line, Short, Shot, line_id_problem, load_short, validate
 
@@ -38,7 +38,7 @@ class Env:
         (tmp_path / "home").mkdir()
 
     def run(self, *args):
-        return subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
+        return _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
                               text=True, env=self.env, check=False)  # fmt: skip
 
     def cli(self, *args):

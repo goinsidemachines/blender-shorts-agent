@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from bsa import proc as _proc
+
 MIN_BLENDER = (4, 5)
 
 PROGRAM_FILES = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -76,7 +78,7 @@ def parse_version(text: str) -> tuple[int, int]:
 
 
 def blender_version(exe: Path) -> tuple[int, int]:
-    result = subprocess.run([str(exe), "--version"], check=False, capture_output=True, text=True, timeout=60)
+    result = _proc.run([str(exe), "--version"], check=False, capture_output=True, text=True, timeout=60)
     return parse_version(result.stdout)
 
 
@@ -95,7 +97,7 @@ def blender_python(exe: Path) -> Path:
 
 def _python_from_blender(exe: Path) -> Path:
     code = "import sys; print('BSA_PYTHON=' + sys.executable)"
-    result = subprocess.run(
+    result = _proc.run(
         [str(exe), "-b", "--factory-startup", "--python-expr", code],
         check=False, capture_output=True, text=True, timeout=120,
     )  # fmt: skip

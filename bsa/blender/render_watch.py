@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,6 +16,7 @@ from pathlib import Path
 import bpy
 import numpy as np
 
+from bsa import proc as _proc
 from bsa import render_status as rs
 from bsa.image_checks import Flicker, luminance, pixel_findings
 
@@ -31,7 +31,7 @@ def _vram() -> list[dict]:
 
     now = time.time()
     return [{"name": g.name, "total_gb": g.vram_gb, "used_gb": g.vram_used_gb, "at": now}
-            for g in _nvidia(subprocess.run)]  # fmt: skip
+            for g in _nvidia(_proc.run)]  # fmt: skip
 
 
 def _gpu_name() -> str | None:

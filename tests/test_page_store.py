@@ -1,11 +1,11 @@
 import json
-import subprocess
 import sys
 import threading
 from pathlib import Path
 
 import pytest
 
+from bsa import proc as _proc
 from bsa.review import notes, stages, store
 
 OVERALL = {"kind": "overall", "id": None, "version": 1}
@@ -146,7 +146,7 @@ def test_concurrent_processes_lose_nothing(tmp_path):
         "    notes.add(Path(sys.argv[1]), 'story', {'kind': 'overall', 'id': None, 'version': 1}, f'{sys.argv[2]}-{i}', 'page')\n"
     )
     root = str(Path(__file__).resolve().parent.parent)
-    procs = [subprocess.Popen([sys.executable, "-c", code, str(tmp_path), str(k)], cwd=root) for k in range(2)]
+    procs = [_proc.popen([sys.executable, "-c", code, str(tmp_path), str(k)], cwd=root) for k in range(2)]
     assert [p.wait(timeout=60) for p in procs] == [0, 0]
     got = notes.load(tmp_path)
     assert len(got) == 50 and len({n["id"] for n in got}) == 50

@@ -1,11 +1,12 @@
 import os
 import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -50,7 +51,7 @@ def run_in_blender(test_module, timeout=300):
         str(blender), "-b", "--factory-startup", "--python-exit-code", "1",
         "--python", str(runner), "--", str(test_module),
     ]  # fmt: skip
-    return subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout, cwd=str(ROOT))
+    return _proc.run(cmd, check=False, capture_output=True, text=True, timeout=timeout, cwd=str(ROOT))
 
 
 @pytest.fixture

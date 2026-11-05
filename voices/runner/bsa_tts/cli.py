@@ -20,7 +20,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +28,7 @@ import urllib.request
 from pathlib import Path
 
 from bsa_tts import EXIT_ERROR, EXIT_GPU_BUSY, EXIT_NOT_INSTALLED, EXIT_OK, EXIT_OOM, EXIT_USAGE, gpu
+from bsa_tts import proc as _proc
 
 OUT_SR = 48000
 REGISTRY = Path(__file__).resolve().parent / "registry.json"
@@ -163,7 +163,7 @@ def run_worker(model: dict, job: dict, workdir: Path) -> dict:
         HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1", HF_DATASETS_OFFLINE="1",
         PYTHONIOENCODING="utf-8", PYTHONUTF8="1",
     )  # fmt: skip
-    proc = subprocess.run([str(python), "-I", str(WORKER), str(job_path)], env=env, check=False)
+    proc = _proc.run([str(python), "-I", str(WORKER), str(job_path)], env=env, check=False)
     if proc.returncode == EXIT_OOM:
         raise CliError("CUDA ran out of memory while generating. Close other programs that use the GPU.", EXIT_OOM)
     if proc.returncode != 0:

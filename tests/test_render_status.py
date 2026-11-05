@@ -4,13 +4,13 @@ what describe() gives the page's Render stage, and CLI render-status."""
 import json
 import os
 import struct
-import subprocess
 import sys
 import zlib
 from pathlib import Path
 
 import pytest
 
+from bsa import proc as _proc
 from bsa import render_status as rs
 from bsa.image_checks import Finding
 
@@ -305,7 +305,7 @@ def test_stuck_frames_from_digests():
 def test_alive_for_this_process_and_dead_for_an_exited_one():
     me = {"state": "running", "pid": os.getpid(), "pid_token": rs.process_token(os.getpid())}
     assert rs.is_alive(me)
-    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc = _proc.popen([sys.executable, "-c", "pass"])
     proc.wait()
     token = rs.process_token(proc.pid)
     assert token is None
@@ -408,7 +408,7 @@ def test_describe_a_dead_render_says_how_to_go_on(tmp_path):
 
 def _cli(home: Path, *args):
     env = {**os.environ, "BSA_HOME": str(home)}
-    return subprocess.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
+    return _proc.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
                           env=env, cwd=str(home), timeout=120)  # fmt: skip
 
 
@@ -636,7 +636,7 @@ def test_settling_leaves_a_run_that_started_alone(tmp_path):
 def test_starting_leaves_a_live_run_of_another_process_alone(tmp_path):
     clock = Clock()
     path = rs.status_path(tmp_path, "preview")
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    proc = _proc.popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         doc = {"version": 2, "state": "running", "kind": "render", "preset": "preview", "pid": proc.pid,
                "pid_token": rs.process_token(proc.pid), "run": {"kind": "render", "steps": [], "current": "render"}}  # fmt: skip
@@ -671,7 +671,7 @@ def test_a_dead_running_run_is_superseded_as_stopped(tmp_path):
 def test_a_live_run_of_another_process_is_left_alone(tmp_path):
     clock = Clock()
     path = rs.status_path(tmp_path, "preview")
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    proc = _proc.popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         token = rs.process_token(proc.pid)
         doc = {"version": 2, "state": "running", "kind": "render", "preset": "preview", "pid": proc.pid,

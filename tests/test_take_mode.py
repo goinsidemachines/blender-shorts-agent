@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
+from bsa import proc as _proc
 from bsa.narrate import contract, takes
 from bsa.narrate import run as nrun
 from bsa.short import Line, Short, Shot, save_short
@@ -80,13 +80,13 @@ class Env:
         self.vo = self.short / "audio" / "vo"
 
     def cli(self, *args):
-        proc = subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
+        proc = _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
                               text=True, env=self.env, check=False)  # fmt: skip
         assert proc.returncode == 0, proc.stdout + proc.stderr
         return json.loads(proc.stdout)
 
     def run_raw(self, *args):
-        return subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
+        return _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True,
                               text=True, env=self.env, check=False)  # fmt: skip
 
     def calls(self) -> list[dict]:

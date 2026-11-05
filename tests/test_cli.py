@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from bsa import jobstate
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "bsa_cli.py"
@@ -22,7 +23,7 @@ SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source" / "short.json"
 def run(home: Path, *args, cwd: Path | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
     env = {**os.environ, "BSA_HOME": str(home)}
     env.pop("ELEVENLABS_API_KEY", None)
-    return subprocess.run(
+    return _proc.run(
         [sys.executable, str(CLI), *map(str, args)],
         check=False, capture_output=True, text=True, env=env, cwd=str(cwd or home), timeout=timeout,
     )  # fmt: skip
@@ -1461,14 +1462,14 @@ def test_blender_stills_and_check_smoke(home, pendulum):
     base = [str(blender), "-b", "--factory-startup", "--python-exit-code", "1"]
 
     def make(stamp):
-        made = subprocess.run(base + ["--python-expr", _TINY_SCENES, "--", str(blend), stamp],
+        made = _proc.run(base + ["--python-expr", _TINY_SCENES, "--", str(blend), stamp],
                               check=False, capture_output=True, text=True, timeout=300)  # fmt: skip
         assert made.returncode == 0 and blend.is_file(), made.stdout + made.stderr
 
     def blender_cmd(*args):
         cmd = [str(blender), "-b", str(blend), "--factory-startup", "--python-exit-code", "1",
                "--python", str(ROOT / "bsa_blender.py"), "--", *map(str, args)]  # fmt: skip
-        return subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=900, env=env, cwd=str(home))
+        return _proc.run(cmd, check=False, capture_output=True, text=True, timeout=900, env=env, cwd=str(home))
 
     ok(run(home, "timeline", "pendulum"))
     make("-")  # a .blend whose scenes carry no timeline stamp
@@ -2841,7 +2842,7 @@ def test_check_reuses_unchanged_objects_in_a_changed_shot(home, pendulum, monkey
 
 
 def _child(code: str) -> subprocess.Popen:
-    return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    return _proc.popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace")  # fmt: skip
 
 

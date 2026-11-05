@@ -642,7 +642,7 @@ def test_default_check_without_whisper_starts_nothing(tmp_path, bsa_home, monkey
     def no_process(*a, **k):
         raise AssertionError(f"a process was started: {a}")
 
-    monkeypatch.setattr(local.subprocess, "run", no_process)
+    monkeypatch.setattr(local._proc, "run", no_process)
 
     def el(lns, voice, speed, out):
         for x in lns:

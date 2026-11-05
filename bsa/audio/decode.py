@@ -9,12 +9,13 @@ reused from then on.
 from __future__ import annotations
 
 import struct
-import subprocess
 import sys
 import wave
 from pathlib import Path
 
 import numpy as np
+
+from bsa import proc as _proc
 
 SR = 48000
 WAV_EXT = (".wav", ".wave")
@@ -136,7 +137,7 @@ def _decode_with_blender(src: Path, dst: Path) -> None:
     expr = (f"import sys; sys.path.insert(0, {str(_ROOT)!r}); from bsa.audio import decode; "
             f"decode.blender_decode({str(src)!r}, {str(dst)!r})")  # fmt: skip
     cmd = [str(blender), "-b", "--factory-startup", "--python-exit-code", "1", "--python-expr", expr]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=DECODE_TIMEOUT_S, check=False)
+    result = _proc.run(cmd, capture_output=True, text=True, timeout=DECODE_TIMEOUT_S, check=False)
     if result.returncode != 0 or not dst.is_file():
         tail = (result.stderr or result.stdout).strip().splitlines()[-1:] or ["no output"]
         raise RuntimeError(f"Blender could not decode {src.name}: {tail[0]}")

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from bsa import proc as _proc
 from bsa import settings
 from bsa.narrate import contract, install
 from bsa.narrate import run as nrun
@@ -157,7 +158,7 @@ def test_cli_narrate_keeps_the_voice_tools_log(tmp_path):
     env = {**os.environ, "BSA_HOME": str(home)}
 
     def cli(*args):
-        proc = subprocess.run([sys.executable, str(root / "bsa_cli.py"), *map(str, args)], capture_output=True,
+        proc = _proc.run([sys.executable, str(root / "bsa_cli.py"), *map(str, args)], capture_output=True,
                               text=True, env=env, check=False)  # fmt: skip
         assert proc.returncode == 0, proc.stdout + proc.stderr
         return json.loads(proc.stdout)

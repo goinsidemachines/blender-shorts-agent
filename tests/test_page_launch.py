@@ -6,7 +6,6 @@ import http.client
 import json
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -16,6 +15,7 @@ from pathlib import Path
 import pagefix
 import pytest
 
+from bsa import proc as _proc
 from bsa import render_status
 from bsa.review import launch, server
 from tests import test_cli
@@ -89,7 +89,7 @@ def _no_browser(home) -> str:
 def run(home, *args, timeout=120):
     env = {**os.environ, "BSA_HOME": str(home), "BROWSER": _no_browser(home)}
     env.pop("ELEVENLABS_API_KEY", None)
-    return subprocess.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
+    return _proc.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
                           env=env, cwd=str(home), timeout=timeout)  # fmt: skip
 
 
@@ -186,7 +186,7 @@ def test_ensure_fails_at_once_when_the_server_dies(tmp_path):
     pagefix.make_short(ws, "story")
     t0 = time.monotonic()
     with pytest.raises(launch.ServerUnavailable, match="stopped"):
-        launch.ensure_server(ws, spawn=lambda ws, lan: subprocess.Popen([sys.executable, "-c", "pass"]), timeout_s=20)
+        launch.ensure_server(ws, spawn=lambda ws, lan: _proc.popen([sys.executable, "-c", "pass"]), timeout_s=20)
     assert time.monotonic() - t0 < 10
 
 
@@ -196,7 +196,7 @@ def test_ensure_kills_a_server_that_never_answers(tmp_path):
     procs = []
 
     def spawn(ws, lan):
-        procs.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]))
+        procs.append(_proc.popen([sys.executable, "-c", "import time; time.sleep(60)"]))
         return procs[-1]
 
     with pytest.raises(launch.ServerUnavailable, match="did not answer"):

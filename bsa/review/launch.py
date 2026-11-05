@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from bsa import postpack, render_status
+from bsa import proc as _proc
 from bsa.review import history, page, server, snapshot, stages, store
 
 SERVER_FILE = ".page-server.json"
@@ -103,7 +104,7 @@ def _spawn(workspace: Path, lan: bool):
         )
     else:
         kw["start_new_session"] = True
-    return subprocess.Popen(cmd, **kw)  # our own CLI, no shell
+    return _proc.popen(cmd, **kw)  # our own CLI, no shell
 
 
 def _kill_tree(proc) -> None:
@@ -111,7 +112,7 @@ def _kill_tree(proc) -> None:
     its child)."""
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True,
+            _proc.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], check=False, capture_output=True,
                            timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)  # fmt: skip
         else:
             os.killpg(proc.pid, signal.SIGKILL)  # start_new_session made it a group leader

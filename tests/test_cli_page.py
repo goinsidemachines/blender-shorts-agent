@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from bsa import jobstate
+from bsa import proc as _proc
 from bsa.review import decisions, notes
 from tests import test_cli
 from tests.test_cli import CLI, ok, run
@@ -85,7 +86,7 @@ def test_reset_supersedes_approvals(home, pendulum):
 def test_chat_and_page_approve_race_marks_state_once(home, pendulum):
     _to(home, pendulum, "story")
     procs = [
-        subprocess.Popen(
+        _proc.popen(
             [sys.executable, str(CLI), "page", "decide", "pendulum", "story", "approve", "--by", by],
             env={**os.environ, "BSA_HOME": str(home)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
@@ -131,12 +132,12 @@ def test_a_failed_apply_gives_the_claim_back(home, pendulum, monkeypatch):
 def test_wait_racing_decide_marks_state_once(home, pendulum):
     _to(home, pendulum, "story")
     env = {**os.environ, "BSA_HOME": str(home)}
-    waiter = subprocess.Popen(
+    waiter = _proc.popen(
         [sys.executable, str(CLI), "page", "wait", "pendulum", "--stage", "story", "--timeout", "10", "--poll", "0.05"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )  # fmt: skip
     deciders = [
-        subprocess.Popen(
+        _proc.popen(
             [sys.executable, str(CLI), "page", "decide", "pendulum", "story", "approve", "--by", by],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )

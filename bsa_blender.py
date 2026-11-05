@@ -1891,16 +1891,17 @@ def cmd_camtest(args) -> dict:
 
 def _build_script_mode(sdir: Path) -> Path:
     """Run source/build.py in a fresh background Blender (script mode, exactly as 06-build.md runs it)."""
-    import subprocess
 
     import bpy
+
+    from bsa import proc as _proc
 
     build = sdir / "source" / "build.py"
     if not build.is_file():
         raise CliError(f"{build} does not exist: write it first (06-build.md)")
     cmd = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1", "--python", str(build), "--",
            str(PLUGIN_ROOT), str(sdir)]  # fmt: skip
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
     blend = _blend(sdir)
     if proc.returncode != 0 or not blend.is_file():
         lines = [ln.strip() for ln in (proc.stderr or proc.stdout or "").splitlines() if ln.strip()]
@@ -2121,10 +2122,12 @@ def _start_side_check(args, sdir: Path, chain) -> _SideCheck:
 
     import bpy
 
+    from bsa import proc as _proc
+
     cmd = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1", "--python",
            str(PLUGIN_ROOT / "bsa_blender.py"), "--", "check", str(sdir), "--every", str(args.every), "--in-chain"]  # fmt: skip
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                            errors="replace")  # fmt: skip
+    proc = _proc.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                           errors="replace")  # fmt: skip
     return _SideCheck(proc, chain)
 
 

@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from bsa import proc as _proc
 from bsa.machine import Machine
 from bsa.narrate.contract import NarrationError
 from bsa.settings import bsa_home
@@ -100,7 +101,7 @@ def _needs_python() -> bool:
     if uv is None:
         return True
     try:
-        proc = subprocess.run(
+        proc = _proc.run(
             [str(uv), "python", "find", "3.12"], check=False, capture_output=True, text=True, timeout=30
         )
     except (OSError, subprocess.SubprocessError):
@@ -167,7 +168,7 @@ def _make_refs(uv: str, runner: Path, run) -> None:
             shutil.copyfile(out / f"{ref_id}.wav", refs / filename)
 
 
-def install(models: list[str], run=subprocess.run) -> Path:
+def install(models: list[str], run=_proc.run) -> Path:
     """Copy the runner and the needed engines to <bsa_home>/voices, `uv sync` each, download the weights and make the
     Chatterbox reference clips. Returns the runner's folder. Call only after the user approved download_plan()."""
     uv_exe = uv_path()
@@ -229,7 +230,7 @@ def suggest(m: Machine) -> dict:
     return {"suggested": suggested, "options": options}
 
 
-def sample(model: str, voice: str, run=subprocess.run) -> Path:
+def sample(model: str, voice: str, run=_proc.run) -> Path:
     """Render one short test line with an installed voice so the user can listen before choosing."""
     from bsa.narrate import local
 

@@ -3,13 +3,13 @@ cached in `<workspace>/.assets-cache/fonts/`, else a clear warning saying how to
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 from fontbuild import build_font, build_variable
 
 from bsa import fonts
+from bsa import proc as _proc
 from bsa.short import Line, Short, Shot
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -127,7 +127,7 @@ def test_report_for_cli_fonts(tmp_path):
 
 def test_cli_fonts_with_a_weight(tmp_path):
     env = {**os.environ, "BSA_HOME": str(tmp_path / "home")}
-    out = subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), "fonts", "No Such Font Anywhere@600"],
+    out = _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), "fonts", "No Such Font Anywhere@600"],
                          capture_output=True, text=True, check=True, env=env).stdout  # fmt: skip
     data = json.loads(out)
     assert data["installed"] is False and data["requested_weight"] == 600

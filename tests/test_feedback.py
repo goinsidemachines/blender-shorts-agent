@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from bsa import feedback, settings
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "bsa_cli.py"
@@ -169,7 +170,7 @@ def test_feedback_setting(bsa_home):
 
 def run(home: Path, *args) -> subprocess.CompletedProcess:
     env = {**os.environ, "BSA_HOME": str(home)}
-    return subprocess.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
+    return _proc.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
                           env=env, cwd=str(home), timeout=120)  # fmt: skip
 
 

@@ -6,13 +6,13 @@ import json
 import os
 import shutil
 import struct
-import subprocess
 import zlib
 from pathlib import Path
 
 import numpy as np
 
 from bsa import engine_runs, jobstate, render_status, workspace
+from bsa import proc as _proc
 from bsa.narrate.run import HEARD_FILE
 from bsa.review import decisions, snapshot, stages, worddiff
 from bsa.short import load_short, spoken_text
@@ -51,7 +51,7 @@ def make_mp4(path: Path, seconds: float = 1.0) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size=1080x1920:rate=30:duration={seconds}",
            "-vf", "scale=270:480", "-pix_fmt", "yuv420p", str(path)]  # fmt: skip
-    return subprocess.run(cmd, check=False, capture_output=True).returncode == 0 and path.exists()
+    return _proc.run(cmd, check=False, capture_output=True).returncode == 0 and path.exists()
 
 
 COUNTER_STEP = 7 * 255 / 219  # the full-range grey between two frames of a counter video
@@ -68,7 +68,7 @@ def make_counter_mp4(path: Path, frames: int = 30) -> bool:
     cmd = [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=gray:s=270x480:r=30",
            "-vf", "format=yuv420p,geq=lum='16+N*7':cb=128:cr=128", "-frames:v", str(frames),
            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "10", str(path)]  # fmt: skip
-    return subprocess.run(cmd, check=False, capture_output=True).returncode == 0 and path.exists()
+    return _proc.run(cmd, check=False, capture_output=True).returncode == 0 and path.exists()
 
 
 def counter_frame(grey: float) -> int:
