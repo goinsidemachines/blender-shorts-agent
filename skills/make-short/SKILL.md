@@ -127,7 +127,7 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    restore`, which puts back `state.json.bak` (the copy before the last save; the damaged file is kept), then
    check `next` and redo only the stage that the backup lacks.
 4. **The user sees one review page, never Markdown or JSON.** Every stage of a short (interview, story,
-   storyboard, engine, narration, render, final, post) is on one local page that updates itself as the files
+   storyboard, the optional camera stage, engine, narration, render, final, post) is on one local page that updates itself as the files
    change. Talk about what is on it; never paste short.json or ask the user to open your working files.
    - **Open it once, at the interview:** `CLI page SHORT` (`playbook/01-interview.md`). Its result has `url` and
      `opened`. When `opened` is false, the page did not open (or never checked in): tell the user it didn't open

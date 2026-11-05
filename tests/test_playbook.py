@@ -519,3 +519,12 @@ def test_time_warps_keep_sound_on_real_beats():
     assert "own clock" in text
     assert "events from the build" in text or "source/events.json" in text
     assert "skip beats" in text
+
+
+def test_skill_lists_every_new_command():
+    skill = _read("SKILL.md")
+    for cmd in ("BLENDER camtest", "BLENDER relink", "CLI workspace move"):
+        assert cmd in skill, cmd
+    build = _flat(_read("playbook/06-build.md"))
+    assert "camera.follow" in build and "window_frames" in build
+    assert "camera stage" in _flat(skill)

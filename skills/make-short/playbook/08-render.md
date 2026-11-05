@@ -97,7 +97,7 @@ The page updates itself while something runs.
 
 Every shot carries a **fingerprint**: a hash of everything that can change its pixels (its scene's render settings,
 world and colour management, its camera and every object's motion at each of its frames, meshes, modifiers,
-materials and node trees, images and fonts with their files, lights, text, the compositor, visibility). Its frames
+materials and node trees (a Geometry Nodes modifier's input values too), images and fonts with their files, lights, text, the compositor, visibility). Its frames
 (`frames/<preset>/<shot>/.render.json`), its anchors and its scene checks are stamped with it, so after a rebuild
 only the shots whose fingerprint changed render again, re-project their anchors and are checked again; the others
 are kept, even though the .blend was saved again. A shot also renders again when its frame range (`new range`) or
