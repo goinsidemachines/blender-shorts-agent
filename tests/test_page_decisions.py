@@ -1,9 +1,15 @@
+import json
 import os
 import threading
 
 import pytest
 
+from bsa import jobstate
 from bsa.review import decisions, versions
+from tests import test_cli
+from tests.test_cli import ok, run
+
+home, workspace, pendulum = test_cli.home, test_cli.workspace, test_cli.pendulum  # the CLI tests' fixtures
 
 
 def test_versions_count_up_only_on_visible_change(tmp_path):
@@ -119,3 +125,33 @@ def test_concurrent_approvals_record_one(tmp_path):  # Review Focus 1
     [t.join() for t in ts]
     assert sum(isinstance(r, dict) for r in results) == 1
     assert len([d for d in decisions.load(tmp_path) if d["decision"] == "approve"]) == 1
+
+
+def _cli_one_take(home, short, one_take):
+    if one_take:
+        path = short / "source" / "short.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["camera"] = {"style": "one-take", "seconds": 20}
+        for shot, at in zip(data["shots"], (0, 6, 13), strict=True):
+            shot["at"] = at
+        path.write_text(json.dumps(data), encoding="utf-8")
+    ok(run(home, "state", short.name, "done", "interview"))
+    for stage in ("story", "storyboard"):
+        ok(run(home, "page", "decide", short.name, stage, "approve", "--by", "chat"))
+
+
+def test_approving_the_camera_marks_it_done(home, pendulum):
+    _cli_one_take(home, pendulum, True)
+    assert ok(run(home, "state", "pendulum"))["next"] == "camera"
+    out = ok(run(home, "page", "decide", "pendulum", "camera", "approve", "--by", "chat"))
+    assert out["decision"]["applied"] is True and out["state"]["next"] == "engine"
+    assert jobstate.load_state(pendulum)["stages"]["camera"]["version"] == 1
+
+
+def test_the_camera_of_a_short_without_the_stage_is_refused(home, pendulum):
+    _cli_one_take(home, pendulum, False)
+    proc = run(home, "page", "decide", "pendulum", "camera", "approve", "--by", "chat")
+    assert proc.returncode == 1 and "not a stage of this short" in proc.stderr and "Traceback" not in proc.stderr
+    proc = run(home, "state", "pendulum", "done", "camera")
+    assert proc.returncode == 1 and "not a stage of this short" in proc.stderr
+    assert "camera" not in jobstate.load_state(pendulum)["stages"]

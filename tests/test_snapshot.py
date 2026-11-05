@@ -6,13 +6,13 @@ import pytest
 from bsa.review import notes, snapshot, stages, store
 
 
-@pytest.mark.parametrize("stage", stages.PAGE_STAGES)
+@pytest.mark.parametrize("stage", stages.page_stages(False))
 def test_snapshot_at_every_stage(tmp_path, stage):
     sdir = pagefix.make_short(tmp_path / "My Shorts é", stage)
     snap = snapshot.build(sdir, settings={})
     assert snap["schema"] == 1 and snap["current"] == stage and snap["short"]["key"] == sdir.name
-    assert [s["id"] for s in snap["stages"]] == list(stages.PAGE_STAGES)
-    i = stages.PAGE_STAGES.index(stage)
+    assert [s["id"] for s in snap["stages"]] == list(stages.page_stages(False))
+    i = stages.page_stages(False).index(stage)
     assert all(s["status"] == "done" for s in snap["stages"][:i])
     assert snap["stages"][i]["status"] == "current"
     assert all(s["status"] == "locked" for s in snap["stages"][i + 1 :])

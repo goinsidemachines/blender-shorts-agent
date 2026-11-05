@@ -193,7 +193,8 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
     with `side_run`, a finished side run's (`preview-<side_run>`), on a 30-frame timeline; after Render, the checks,
     the frame checks and the final MP4 (a 30-frame counter video, when ffmpeg is there). The post text comes with
     the short.json."""
-    if stage != "done" and stage not in stages.PAGE_STAGES:
+    page = stages.page_stages(False)  # the pendulum is a cuts short: no camera stage
+    if stage != "done" and stage not in page:
         raise ValueError(f"unknown stage {stage!r}")
     sdir = workspace.new_short(Path(workspace_dir), "Pendulum", number)
     shutil.copyfile(SOURCE, sdir / "source" / "short.json")
@@ -203,9 +204,9 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
     (sdir / "review" / "estimate.json").write_text(
         json.dumps({"frames": 450, "eevee_s": 300.0, "cycles_s": 1200.0, "per_scene": []}), encoding="utf-8"
     )
-    upto = len(stages.PAGE_STAGES) if stage == "done" else stages.PAGE_STAGES.index(stage)
+    upto = len(page) if stage == "done" else page.index(stage)
     ctx = snapshot.load_ctx(sdir, {})
-    for page_stage in stages.PAGE_STAGES[:upto]:
+    for page_stage in page[:upto]:
         for job_stage in stages.COVERS.get(page_stage, (page_stage,)):
             jobstate.mark_done(sdir, job_stage)
         if page_stage in stages.APPROVAL_STAGES:
@@ -213,14 +214,14 @@ def make_short(workspace_dir: Path, stage: str, *, number: int = 1, side_run: st
             choice = {"engine": "eevee"} if page_stage == "engine" else None
             made = decisions.record(sdir, page_stage, version, "approve", "page", current=version, choice=choice)
             decisions.mark_applied(sdir, made["id"])
-    if upto >= stages.PAGE_STAGES.index("render"):
+    if upto >= page.index("render"):
         write_render_status(sdir, "preview", state="running" if stage == "render" else "done",
                             done=10 if stage == "render" else FRAMES)  # fmt: skip
         if side_run:
             write_render_status(sdir, f"preview-{side_run}", state="done")
         write_timeline(sdir, frames=30)  # the final's counter video is 30 frames: the flicker at 12 sits on it
         record_edit(sdir, "preview")
-    if upto > stages.PAGE_STAGES.index("render"):
+    if upto > page.index("render"):
         _write_checks(sdir)
         make_counter_mp4(sdir / "out" / "pendulum.mp4")
         record_edit(sdir, "final")

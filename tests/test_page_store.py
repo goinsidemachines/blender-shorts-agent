@@ -15,14 +15,18 @@ def test_statuses_map_jobstate_onto_page_stages():
     s = stages.statuses(["interview", "story", "storyboard", "engine", "narration", "build", "checks"])
     assert s["engine"] == "done" and s["render"] == "current" and s["final"] == "locked"
     assert stages.statuses([])["interview"] == "current"
-    assert list(stages.statuses([])) == list(stages.PAGE_STAGES)
+    assert list(stages.statuses([])) == list(stages.page_stages(False))
+    assert stages.page_stages(False) == tuple(p for p in stages.PAGE_STAGES if p != "camera")
+    with_camera = stages.statuses(["interview", "story", "storyboard", "narration"], stages.page_stages(True))
+    assert list(with_camera) == list(stages.PAGE_STAGES) and with_camera["camera"] == "current"
+    assert with_camera["engine"] == "locked" and with_camera["narration"] == "done"
 
 
 def test_stage_constants():
     assert stages.LABELS["engine"] == "Engine"
     assert set(stages.LABELS) == set(stages.PAGE_STAGES)
     assert stages.COVERS["render"] == ("build", "checks", "preview")
-    assert stages.APPROVAL_STAGES == ("story", "storyboard", "engine") and stages.ACK_STAGES == ("final",)
+    assert stages.APPROVAL_STAGES == ("story", "storyboard", "camera", "engine") and stages.ACK_STAGES == ("final",)
 
 
 def test_note_round_trip(tmp_path):

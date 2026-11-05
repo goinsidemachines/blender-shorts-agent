@@ -22,11 +22,11 @@ from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
 from bsa.narrate.run import HEARD_FILE
 from bsa.review import decisions, facts, notes, pages, stages, store, track, versions, voice
-from bsa.short import Short, label_text, load_short
+from bsa.short import Short, camera_stage_wanted, label_text, load_short
 from bsa.timeline import WindowOverrun, build_timeline, pacing
 
 SCHEMA = 1
-VERSIONED = ("interview", "story", "storyboard", "engine", "narration", "final", "post")
+VERSIONED = ("interview", "story", "storyboard", "camera", "engine", "narration", "final", "post")
 
 
 @dataclass
@@ -387,6 +387,82 @@ def _storyboard(ctx: Ctx) -> dict | None:
     return out
 
 
+CAMERA_LEAD = ("The camera path in Workbench grey: a draft of the move, not the look. Check what each shot frames and "
+               "how the camera moves.")
+
+
+def _camera_file(sdir: Path, name: str) -> dict | None:
+    """A camera test file (review/camtest/<name>) as a file ref tagged with its mtime_ns, so a new clip under the
+    same name is loaded again; None when it is not there."""
+    from bsa import camtest
+
+    path = sdir / camtest.FOLDER / name
+    try:
+        mtime = path.stat().st_mtime_ns if path.is_file() else None
+    except OSError:
+        mtime = None
+    return None if mtime is None else {"file": (camtest.FOLDER / name).as_posix(), "tag": mtime}
+
+
+def _camera_record(sdir: Path) -> dict | None:
+    from bsa import camtest
+
+    try:
+        data = json.loads((sdir / camtest.FOLDER / camtest.RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _camera_timing(ctx: Ctx, short: Short) -> str:
+    """The hash of the timeline as it is now (what source/timeline.json holds once CLI timeline has run): the takes'
+    timing once narration made them, else reading pace, as BLENDER camtest works it out."""
+    from bsa.narrate.run import takes_durations, takes_onsets
+    from bsa.timeline import timeline_hash, to_json
+
+    durations = takes_durations(ctx.sdir, short)
+    tl = build_timeline(short, durations, settings_mod.has_end_card(ctx.settings, short),
+                        onsets=takes_onsets(ctx.sdir, short) if durations is not None else None)  # fmt: skip
+    return timeline_hash(json.loads(json.dumps(to_json(tl))))
+
+
+def _camera(ctx: Ctx) -> dict | None:
+    """The camera test (BLENDER camtest) for the optional Camera stage: None for a short without the stage. `stale`
+    (left out of the version) says why the clip no longer shows the short: none yet, made for only some shots, or
+    made before the timing or the scene changed."""
+    from bsa import camtest, freshness
+    from bsa import workspace as workspace_mod
+
+    short = _short(ctx)
+    if not camera_stage_wanted(short):
+        return None
+    command = f"BLENDER camtest {workspace_mod.short_key(ctx.sdir, ctx.settings.get('workspace'))}"
+    video = _camera_file(ctx.sdir, camtest.MP4)
+    rec = _camera_record(ctx.sdir) if video is not None else None
+    made = None
+    if rec is not None:
+        made = {k: rec.get(k) for k in ("shots", "frames", "percent")}
+    tested = rec.get("shots") if rec is not None else None
+    missing = [s.id for s in short.shots if not isinstance(tested, list) or s.id not in tested]
+    if rec is not None and missing:  # a clip of some shots (--shots) does not show the short
+        stale = f"the camera test has no {', '.join(missing)}: run {command} for every shot"
+    else:
+        try:
+            timing = _camera_timing(ctx, short)
+        except Exception as e:  # noqa: BLE001 - a bad input must never break the page
+            stale = _plain(ctx.sdir, f"the timing can't be worked out: {e}")
+        else:
+            stale = camtest.stale(rec, freshness.blend_stat(ctx.sdir), timing)
+    return {
+        "lead": CAMERA_LEAD,
+        "video": video,
+        "sheet": _camera_file(ctx.sdir, camtest.SHEET),
+        "made": made,
+        "stale": stale,
+        "command": command,
+    }
+
+
 def _estimate(sdir: Path, engine: str) -> float | None:
     try:
         data = json.loads((sdir / "review" / "estimate.json").read_text(encoding="utf-8"))
@@ -708,6 +784,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
     "interview": _interview,
     "story": _story,
     "storyboard": _storyboard,
+    "camera": _camera,
     "engine": _engine,
     "narration": _narration,
     "render": _render,
@@ -718,7 +795,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
+_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",), "camera": ("stale",),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
                          "checklist_problem", "thumbnail_problems")}
@@ -829,7 +906,8 @@ def build(sdir: Path, *, settings: dict | None = None, now: float | None = None)
     ctx = load_ctx(sdir, settings)
     problems = [p for p in (ctx.short_problem, ctx.state_problem) if p]
     done = set(ctx.state["stages"]) if ctx.state else set()
-    status = stages.statuses(done)
+    page = stages.page_stages(camera_stage_wanted(ctx.short))  # a short.json that can't be read: no camera stage
+    status = stages.statuses(done, page)
     live: list[dict] = []
     try:
         live = [d for d in decisions.load(sdir) if not d.get("superseded")]
@@ -840,8 +918,8 @@ def build(sdir: Path, *, settings: dict | None = None, now: float | None = None)
         note_list = notes.load(sdir)
     except Exception as e:  # noqa: BLE001 - a bad input must never break the page
         problems.append(_plain(sdir, e))
-    rows = [_stage(ctx, s, status[s], live, problems) for s in stages.PAGE_STAGES]
-    current = next((s for s in stages.PAGE_STAGES if status[s] == "current"), stages.PAGE_STAGES[-1])
+    rows = [_stage(ctx, s, status[s], live, problems) for s in page]
+    current = next((s for s in page if status[s] == "current"), page[-1])
     short = ctx.short
     panel = None
     try:

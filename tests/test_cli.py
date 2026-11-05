@@ -858,6 +858,29 @@ def test_state_done_build_resets_later_stages(home, pendulum):
     assert not {"checks", "preview", "final"} & stages.keys()
 
 
+@pytest.mark.parametrize("one_take", [False, True])
+def test_preview_needs_the_camera_only_when_the_short_wants_it(home, pendulum, monkeypatch, capsys, one_take):
+    import bsa_blender
+
+    if one_take:
+        path = pendulum / "source" / "short.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["camera"] = {"style": "one-take", "seconds": 20}
+        for shot, at in zip(data["shots"], (0, 6, 13), strict=True):
+            shot["at"] = at
+        path.write_text(json.dumps(data), encoding="utf-8")
+    for stage in ("interview", "story", "storyboard", "engine", "narration"):
+        jobstate.mark_done(pendulum, stage)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    monkeypatch.setattr(bsa_blender, "_preview_chain", lambda *a: {"chain": "ran"})
+    code = bsa_blender.main(["preview", "pendulum"])
+    err = capsys.readouterr().err
+    if one_take:
+        assert code == 1 and "still needs: camera" in err, err
+    else:
+        assert code == 0 and "still needs" not in err, err
+
+
 # --------------------------------------------------------------------------- bsa_blender.py
 
 
@@ -1533,7 +1556,7 @@ def test_voice_test_custom_failure_is_one_plain_line(home):
 
 
 def _past_narration(home, short: Path) -> None:
-    for stage in jobstate.STAGES[: jobstate.STAGES.index("build")]:
+    for stage in jobstate.wanted_stages(short)[: jobstate.wanted_stages(short).index("build")]:
         jobstate.mark_done(short, stage)
     ok(run(home, "timeline", short.name))
 

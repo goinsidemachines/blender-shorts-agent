@@ -1974,7 +1974,8 @@ def cmd_preview(args) -> dict:
     sdir = _short_dir(args.short)
     args.short = str(sdir)  # resolved once: a short made meanwhile can't make a number ambiguous mid-chain
     stages = jobstate.load_state(sdir)["stages"]
-    missing = [s for s in jobstate.STAGES[: jobstate.STAGES.index("build")] if s not in stages]
+    wanted = jobstate.wanted_stages(sdir)  # the camera stage only when the short asks for it
+    missing = [s for s in wanted[: wanted.index("build")] if s not in stages]
     if missing:
         raise CliError("BLENDER preview rebuilds a short that is past narration; this one still needs: "
                        f"{', '.join(missing)} (CLI state SHORT)")  # fmt: skip

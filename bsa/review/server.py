@@ -510,7 +510,10 @@ class _Handler(BaseHTTPRequestHandler):
         label = stages.LABELS[stage]
         if stage not in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES):
             raise decisions.DecisionRefused(f"The {label} has nothing to approve.")
-        status = stages.statuses(_done_stages(sdir)).get(stage)
+        page = stages.page_stages("camera" in jobstate.wanted_stages(sdir))
+        if stage not in page:
+            raise decisions.DecisionRefused(f"The {label} is not a stage of this short.")
+        status = stages.statuses(_done_stages(sdir), page).get(stage)
         if not (status == "current" or (stage in stages.ACK_STAGES and status == "done")):
             raise decisions.DecisionRefused(f"The {label} is not the stage being made now, so it can't be answered.")
         current = snapshot.stage_version(sdir, stage)

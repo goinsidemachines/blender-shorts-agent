@@ -1,9 +1,11 @@
 import json
+import os
 from pathlib import Path
 
 import kitfix
 import numpy as np
 import pagefix
+import pytest
 
 from bsa import jobstate
 from bsa import kit as kit_mod
@@ -328,3 +330,106 @@ def test_describe_one_plain_line_per_copied_value():
                                                                                            "font"]  # fmt: skip
     p = like.provenance(Path("x/03-how-a-clock-ticks"), ["style"], now=0, title="How a clock ticks", style={"font": "x"})
     assert p["title"] == "How a clock ticks" and p["style_keys"] == ["font"]
+
+
+# --------------------------------------------------------------------------- the optional camera stage
+
+
+def _one_take(sdir, approve=None):
+    """Make the fixture short a one-take short (or, with `approve`, a cuts short with camera.approve)."""
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text("utf-8"))
+    if approve is None:
+        data["camera"] = {"style": "one-take", "seconds": 20}
+        for shot, at in zip(data["shots"], (0, 6, 13), strict=True):
+            shot["at"] = at
+    else:
+        data["camera"] = {"approve": approve}
+    path.write_text(json.dumps(data), "utf-8")
+
+
+def _camtest(sdir, shots=None):
+    """review/camtest/ as BLENDER camtest leaves it, made from this .blend and this timing."""
+    from bsa import camtest, freshness, settings
+    from bsa.timeline import build_timeline, timeline_hash, to_json
+
+    short = load_short(sdir / "source" / "short.json")
+    blend = sdir / "blend" / "short.blend"
+    blend.parent.mkdir(parents=True, exist_ok=True)
+    if not blend.exists():
+        blend.write_bytes(b"BLENDER-v400")
+    tl = build_timeline(short, None, settings.has_end_card({}, short))
+    folder = sdir / camtest.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / camtest.MP4).write_bytes(b"\0\0\0 ftypisom")
+    pagefix.write_png(folder / camtest.SHEET, np.full((8, 8, 3), 128, np.uint8))
+    rec = camtest.record(freshness.blend_stat(sdir), timeline_hash(json.loads(json.dumps(to_json(tl)))),
+                         shots or [s.id for s in short.shots], 0.33, tl.n_frames)  # fmt: skip
+    (folder / camtest.RECORD).write_text(json.dumps(rec), "utf-8")
+
+
+TODAYS_PAGE_STAGES = ["interview", "story", "storyboard", "engine", "narration", "render", "final", "post"]
+STORYBOARD_FINGERPRINT = "06da5a6dff4a3a2f8f562a1c52145e1648f2e603940c3e3ee64b1cb77941e108"  # before the camera stage
+
+
+@pytest.mark.parametrize("stage", ["storyboard", "engine", "done"])
+def test_a_short_without_the_camera_stage_has_todays_stage_rows(tmp_path, stage):
+    sdir = pagefix.make_short(tmp_path, stage)
+    snap = snapshot.build(sdir, settings={})
+    assert [s["id"] for s in snap["stages"]] == TODAYS_PAGE_STAGES
+    assert [s["version"] for s in snap["stages"]] == [1, 1, 1, 1, 1, None, 1, 1]
+    want = {"storyboard": "current", "engine": "current", "done": "done"}[stage]
+    assert _stage(snap, "storyboard" if stage != "engine" else "engine")["status"] == want
+    sb = _stage(snap, "storyboard")["content"]
+    assert snapshot.stage_fingerprint(sdir, "storyboard", sb) == STORYBOARD_FINGERPRINT
+    assert "camera" not in jobstate.load_state(sdir)["stages"]
+    assert snapshot.stage_version(sdir, "camera") is None  # nothing to approve on a plain short
+
+
+def test_the_camera_stage_shows_the_clip_and_says_when_it_is_stale(tmp_path):
+    from bsa import camtest
+
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    ws = {"workspace": str(tmp_path)}
+    _one_take(sdir)
+    snap = snapshot.build(sdir, settings=ws)
+    assert [s["id"] for s in snap["stages"]][2:5] == ["storyboard", "camera", "engine"]
+    row = _stage(snap, "camera")
+    assert row["label"] == "Camera" and row["status"] == "locked" and row["problem"] is None
+    c = row["content"]
+    assert c["video"] is None and c["sheet"] is None and c["made"] is None
+    assert c["stale"] == "no camera test yet" and c["command"] == "BLENDER camtest 01" and c["lead"]
+    _camtest(sdir)
+    c = _stage(snapshot.build(sdir, settings=ws), "camera")["content"]
+    mtime = (sdir / camtest.FOLDER / camtest.MP4).stat().st_mtime_ns
+    assert c["video"] == {"file": "review/camtest/camtest.mp4", "tag": mtime}
+    assert c["sheet"]["file"] == "review/camtest/camtest-sheet.png" and isinstance(c["sheet"]["tag"], int)
+    assert c["made"]["shots"] == ["s01", "s02", "s03"] and c["made"]["percent"] == 35 and c["made"]["frames"] > 0
+    assert c["stale"] is None
+    version = snapshot.stage_version(sdir, "camera")
+    blend = sdir / "blend" / "short.blend"
+    st = blend.stat()
+    os.utime(blend, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))  # the scene was saved again
+    c = _stage(snapshot.build(sdir, settings=ws), "camera")["content"]
+    assert "scene changed" in c["stale"]
+    assert snapshot.stage_version(sdir, "camera") == version  # stale is said, never a new version
+
+
+def test_a_camera_test_of_some_shots_does_not_cover_the_short(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    ws = {"workspace": str(tmp_path)}
+    _one_take(sdir)
+    _camtest(sdir, shots=["s01", "s02"])
+    c = _stage(snapshot.build(sdir, settings=ws), "camera")["content"]
+    assert c["video"] is not None and "s03" in c["stale"] and "BLENDER camtest 01" in c["stale"]
+
+
+def test_camera_approve_on_a_cuts_short_adds_the_stage_and_the_timing_moves_it_stale(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "storyboard")
+    ws = {"workspace": str(tmp_path)}
+    _one_take(sdir, approve=True)
+    _camtest(sdir)
+    assert _stage(snapshot.build(sdir, settings=ws), "camera")["content"]["stale"] is None
+    path = sdir / "source" / "short.json"
+    path.write_text(path.read_text("utf-8").replace("beat.", "beat, and more words to say here."), "utf-8")
+    assert "timing changed" in _stage(snapshot.build(sdir, settings=ws), "camera")["content"]["stale"]

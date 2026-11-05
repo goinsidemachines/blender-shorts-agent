@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -177,3 +178,44 @@ def test_oserror_on_read_propagates_and_keeps_file(tmp_path, monkeypatch):
     monkeypatch.setattr(pathlib.Path, "read_bytes", real)
     assert list(jobstate.load_state(tmp_path)["stages"]) == ["interview"]
     assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+
+
+PENDULUM = Path(__file__).resolve().parent / "e2e" / "pendulum" / "source" / "short.json"
+
+
+def _short_with_camera(folder: Path, camera: dict | None) -> Path:
+    data = json.loads(PENDULUM.read_text(encoding="utf-8"))
+    if camera is not None:
+        data["camera"] = camera
+    (folder / "source").mkdir(parents=True, exist_ok=True)
+    (folder / "source" / "short.json").write_text(json.dumps(data), encoding="utf-8")
+    return folder
+
+
+@pytest.mark.parametrize("camera", [None, {"style": "cuts"}, {"approve": False}])
+def test_a_plain_short_has_no_camera_stage(tmp_path, camera):
+    sdir = _short_with_camera(tmp_path, camera)
+    assert "camera" not in jobstate.wanted_stages(sdir)
+    for st in ("interview", "story", "storyboard"):
+        jobstate.mark_done(sdir, st)
+    assert jobstate.next_stage(sdir) == "engine"
+
+
+@pytest.mark.parametrize("camera", [{"approve": True}, {"style": "one-take", "seconds": 13}])
+def test_the_camera_stage_is_wanted_only_when_asked_or_one_take(tmp_path, camera):
+    sdir = _short_with_camera(tmp_path, camera)
+    wanted = jobstate.wanted_stages(sdir)
+    assert wanted[wanted.index("storyboard") + 1 : wanted.index("storyboard") + 3] == ["camera", "engine"]
+    for st in ("interview", "story", "storyboard"):
+        jobstate.mark_done(sdir, st)
+    assert jobstate.next_stage(sdir) == "camera"
+    jobstate.mark_done(sdir, "camera")
+    assert jobstate.next_stage(sdir) == "engine"
+
+
+def test_an_unreadable_short_has_no_camera_stage(tmp_path):
+    assert jobstate.wanted_stages(tmp_path) == [s for s in jobstate.STAGES if s != "camera"]
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "short.json").write_text("{not json", encoding="utf-8")
+    assert "camera" not in jobstate.wanted_stages(tmp_path)
+    assert jobstate.STAGES.index("camera") == jobstate.STAGES.index("storyboard") + 1 and "camera" in jobstate.APPROVALS

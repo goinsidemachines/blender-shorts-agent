@@ -384,6 +384,7 @@ def cmd_state(args) -> dict:
                 raise CliError(f"--info is not valid JSON: {exc}") from exc
             if not isinstance(info, dict):
                 raise CliError("--info must be a JSON object")
+        _own_stage(sdir, args.stage)
         if args.stage in ("interview", "story"):
             _gate(sdir, args.stage)
         if args.stage in jobstate.APPROVALS:
@@ -404,6 +405,23 @@ def cmd_state(args) -> dict:
     elif args.action is not None:
         raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     return _state(sdir)
+
+
+NOT_A_STAGE = ("The camera is not a stage of this short: it is offered for a one-take short, or with \"approve\": true "
+               "in short.json's camera")  # fmt: skip
+
+
+def _own_stage(sdir: Path, stage: str) -> None:
+    """Refuse a stage this short doesn't have (the optional camera stage of a short that doesn't ask for it)."""
+    if stage not in jobstate.wanted_stages(sdir):
+        raise CliError(NOT_A_STAGE)
+
+
+def _page_stages(sdir: Path) -> tuple[str, ...]:
+    """The short's own page stages: the camera stage only when it wants it."""
+    from bsa.review import stages
+
+    return stages.page_stages("camera" in jobstate.wanted_stages(sdir))
 
 
 def _require_approval(sdir: Path, stage: str) -> None:
@@ -504,6 +522,8 @@ def _page_decide(args, sdir: Path) -> dict:
     stage, decision = _page_stage(args.words[2]), args.words[3]
     if stage not in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES):
         raise CliError(f"The {stages.LABELS[stage]} has nothing to approve.")
+    if stage not in _page_stages(sdir):
+        raise CliError(NOT_A_STAGE)
     if decision not in decisions.DECISIONS:
         raise CliError(f"usage: page decide SHORT STAGE approve|changes (not {decision!r})")
     if args.by is None:
@@ -578,6 +598,8 @@ def _page_wait(args, sdir: Path) -> dict:
     if len(args.words) != 2 or args.stage is None:
         raise CliError("usage: page wait SHORT --stage STAGE [--timeout S] [--poll S]")
     stage = _page_stage(args.stage)
+    if stage not in _page_stages(sdir):
+        raise CliError(NOT_A_STAGE)
     deadline = time.monotonic() + (args.timeout if args.timeout is not None else 600.0)
     poll = max(args.poll, 0.05)
 
@@ -589,7 +611,7 @@ def _page_wait(args, sdir: Path) -> dict:
                 and d["applied"] and not d["superseded"]]  # fmt: skip
 
     def stage_done() -> bool:
-        return stages.statuses(jobstate.load_state(sdir)["stages"])[stage] == "done"
+        return stages.statuses(jobstate.load_state(sdir)["stages"], _page_stages(sdir)).get(stage) == "done"
 
     old_sent = {n["id"] for n in sent_notes() if n["stage"] != stage}  # other stages' notes sent before: not news
     old_applied = {d["id"] for d in applied_approvals()}
