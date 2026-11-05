@@ -1429,6 +1429,38 @@ def cmd_assets(args) -> dict:
 # --------------------------------------------------------------------------- workspace move
 
 
+RELINK_TIMEOUT = 900  # seconds for one short's BLENDER relink (opening, reloading linked files, saving)
+
+
+def _relink(exe: Path, sdir: Path, old: Path) -> tuple[dict | None, str]:
+    """Run `BLENDER relink SDIR --from OLD` in a background Blender: (its result, "") or (None, why it failed)."""
+    import subprocess
+
+    from bsa import proc
+
+    cmd = [str(exe), "-b", "--factory-startup", "--python-exit-code", "1", "--python",
+           str(PLUGIN_ROOT / "bsa_blender.py"), "--", "relink", str(sdir), "--from", str(old)]  # fmt: skip
+    try:
+        r = proc.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RELINK_TIMEOUT,
+                     check=False)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        return None, f"Blender took more than {RELINK_TIMEOUT // 60} minutes"
+    except OSError as exc:
+        return None, f"Blender couldn't start: {_one_line(exc)}"
+    result = None
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("BSA_RESULT "):
+            try:
+                result = json.loads(line[len("BSA_RESULT ") :])
+            except ValueError:
+                result = None
+    if r.returncode == 0 and isinstance(result, dict) and result.get("ok", True) is not False:
+        return {k: result[k] for k in ("relinked", "missing", "saved", "warnings") if k in result}, ""
+    err = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+    why = (result or {}).get("error") if isinstance(result, dict) else None
+    return None, _one_line(why or (err[-1] if err else f"Blender stopped with exit code {r.returncode}"))
+
+
 def cmd_workspace(args) -> dict:
     """`workspace move NEW`: move the whole workspace and repoint the paths stored for it. Refuses while its page
     server, a render or the GPU lock is live, and never deletes the old folder (another drive: it is copied, every
@@ -1438,7 +1470,7 @@ def cmd_workspace(args) -> dict:
     import shutil
     import time
 
-    from bsa import gpulock, render_status, wsmove
+    from bsa import gpulock, locate, render_status, wsmove
     from bsa.review import launch, server
 
     s = settings.load_settings()
@@ -1486,17 +1518,27 @@ def cmd_workspace(args) -> dict:
 
     changed: list[str] = []
     not_fixed: list[dict] = []
-    relinked: list[str] = []
-    for blend in sorted(new.glob("*/blend/short.blend")):  # Task 13 runs BLENDER relink here
-        key = workspace.short_key(blend.parent.parent, new)
-        not_fixed.append({"what": f"{blend.parent.parent.name}: its .blend still points at {old} for its images, "
-                                  "sounds and linked files",
-                          "fix": f"BLENDER relink {key}"})  # fmt: skip
-
+    relinked: list[dict] = []
     s, keys = wsmove.rewrite(s, old, new)
     if keys:
         settings.save_settings(s)
         changed += [f"settings: {k}" for k in keys]
+
+    try:
+        exe, no_blender = locate.find_blender(s), None  # the settings as repointed: Blender may live in the workspace
+    except locate.BlenderNotFound as exc:
+        exe, no_blender = None, _one_line(exc)
+    for blend in sorted(new.glob("*/blend/short.blend")):
+        sdir = blend.parent.parent
+        if exe is not None:
+            print(f"relinking {sdir.name}/blend/short.blend ...", file=sys.stderr, flush=True)
+        res, why = _relink(exe, sdir, old) if exe is not None else (None, no_blender)
+        if res is not None:
+            relinked.append({"short": sdir.name, **res})
+            continue
+        not_fixed.append({"what": f"{sdir.name}: its .blend still points at {old} for its images, sounds and linked "
+                                  f"files ({why})",
+                          "fix": f'BLENDER relink {workspace.short_key(sdir, new)} --from "{old}"'})  # fmt: skip
     for path in sorted(new.glob("*/review/render-status-*.json")):
         status = render_status.read_status(path)
         short = status.get("short") if status else None
@@ -1514,7 +1556,8 @@ def cmd_workspace(args) -> dict:
 
     out = {"from": str(old), "to": str(new), "how": how, "changed": changed, "relinked": relinked,
            "not_fixed": not_fixed, "old_folder": None,
-           "note": "Stored fingerprints name the old folder, so a short in progress re-renders once on its next run."}  # fmt: skip
+           "note": "A short's stored fingerprints include its files' paths, so a short in progress re-renders and its "
+                   "checks run once more on its next run."}  # fmt: skip
     if how == "copied":
         out["old_folder"] = f"kept at {old}: delete it yourself once you have checked {new}"
         try:

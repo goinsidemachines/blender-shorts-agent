@@ -20,9 +20,10 @@ remember the workspace in your memory too ("Want me to note that in my memory as
 reads the settings file.
 
 To move the workspace later ("save my shorts somewhere else" with the shorts going too), use `CLI workspace move
-NEW`; never move it by hand (the settings, render statuses and each short's .blend name the old folder). It says what
-it changed, what it couldn't fix with the command for each, and, across drives, that the old folder is kept for the
-user to delete once they've checked the new one. `settings set workspace` only points future shorts at another
+NEW`; never move it by hand (the settings, render statuses and each short's .blend name the old folder). It
+re-points each short's .blend in Blender (`BLENDER relink`), and says what it changed, what it couldn't fix with the
+command for each, and, across drives, that the old folder is kept for the user to delete once they've checked the new
+one. `settings set workspace` only points future shorts at another
 folder; it moves nothing.
 
 ## 2. Narrator

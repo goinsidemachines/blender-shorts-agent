@@ -2226,6 +2226,64 @@ def cmd_probe(args) -> dict:
     return {"mp4": str(mp4.resolve()), **probe(mp4)}
 
 
+# --------------------------------------------------------------------------- relink (after a workspace move)
+
+_RELINK_KINDS = (("image", "images"), ("sound", "sounds"), ("font", "fonts"), ("movieclip", "movieclips"),
+                 ("cache_file", "cache_files"), ("volume", "volumes"), ("library", "libraries"))  # fmt: skip
+
+
+def _file_there(path: str) -> bool:
+    """A repointed file exists (a UDIM/tile set: its folder)."""
+    p = Path(path)
+    return p.parent.is_dir() if "<" in p.name else p.exists()
+
+
+def cmd_relink(args) -> dict:
+    """Re-point every file path of the short's .blend that is under OLD (--from) to the same path under NEW (--to,
+    default the short's workspace), and save it when anything changed. Packed files, //relative paths and data
+    linked from another .blend are left alone; nothing else in the file (the render engine, any setting) changes."""
+    import bpy
+
+    from bsa import wsmove
+
+    sdir = _short_dir(args.short)
+    blend = _blend(sdir)
+    if not blend.is_file():
+        raise CliError(f"{blend} does not exist: nothing to relink")
+    old = Path(args.from_)
+    new = Path(args.to) if args.to else sdir.parent
+    if not bpy.data.filepath or not wsmove.same_folder(Path(bpy.data.filepath), blend):
+        bpy.ops.wm.open_mainfile(filepath=str(blend))
+    relinked, missing, libraries, warnings = [], [], [], []
+    for kind, attr in _RELINK_KINDS:
+        for idb in getattr(bpy.data, attr, ()):
+            fp = idb.filepath
+            if not fp or fp.startswith("//") or fp == "<builtin>" or getattr(idb, "packed_file", None) is not None:
+                continue
+            if idb.library is not None or getattr(idb, "parent", None) is not None:
+                continue  # linked from (or an indirect library of) another .blend: that file names it
+            to = wsmove.repoint(bpy.path.abspath(fp, library=idb.library), old, new)
+            if to is None:
+                continue
+            idb.filepath = to
+            relinked.append({"type": kind, "name": idb.name, "from": fp, "to": to})
+            if not _file_there(to):
+                missing.append(to)
+            elif kind == "library":
+                libraries.append(idb)
+    for lib in libraries:
+        try:
+            lib.reload()
+        except RuntimeError as exc:
+            warnings.append(f"the linked file {lib.filepath} didn't reload: {_one_line(exc)}")
+    if relinked:
+        bpy.ops.wm.save_mainfile()
+    out = {"relinked": relinked, "missing": missing, "saved": bool(relinked)}
+    if warnings:
+        out["warnings"] = warnings
+    return out
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -2382,6 +2440,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")
     sp.set_defaults(fn=cmd_probe)
+
+    sp = sub.add_parser("relink", help="after a workspace move: re-point the .blend's files from --from OLD to the "
+                                       "short's workspace (or --to NEW) and save")  # fmt: skip
+    sp.add_argument("short")
+    sp.add_argument("--from", dest="from_", required=True, metavar="OLD", help="the workspace's old folder")
+    sp.add_argument("--to", default=None, metavar="NEW", help="the new folder (default: the short's workspace)")
+    sp.set_defaults(fn=cmd_relink)
     return p
 
 

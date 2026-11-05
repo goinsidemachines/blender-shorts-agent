@@ -54,8 +54,14 @@ Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook
 - `CLI workspace move NEW`: to move the workspace, use this; never move it by hand. It refuses while the page
   server, a render or the GPU lock is live, or when NEW is a folder that isn't empty. One drive: renamed. Another
   drive: copied, every file's size checked, the old folder kept (`old_folder`: the user deletes it after checking).
-  It repoints the settings and render-status paths; relay `not_fixed` (each with its `fix`) and `note` (a short in
-  progress re-renders once).
+  It repoints the settings and render-status paths, and runs `BLENDER relink` on every short's .blend (`relinked`);
+  relay `not_fixed` (each with its `fix`, e.g. `BLENDER relink SHORT --from OLD` for a .blend Blender couldn't open
+  or save) and `note` (the fingerprints include the files' paths, so a short in progress re-renders and its checks
+  run once more).
+- `BLENDER relink SHORT --from OLD [--to NEW]`: re-points the .blend's images, sounds, fonts, movie clips, caches
+  and linked files under OLD to the same path under NEW (default: the short's workspace) and saves it only when
+  something changed; packed and `//relative` paths are left alone, the render engine and settings untouched.
+  `missing` lists repointed files that aren't there.
 - `CLI new-short "<title>" --like OTHER`: starts a short from an earlier one (its number, slug or folder): copies only
   what differs from the user's settings and brand, never the story or the render engine. The result has `said`,
   `notes` and `skipped` (the interview questions to leave out).

@@ -2926,7 +2926,10 @@ def _move_setup(tmp_path, bsa_home):
                                                 encoding="utf-8")  # fmt: skip
     bsa_settings.set_value("workspace", str(old))
     bsa_settings.set_value("closing.image", str(old / "brand" / "end.png"))
-    bsa_settings.set_value("blender_exe", str(tmp_path / "Blender" / "blender.exe"))
+    exe = tmp_path / "Blender" / "blender.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"not a program")  # found, but can't start: a relink the test doesn't stub fails, never runs
+    bsa_settings.set_value("blender_exe", str(exe))
     return old, sdir
 
 
@@ -2958,8 +2961,50 @@ def test_workspace_move_renames_and_fixes_settings_and_statuses(tmp_path, bsa_ho
     assert f"{sdir.name}/review/render-status-final.json: short.dir" in out["changed"]
     whats = " ".join(n["what"] for n in out["not_fixed"])
     assert "notes.json" in whats and "seen" in whats  # a leftover old path, with how to fix it
-    assert any("relink" in n["fix"] for n in out["not_fixed"])  # until relink exists, each .blend is listed
+    assert any("relink" in n["fix"] for n in out["not_fixed"])  # Blender couldn't start: the .blend is listed
     assert "re-render" in out["note"]
+
+
+def test_workspace_move_relinks_every_short_with_a_blend(tmp_path, bsa_home, capsys, monkeypatch):
+    import subprocess
+
+    from bsa import proc
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    other = old / "02-how-a-lever-works"
+    (other / "blend").mkdir(parents=True)
+    (other / "blend" / "short.blend").write_bytes(b"BLENDER")
+    (old / "03-no-blend-yet" / "source").mkdir(parents=True)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        short = Path(cmd[cmd.index("relink") + 1])
+        if short.name == other.name:
+            return subprocess.CompletedProcess(cmd, 1, 'BSA_RESULT {"ok": false, "error": "the file is damaged"}\n',
+                                               "the file is damaged\n")  # fmt: skip
+        res = {"relinked": [{"type": "image", "name": "tex", "from": "a", "to": "b"}], "missing": [], "saved": True}
+        return subprocess.CompletedProcess(cmd, 0, "Blender 4.5\nBSA_RESULT " + json.dumps(res) + "\n", "")
+
+    monkeypatch.setattr(proc, "run", fake_run)
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    assert len(calls) == 2  # once per short with a .blend
+    for cmd in calls:
+        assert cmd[0] == str(tmp_path / "Blender" / "blender.exe")
+        assert cmd[1:7] == ["-b", "--factory-startup", "--python-exit-code", "1", "--python",
+                            str(Path(__file__).resolve().parent.parent / "bsa_blender.py")]  # fmt: skip
+        assert cmd[7:9] == ["--", "relink"] and cmd[10:] == ["--from", str(old)]
+    assert sorted(Path(c[9]).name for c in calls) == [sdir.name, other.name]
+    assert all(Path(c[9]).parent == new for c in calls)
+    assert out["relinked"] == [{"short": sdir.name, "relinked": [{"type": "image", "name": "tex", "from": "a",
+                                                                  "to": "b"}], "missing": [], "saved": True}]  # fmt: skip
+    bad = [n for n in out["not_fixed"] if other.name in n["what"]]
+    assert len(bad) == 1 and "the file is damaged" in bad[0]["what"]
+    assert bad[0]["fix"] == f'BLENDER relink 02 --from "{old}"'
+    assert not any(sdir.name in n["what"] for n in out["not_fixed"] if n["fix"].startswith("BLENDER relink"))
+    assert "checks" in out["note"]
 
 
 def test_workspace_move_copies_across_drives_and_keeps_the_old_folder(tmp_path, bsa_home, capsys, monkeypatch):
