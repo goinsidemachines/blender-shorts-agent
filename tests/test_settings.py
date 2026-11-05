@@ -288,7 +288,7 @@ def test_narrator_params_values_are_numbers():
 def test_narrator_params_problems_follow_the_provider():
     s = copy.deepcopy(settings.DEFAULTS)
     assert settings.narrator_problems(s) == []
-    s["narrator"].update(provider="chatterbox", params={"exaggeration": 0.8})
+    s["narrator"].update(provider="chatterbox", params={"exaggeration": 0.6})
     assert settings.narrator_problems(s) == []
     s["narrator"]["params"] = {"pitch": 1.0}
     assert "exaggeration, cfg_weight, temperature" in settings.narrator_problems(s)[0]

@@ -246,7 +246,7 @@ def test_speak_params_go_last_over_the_model_and_voice(root, tmp_path, capsys, m
         ("chatterbox", "exaggeration=5", ["exaggeration", "0.25", "2"]),
         ("chatterbox", "temperature=nan", ["temperature"]),
         ("chatterbox", "temperature", ["KEY=VALUE"]),
-        ("chatterbox-turbo", "exaggeration=0.8", ["exaggeration", "temperature"]),
+        ("chatterbox-turbo", "exaggeration=0.6", ["exaggeration", "temperature"]),
         ("kokoro", "temperature=0.5", ["kokoro", "no engine parameters"]),
     ],
 )

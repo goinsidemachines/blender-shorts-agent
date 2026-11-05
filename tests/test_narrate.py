@@ -1278,7 +1278,7 @@ def test_retake_take_only_deletes_files_inside_the_takes_folder(tmp_path):
 
 # --- narrator.params: engine parameters given to the runner last ---------------------------------------------------
 
-CHATTER = {"narrator": {"provider": "chatterbox", "voice": "george", "speed": 1.0, "verify": False}}
+CHATTER = {"narrator": {"provider": "chatterbox", "voice": "michael", "speed": 1.0, "verify": False}}
 
 
 def _runner_cmds(tmp_path, settings, short=None):
@@ -1327,7 +1327,7 @@ def test_params_reach_the_runner_with_the_short_over_the_settings(tmp_path, bsa_
     [
         ("chatterbox", {"pitch": 1.0}, ["pitch", "exaggeration, cfg_weight, temperature"]),
         ("chatterbox", {"exaggeration": 3.0}, ["exaggeration", "0.25", "2"]),
-        ("chatterbox-turbo", {"exaggeration": 0.8}, ["exaggeration", "temperature"]),
+        ("chatterbox-turbo", {"exaggeration": 0.6}, ["exaggeration", "temperature"]),
         ("kokoro", {"temperature": 0.5}, ["kokoro takes no engine parameters", "chatterbox: exaggeration"]),
         ("elevenlabs", {"temperature": 0.5}, ["elevenlabs takes no engine parameters"]),
         ("chatterbox", {"temperature": "hot"}, ["must be a number"]),
@@ -1349,10 +1349,10 @@ def test_bad_params_never_reach_the_runner(tmp_path, bsa_home, provider, params,
 def test_params_problems_accept_good_values_and_empty():
     from bsa.narrate import params as nparams
 
-    assert nparams.problems("chatterbox", {"exaggeration": 0.8, "cfg_weight": 0.5, "temperature": 0.8}) == []
+    assert nparams.problems("chatterbox", {"exaggeration": 0.6, "cfg_weight": 0.5, "temperature": 0.8}) == []
     assert nparams.problems("chatterbox-turbo", {"temperature": 0.05}) == []
     assert nparams.problems("kokoro", {}) == nparams.problems("elevenlabs", None) == []
-    assert nparams.as_args({"exaggeration": 0.8}) == ["--param", "exaggeration=0.8"]
+    assert nparams.as_args({"exaggeration": 0.6}) == ["--param", "exaggeration=0.6"]
 
 
 def test_changing_params_throws_the_takes_away(tmp_path):
@@ -1364,24 +1364,24 @@ def test_changing_params_throws_the_takes_away(tmp_path):
     nrun.clear_stale_takes(vo, short, base)
     (vo / "l01.wav").write_bytes(b"x")
     assert nrun.clear_stale_takes(vo, short, {**base, "params": {}}) == []  # empty = none
-    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.8}}) == ["l01"]
+    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.6}}) == ["l01"]
     (vo / "l01.wav").write_bytes(b"x")
-    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.8}}) == []
+    assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.6}}) == []
     assert nrun.clear_stale_takes(vo, short, {**base, "params": {"exaggeration": 0.9}}) == ["l01"]
 
 
 def test_params_for_another_narrator_are_dropped_with_its_voice():
     short = _take_short()
-    short.narrator = {"voice": "george", "params": {"exaggeration": 0.8}, "voice_for": "chatterbox"}
+    short.narrator = {"voice": "michael", "params": {"exaggeration": 0.6}, "voice_for": "chatterbox"}
     got = nrun.narrator_for({"narrator": {"provider": "kokoro", "voice": "am_michael"}}, short)
     assert got["voice"] == "am_michael" and "params" not in got
 
 
 def test_an_old_runner_without_params_says_how_to_update(tmp_path, bsa_home):
-    err = "usage: bsa-tts ...\nbsa-tts: error: unrecognized arguments: --param exaggeration=0.8\n"
+    err = "usage: bsa-tts ...\nbsa-tts: error: unrecognized arguments: --param exaggeration=0.6\n"
     with pytest.raises(contract.NarrationError, match="voice install chatterbox"):
-        local.generate("chatterbox", lines("l01"), "george", 1.0, tmp_path, run=lambda c, **k: completed(2, "", err),
-                       params={"exaggeration": 0.8})  # fmt: skip
+        local.generate("chatterbox", lines("l01"), "michael", 1.0, tmp_path, run=lambda c, **k: completed(2, "", err),
+                       params={"exaggeration": 0.6})  # fmt: skip
 
 
 def test_a_huge_integer_param_is_a_plain_problem():
@@ -1420,22 +1420,22 @@ def test_voice_sample_uses_the_narrator_params(bsa_home, monkeypatch, tmp_path):
     from bsa.short import save_short
 
     s = {"narrator": {"provider": "chatterbox", "params": {"exaggeration": 0.7, "temperature": 0.6}}}
-    _, cmds = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", settings_=s)
+    _, cmds = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "michael", settings_=s)
     assert _params_of(cmds[0]) == {"exaggeration=0.7", "temperature=0.6"}
     # a short's own params over the settings', as narrate merges them
     sdir = tmp_path / "short"
     short = make_short("l01")
     short.narrator = {"params": {"exaggeration": 0.9}}
     save_short(short, sdir / "source" / "short.json")
-    _, cmds = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", "short", short_dir=sdir)
+    _, cmds = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "michael", "short", short_dir=sdir)
     assert _params_of(cmds[0]) == {"exaggeration=0.9", "temperature=0.6"}
 
 
 def test_voice_sample_without_params_is_unchanged(bsa_home, monkeypatch):
-    _, plain = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", settings_={"narrator": {"provider": None}})
+    _, plain = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "michael", settings_={"narrator": {"provider": None}})
     s = {"narrator": {"provider": "chatterbox", "params": {}}}
-    _, empty = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", settings_=s)
+    _, empty = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "michael", settings_=s)
     # another engine's params are not this model's: the sample is of the engine's own delivery
-    s = {"narrator": {"provider": "chatterbox", "params": {"exaggeration": 0.8}}}
+    s = {"narrator": {"provider": "chatterbox", "params": {"exaggeration": 0.6}}}
     _, other = _sample_cmds(bsa_home, monkeypatch, "chatterbox-turbo", "default", settings_=s)
     assert plain == empty and not any("--param" in c for c in plain + other)
