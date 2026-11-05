@@ -52,12 +52,14 @@ Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook
 - `CLI shorts`: the workspace's shorts (title, look, length, voice) and `last_finished`, the last three finished
   titles, for "Make it like an earlier one?".
 - `CLI workspace move NEW`: to move the workspace, use this; never move it by hand. It refuses while the page
-  server, a render or the GPU lock is live, or when NEW is a folder that isn't empty. One drive: renamed. Another
-  drive: copied, every file's size checked, the old folder kept (`old_folder`: the user deletes it after checking).
-  It repoints the settings and render-status paths, and runs `BLENDER relink` on every short's .blend (`relinked`);
-  relay `not_fixed` (each with its `fix`, e.g. `BLENDER relink SHORT --from OLD` for a .blend Blender couldn't open
-  or save) and `note` (the fingerprints include the files' paths, so a short in progress re-renders and its checks
-  run once more).
+  server, a render or the GPU lock is live (and holds the GPU lock while it moves), when a drive is not there, or when
+  NEW is a folder that isn't empty. One drive: renamed. Another drive: copied, every file and folder checked, the old
+  folder kept (`old_folder`: the user deletes it after checking). It repoints the settings and the plugin's own files
+  in each short (state.json, review/*.json: render statuses, engine runs, checks, camera test), so the page keeps its
+  videos, and runs `BLENDER relink` on every short's .blend (`relinked`); relay `not_fixed` (each with its `fix`, e.g.
+  `BLENDER relink SHORT --from OLD` for a .blend Blender couldn't open or save, or the user's own source/short.json
+  naming the old folder) and `note` (the fingerprints include the files' paths, so a short in progress re-renders and
+  its checks run once more; its next preview reopens checks, preview, final and post for approval).
 - `BLENDER relink SHORT --from OLD [--to NEW]`: re-points the .blend's images, sounds, fonts, movie clips, texts,
   caches (point, fluid, mesh), linked files, sequencer strips, File Output nodes and the render output path under
   OLD to the same path under NEW (default: the short's workspace) and saves it only when something changed (same
