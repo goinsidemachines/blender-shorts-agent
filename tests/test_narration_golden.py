@@ -104,8 +104,8 @@ def _digests(root: Path) -> dict[str, str]:
     vo = root / "audio" / "vo"
     for path in sorted(p for p in vo.rglob("*") if p.is_file() and p.name not in SKIPPED):
         found[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-    timeline = root / "source" / "timeline.json"
-    found["source/timeline.json"] = hashlib.sha256(timeline.read_bytes()).hexdigest()
+    timeline = root / "source" / "timeline.json"  # text: the same digest on every system, whatever its line endings
+    found["source/timeline.json"] = hashlib.sha256(timeline.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     return found
 
 
