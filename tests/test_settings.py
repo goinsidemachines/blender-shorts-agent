@@ -217,3 +217,89 @@ def test_a_short_end_card_overrides_the_setting():
     assert settings.end_card(nobody, plain) == {"handle": None, "text": None, "second": None}  # no handle: no card
     assert settings.has_end_card(nobody, own)  # the short's own card shows without a handle
     assert settings.end_card(nobody, own) == {"handle": None, "text": "Play with it", "second": "example.com"}
+
+
+def test_post_format_is_validated_when_set():
+    import pytest
+
+    with pytest.raises(ValueError):
+        settings.check_value("post_format", {"title_style": "shout"})
+    with pytest.raises(ValueError):
+        settings.check_value("post_format", {"bogus": 1})
+    with pytest.raises(ValueError):
+        settings.check_value("post_format.title_style", "shout")
+    link = {"link_line": "Watch more: {link}"}
+    assert settings.check_value("post_format", link) == link
+    assert settings.check_value("post_format.title_suffix", " #shorts") == " #shorts"
+    assert settings.DEFAULTS["post_format"] == {} and settings.DEFAULTS["post_format_asked"] is False
+
+
+def test_brand_kit_keys_are_checked_through_the_kit():
+    assert settings.check_value("brand.style", "Flat") == "toon"
+    with pytest.raises(ValueError, match="from 0 to 24"):
+        settings.check_value("brand.shadow_px", 30)
+    assert settings.check_value("brand.material", "glossy toy") == "glossy toy"  # prose passes
+    assert settings.check_value("brand.mode", "Brand") == "brand"
+
+
+def test_caption_colours_take_6_or_8_hex_digits_without_a_style():
+    assert settings.check_value("brand.caption.box", "#14161a99") == "#14161A99"
+    assert settings.check_value("brand.caption.color", "#FFFFFF") == "#FFFFFF"
+    assert settings.check_value("brand.caption", {"box": "#14161A99"}) == {"box": "#14161A99"}
+    with pytest.raises(ValueError, match="brand.caption.box"):
+        settings.check_value("brand.caption.box", "#14161A9")
+    with pytest.raises(ValueError, match="brand.palette.accent"):
+        settings.check_value("brand.palette.accent", "#7A4CE080")  # palette colours stay 6 digits
+
+
+def test_setting_the_whole_brand_merges_into_the_stored_one_and_checks_every_key():
+    with pytest.raises(ValueError, match="brand.mode"):
+        settings.check_value("brand", {"mode": "loud"})
+    with pytest.raises(ValueError, match="brand.exposure"):
+        settings.check_value("brand", {"exposure": "bright"})
+    assert settings.check_value("brand", {"mode": "Brand", "exposure": "0.3", "style": "flat"}) == {
+        "mode": "brand", "exposure": 0.3, "style": "toon"}  # fmt: skip
+
+
+def test_take_mode_and_lead_in_settings():
+    assert settings.check_value("narrator.take_mode", "Paragraph") == "paragraph"
+    with pytest.raises(ValueError, match="line, paragraph"):
+        settings.check_value("narrator.take_mode", "fast")
+    for bad in (1.5, -0.1, "soon"):
+        with pytest.raises(ValueError, match="narrator.lead_in must be seconds from 0 to 1"):
+            settings.check_value("narrator.lead_in", bad)
+    v = settings.check_value("narrator.lead_in", 0.3)
+    assert v == 0.3 and isinstance(v, float)
+    assert settings.check_value("narrator.lead_in", 1) == 1.0
+    assert settings.DEFAULTS["narrator"]["take_mode"] == "line" and settings.DEFAULTS["narrator"]["lead_in"] == 0.0
+
+
+def test_narrator_params_values_are_numbers():
+    assert settings.DEFAULTS["narrator"]["params"] == {}
+    assert settings.check_value("narrator.params", {"temperature": 1}) == {"temperature": 1.0}
+    assert settings.check_value("narrator.params.temperature", 0.7) == 0.7
+    assert settings.check_value("narrator.params.temperature", None) is None  # removes the key
+    for path, bad in (("narrator.params", [0.7]), ("narrator.params", {"temperature": "hot"}),
+                      ("narrator.params.temperature", True), ("narrator.params.temperature", float("inf"))):  # fmt: skip
+        with pytest.raises(ValueError, match="narrator.params"):
+            settings.check_value(path, bad)
+
+
+def test_narrator_params_problems_follow_the_provider():
+    s = copy.deepcopy(settings.DEFAULTS)
+    assert settings.narrator_problems(s) == []
+    s["narrator"].update(provider="chatterbox", params={"exaggeration": 0.6})
+    assert settings.narrator_problems(s) == []
+    s["narrator"]["params"] = {"pitch": 1.0}
+    assert "exaggeration, cfg_weight, temperature" in settings.narrator_problems(s)[0]
+    s["narrator"]["params"] = {"exaggeration": 9.0}
+    assert "0.25 to 2" in settings.narrator_problems(s)[0]
+    s["narrator"].update(provider="kokoro", params={"temperature": 0.5})
+    assert "kokoro takes no engine parameters" in settings.narrator_problems(s)[0]
+
+
+def test_set_value_removes_a_narrator_param_set_to_null(bsa_home):
+    settings.set_value("narrator.params.temperature", 0.7)
+    assert settings.load_settings()["narrator"]["params"] == {"temperature": 0.7}
+    settings.set_value("narrator.params.temperature", None)
+    assert settings.load_settings()["narrator"]["params"] == {}

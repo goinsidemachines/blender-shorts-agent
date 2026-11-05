@@ -62,7 +62,7 @@ def use_gpu() -> str:
 
 
 def current_engine(scene) -> str:
-    """The scene's engine as "cycles" or "eevee"."""
+    """The scene's engine as "cycles" or "eevee" (any engine but Cycles, Workbench too, counts as "eevee")."""
     return "cycles" if scene.render.engine == "CYCLES" else "eevee"
 
 
@@ -77,7 +77,8 @@ def resolve_engine(scene, engine: str | None) -> str:
 
 @contextlib.contextmanager
 def preserved_render_state(scene):
-    """Restore every render setting a preset touches (engine, resolution %, samples, denoise, blur, device)."""
+    """Restore every render setting a preset touches (engine, resolution %, samples, denoise, blur, device), then
+    match a brand style's stamped lights and world to the restored engine (look.match_engine)."""
     r, cy, ev = scene.render, scene.cycles, scene.eevee
     snap = {
         "engine": r.engine,
@@ -88,8 +89,12 @@ def preserved_render_state(scene):
         "ev_blur": getattr(ev, "use_motion_blur", None),
         "ev_rays": getattr(ev, "use_raytracing", None),
     }
+    failed = False
     try:
         yield
+    except BaseException:
+        failed = True
+        raise
     finally:
         r.engine = snap["engine"]
         r.resolution_percentage = snap["percent"]
@@ -100,6 +105,14 @@ def preserved_render_state(scene):
             ev.use_motion_blur = snap["ev_blur"]
         if snap["ev_rays"] is not None:
             ev.use_raytracing = snap["ev_rays"]
+        from bsa.blender import look  # look imports this module
+
+        try:
+            look.match_engine(scene)
+        except Exception:
+            if not failed:
+                raise
+            # the render's own error is the one to see: a stamp problem must not replace it
 
 
 def _motion_blur(scene, on: bool) -> None:
@@ -167,8 +180,11 @@ def remove_scenes(names) -> None:
     refer to objects by name). Data the scenes did not use, or still used elsewhere, is never touched: in MCP mode the
     open file is the user's. The untouched factory scene goes too (`remove_factory_scene`)."""
     scenes = [bpy.data.scenes[n] for n in names if n in bpy.data.scenes]
+    from bsa.blender import look, styles  # both import this module
     owned: set = set()
     for sc in scenes:
+        styles._extra_lines_off(sc)  # a style's own linesets (blueprint, pencil) hold the collection too
+        look._ink_off(sc)  # its ink lineset, line style and "no lines" collection go first: removing the scene would leave them badly counted
         _own(sc, owned)
     for sc in scenes:
         bpy.data.scenes.remove(sc)

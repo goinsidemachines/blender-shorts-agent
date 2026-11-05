@@ -5,7 +5,6 @@ import io
 import json
 import os
 import shutil
-import subprocess
 import sys
 import wave
 import zipfile
@@ -16,6 +15,7 @@ import pytest
 from fontbuild import build_font
 
 import bsa_cli
+from bsa import proc as _proc
 from bsa.assets import sounds
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +25,7 @@ SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source" / "short.json"
 def run(home, *args):
     env = {**os.environ, "BSA_HOME": str(home)}
     env.pop("FREESOUND_API_KEY", None)
-    return subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True, text=True,
+    return _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), *map(str, args)], capture_output=True, text=True,
                           env=env, cwd=str(home), timeout=120, check=False)  # fmt: skip
 
 

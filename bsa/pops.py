@@ -12,7 +12,9 @@ and steps too small to see on the object are not pops. Moves are only measured b
 
 A shot's first and last frames have no move on one side inside the shot; a track may carry one frame before and
 after the frames judged (`judged`), so how the object came into the shot (a ball already swinging when the shot
-cuts in) is a reference for the first moves without being judged itself (a cut may move anything).
+cuts in) is a reference for the first moves without being judged itself (a cut may move anything). Only frames
+inside the short, and in the same scene, are references (`reference_frames`): a pose past the short's end (an
+action extrapolated past its last key) or across a cut to another scene says nothing about the shot's motion.
 
 Pure numpy: no bpy, so it is tested outside Blender.
 """
@@ -29,12 +31,24 @@ POP_SIZE_FRACTION = 0.1
 POP_MAX_RUN = 2
 MOVE_EPS = 1e-4
 
-__all__ = ["MOVE_EPS", "POP_FACTOR", "POP_FLOOR", "POP_MAX_RUN", "POP_SIZE_FRACTION", "find_pops", "pop_floor"]
+__all__ = ["MOVE_EPS", "POP_FACTOR", "POP_FLOOR", "POP_MAX_RUN", "POP_SIZE_FRACTION", "find_pops", "pop_floor",
+           "reference_frames"]  # fmt: skip
 
 
 def pop_floor(size: float) -> float:
     """The smallest move that can be a pop on an object of this size (its largest dimension, m)."""
     return max(POP_FLOOR, POP_SIZE_FRACTION * max(0.0, float(size)))
+
+
+def reference_frames(f0: int, f1: int, first: int, last: int, same_before: bool, same_after: bool) -> list[int]:
+    """The frames just outside the shot f0..f1 that are references for its first and last moves: f0 - 1 when it is
+    in the short (first..last) and the shot before is in the same scene (`same_before`), f1 + 1 likewise."""
+    refs = []
+    if f0 - 1 >= first and same_before:
+        refs.append(f0 - 1)
+    if f1 + 1 <= last and same_after:
+        refs.append(f1 + 1)
+    return refs
 
 
 def _segments(track) -> list[list[tuple[int, float]]]:

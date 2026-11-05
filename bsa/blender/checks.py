@@ -1,5 +1,5 @@
 """Scene checks run before a short is published: materials, textures, normals, shading, overlaps, framing,
-grounding, pops, names, z-fighting inside one mesh, live Booleans and contact parts that follow different parents. All geometry is the evaluated (modifier-applied, animated) mesh at the frame checked.
+grounding, pops, names, z-fighting inside one mesh, live Booleans and contact parts that follow different parents. All geometry is the evaluated (modifier-applied, animated) mesh at the frame checked, but for a style's bevel (below).
 
 Coverage: mesh objects get every check. Other renderable geometry (curves, text, surfaces, metaballs) gets the
 materials and images checks (a grey text label, a pink curve). Instanced geometry (collection instances, geometry
@@ -8,7 +8,15 @@ overlaps, normals, grounding and pops are not checked on instances: append the o
 "overlay" (a glow halo, a distance line, an arrow: not physical geometry) is left out of the overlap and z-fighting
 checks (as either object of a pair), self_zfight, self_overlap, floating (neither checked nor counted as a support)
 and pops; it still gets the materials, images, normals and faceted checks, and frame_edge like a hero (not when
-tagged "overlay:may-exit": it leaves the frame on purpose). An open mesh
+tagged "overlay:may-exit": it leaves the frame on purpose). Set objects (tagged "set:<role>": the floor, walls,
+backdrop and props a scene set made) are scenery: never heroes (whatever else they are tagged), so never in framing,
+frame_edge, self_overlap or the covered check's subjects; a pair of two set objects is not tested for overlap or
+z-fighting, but a set object against any other object is, so a prop sunk into the subject or a face flush with it is
+still found; floating, pops and pop_in skip them, and a "set:floor" still holds up a grounded part. A style's bevel
+(the "bsa style bevel" modifier of toy, clay and paper) is switched off while the checks run (and put back after):
+every geometry check (overlap, z-fighting, floating, self_overlap, self_zfight, faceted, normals) measures the parts
+as built, without the style bevel, so rounding an edge never makes a part resting on it float, nor hides a shallow
+overlap, and faceted and normals see the mesh as modelled, not the bevel's geometry. An open mesh
 tagged "surface" (water moved by waves, a liquid level: things float in it and dip into it) is left out of the
 overlap and z-fighting checks (as either object of a pair) and gets every other check; it still holds up a grounded
 object. A closed mesh is a solid: it is checked as usual whatever its tags, and a "surface" tag on it is a names
@@ -96,7 +104,14 @@ Tolerances (scene units are metres):
   sides of it (moves under 0.1 mm count as standing still) and over 5 mm or a tenth of the object's largest
   dimension. A teleport, a keyed jump or a one-frame snap pops; a ball that falls fast and then hangs almost still,
   or a still ball struck into motion, does not (its speed changes once and stays changed). The frame before and
-  after each shot are read as references for its first and last moves, not judged (a cut may move anything).
+  after each shot are read as references for its first and last moves, not judged (a cut may move anything), but
+  only when inside the short and next to a shot of the same scene: the first and last frames of the short, and of a
+  shot cut to or from another scene, are judged against the frames inside the shot.
+- set_clearance: a set prop (tagged "set:prop") whose screen box, at a sampled frame, meets the subject's (the
+  shot's heroes' boxes; with no hero, every other rendered mesh that is not scenery or an overlay, as placement takes
+  it) or a card, caption or label of the edit, or a strip the Shorts player covers, by any positive overlap: the one
+  rule placement uses (bsa.setplace.collision, here with no margin round the subject). A warning, one per prop and
+  shot, naming the frames: a prop the saved arrangement kept that a new timing or motion now puts in the way.
 - names: object names ending in ".001" (Blender renamed a duplicate: object names are one namespace across
   scenes) are one warning naming them; a contact tag naming no object in the scene, a hero tag naming a shot
   short.json does not have, or a near label naming an object its shot's scene does not have, is an error.
@@ -117,13 +132,35 @@ from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from bsa import overlays, viewer
+from bsa import kitlayout, overlays, setplace, viewer
 from bsa.blender.anchors import screen_box, screen_top
-from bsa.blender.bake import is_hero, is_overlay, is_surface, may_exit, tags
-from bsa.findings import cap_pairs, not_listed
+from bsa.blender.bake import (
+    assembly,
+    category,
+    contact_tag,
+    follow_differs,
+    hero_from,
+    hero_start,
+    is_fast,
+    is_hero,
+    is_overlay,
+    is_rigid,
+    is_set,
+    is_surface,
+    is_volume,
+    may_exit,
+    merged_contact,
+    set_role,
+    swap_of,
+    tag_problem,
+    tags,
+)
+from bsa.blender.styles import BEVEL as STYLE_BEVEL
+from bsa.findings import cap_pairs, metres, not_listed
 from bsa.image_checks import Finding
-from bsa.pops import find_pops
-from bsa.short import label_near, label_text, load_short
+from bsa.layout import Rect
+from bsa.pops import find_pops, reference_frames
+from bsa.short import label_anchor, label_at, label_near, label_text, load_short
 from bsa.timeline import Timeline, wide_frames
 
 __all__ = ["Finding", "OverlapFinding", "run_checks"]
@@ -177,6 +214,8 @@ class OverlapFinding(Finding):
     """An overlap finding with the pair of objects it is about (the cap on listed pairs counts pairs)."""
 
     pair: tuple[str, str] = ("", "")
+    kind: str | None = None  # "penetrate", "deep" or "zfight"
+    depth: float | None = None  # how deep, as reported (0 when it cannot be measured); None for z-fighting
 
 
 @dataclass
@@ -241,19 +280,27 @@ class _Contact:
 
 
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
-               rules: list[dict] | None = None, cap: bool = True) -> list[Finding]:  # fmt: skip
+               rules: list[dict] | None = None, cap: bool = True,
+               keep_objects: set[str] | None = None) -> list[Finding]:  # fmt: skip
     """Run every check over each shot (every `sample_every` frames plus the shot's first and last; overlaps of moving
     objects and pops use every frame). `short` (the Short, for its near labels and shot ids) defaults to the
     short.json next to the open .blend (<short>/blend/short.blend), when there is one. Errors come first.
     scene.frame_current is restored afterwards. `progress(shot id, frames done, frames in the shot)` is called after
     each frame when given (it never changes what is found). `rules`: the hard rules (bsa.rules.effective); object,
     mesh, material, collection and library names with words a rule may forbid are "hard_rule" warnings. `cap`: list
-    the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead)."""
+    the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead).
+    `keep_objects`: objects whose own findings from the last checks still hold (bsa.freshness.partial_checks: their
+    keys did not change): their one-object checks (bsa.freshness.OBJECT_CHECKS) are not run, nor the overlap of a
+    pair of two of them; every other check runs as usual."""
     original = scene.frame_current
-    run = _Run(scene)
-    short = _short_beside_blend() if short is None else short
-    run.short, run.tl = short, tl
+    bevels: list[tuple] = []
     try:
+        _hide_style_bevels(scene, bevels)  # measure the parts as built, not rounded by a style
+        run = _Run(scene)
+        run.keep = set(keep_objects or ())
+        short = _short_beside_blend() if short is None else short
+        run.short, run.tl = short, tl
+        run.kit, run.kit_font = _kit_and_font(short)
         if scene.world and scene.world.node_tree:
             for problem in _image_problems(scene.world.node_tree):
                 run.add("images", "error", None, None, f"world: {problem}", key=("world", problem))
@@ -264,9 +311,44 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
             run.shot(shot, sample_every, progress)
         run.finish_self()
     finally:
+        _restore_modifiers(bevels)
         scene.frame_set(original)
     found = _cap_overlaps(run.findings) if cap else run.findings
     return sorted(found, key=lambda f: f.severity != "error")
+
+
+def _hide_style_bevels(scene, hidden: list[tuple]) -> None:
+    """Switch off every style bevel ("bsa style bevel", bsa.blender.styles) in the viewport and render, so the
+    evaluated meshes the checks read are the parts as built. Each one is noted in `hidden` before it is changed, so
+    _restore_modifiers puts back all that was changed even when this stops part-way."""
+    for obj in scene.objects:
+        mod = obj.modifiers.get(STYLE_BEVEL) if obj.type == "MESH" and obj.library is None else None
+        if mod is not None and (mod.show_viewport or mod.show_render):
+            hidden.append((obj, mod.name, mod.show_viewport, mod.show_render))
+            mod.show_viewport = mod.show_render = False
+
+
+def _restore_modifiers(hidden: list[tuple]) -> None:
+    for obj, mod_name, viewport, render in hidden:
+        try:
+            mod = obj.modifiers.get(mod_name)
+        except ReferenceError:  # the object was deleted meanwhile
+            continue
+        if mod is not None:
+            mod.show_viewport, mod.show_render = viewport, render
+
+
+def _kit_and_font(short):
+    """(the brand kit the short's edit draws, its card font) or (None, None) without one: the covered check then
+    measures the kit's cards instead of today's text boxes (bsa.overlays.shot_boxes)."""
+    from bsa import cards, kit, settings
+    from bsa.fonts import font_caches
+
+    k = kit.kit_for(settings.load_settings(), short)
+    if k is None:
+        return None, None
+    sdir = Path(bpy.data.filepath).resolve().parent.parent if bpy.data.filepath else None  # <short>/blend/short.blend
+    return k, cards.card_font(k, font_caches(sdir))
 
 
 def _short_beside_blend():
@@ -281,8 +363,8 @@ def _short_beside_blend():
 
 
 def _cap_overlaps(findings: list[Finding]) -> list[Finding]:
-    kept, _, more = cap_pairs(findings, OVERLAP_MAX_FINDINGS)
-    return [*kept, not_listed(more)] if more else kept
+    kept, held, more = cap_pairs(findings, OVERLAP_MAX_FINDINGS)
+    return [*kept, not_listed(more, summary=False, held=held)] if more else kept  # no overlap_summary here
 
 
 class _Run:
@@ -307,26 +389,70 @@ class _Run:
         self.drift: dict[tuple[str, str], dict] = {}  # per shot: where each such pair meets, and how far it drifts
         self.overlay = {o.name for o in scene.objects if is_overlay(o)}  # glows, guide lines: not physical
         self.surface = {o.name for o in scene.objects if is_surface(o)}  # open water surfaces: things may cross them
+        self.set_objs = {o.name for o in scene.objects if is_set(o)}  # a set's floor, walls and props: scenery
+        self.fast: set[str] = {o.name for o in scene.objects if is_fast(o)}  # really moves that quickly: no pops
+        self.swap: dict[str, str] = {o.name: swap_of(o) for o in scene.objects if swap_of(o)}  # new part: the old one
+        self.rigid_root: dict[str, str] = _rigid_roots(scene)  # at or under a rigid part: the outermost rigid part
+        self.assemblies: dict[str, tuple[str, float | None]] = {o.name: assembly(o) for o in scene.objects if assembly(o)}
+        self.volume: set[str] = {o.name for o in scene.objects if is_volume(o)}  # gas, flame round solids: not solid
+        self.switches: dict[str, dict[str, list[int]]] = {}  # per shot: {"on": [frames], "off": [frames]} per object
+        self.span = None  # the shot span shot() is on
+        self.states: dict[str, str] = {}  # each object's _box_state at the last sampled frame ("in", "partial", "out")
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
+        self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
+        self.kit_font = None
+        self.keep: set[str] = set()  # objects whose own checks still hold (run_checks keep_objects): not run again
 
-    def add(self, check, severity, obj, frame, message, key=None, pair=None):
+    def hero(self, obj, shot_id=None, frame=None) -> bool:
+        """is_hero, but a set object is never a hero (scenery, whatever it is tagged). With `frame` and `shot_id` (the
+        shot `shot()` is on), also not before the hero's start: hero:s07@0.6 is framed from 60% of s07 on."""
+        if obj.name in self.set_objs or not is_hero(obj, shot_id):
+            return False
+        span = self.span
+        if frame is None or shot_id is None or span is None or span.id != shot_id:
+            return True
+        return frame >= hero_start(hero_from(obj, shot_id) or 0.0, span.f0, span.f1)
+
+    def solid(self, name) -> bool:
+        """Checked for grounding: not an overlay, not a volume, not scenery (a set:floor still holds others up)."""
+        return name not in self.overlay and name not in self.volume and name not in self.set_objs
+
+    def grouped(self, a: str, b: str) -> tuple[str, float | None, bool] | None:
+        """Why two objects may pass into each other as parts of one group, the depth the group allows (None: any) and
+        whether the pair is not tested at all: both under one rigid part (one solid), or both in one assembly (up to
+        its depth: the deeper one either member states; any depth when neither states one). None otherwise: a member
+        against anything outside its group is checked as usual."""
+        root = self.rigid_root.get(a)
+        if root is not None and root == self.rigid_root.get(b):
+            return (f"rigid group of {root!r}", None, True)
+        ga, gb = self.assemblies.get(a), self.assemblies.get(b)
+        if ga is None or gb is None or ga[0] != gb[0]:
+            return None
+        stated = [d for d in (ga[1], gb[1]) if d is not None]
+        depth = max(stated) if stated else None
+        return (f"assembly {ga[0]!r}", depth, depth is None)
+
+    def add(self, check, severity, obj, frame, message, key=None, pair=None, kind=None, depth=None):
         key = (check, obj, message) if key is None else (check, *key)
         if key not in self.seen:
             self.seen.add(key)
             if pair is None:
                 self.findings.append(Finding(check, severity, obj, frame, message))
             else:
-                self.findings.append(OverlapFinding(check, severity, obj, frame, message, pair))
+                self.findings.append(OverlapFinding(check, severity, obj, frame, message, pair, kind, depth))
 
     def shot(self, shot, every, progress=None):
         sampled = set(range(shot.f0, shot.f1 + 1, max(1, every))) | {shot.f1}
         positions: dict[str, list[tuple[int, np.ndarray]]] = {}
         views: dict[str, dict] = {}  # heroes and overlays: {"overlay", "samples": [(frame, share outside)]}
-        self.cur, self.changed, self.hits, self.drift = {}, {}, {}, {}
+        self.cur, self.changed, self.hits, self.drift, self.switches = {}, {}, {}, {}, {}
+        self.span = shot
         sizes: dict[str, float] = {}
-        seen = {"below": {}, "framing": {}, "texts": {}}  # what the viewer sees at the sampled frames (see_frame)
-        self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
+        seen = {"below": {}, "framing": {}, "parts": {}, "texts": {}, "props": {}}  # what the viewer sees at samples
+        refs = self.reference_frames(shot)  # the frames just outside the shot, in the short and in its scene
+        if shot.f0 - 1 in refs:
+            self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
         shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
         for frame in range(shot.f0, shot.f1 + 1):
             self.scene.frame_set(frame)
@@ -347,9 +473,11 @@ class _Run:
             self.track_contacts(frame)
             if progress is not None:
                 progress(shot.id, frame - shot.f0 + 1, shot.f1 - shot.f0 + 1)
-        self.track_positions(shot.f1 + 1, positions)  # and how it leaves it
+        if shot.f1 + 1 in refs:
+            self.track_positions(shot.f1 + 1, positions)  # and how it leaves it
         self.scene.frame_set(shot.f1)
         self.depsgraph.update()
+        self.report_swaps(shot)
         self.pops(shot, positions, sizes)
         self.report_overlaps(shot, sampled)
         self.report_contacts(shot)
@@ -361,15 +489,26 @@ class _Run:
     def pop_in(self, shot, frame, objs, before: dict[str, bool]) -> dict[str, bool]:
         """Warn about an object (not an overlay) that switches on inside the camera frame after its shot's first
         frame: it was not rendered (hide_render, a hidden collection) or was scaled to nothing at the frame before,
-        and now part of its box is on screen. It pops into view. Returns what is shown now, for the next frame."""
+        and now part of its box is on screen. It pops into view. A part tagged swap:<other> is left to report_swaps.
+        Records each object's switch frames (on: shown now and not at the frame before; off: the reverse) in
+        self.switches. Returns what is shown now, for the next frame."""
         cam = self.scene.camera
         now = {}
         for obj in objs:
             m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
             scale = float(np.linalg.norm(m[:3, :3], axis=0).max())
             now[obj.name] = scale > POP_IN_SCALE
-            if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name) or obj.name in self.overlay:
+        if frame > shot.f0:
+            for name in now.keys() | before.keys():
+                if bool(now.get(name)) != bool(before.get(name)):
+                    switch = self.switches.setdefault(name, {"on": [], "off": []})
+                    switch["on" if now.get(name) else "off"].append(frame)
+        for obj in objs:
+            if frame == shot.f0 or cam is None or not now[obj.name] or before.get(obj.name):
                 continue
+            if obj.name in self.overlay or obj.name in self.set_objs or obj.name in self.swap:
+                continue
+            m = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
             corners = np.array([tuple(c) for c in obj.evaluated_get(self.depsgraph).bound_box], dtype=np.float64)
             world = corners @ m[:3, :3].T + m[:3, 3]
             box = SimpleNamespace(lo=world.min(0), hi=world.max(0))
@@ -383,37 +522,118 @@ class _Run:
                      "on purpose (then say why in your notes)", key=(obj.name, shot.id))  # fmt: skip
         return now
 
+    def report_swaps(self, shot):
+        """A part tagged swap:<other> must take over from the other in place: switched on on the frame the other is
+        switched off (the nearest such frame), its box on screen where the other's was the frame before. The scene is
+        left at the shot's last frame, as the reports after it expect, even when this fails."""
+        try:
+            self._report_swaps(shot)
+        finally:
+            self.scene.frame_set(shot.f1)
+            self.depsgraph.update()
+
+    def _report_swaps(self, shot):
+        cam = self.scene.camera
+        for new, old in sorted(self.swap.items()):
+            if old not in self.scene.objects:
+                continue  # names reports the missing object
+            offs = self.switches.get(old, {}).get("off", [])
+            for on in self.switches.get(new, {}).get("on", []):
+                if not shot.f0 < on <= shot.f1:
+                    continue
+                off = min(offs, key=lambda f: abs(f - on)) if offs else None
+                problem = viewer.swap_problem(on, off, None, None)
+                if problem is None and cam is not None:
+                    boxes = []
+                    for name, frame in ((new, on), (old, (off or on) - 1)):
+                        self.scene.frame_set(frame)
+                        self.depsgraph.update()
+                        boxes.append(_rect(screen_box(self.scene, cam.evaluated_get(self.depsgraph),
+                                                      self.scene.objects[name], self.depsgraph)))  # fmt: skip
+                    problem = viewer.swap_problem(on, off, *boxes)
+                if problem:
+                    self.add("swap", "warning", new, on, f"{new!r} takes over from {old!r} at frame {on} in shot "
+                             f"{shot.id!r}, but {problem}. Switch {old!r} off on the same frame and put {new!r} "
+                             f"exactly where {old!r} was", key=(new, shot.id, on))  # fmt: skip
+
     def short_shot(self, shot_id):
         return next((s for s in self.short.shots if s.id == shot_id), None) if self.short is not None else None
 
     def see_frame(self, frame, span, objs, seen):
-        """What a viewer sees at a sampled frame: the camera under a ground, the heroes' boxes on screen (framing)
-        and the edit's text boxes over the heroes and labelled parts (covered)."""
+        """What a viewer sees at a sampled frame: the camera under a ground, the heroes' boxes on screen (framing:
+        only heroes from their start, hero:<shot>@<fraction>), every other part's box on screen (framing's parts: not
+        a hero from its start, already framed) and the edit's text boxes over the heroes and labelled parts
+        (covered)."""
         cam = self.scene.camera
         if cam is None:
             return
         dg = self.depsgraph
         cam_ev = cam.evaluated_get(dg)
         geos = self.cur
-        heroes = [o for o in objs if is_hero(o, span.id) and o.name not in self.overlay and o.name in geos]
+        heroes = [o for o in objs if self.hero(o, span.id) and o.name not in self.overlay and o.name in geos]
         self.below_ground(frame, np.array(cam_ev.matrix_world.translation), [geos[o.name] for o in heroes], geos,
                           seen["below"])  # fmt: skip
         boxes = {o.name: screen_box(self.scene, cam_ev, o, dg) for o in heroes}
-        seen["framing"][frame] = [viewer.box_rect(b) for b in boxes.values()]
+        seen["framing"][frame] = [viewer.box_rect(boxes[o.name]) for o in heroes if self.hero(o, span.id, frame)]
+        seen["parts"][frame] = {
+            o.name: viewer.box_rect(screen_box(self.scene, cam_ev, o, dg)) for o in objs
+            if o.name in geos and o.name not in self.set_objs and o.name not in self.overlay
+            and self.states.get(o.name) != "out" and not self.hero(o, span.id, frame)}  # fmt: skip
         shot = self.short_shot(span.id)
-        if shot is None or self.tl is None:
+        anchors, hero_track = {}, {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}
+        if shot is not None and self.tl is not None:
+            subjects = {n: viewer.box_rect(b) for n, b in boxes.items()}
+            for label in shot.labels:
+                near = label_near(label)
+                obj = self.scene.objects.get(near) if near else None
+                if obj is None:
+                    continue
+                point = screen_top(self.scene, cam_ev, obj, dg, label_at(label))
+                anchors[label_anchor(label)] = {"f0": frame, "points": [point],
+                                                "category": category(obj)}  # a kit's part label shows its category's dot
+                subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
+            try:
+                texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors, hero_track, [frame],
+                                            kit=self.kit, font=self.kit_font)[frame]  # fmt: skip
+            except kitlayout.LayoutError as exc:  # a kit can't lay out this shot's cards: CLI validate names it too
+                self.add("covered", "error", None, frame, f"shot {span.id!r}: {exc}", key=(span.id, "layout"))
+            else:
+                seen["texts"][frame] = {"subjects": subjects, "texts": texts}
+        self.set_clearance(frame, cam_ev, objs, shot, span, anchors, hero_track if heroes else None, seen["props"])
+
+    def set_clearance(self, frame, cam_ev, objs, shot, span, anchors, heroes, hits):
+        """Note each rendered set prop on screen at `frame` that meets the subject or a text rect, by the rule
+        placement uses (bsa.setplace.collision, no margin): the subject is the shot's heroes (`heroes`: {"f0",
+        "boxes"} at this frame; None with no hero: every other rendered mesh that is not scenery or an overlay, as
+        placement takes it), the text rects setplace.text_rects (the edit's cards, captions and near labels, from
+        `anchors`, and the covered strips; without the short only the covered strips, as placement). hits[prop]
+        gets (frame, why)."""
+        props = [o for o in objs if o.name in self.set_objs and set_role(o) == "prop"]
+        if not props:
             return
-        anchors, subjects = {}, {n: viewer.box_rect(b) for n, b in boxes.items()}
-        for label in shot.labels:
-            near = label_near(label)
-            obj = self.scene.objects.get(near) if near else None
-            if obj is None:
-                continue
-            anchors[near] = {"f0": frame, "points": [screen_top(self.scene, cam_ev, obj, dg)]}
-            subjects.setdefault(near, viewer.box_rect(screen_box(self.scene, cam_ev, obj, dg)))
-        texts = overlays.shot_boxes(self.short, self.tl, shot, span, anchors,
-                                    {"f0": frame, "boxes": {n: [b] for n, b in boxes.items()}}, [frame])  # fmt: skip
-        seen["texts"][frame] = {"subjects": subjects, "texts": texts[frame]}
+        dg = self.depsgraph
+
+        def rect(o):
+            return viewer.box_rect(screen_box(self.scene, cam_ev, o, dg))
+
+        if heroes is None:
+            subjects = [rect(o) for o in objs if o.name not in self.set_objs and o.name not in self.overlay]
+        else:
+            subjects = [viewer.box_rect(b[0]) for b in heroes["boxes"].values()]
+        subjects = [r for r in subjects if r is not None]
+        if shot is None or self.tl is None:
+            rects = [("covered", r) for r in setplace.covered_rects()]
+        else:
+            try:
+                rects = setplace.text_rects(self.short, self.tl, shot, span, self.kit, self.kit_font, [frame], anchors,
+                                            heroes)[frame]  # fmt: skip
+            except kitlayout.LayoutError:  # named by the covered check; placement leaves such cards out too
+                rects = []
+        for prop in props:
+            r = rect(prop)
+            why = setplace.collision(r, subjects, rects, 0) if r is not None else None
+            if why:
+                hits.setdefault(prop.name, []).append((frame, why))
 
     def below_ground(self, frame, cam_pos, heroes, geos, below):
         """Note the camera at `frame` when it is under the top surface of a mesh that acts as ground (bsa.viewer
@@ -444,17 +664,44 @@ class _Run:
             frame, depth, at = max(hits, key=lambda h: h[1])
             self.add("camera_below_ground", "error", ground, frame,
                      f"the camera{f' {cam.name!r}' if cam else ''} is under {ground!r} in shot {span.id!r} (frames "
-                     f"{viewer.frame_spans(frames, max(1, every))}; at frame {frame} it is at {_point(at)}, {_metres(depth)} below its top): "
+                     f"{viewer.frame_spans(frames, max(1, every))}; at frame {frame} it is at {_point(at)}, {metres(depth)} below its top): "
                      "the shot sees the ground's underside. Raise the camera above the ground's top (frame the "
                      "subject from above its base), or lower the ground", key=(ground, span.id))  # fmt: skip
         shot = self.short_shot(span.id)
         skip = wide_frames(shot, span, self.tl.fps) if shot is not None and self.tl is not None else set()
-        for f in viewer.framing_findings(span.id, seen["framing"], skip):
+        for f in viewer.framing_findings(span.id, seen["framing"], skip, seen["parts"]):
             self.add(f.check, f.severity, f.obj, f.frame, f.message, key=(span.id, f.message.split(":")[0]))
         if seen["texts"]:
             fps = self.tl.fps if self.tl is not None else 30
             for f in viewer.coverage_findings(span.id, seen["texts"], max(1, every), fps):
                 self.add(f.check, f.severity, f.obj, f.frame, f.message)
+        for name, hits in sorted(seen["props"].items()):
+            frames = [f for f, _ in hits]
+            obj = self.scene.objects.get(name)
+            prop = str(obj.get("bsa_prop", name)) if obj is not None else name  # the set's name for it
+            self.add("set_clearance", "warning", name, frames[0],
+                     f"set prop {name!r} is {hits[0][1]} in shot {span.id!r} (frames "
+                     f"{viewer.frame_spans(frames, max(1, every))}). sets.dress reuses the saved arrangement as it "
+                     f"is, so after asking, place it again with sets.dress(..., replace=[{prop!r}]) (or move the "
+                     "prop by hand)",
+                     key=(name, span.id))  # fmt: skip
+
+    def reference_frames(self, shot) -> list[int]:
+        """The frames just outside a shot that pops read as references (bsa.pops.reference_frames): inside the short
+        (the timeline's frames; without one, the scene's range) and only next to a shot of the same scene (by order in
+        the short's shots; none without a short)."""
+        if self.tl is not None:
+            first, last = 1, self.tl.n_frames
+        else:
+            first, last = self.scene.frame_start, self.scene.frame_end
+        same_before = same_after = False
+        shots = list(getattr(self.short, "shots", None) or [])
+        ids = [s.id for s in shots]
+        if shot.id in ids:
+            i = ids.index(shot.id)
+            same_before = i > 0 and shots[i - 1].scene == shots[i].scene
+            same_after = i + 1 < len(shots) and shots[i + 1].scene == shots[i].scene
+        return reference_frames(shot.f0, shot.f1, first, last, same_before, same_after)
 
     def track_positions(self, frame, positions):
         """Positions at a frame just outside a shot, kept with the shot's own for the pops check only."""
@@ -487,27 +734,34 @@ class _Run:
         depsgraph = self.depsgraph
         cam = self.scene.camera
         geos = {}
+        self.states = {}
         for obj in objs:
             geo = self.geo(obj)
             if geo is None:
                 continue
             geos[obj.name] = geo
             state, share, seen = _view(self.scene, cam, geo) if cam else ("in", 0.0, None)
-            if cam and (is_hero(obj, shot_id) or obj.name in self.overlay) and not may_exit(obj):  # overlays too
+            self.states[obj.name] = state
+            framed = self.hero(obj, shot_id, frame) or obj.name in self.overlay  # a hero from its start; overlays too
+            if cam and framed and not may_exit(obj):
                 views.setdefault(obj.name, {"overlay": obj.name in self.overlay, "samples": []})["samples"].append(
                     (frame, share, seen))
+            if obj.name in self.keep:  # its own checks still hold: only what involves others runs
+                continue
             if obj.name not in self.static_done:
                 self.static_done.add(obj.name)
                 self.static(obj, depsgraph, frame)
             self.material(obj.name, obj.evaluated_get(depsgraph).material_slots, frame, state)
-            if (state != "out" or is_hero(obj)) and obj.name not in self.overlay:
+            if (state != "out" or self.hero(obj)) and obj.name not in self.overlay and obj.name not in self.volume:
                 self.coplanar(obj, geo, frame)
         self.note_changes(frame, geos)
         self.overlaps(frame, objs, geos)
         for obj in objs:
-            if "grounded" in tags(obj) and obj.name in geos and obj.name not in self.overlay:
+            if "grounded" in tags(obj) and obj.name in geos and self.solid(obj.name):
                 self.floating(frame, obj.name, geos)
-            if obj.name in geos and is_hero(obj) and obj.name not in self.overlay:
+            if obj.name in self.keep:
+                continue
+            if obj.name in geos and self.hero(obj) and obj.name not in self.overlay and obj.name not in self.volume:
                 self.loose_parts(obj.name, geos[obj.name], frame)
 
     def sweep(self, frame, objs):
@@ -527,7 +781,7 @@ class _Run:
             return
         self.overlaps(frame, objs, geos, only=changed)
         for obj in objs:
-            if obj.name in changed and "grounded" in tags(obj) and obj.name not in self.overlay:
+            if obj.name in changed and "grounded" in tags(obj) and self.solid(obj.name):
                 self.floating(frame, obj.name, geos)
 
     def images(self, name, slots, frame):
@@ -618,7 +872,7 @@ class _Run:
                 if bad:
                     self.add("normals", "error", obj.name, frame, f"mesh is inside out ({len(bad)} of "
                              f"{len(shells)} shells have negative signed volume, e.g. {bad[0].volume:.4g})")  # fmt: skip
-        if open_edges and is_hero(obj):
+        if open_edges and self.hero(obj):
             self.add("normals", "warning", obj.name, frame, f"hero mesh has {open_edges} non-manifold edges")
 
     def faceted(self, obj, mesh, frame):
@@ -708,7 +962,7 @@ class _Run:
         frame, worst = max(bad, key=lambda b: (b[1].depth, -b[0]))
         more = f" ({len(bad)} pairs of parts in all)" if len(bad) > 1 else ""
         self.add("self_overlap", "warning", name, frame, f"hero mesh has loose parts that pass into each other: the "
-                 f"{worst.inner} is {_metres(worst.depth)} inside the {worst.outer}{more}. They read as one solid: "
+                 f"{worst.inner} is {metres(worst.depth)} inside the {worst.outer}{more}. They read as one solid: "
                  "end one part at the other's surface, or make them separate objects", key=(name,))  # fmt: skip
 
     def track_contacts(self, frame):
@@ -740,13 +994,15 @@ class _Run:
             d, frame = rec["worst"]
             self.add("contact_parent", "warning", a, frame, f"{a!r} and {b!r} are tagged contact but follow "
                      f"different moving parents ({_follows(a, moves_a)}, {_follows(b, moves_b)}), and where they "
-                     f"meet drifts {_metres(d)} apart in shot {shot.id!r} (most at frame {frame}). A part rebuilt "
+                     f"meet drifts {metres(d)} apart in shot {shot.id!r} (most at frame {frame}). A part rebuilt "
                      "with a new constructor may have lost its parent: parent both to the moving part they share. If "
                      "one really moves against the other through its parent (a foot stepping on a floor), ignore "
                      "this", key=(a, b))  # fmt: skip
 
     def overlaps(self, frame, objs, geos, only=None):
-        """Every pair of objects whose boxes touch (only pairs with an object in `only` when given)."""
+        """Every pair of objects whose boxes touch (only pairs with an object in `only` when given). Overlays, open
+        surfaces and volumes are left out; a pair in one rigid group or one depth-free assembly is not tested, nor a
+        pair of two kept objects (self.keep)."""
         by_name = {o.name: o for o in objs}
         for n in sorted(self.surface & set(geos)):
             if geos[n].closed:
@@ -754,18 +1010,30 @@ class _Run:
                          "solid and its overlaps are checked. Use it on an open surface (a grid moved by waves), or "
                          "remove it", key=(n, "surface"))  # fmt: skip
         open_surface = {n for n in self.surface & set(geos) if not geos[n].closed}
-        names = sorted(n for n in geos if n not in self.overlay and n not in open_surface)  # not solid: no overlap
+        skip = self.overlay | open_surface | self.volume  # not solid: no overlap
+        names = sorted(n for n in geos if n not in skip)
         if only is not None:
-            only = {n for n in only if n not in self.overlay and n not in open_surface}
+            only = {n for n in only if n not in skip}
         if only is None:
             pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
         else:
             pairs = sorted({(min(a, b), max(a, b)) for a in only for b in names if b != a})
         for a, b in pairs:
+            if a in self.set_objs and b in self.set_objs:  # scenery against scenery: not checked
+                continue
+            if a in self.keep and b in self.keep:  # neither changed: the pair's findings still hold
+                continue
             ga, gb = geos[a], geos[b]
             if not _boxes_touch(ga, gb, OVERLAP_TOL):
                 continue
+            group = self.grouped(a, b)
+            if group is not None and group[2]:  # one solid, or members free to mesh: not tested
+                continue
             exempt = _exemption(by_name[a], by_name[b])
+            deeper = "tag contact:<other>:<max depth in metres>"
+            if group is not None and (exempt is None or _allowance(ga, gb, group[1]) > _allowance(ga, gb, exempt[1])):
+                exempt = group[:2]  # the assembly's depth, when it is the deeper allowance
+                deeper = f"raise the assembly's depth on its members (assembly:{self.assemblies[a][0]}:<max depth m>)"
             limit = None if exempt is None else _allowance(ga, gb, exempt[1])
             step = None if exempt is not None else self.zfight_step(np.maximum(ga.lo, gb.lo), np.minimum(ga.hi, gb.hi))
             rule = ("strict", step) if exempt is None else ("contact", exempt[1])  # not the allowance: it jitters
@@ -776,7 +1044,7 @@ class _Run:
                 for kind in sorted(res.kinds):
                     self.hit(a, b, kind, frame, res)
             elif res.depth > limit:
-                self.hit(a, b, "deep", frame, res, f"the {exempt[0]} allows ({_metres(limit)})")
+                self.hit(a, b, "deep", frame, res, f"the {exempt[0]} allows ({metres(limit)})", deeper)
 
     def zfight_step(self, lo: np.ndarray, hi: np.ndarray) -> int:
         """The z-fight tolerance where the box [lo, hi] is seen by the scene camera now, as a half-octave step
@@ -787,8 +1055,10 @@ class _Run:
         pos = np.array(cam.evaluated_get(self.depsgraph).matrix_world.translation, dtype=np.float64)
         return _tol_step(_zfight_tol(cam.data, pos, lo, hi))
 
-    def hit(self, a, b, kind, frame, res, note=None):
-        rec = self.hits.setdefault((a, b, kind), {"frames": {}, "note": note})
+    def hit(self, a, b, kind, frame, res, note=None, deeper=None):
+        """Record a pair's finding at a frame; `note` (what allows it) and `deeper` (how to allow more, when it is
+        deep by design) are for the deep-overlap message."""
+        rec = self.hits.setdefault((a, b, kind), {"frames": {}, "note": note, "deeper": deeper})
         rec["frames"][frame] = res
 
     def report_overlaps(self, shot, sampled):
@@ -817,14 +1087,15 @@ class _Run:
                 where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}"
                 self.add("overlap", "error", a, None if static else first, f"z-fighting: {a!r} ({self.size(a)}) and "
                          f"{b!r} ({self.size(b)}) have coplanar overlapping faces {where}{at}. Move one face 0.5 to "
-                         "1 mm in (or out), or delete the duplicate face", key=key, pair=pair)  # fmt: skip
+                         "1 mm in (or out), or delete the duplicate face", key=key, pair=pair, kind=kind)  # fmt: skip
                 continue
             deepest = max(frames, key=lambda f: (frames[f].depth, -f))
             res = frames[deepest]
-            how = f"{res.inner!r} is {_metres(res.depth)} inside {res.outer!r}" if res.depth > 0 else ""
+            how = f"{res.inner!r} is {metres(res.depth)} inside {res.outer!r}" if res.depth > 0 else ""
             if res.depth > 0 and res.outer_open:
                 how = (f"{res.inner!r} reaches into {res.outer!r}, whose mesh is not closed ({res.outer_open} open "
                        "edges), so how deep cannot be measured. Close it, or keep its open parts as their own object")
+            depth = 0.0 if res.outer_open else float(res.depth)  # an open outer mesh: how deep is not measured
             at = f" (deepest at frame {deepest})" if res.depth > 0 and len(frames) > 1 else ""
             where = "in every frame" if static else f"in shot {shot.id!r}, {_spans(sorted(frames))}{at}"
             if kind == "penetrate":
@@ -833,11 +1104,13 @@ class _Run:
                     "the motion; tag contact:<other> only if they really touch at a surface, and write why"
                 )
                 frame = None if static else deepest if how else first
-                self.add("overlap", "error", a, frame, message, key=key, pair=pair)
+                self.add("overlap", "error", a, frame, message, key=key, pair=pair, kind=kind, depth=depth)
             else:
                 self.add("overlap", "error", res.inner, None if static else deepest, f"{how} {where}, deeper than "
-                         f"{rec['note']}. End one at the other's surface; if it is deep by design, tag "
-                         "contact:<other>:<max depth in metres> and write why", key=key, pair=pair)  # fmt: skip
+                         f"{rec['note']}. End one at the other's surface; if it is deep by design, "
+                         f"{rec['deeper'] or 'tag contact:<other>:<max depth in metres>'} and write why", key=key,
+                         pair=pair, kind=kind,
+                         depth=depth)  # fmt: skip
 
     def size(self, name: str) -> str:
         """The object's size (its local box times its scale), such as "6.4 x 6.4 x 1.2 mm"."""
@@ -890,13 +1163,18 @@ class _Run:
                      key=("renamed",))  # fmt: skip
         for obj in sorted(self.scene.objects, key=lambda o: o.name):
             for t in tags(obj):
-                if t.startswith("contact:"):
-                    target = _contact_target(t[len("contact:") :], present)
+                problem = tag_problem(t)
+                if problem:  # a typo, or a prefix with nothing after it: the checks would not read it
+                    self.add("names", "error", obj.name, None, f"tag {t!r} on {obj.name!r}: {problem}",
+                             key=(obj.name, t))  # fmt: skip
+                elif t.startswith(("contact:", "swap:")):
+                    swap = t.startswith("swap:")
+                    target = t[len("swap:") :] if swap else contact_tag(t[len("contact:") :], present)[0]
                     if target not in present:
                         self.add("names", "error", obj.name, None, f"tag {t!r} names {target!r}, which scene "
                                  f"{self.scene.name!r} does not have{_did_you_mean(target, present)}")  # fmt: skip
                 elif t.startswith("hero:") and shot_ids is not None:
-                    for sid in t[len("hero:") :].split(","):
+                    for sid in (i.partition("@")[0] for i in t[len("hero:") :].split(",")):
                         if sid not in shot_ids:
                             self.add("names", "error", obj.name, None, f"tag {t!r} names shot {sid!r}, which "
                                      "short.json does not have")  # fmt: skip
@@ -925,7 +1203,7 @@ class _Run:
             origin = (float(p[0]), float(p[1]), zmin + GROUND_RAY_LIFT)
             top = None
             for other, og in geos.items():
-                if other == name or other in self.overlay or not (og.lo[0] <= p[0] <= og.hi[0] and og.lo[1] <= p[1] <= og.hi[1]):
+                if other == name or other in self.overlay or other in self.volume or not (og.lo[0] <= p[0] <= og.hi[0] and og.lo[1] <= p[1] <= og.hi[1]):
                     continue
                 if og.lo[2] > origin[2]:
                     continue
@@ -945,11 +1223,12 @@ class _Run:
 
     def pops(self, shot, positions, sizes):
         for name, track in positions.items():
-            if name in self.overlay:  # a glow or guide may snap into place
-                continue
+            if name in self.overlay or name in self.set_objs or name in self.fast:  # a glow or guide may snap into
+                continue  # place; scenery; a part tagged fast really moves that quickly
             for frame, d, limit in find_pops(track, sizes.get(name, 0.0), judged=(shot.f0, shot.f1)):
                 self.add("pops", "error", name, frame, f"jumps {d:.3f} m in one frame (limit {limit:.3f} m from the "
-                         f"moves around it) in shot {shot.id!r}", key=(name, frame))  # fmt: skip
+                         f"moves around it) in shot {shot.id!r}; if the real motion is this quick (a flick, a snap), "
+                         "tag it 'fast'", key=(name, frame))  # fmt: skip
 
 
 def _creases(mesh, lo: float, hi: float) -> int:
@@ -1190,27 +1469,43 @@ def _moving_ancestors(obj, skip) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _follows_set(obj, skip) -> frozenset[str]:
+    """The names of the moving things the object follows, leaving out the objects in `skip`: its animated
+    ancestors, and for a Hook or Armature modifier its hook object or armature (when animated) and their animated
+    ancestors (a mesh deformed by them moves with them)."""
+    out = set(_moving_ancestors(obj, skip))
+    for mod in getattr(obj, "modifiers", ()):
+        driver = getattr(mod, "object", None) if mod.type in ("HOOK", "ARMATURE") else None
+        if driver is None:
+            continue
+        if driver not in skip and _animated(driver):
+            out.add(driver.name)
+        out.update(_moving_ancestors(driver, skip))
+    return frozenset(out)
+
+
 def _contact_pairs(scene) -> list[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
-    """Each contact-tagged pair whose two parts follow different moving ancestors: (tagged, other, its moving
-    ancestors, the other's). Each pair once, however many tags name it."""
+    """Each contact-tagged pair whose two parts follow different moving things (bake.follow_differs): (tagged,
+    other, what moves the tagged part, what moves the other), each sorted. Each pair once, its tags merged; a pair
+    whose tags say it moves against each other by design is left out."""
     names = {o.name for o in scene.objects}
     out, seen = [], set()
     for obj in sorted(scene.objects, key=lambda o: o.name):
         for t in tags(obj):
             if not t.startswith("contact:"):
                 continue
-            target, _, moves = _contact_tag(t[len("contact:") :], names)
-            other = scene.objects.get(target)
+            other = scene.objects.get(contact_tag(t[len("contact:") :], names)[0])
             pair = frozenset((obj.name, getattr(other, "name", "")))
             if other is None or other == obj or pair in seen:
                 continue
             seen.add(pair)
-            if moves or _moves_tagged(other, obj.name):
+            merged = merged_contact(obj.name, tags(obj), other.name, tags(other))
+            if merged is None or merged.moves:
                 continue  # designed to move against each other
             skip = {obj, other}
-            ma, mb = _moving_ancestors(obj, skip), _moving_ancestors(other, skip)
-            if set(ma) != set(mb):
-                out.append((obj.name, other.name, ma, mb))
+            fa, fb = _follows_set(obj, skip), _follows_set(other, skip)
+            if follow_differs(obj.name, fa, other.name, fb):
+                out.append((obj.name, other.name, tuple(sorted(fa)), tuple(sorted(fb))))
     return out
 
 
@@ -1220,68 +1515,31 @@ def _follows(name: str, moves: tuple[str, ...]) -> str:
     return f"{name!r} moves with " + " and ".join(repr(m) for m in moves)
 
 
-MOVES = "moves"  # contact:<other>:moves - the pair moves against each other by design
-
-
-def _contact_tag(rest: str, names) -> tuple[str, float | None, bool]:
-    """(the object a contact tag names, the depth it sets or None, whether it says "moves"): "Yoke" in
-    "contact:Yoke", "contact:Yoke:0.05", "contact:Yoke:moves" and "contact:Yoke:0.05:moves" (unless an object is
-    really called "Yoke:0.05")."""
-    if rest in names:
-        return rest, None, False
-    target, depth, moves = rest, None, False
-    for _ in range(2):  # at most a depth and the qualifier, in either order
-        head, sep, tail = target.rpartition(":")
-        if not sep or target in names:
-            break
-        if tail == MOVES and not moves:
-            moves, target = True, head
-        elif depth is None and _metres_value(tail) is not None:
-            depth, target = _metres_value(tail), head
-        else:
-            break
-    return target, depth, moves
-
-
-def _contact_target(rest: str, names) -> str:
-    """The object a contact tag names (see `_contact_tag`)."""
-    return _contact_tag(rest, names)[0]
-
-
-def _moves_tagged(obj, other: str) -> bool:
-    """Does obj carry "contact:<other>:moves" (with or without a depth)?"""
-    for t in tags(obj):
-        if t.startswith("contact:"):
-            target, _, moves = _contact_tag(t[len("contact:") :], ())
-            if moves and target == other:
-                return True
-    return False
-
-
-def _metres_value(text: str) -> float | None:
-    try:
-        value = float(text)
-    except ValueError:
-        return None
-    return value if value >= 0 and math.isfinite(value) else None
+def _rigid_roots(scene) -> dict[str, str]:
+    """Every object at or under a rigid-tagged object (bake.is_rigid): the name of the outermost such object. A rigid
+    group is a parent and its children that don't move on their own: the walk up stops at the first object that moves
+    by itself (_animated), so a keyed child, and everything under it, is not in its rigid parent's group (it is checked
+    against the group as usual, and may be tagged rigid to start a group of its own)."""
+    roots = {}
+    for obj in scene.objects:
+        root, up = None, obj
+        while up is not None:
+            if is_rigid(up):
+                root = up.name
+            if _animated(up):
+                break  # moves on its own: nothing above it is in one solid with it
+            up = up.parent
+        if root is not None:
+            roots[obj.name] = root
+    return roots
 
 
 def _exemption(a, b) -> tuple[str, float | None] | None:
-    """Why the pair may overlap a little ("contact:B tag on 'A'", "parent/child pair") and the depth a contact tag
-    sets (None for the default), or None when it may not overlap at all."""
-    found = []
-    for x, y in ((a, b), (b, a)):
-        for t in tags(x):
-            if t.startswith("contact:"):
-                rest = t[len("contact:") :]
-                if rest == y.name:
-                    found.append((f"{t} tag on {x.name!r}", None))
-                else:
-                    target, depth, _ = _contact_tag(rest, ())
-                    if target == y.name:
-                        found.append((f"{t} tag on {x.name!r}", depth))
-    if found:
-        return max(found, key=lambda w: -1.0 if w[1] is None else w[1])
+    """Why the pair may overlap a little ("contact:B tag on 'A'", "parent/child pair") and the depth its merged
+    contact tags set (None for the default), or None when it may not overlap at all."""
+    merged = merged_contact(a.name, tags(a), b.name, tags(b))
+    if merged is not None:
+        return (merged.why, merged.depth)
     if a.parent == b or b.parent == a:
         return ("parent/child pair", None)
     return None
@@ -1303,17 +1561,14 @@ def _area(a: float) -> str:
     return f"{a * 1e6:.1f} mm²"
 
 
+def _rect(b) -> Rect | None:
+    """[x0, y0, x1, y1] (screen_box) as a Rect, not cut to the frame, or None."""
+    return None if not b else Rect(b[0], b[1], b[2] - b[0], b[3] - b[1])
+
+
 def _did_you_mean(name: str, present) -> str:
     close = sorted(n for n in present if RENAMED.sub("", n) == name and n != name)
     return f" (did you mean {close[0]!r}?)" if close else ""
-
-
-def _metres(d: float) -> str:
-    if d >= 1.0:
-        return f"{d:.1f} m"
-    if d >= 0.01:
-        return f"{d * 100:.0f} cm"
-    return f"{d * 1000:.0f} mm"
 
 
 def _spans(frames: list[int]) -> str:

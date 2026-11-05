@@ -1,9 +1,10 @@
 import platform
-import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from bsa import proc as _proc
 
 HERE = Path(__file__).resolve().parent
 
@@ -28,7 +29,7 @@ def test_ogg_decodes_outside_blender_through_a_blender_run(tmp_path, bsa_home):
     ogg = tmp_path / "tone.ogg"
     expr = (f"import aud; aud.Sound.sine(330, 44100).limit(0, 0.4).write({str(ogg)!r}, rate=44100, "
             "channels=aud.CHANNELS_MONO, container=aud.CONTAINER_OGG, codec=aud.CODEC_VORBIS, bitrate=96000)")  # fmt: skip
-    subprocess.run([str(find_blender()), "-b", "--factory-startup", "--python-exit-code", "1", "--python-expr", expr],
+    _proc.run([str(find_blender()), "-b", "--factory-startup", "--python-exit-code", "1", "--python-expr", expr],
                    check=True, capture_output=True, timeout=120)  # fmt: skip
     assert ogg.is_file()
     x = decode.load(ogg)

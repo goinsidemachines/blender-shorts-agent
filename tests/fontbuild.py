@@ -59,12 +59,54 @@ def _fvar(axes: list[tuple], instances: list[tuple]) -> bytes:
     return out
 
 
+def _metric_tables(weight: int, upm: int, box: tuple[int, int], hhea: tuple[int, int, int],
+                   typo: tuple[int, int, int], use_typo: bool) -> dict[str, bytes]:  # fmt: skip
+    """head (unitsPerEm, yMin, yMax), hhea (ascender, descender, lineGap) and a full OS/2 (fsSelection, typo)."""
+    head = bytearray(54)
+    struct.pack_into(">H", head, 18, upm)
+    struct.pack_into(">hh", head, 38, box[0], 0)
+    struct.pack_into(">h", head, 42, box[1])
+    hh = bytearray(36)
+    struct.pack_into(">hhh", hh, 4, *hhea)
+    os2 = bytearray(_os2(weight))
+    struct.pack_into(">H", os2, 62, 0x80 if use_typo else 0)
+    struct.pack_into(">hhh", os2, 68, *typo)
+    return {"head": bytes(head), "hhea": bytes(hh), "OS/2": bytes(os2)}
+
+
+DEFAULT_METRICS = {"upm": 1000, "box": (-200, 1000), "hhea": (800, -200, 0), "typo": (800, -200, 0), "use_typo": False}
+
+
+def _hmtx(n_glyphs: int, advance, cps: list[int], n_metrics: int | None) -> tuple[bytes, int]:
+    """hmtx for glyph 0 (.notdef) and one glyph per codepoint in `cps` order: (advance, lsb 0) for the first
+    `n_metrics` glyphs (default all), then a bare lsb for the rest (they take the last advance)."""
+    per = advance if isinstance(advance, dict) else {}
+    base = per.get("", 500) if isinstance(advance, dict) else advance
+    widths = [base] + [per.get(chr(c), base) for c in cps]
+    n = n_glyphs if n_metrics is None else n_metrics
+    out = b"".join(struct.pack(">Hh", widths[g], 0) for g in range(n))
+    return out + b"".join(struct.pack(">h", 0) for _ in range(n, n_glyphs)), n
+
+
 def build_font(text: str = "", family: str = "Testa", subfamily: str = "Regular", weight: int = 400,
-               cmap_format: int = 4, axes=None, instances=None, extra_names=None) -> bytes:
-    """A font whose cmap covers exactly the characters of `text` (plus space)."""
+               cmap_format: int = 4, axes=None, instances=None, extra_names=None, metrics=None, advance=None,
+               n_metrics: int | None = None) -> bytes:  # fmt: skip
+    """A font whose cmap covers exactly the characters of `text` (plus space). `metrics`: keyword arguments of
+    _metric_tables (upm, box (yMin, yMax), hhea, typo, use_typo) to add head, hhea and a full OS/2. `advance`: every
+    glyph's advance width in font units (or {char: advance}, "" for the rest), written to hmtx with
+    hhea.numberOfHMetrics = `n_metrics` (default every glyph); it adds DEFAULT_METRICS (upm 1000) unless `metrics`."""
     cps = sorted({ord(c) for c in text} | {0x20})
     names = {1: family, 2: subfamily, **(extra_names or {})}
     tables = {"cmap": _cmap(cps, cmap_format), "name": _name(names), "OS/2": _os2(weight)}
+    if advance is not None and not metrics:
+        metrics = DEFAULT_METRICS
+    if metrics:
+        tables.update(_metric_tables(weight, **metrics))
+    if advance is not None:
+        tables["hmtx"], n = _hmtx(len(cps) + 1, advance, cps, n_metrics)
+        hh = bytearray(tables["hhea"])
+        struct.pack_into(">H", hh, 34, n)
+        tables["hhea"] = bytes(hh)
     if axes:
         tables["fvar"] = _fvar(axes, instances or [])
     tags = sorted(tables)

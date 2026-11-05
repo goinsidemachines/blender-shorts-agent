@@ -10,9 +10,9 @@ memory"); suggest closing it, but never stop a program yourself.
 
 ## One GPU job at a time
 
-`BLENDER render`, the preview chain's render step, `BLENDER extremes`, `BLENDER test-frames` and `BLENDER estimate` take the workspace's
+`BLENDER render`, the preview chain's render step, `BLENDER extremes`, `BLENDER test-frames`, `BLENDER stills` and `BLENDER estimate` take the workspace's
 GPU lock (`<workspace>/.gpu.lock`: pid, short, command, start time), so two sessions never render at once. A second
-command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr, and `render-status` and
+command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr (and again every 30 s: "still waiting for ...: waited 1 min 30 s"), and `render-status` and
 the page say "final render waiting for the GPU: ...". It starts by itself when the first ends, or at once when the
 first's Blender is gone (a crashed or killed run leaves a stale lock, which is cleared). Tell the user what it waits
 for. With `--no-wait` it fails at once instead, naming the holder: use that when the user would rather not queue.
@@ -26,6 +26,13 @@ Its result lists the PNG `paths` (and each one's shot, fraction and frame): open
 a light or a framing without a whole preview render, instead of a render script of your own. It takes the GPU lock
 like the commands above (it waits and says for what, or fails at once with `--no-wait`), so it never renders
 alongside another session's job. Rebuild first after changing `build.py` (it warns when the .blend is older).
+Judge framing on `--guides` frames: they show the caption zone, the top cards and the framing band the edit and the
+checks use. `--guides` (on `test-frames`, `stills` and `grab`) also writes `<name>-guides.png` beside each frame
+with those zones outlined (caption zone yellow, top cards cyan with a kit, framing band magenta) and lists them in
+the result's `guides`; the plain frames are unchanged. The magenta band is the default framing band: a shot's own
+framing (`px_top`, `px_bottom`, `px_left`, `px_right` or `top` given to `camera.frame_objects`) is not drawn, so
+judge such a shot against the band you gave it. `grab --guides` warns when `source/timeline.json` is newer than the
+video (the timing changed after the edit: a grab's shot may be off).
 
 ## Moving parts at their extremes (before the first preview)
 
@@ -44,13 +51,15 @@ moving subject and parent its moving parts under it.
 ## Watching a render (and the rest of the chain)
 
 Every `BLENDER preview`, `BLENDER render`, `BLENDER check`, `BLENDER frame-check` and `BLENDER edit` keeps a live
-status while it runs: `review/render-status-<preset>.json` and the page `review/render-preview.html` /
-`review/render-final.html` (`BLENDER check` shows on the preview page unless given `--preset final`).
+status while it runs: `review/render-status-<preset>.json`, which the review page's Render stage shows live
+(`BLENDER check` shows with the preview unless given `--preset final`).
 
 - **The chain.** `BLENDER preview` lists its steps (timeline, build, build done, mix, check, render, frame-check,
   edit), each pending, running, done, skipped (with why: "the .blend is current", "already passed on every shot as
   it is now") or failed (with the error), with start and end times and a summary per step. The current step is
-  highlighted at the top. A standalone `check`, `frame-check`, `edit` or `render` shows as a run of one step.
+  highlighted at the top. The check step runs beside the render: both show running, the check with the shot it is
+  on ("checking s02 (2 of 4), 0 errors so far"); a check that stops moving says "no progress for ..." on its row
+  and in the summary. A standalone `check`, `frame-check`, `edit` or `render` shows as a run of one step.
 - **Progress inside a step.** `check` counts the frames it has checked of those it has to check, the shot (and
   scene) it is on, a row per shot (kept, waiting, checking, done), the elapsed time and the time left from its
   measured speed; `frame-check` counts frames per shot the same way, and `edit` counts the frames it has encoded.
@@ -66,19 +75,20 @@ status while it runs: `review/render-status-<preset>.json` and the page `review/
   keeps one line about the previous run (how it ended and when), so an old "done" never passes for this run. A run
   that is still going in another process is left alone (the new one is not recorded there).
 
-The page refreshes itself while something runs.
+The page updates itself while something runs.
 
 - **When the chain or a render starts** (the preview chain or the final render, in the background), run
-  `CLI render-status SHORT --preset preview|final --open` once it has started: it opens the page for the user. Say
-  in one line that it shows the progress live.
+  `CLI page SHORT --stage render` once it has started: it switches the open page to the Render stage (or opens the
+  page: when `opened` is false, say it didn't open and give the `url` as a link). Say in one line that the page has
+  switched to the render and shows the progress live.
 - **When the user asks where it is** (or you need to know), run `CLI render-status SHORT [--preset ...]` instead of
   counting PNGs. Relay its `summary` (e.g. "preview chain running: step 5 of 8, check: 340 of 1200 frames (28%),
   shot s03 (scene Clock), about 4 min left"). `step` is the current step (name, index of total, progress); `idle:
   true` means nothing is running and `last_run` says how the last run ended and when. `alive` says whether its
   Blender is still running; `stale: true` means it says running but its process is gone (killed, crashed, the
   session ended): run the same command again (`BLENDER preview` skips the steps already current, a render resumes
-  from the frames on disk). It works for every step, after a session ended or the computer restarted, and rewrites
-  the page with the true state. Each run has a `run_id` and `started_at`, and the summary ends "(run started
+  from the frames on disk). It works for every step, after a session ended or the computer restarted, and the
+  page shows the true state too. Each run has a `run_id` and `started_at`, and the summary ends "(run started
   14:02:31)": if that is before you launched the command, it is the last run, not yours (`note` says so). Blender
   takes a few seconds to start before the new run writes "starting": check again then.
 - Live warnings are early news, not the verdict: `BLENDER frame-check` still checks every frame afterwards.
@@ -87,7 +97,7 @@ The page refreshes itself while something runs.
 
 Every shot carries a **fingerprint**: a hash of everything that can change its pixels (its scene's render settings,
 world and colour management, its camera and every object's motion at each of its frames, meshes, modifiers,
-materials and node trees, images and fonts with their files, lights, text, the compositor, visibility). Its frames
+materials and node trees (a Geometry Nodes modifier's input values too), images and fonts with their files, lights, text, the compositor, visibility). Its frames
 (`frames/<preset>/<shot>/.render.json`), its anchors and its scene checks are stamped with it, so after a rebuild
 only the shots whose fingerprint changed render again, re-project their anchors and are checked again; the others
 are kept, even though the .blend was saved again. A shot also renders again when its frame range (`new range`) or
@@ -135,9 +145,28 @@ are never overwritten, the engine stage keeps its engine, and a side edit never 
 same options on every command of one side run (`BLENDER render SHORT --preset preview --engine eevee`, then
 `frame-check` and `edit` with `--engine eevee`); the chain passes them on itself. Tags are lowercase letters, digits
 and hyphens; `preview` and `final` are refused. Its fingerprints, resume, scene checks and GPU lock are the same as
-the approved run's. Its live status is its own too: `review/render-status-<preset>-<tag>.json`, the page
-`review/render-<preset>-<tag>.html` and its thumbnails, so the approved run's page is never overwritten (`CLI
-render-status SHORT --preset preview --tag eevee` reads it).
+the approved run's. Its live status is its own too: `review/render-status-<preset>-<tag>.json` and its thumbnails,
+so the approved run's status is never overwritten (`CLI render-status SHORT --preset preview --tag eevee` reads it,
+and the page's Render stage shows it beside the approved run).
+
+## Each run's timeline on the page
+
+Once a run's edit has made its video, the Render stage shows that run in its own tab (`Preview`, and a side run as
+`Preview · eevee`) with the video and a timeline under it: a frame slider and rows of markers for the shots, the
+captions, the sounds, the findings (the scene checks and that run's frame checks), the holds and the closing
+card, each at its frame. Clicking a marker shows that frame; findings that have no frame are listed under the
+timeline. The Final stage has the same timeline for the final video. "Note at this moment" leaves a frame note: on
+the Render stage its id is `<run key>:<frame>` (`preview:412`, `preview-eevee:412`), on Final the frame alone; read
+it as SKILL.md rule 4 says (grab that frame and look at it).
+
+When the timing changed after a video was cut (a re-take, a new narration, a timeline change), the page says "This
+video was cut from an older timing; run the edit again to line up the markers." and hides the markers, because they
+would point at the wrong frames. Run the edit again for that video: `BLENDER preview SHORT` for the preview (it reruns
+what the new timing needs, render and frame-check included, then the edit), and for the final `BLENDER render SHORT
+--preset final`, `BLENDER frame-check SHORT --preset final` and `BLENDER edit SHORT --preset final` (shots whose
+frames are current are kept); a side run's edit takes its own `--engine` / `--tag`. The banner goes away by itself
+once the new edit is made. A video edited before edits kept their timing record shows "This video has no timing
+record; run the edit again to line up the markers." instead: the same fix.
 
 Each render's result has `s_per_frame` (the average over the frames it rendered fresh) and `engines`: every run of
 that preset on record in `review/engine-runs.json`, with what it measured and its MP4 while it exists. Relay those
@@ -155,11 +184,17 @@ background) runs everything needed to get back to a checked preview, through the
 the timeline (only if the timing changed), the build in script mode (only if build.py is newer than the .blend, the
 scenes are missing or from another timing, or with `--rebuild`), `state done build` (when the .blend is newer than
 that mark), `mix`, `check` (skipped when it already passed on every shot as it is now; otherwise only changed shots
-are checked again), `render --preset preview` (it resumes; only changed shots render again, and its step says which
-were kept and why the others rendered), `frame-check --preset preview` and `edit --preset preview`. Its
-result's `steps` say what ran or was skipped and why, and its `closing` (as the edit's) has a `note` when the
-closing card holds longer than `closing.seconds` so its voice line fits: tell the user. It stops at the first failure with "stopped at <step>: ..."
-(for example the check errors, with the checks' counts in the result): fix that and run it again. In MCP mode,
+are checked again, in a second Blender beside the render: the checks need no GPU, and the page shows their progress
+on the check step while the render runs), `render --preset preview` (it resumes; only changed shots render again, and
+its step says which were kept and why the others rendered), `frame-check --preset preview`, then (once the checks
+have ended) `edit --preset preview`. Its result's `steps` say what ran or was skipped and why, and its `closing` (as
+the edit's) has a `note` when the closing card holds longer than `closing.seconds` so its voice line fits: tell the
+user. When the checks find errors the preview is still made: the result's `warnings` (and a `warning:` line on
+stderr) say how many and the first few, the check step shows failed and the `checks` stage stays unmarked, so the
+final render and the final edit refuse until they are fixed and checked again; tell the user and fix them. Any other
+failure stops the chain with "stopped at <step>: ..." (a check process that crashed: "stopped at check: the checks
+stopped: ...", before the edit): fix that and run it again. Stopping the chain (or a failure in the render) also
+ends the check process. In MCP mode,
 rebuild through the MCP first and run `BLENDER preview SHORT --no-build`: it never runs build.py and refuses with
 a plain message when the .blend is not current. The chain needs every stage up to narration done. Then do steps 3,
 5 and 6 below (look at the frames, grab frames of the video, review the timing) yourself.
@@ -203,7 +238,10 @@ The single steps, when you need one on its own:
    `--sheet [--count 12] [--columns 4]` makes one quarter-size contact sheet of evenly spaced frames,
    `review/grabs/preview-sheet.png`, for an overview. Grabs of an older edit of the same video are removed first
    (the result's `cleared` counts them), so the folder only ever holds frames of the video as it is now; a side
-   run's grabs are its own. No .blend is needed. The grabs use the Standard view
+   run's grabs are its own. The result's `older` counts this video's other grabs still in the folder (with an
+   `older_note`; a grab and its `--guides` copy count as one); `--clear` removes them before grabbing. `--guides`
+   also writes `preview-f0046-guides.png` beside each `--at` grab (the shot comes from the timeline; a frame in the
+   closing card gets none): judge framing on those. No .blend is needed. The grabs use the Standard view
    transform, so their colours match the video (pulling frames through a default scene's AgX washes them out). Check
    captions, labels, badges and the end card where they really sit, and grab the moments where parts move against
    each other at full size: a contact sheet is too small to show thin parts passing through each other.
@@ -217,15 +255,16 @@ The single steps, when you need one on its own:
    refuses to start unless `BLENDER check SHORT` passed on every shot as it is now and this timing (rebuilt since?
    check again: it re-checks only changed shots). Long renders survive the
    session ending: if the user comes back later, run the same command and it carries on from the frames on disk.
-   Tell the user roughly how long it will take (from the estimate) and that they can leave it running, and open
-   the live page (`CLI render-status SHORT --preset final --open`). While it renders is a good time to write the
+   Tell the user roughly how long it will take (from the estimate) and that they can leave it running, and switch
+   the page to the render (`CLI page SHORT --stage render`, with the same `opened` rule). While it renders is a good time to write the
    post text (`09-post.md` step 1): it never makes the frames or checks stale.
 2. `BLENDER frame-check SHORT --preset final` (in the background too), fix errors, and look at a sample of final frames yourself (noise
    and fireflies show up here, not in the preview).
    After the final edit, `BLENDER grab SHORT --preset final --sheet` and a few `--at` grabs show the finished video
    itself.
 3. `BLENDER edit SHORT --preset final` (it also needs the passing checks) writes `out/<slug>.mp4` (1080×1920, 30 fps, H.264 + AAC 48 kHz stereo) and
-   marks `final`. If you chain it after the render and frame-check, read every step's `BSA_RESULT`: a refusal
+   marks `final`. The same edit also writes the caption files beside it: `out/<slug>.srt`, `out/<slug>.vtt` and
+   `out/<slug>-transcript.txt`, cue for cue with the captions in the video. If you chain it after the render and frame-check, read every step's `BSA_RESULT`: a refusal
    prints one too (`"ok": false` and the `error`), so relay it rather than retrying blind.
 4. `BLENDER probe "<short>/out/<slug>.mp4"` if you want to double-check: width 1080, height 1920, fps 30, frames
    equal to the timeline's `n_frames`, `has_audio` true.

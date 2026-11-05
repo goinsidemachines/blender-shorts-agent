@@ -58,6 +58,10 @@ Write the comparison into `source/notes.md`: "simulated period 2.01 s vs 2π√(
 - Overlays that explain forces (arrows, a live plot) are drawn from the same data: an arrow for a damper's pull
   uses `pull`, not a guess. Explain the colours once in the narration or a label.
 
+A forged part made of several meshes (a crank and its pin) is one body: join the meshes into one object
+(`bpy.ops.object.join()`) before it goes into a simulation, or tag the parent `rigid` so the checks treat the group
+as one solid (`07-checks.md`). Separate meshes left untagged read as overlapping parts.
+
 ## Blender rigid bodies (`bsa.blender.rigid`)
 
 Blender's own Bullet engine handles bodies that hit, rest and pile up, which the numpy models above don't cover.

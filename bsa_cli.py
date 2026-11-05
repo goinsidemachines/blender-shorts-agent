@@ -7,6 +7,7 @@ Every command prints one JSON object on stdout. On failure it exits non-zero wit
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from dataclasses import asdict
@@ -17,6 +18,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from bsa import jobstate, messages, settings, workspace  # needs the plugin root on sys.path (above)
+from bsa.review import store  # needs the plugin root on sys.path (above)
 
 ERROR_LIMIT = 600  # the one plain error line is trimmed at a sentence or clause boundary past this
 
@@ -53,14 +55,32 @@ def load(sdir: Path):
 
 
 def current_timeline(sdir: Path, short):
-    """The timeline from the takes when narration finished with a voice, else from reading time."""
+    """The timeline from the takes when narration finished with a voice, else from reading time. A one-take short's
+    window too short for its lines is a CliError (its cause the WindowOverrun): one plain line saying what to fix."""
     from bsa.narrate.run import takes_durations, takes_onsets
-    from bsa.timeline import build_timeline
+    from bsa.timeline import WindowOverrun, build_timeline
 
     durations = takes_durations(sdir, short)
     end_card = settings.has_end_card(settings.load_settings(), short)
     onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
-    return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
+    try:
+        return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
+    except WindowOverrun as exc:
+        raise CliError(str(exc)) from exc
+
+
+def _closing_take_s(sdir: Path, short) -> float | None:
+    """The closing take's seconds when the mix and the edit would use it (the takes are current: narration finished
+    with a voice, as current_timeline reads them), else None (the card's set length). A broken take is None too."""
+    from bsa import closing
+    from bsa.narrate.run import takes_durations
+
+    try:
+        if takes_durations(sdir, short) is None:
+            return None
+        return closing.take_seconds(sdir / "audio" / "vo")
+    except Exception:  # noqa: BLE001 - broken takes: the card as set (narrate reports the takes)
+        return None
 
 
 def built_timeline(sdir: Path, short):
@@ -69,14 +89,15 @@ def built_timeline(sdir: Path, short):
 
     tl, from_takes = current_timeline(sdir, short)
     try:
-        freshness.check_timeline(sdir, tl)
+        freshness.check_timeline(sdir, tl, workspace.short_key(sdir, settings.load_settings().get("workspace")))
     except freshness.StaleError as exc:
         raise CliError(str(exc)) from exc
     return tl, from_takes
 
 
-_STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command",
-                "narrator.label", "render.engine",
+_STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command", "narrator.take_mode",
+                "narrator.label", "render.engine", "post_format.title_suffix", "post_format.link_line",
+                "post_format.pinned_comment", "post_format.title_style",
                 "brand.mode", "sound_policy", "freesound.api_key", "feedback"}  # fmt: skip
 
 
@@ -90,7 +111,9 @@ def _parse_value(key: str, text: str):
     except ValueError:
         return text
     if key.startswith("brand.") and not isinstance(value, dict | list):
-        return text
+        from bsa import kit
+
+        return value if kit.json_scalar(key) else text
     return value
 
 
@@ -156,12 +179,33 @@ def cmd_rule(args) -> dict:
     return {"rule": rule, **_rules_out(), "summary": settings.summary_line(settings.load_settings())}
 
 
+def _check_narrator_params(key: str, value) -> None:
+    """Refuse (nothing saved) engine params the narrator set now doesn't take, or out of its ranges."""
+    narrator = settings.load_settings().get("narrator") or {}
+    params = dict(narrator.get("params") or {})
+    if key == "narrator.params":
+        params = value
+    elif value is None:
+        params.pop(key.split(".", 2)[2], None)
+    else:
+        params[key.split(".", 2)[2]] = value
+    wrong = settings.narrator_problems({"narrator": {**narrator, "params": params}})
+    if wrong:
+        raise CliError("; ".join(wrong))
+
+
 def cmd_settings(args) -> dict:
     if args.action == "show":
         s = settings.load_settings()
         return {"settings": settings.redacted(s), "rules": s.get("rules") or [], "path": str(settings.settings_path())}
     if args.action == "rules":
         return _rules_out()
+    if args.action == "post-format":
+        from bsa import post
+
+        s = settings.load_settings()
+        return {"post_format": s.get("post_format") or {}, "asked": bool(s.get("post_format_asked")),
+                "keys": list(post.FORMAT_KEYS)}  # fmt: skip
     if args.action == "rule":
         return cmd_rule(args)
     if args.key in ("rules", "rules_next"):
@@ -173,6 +217,11 @@ def cmd_settings(args) -> dict:
         }
     if args.action == "summary":
         return {"summary": settings.summary_line(settings.load_settings())}
+    if args.action == "check":
+        from bsa import kit
+
+        s = settings.load_settings()
+        return {"advice": kit.advice(s), "problems": kit.problems(s) + settings.narrator_problems(s)}
     # set
     if not args.key or args.value is None:
         raise CliError("usage: settings set KEY VALUE (for example: settings set render.engine cycles)")
@@ -180,6 +229,8 @@ def cmd_settings(args) -> dict:
         value = settings.check_value(args.key, _parse_value(args.key, args.value))
     except ValueError as exc:
         raise CliError(str(exc)) from exc
+    if args.key == "narrator.params" or args.key.startswith("narrator.params."):
+        _check_narrator_params(args.key, value)
     if args.key == "closing.image" and isinstance(value, str) and value.strip():
         path = Path(value.strip()).expanduser().resolve()
         if not path.is_file() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
@@ -200,6 +251,8 @@ def cmd_settings(args) -> dict:
     if args.key == "handle":
         value = value.strip().lstrip("@")  # "" = asked, and the user wants no handle
     s = settings.set_value(args.key, value)
+    if args.key == "post_format" or args.key.startswith("post_format."):
+        s = settings.set_value("post_format_asked", True)
     out = {"settings": settings.redacted(s), "summary": settings.summary_line(s)}
     font = value if args.key == "brand.font" else (value.get("font") if args.key == "brand" and isinstance(
         value, dict) else None)  # fmt: skip
@@ -223,9 +276,11 @@ def cmd_machine(args) -> dict:
 
 
 def cmd_new_short(args) -> dict:
+    from bsa import like
     from bsa.short import Short, save_short
 
-    root = settings.load_settings().get("workspace")
+    settings_ = settings.load_settings()
+    root = settings_.get("workspace")
     if not root:
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
     length = 45 if args.length is None else args.length  # the interview's default
@@ -233,31 +288,67 @@ def cmd_new_short(args) -> dict:
         length = int(length)  # "--length 40" is stored as 40, not 40.0
     if not LENGTH_RANGE_S[0] <= length <= LENGTH_RANGE_S[1]:
         raise CliError(f"--length must be {LENGTH_RANGE_S[0]} to {LENGTH_RANGE_S[1]} seconds, got {length:g}")
+    other = values = None
+    copied: list[str] = []
+    notes: list[str] = []
+    if args.like:  # read the earlier short before making anything, so a refusal leaves no folder behind
+        try:
+            other = workspace.find_short(Path(root), args.like)
+            values, copied, notes = like.copy_from(other, settings_)
+        except (ValueError, FileNotFoundError) as exc:
+            raise CliError(f"--like {args.like}: {exc}") from exc
+        if args.length is not None:  # the length the user gave wins over the copied one
+            values.pop("length_s", None)
+        elif "length_s" in values:
+            try:
+                copied_len = float(values["length_s"])
+            except (TypeError, ValueError):
+                copied_len = None
+            if copied_len is None or not LENGTH_RANGE_S[0] <= copied_len <= LENGTH_RANGE_S[1]:
+                values.pop("length_s")
+                notes.append(f"the length wasn't copied: {other.name}'s length is outside {LENGTH_RANGE_S[0]} to "
+                             f"{LENGTH_RANGE_S[1]} seconds")  # fmt: skip
+            else:
+                length = int(copied_len) if copied_len.is_integer() else copied_len
+        copied = [k for k in copied if k in values]
+        taken = workspace._NUM.match(other.name)
+        if args.number is not None and taken and int(taken.group(1)) == args.number:  # --number 3 --like 3
+            raise CliError(f"--like {args.like}: {other.name} is the short being made itself (number {args.number}): "
+                           "name an earlier short")  # fmt: skip
     try:
         sdir = workspace.new_short(Path(root), args.title, number=args.number)
     except ValueError as exc:
         raise CliError(str(exc)) from exc
     path = short_json(sdir)
     if not path.exists():
-        save_short(Short(slug=workspace.slugify(args.title), title=args.title, length_s=length,
-                         topic=(args.topic or "").strip()), path)
-    return {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
+        short = Short(slug=workspace.slugify(args.title), title=args.title, length_s=length,
+                      topic=(args.topic or "").strip())  # fmt: skip
+        if other is not None:
+            for key in copied:
+                if key != "length_s":
+                    setattr(short, key, values[key])
+            short.like = like.provenance(other, copied, title=load(other).title, style=values.get("style"))
+        save_short(short, path)
+    out = {"short": str(sdir), "slug": sdir.name.split("-", 1)[1], "next": jobstate.next_stage(sdir)}
+    if other is not None:
+        skipped = like.skipped_questions(copied, values.get("narrator") or {})
+        out.update({"like": other.name, "copied": copied, "skipped": skipped,
+                    "said": like.said(load(other).title, skipped),
+                    "notes": notes})  # fmt: skip
+    return out
 
 
 LENGTH_RANGE_S = (15, 90)
 
 
-def _rule_problems(short) -> tuple[list[str], list[str]]:
-    """(errors, warnings) of the short against the user's hard rules and its own (bsa.rules.problems)."""
+def _rule_problems(short, sdir: Path | None = None) -> tuple[list[str], list[str]]:
+    """(errors, warnings) of the short against the user's hard rules and its own (bsa.rules.problems); with the
+    short's folder, a command a warning suggests names it as the user types it (workspace.short_key)."""
     from bsa import rules
 
-    return rules.problems(short, settings.load_settings())
-
-
-def _rule_rows(short) -> list[dict]:
-    from bsa import rules
-
-    return rules.panel_rows(rules.effective(settings.load_settings(), short), short)
+    s = settings.load_settings()
+    key = workspace.short_key(sdir, s.get("workspace")) if sdir is not None else "SHORT"
+    return rules.problems(short, s, key)
 
 
 def _gate(sdir: Path, stage: str) -> None:
@@ -285,10 +376,24 @@ def _gate(sdir: Path, stage: str) -> None:
                        + "; ".join(errors))  # fmt: skip
 
 
+def cmd_shorts(args) -> dict:
+    from bsa import like
+
+    s = settings.load_settings()
+    root = s.get("workspace")
+    if not root:
+        raise CliError("No workspace is set yet: run settings set workspace PATH first.")
+    rows = like.list_shorts(Path(root), s)
+    done = [r["title"] for r in rows if r["finished"] and r["title"]]
+    return {"shorts": rows, "last_finished": done[:3]}
+
+
 def cmd_state(args) -> dict:
     sdir = short_dir(args.short)
     if args.action == "done":
         info = {}
+        if args.stage is None:
+            raise CliError("usage: state SHORT done STAGE [--info JSON]")
         if args.info:
             try:
                 info = json.loads(args.info)
@@ -296,18 +401,390 @@ def cmd_state(args) -> dict:
                 raise CliError(f"--info is not valid JSON: {exc}") from exc
             if not isinstance(info, dict):
                 raise CliError("--info must be a JSON object")
+        _own_stage(sdir, args.stage)
         if args.stage in ("interview", "story"):
             _gate(sdir, args.stage)
+        if args.stage in jobstate.APPROVALS:
+            _require_approval(sdir, args.stage)
         if args.stage == "build":  # a rebuild invalidates the checks and every render made from the old build
             jobstate.reset_from(sdir, "checks")
         jobstate.mark_done(sdir, args.stage, **info)
     elif args.action == "reset":
+        if args.stage is None:
+            raise CliError("usage: state SHORT reset STAGE")
+        from bsa.review import decisions, stages
+
+        later = jobstate.STAGES[jobstate.STAGES.index(args.stage) :]
+        decisions.supersede(sdir, [s for s in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES) if s in later])
         jobstate.reset_from(sdir, args.stage)
     elif args.action == "restore":  # state.json damaged: put state.json.bak back
         jobstate.restore(sdir)
     elif args.action is not None:
         raise CliError("usage: state SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     return _state(sdir)
+
+
+NOT_A_STAGE = ("The camera is not a stage of this short: it is offered for a one-take short, or with \"approve\": true "
+               "in short.json's camera")  # fmt: skip
+
+
+def _own_stage(sdir: Path, stage: str) -> None:
+    """Refuse a stage this short doesn't have (the optional camera stage of a short that doesn't ask for it)."""
+    if stage not in jobstate.wanted_stages(sdir):
+        raise CliError(NOT_A_STAGE)
+
+
+def _page_stages(sdir: Path) -> tuple[str, ...]:
+    """The short's own page stages: the camera stage only when it wants it."""
+    from bsa.review import stages
+
+    return stages.page_stages("camera" in jobstate.wanted_stages(sdir))
+
+
+def _require_approval(sdir: Path, stage: str) -> None:
+    """story, storyboard and engine are marked done only through `page decide`, which leaves an applied approval of
+    the stage's current version."""
+    from bsa.review import decisions, snapshot
+
+    version = snapshot.stage_version(sdir, stage)
+    found = decisions.approved(sdir, stage, version) if version is not None else None
+    if not found or not found["applied"]:
+        raise CliError(f"Approvals are recorded with CLI page decide SHORT {stage} approve --by page|chat (the {stage} "
+                       f"has no approval for its current version {version})")  # fmt: skip
+
+
+def _apply_decision(sdir: Path, entry: dict) -> dict:
+    """Act on a decision: claim it (marks it applied, once, under the store lock); the winner marks an approved
+    approval stage done (after the story's gate). A failure gives the claim back and is raised. Returns the decision
+    as stored."""
+    from bsa.review import decisions
+
+    if not decisions.claim(sdir, entry["id"]):  # decide and wait raced: the other one is acting on it
+        return decisions.get(sdir, entry["id"])
+    try:
+        if entry["decision"] == "approve" and entry["stage"] in jobstate.APPROVALS:
+            _mark_approved(sdir, entry)
+    except BaseException:
+        decisions.unclaim(sdir, entry["id"])
+        raise
+    return decisions.get(sdir, entry["id"])
+
+
+def _mark_approved(sdir: Path, entry: dict) -> None:
+    """Mark an approval stage done from its approval (after the story's gate). Idempotent: the same fields again."""
+    if entry["stage"] == "story":
+        _gate(sdir, "story")
+    jobstate.mark_done(sdir, entry["stage"], decision=entry["id"], version=entry["version"], by=entry["by"],
+                       **(entry["choice"] or {}))  # fmt: skip
+
+
+def _repair_half_applied(sdir: Path, stage: str | None = None) -> list[dict]:
+    """Finish approvals that were claimed (applied) but whose stage never reached state.json: the power went off
+    between decisions.claim and jobstate.mark_done. Only an approval of the stage's current version counts. Returns
+    the approvals repaired."""
+    from bsa.review import decisions, snapshot
+
+    done = jobstate.load_state(sdir)["stages"]
+    found = {d["stage"] for d in decisions.load(sdir)
+             if d["decision"] == "approve" and d["applied"] and not d["superseded"]
+             and d["stage"] in jobstate.APPROVALS and d["stage"] not in done and stage in (None, d["stage"])}  # fmt: skip
+    repaired = []
+    for s in sorted(found, key=jobstate.STAGES.index):
+        version = snapshot.stage_version(sdir, s)
+        entry = decisions.approved(sdir, s, version) if version is not None else None
+        if entry is not None and entry["applied"]:
+            _mark_approved(sdir, entry)
+            repaired.append(entry)
+    return repaired
+
+
+def _page_stage(stage: str | None) -> str:
+    from bsa.review import stages
+
+    if stage not in stages.PAGE_STAGES:
+        raise CliError(f"{stage!r} is not a page stage; expected one of {', '.join(stages.PAGE_STAGES)}")
+    return stage
+
+
+def _page_decide_thumbnail(args, sdir: Path) -> dict:
+    """page decide SHORT thumbnail --choice N [--by page|chat]: use candidate N (its files to out/, the choice
+    recorded in review/thumbs.json and short.json)."""
+    from bsa import thumbs
+
+    if len(args.words) != 3:
+        raise CliError("usage: page decide SHORT thumbnail --choice N [--by page|chat]")
+    if args.note is not None or args.version is not None:
+        raise CliError("page decide SHORT thumbnail takes only --choice N and --by page|chat (no --note or --version): "
+                       "leave a note on a candidate with the page, or tell Claude in the chat")  # fmt: skip
+    by = args.by or "chat"
+    if by not in ("page", "chat"):
+        raise CliError("A thumbnail is chosen on the page or in the chat: --by page|chat")
+    digits = args.choice.strip() if isinstance(args.choice, str) else ""
+    if not (digits.isascii() and digits.isdigit()):
+        raise CliError(f"page decide SHORT thumbnail needs --choice N, the candidate's number (not {args.choice!r})")
+    try:
+        return {"thumbnail": thumbs.choose(sdir, int(digits), by)}
+    except (ValueError, store.StoreDamaged, TimeoutError) as exc:
+        raise CliError(str(exc)) from exc
+
+
+def _page_decide(args, sdir: Path) -> dict:
+    from bsa import engine_runs
+    from bsa.review import decisions, notes, snapshot, stages
+
+    if len(args.words) >= 3 and args.words[2] == "thumbnail":
+        return _page_decide_thumbnail(args, sdir)
+    if len(args.words) != 4:
+        raise CliError("usage: page decide SHORT STAGE approve|changes --by page|chat|settings")
+    stage, decision = _page_stage(args.words[2]), args.words[3]
+    if stage not in (*stages.APPROVAL_STAGES, *stages.ACK_STAGES):
+        raise CliError(f"The {stages.LABELS[stage]} has nothing to approve.")
+    if stage not in _page_stages(sdir):
+        raise CliError(NOT_A_STAGE)
+    if decision not in decisions.DECISIONS:
+        raise CliError(f"usage: page decide SHORT STAGE approve|changes (not {decision!r})")
+    if args.by is None:
+        raise CliError("page decide needs --by page|chat|settings")
+    if args.by == "settings" and decision != "approve":
+        raise CliError("Only an engine approval can be answered from settings.")
+    choice = {"engine": args.choice} if args.choice is not None else None
+    if args.by == "settings":  # the engine the page shows as already chosen: short.json's, else the setting
+        setting = (settings.load_settings().get("render") or {}).get("engine")
+        wanted, source = engine_runs.pick(None, engine_runs.short_engine(sdir), setting)
+        if args.choice is None or args.choice != wanted:
+            where = "short.json's render.engine" if source == "short.json" else "The render.engine setting"
+            raise CliError(f"{where} is {wanted!r}, so it can't answer {args.choice!r}: ask the user which engine "
+                           "to use, then record it with --by chat.")  # fmt: skip
+    current = snapshot.stage_version(sdir, stage)
+    if current is None:
+        raise CliError(f"The {stages.LABELS[stage]} has nothing to answer yet.")
+    version = args.version if args.version is not None else current
+    if stage == "camera" and decision == "approve" and (problem := snapshot.camera_problem(sdir)):
+        raise CliError(problem)  # a camera with no test clip has nothing to approve; a stale one is the user's call
+    if decision == "changes":
+        open_notes = [n for n in notes.load(sdir) if n["stage"] == stage and n["status"] in ("open", "sent")]
+        if not open_notes and not args.note:
+            raise CliError("Add a note saying what to change first.")
+    elif stage == "story" and version == current:
+        _gate(sdir, "story")  # a story that doesn't validate is refused before anything is recorded
+    if args.note:
+        notes.add(sdir, stage, {"kind": "overall", "id": None, "version": version}, args.note, "chat")
+    try:
+        entry = decisions.record(sdir, stage, version, decision, args.by, current=current, choice=choice)
+    except decisions.DecisionRefused as exc:
+        raise CliError(str(exc)) from exc
+    sent = notes.send_stage(sdir, stage) if decision == "changes" or args.note else []
+    entry = _apply_decision(sdir, entry)
+    return {"decision": entry, "state": _state(sdir), "notes_sent": sent}
+
+
+def _page_note(args, sdir: Path) -> dict:
+    from bsa.review import notes
+
+    if len(args.words) != 4 or args.words[3] not in notes.ANSWERS or args.reply is None:
+        raise CliError("usage: page note SHORT ID done|declined --reply TEXT")
+    try:
+        return {"note": notes.answer(sdir, args.words[2], args.words[3], args.reply)}
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+
+
+NOTES_AFTER_CHANGES_S = 5.0  # how long `page wait` waits for the notes a "changes" answer sends (a second write)
+
+
+def _with_findings(sdir: Path, notes: list[dict]) -> list[dict]:
+    """Each note on a finding gains that finding's row ("finding"), or "gone": True when no check reports it."""
+    from bsa.review import pages
+
+    out = []
+    for n in notes:
+        target = n.get("target")
+        if isinstance(target, dict) and target.get("kind") == "finding":
+            row = pages.resolve_finding(sdir, str(target.get("id")))
+            n = {**n, "gone": True} if row is None else {**n, "finding": row}
+        out.append(n)
+    return out
+
+
+def _page_wait(args, sdir: Path) -> dict:
+    """Wait until the stage has something for Claude: an answer to apply (applied here), sent notes (this stage's,
+    or newly sent on any stage), or an answer applied elsewhere since the wait began (`page decide --by chat`), which
+    also ends it. A half-applied approval (power off between the claim and state.json) is repaired."""
+    import time
+
+    from bsa.review import decisions, notes, snapshot, stages
+
+    if len(args.words) != 2 or args.stage is None:
+        raise CliError("usage: page wait SHORT --stage STAGE [--timeout S] [--poll S]")
+    stage = _page_stage(args.stage)
+    if stage not in _page_stages(sdir):
+        raise CliError(NOT_A_STAGE)
+    deadline = time.monotonic() + (args.timeout if args.timeout is not None else 600.0)
+    poll = max(args.poll, 0.05)
+
+    def sent_notes(of: str | None = None) -> list[dict]:
+        return [n for n in notes.load(sdir) if n["status"] == "sent" and of in (None, n["stage"])]
+
+    def applied_approvals() -> list[dict]:
+        return [d for d in decisions.load(sdir) if d["stage"] == stage and d["decision"] == "approve"
+                and d["applied"] and not d["superseded"]]  # fmt: skip
+
+    def stage_done() -> bool:
+        return stages.statuses(jobstate.load_state(sdir)["stages"], _page_stages(sdir)).get(stage) == "done"
+
+    old_sent = {n["id"] for n in sent_notes() if n["stage"] != stage}  # other stages' notes sent before: not news
+    old_applied = {d["id"] for d in applied_approvals()}
+    was_done = stage_done()
+    superseded: list[str] = []
+
+    def news() -> list[dict]:
+        return [n for n in sent_notes() if n["stage"] == stage or n["id"] not in old_sent]
+
+    def result(version, entry, sent, *, applied=None, timed_out=False, repaired=()) -> dict:
+        return {"stage": stage, "version": version, "decision": entry, "notes": _with_findings(sdir, sent),
+                "note_stages": sorted({n["stage"] for n in sent}),
+                "applied": entry is not None if applied is None else applied,
+                "by": entry["by"] if entry else None, "timed_out": timed_out, "superseded": superseded,
+                "repaired": [d["id"] for d in repaired]}  # fmt: skip
+
+    while True:
+        version = snapshot.stage_version(sdir, stage)
+        superseded += decisions.supersede_stale(sdir, stage, version)  # answers to content that has changed since
+        repaired = _repair_half_applied(sdir, stage)
+        if repaired:
+            return result(version, repaired[-1], news(), repaired=repaired)
+        waiting = [d for d in decisions.unapplied(sdir) if d["stage"] == stage and d["version"] == version]
+        if waiting:
+            entry = _apply_decision(sdir, waiting[-1])
+            if entry["decision"] == "changes":  # the server records the answer, then sends the notes: wait for them
+                until = time.monotonic() + NOTES_AFTER_CHANGES_S
+                while not sent_notes(stage) and time.monotonic() < until:
+                    time.sleep(0.05)
+            return result(version, entry, news())
+        new = [d for d in applied_approvals() if d["id"] not in old_applied and d["version"] == version]
+        if new or (not was_done and stage_done()):  # answered elsewhere (page decide --by chat) since the wait began
+            return result(version, new[-1] if new else None, news(), applied=True)
+        sent = news()
+        if sent:
+            return result(version, None, sent)
+        if time.monotonic() >= deadline:
+            return result(version, None, sent, timed_out=True)
+        time.sleep(min(poll, max(deadline - time.monotonic(), 0.0)))
+
+
+def _page_notes(args, sdir: Path) -> dict:
+    """What `page_notes` points at, in full: the notes not answered yet (open: the user is still writing; sent: for
+    Claude to act on) and the decisions not applied yet (`page wait --stage STAGE` applies one)."""
+    from bsa.review import decisions, notes
+
+    if len(args.words) != 2:
+        raise CliError("usage: page notes SHORT [--stage STAGE]")
+    stage = _page_stage(args.stage) if args.stage is not None else None
+    from bsa.review import snapshot
+
+    try:
+        superseded = []
+        for s in sorted({d["stage"] for d in decisions.unapplied(sdir)}):
+            superseded += decisions.supersede_stale(sdir, s, snapshot.stage_version(sdir, s))
+        repaired = _repair_half_applied(sdir)  # an approval the power cut off before state.json was written
+        found = [n for n in notes.load(sdir) if n["status"] in ("open", "sent")]
+        waiting = decisions.unapplied(sdir)
+    except store.StoreDamaged as exc:
+        raise CliError(str(exc)) from exc
+    snap = snapshot.build(sdir)
+    keys = ("id", "stage", "target", "text", "status", "by")
+    shown = [{k: n.get(k) for k in keys} for n in found if stage in (None, n["stage"])]
+    return {"notes": _with_findings(sdir, shown),
+            "decisions": [{k: d.get(k) for k in ("id", "stage", "version", "decision")} for d in waiting
+                          if stage in (None, d["stage"])],
+            "superseded": superseded, "repaired": [d["id"] for d in repaired],
+            "waiting_for_yes": [s["id"] for s in snap["stages"] if s["needs_yes"]]}  # fmt: skip
+
+
+def cmd_page(args) -> dict:
+    if args.words[0] in ("decide", "note", "notes", "wait"):
+        if len(args.words) < 2:
+            raise CliError(f"usage: page {args.words[0]} SHORT ...")
+        args.short = args.words[1]
+        sdir = short_dir(args.short)
+        handlers = {"decide": _page_decide, "note": _page_note, "notes": _page_notes, "wait": _page_wait}
+        return handlers[args.words[0]](args, sdir)
+    if args.words[0] == "serve":
+        return _page_serve(args)
+    if len(args.words) != 1:
+        raise CliError(f"usage: page SHORT [--open] [--stage STAGE]; unexpected {' '.join(args.words[1:])!r}")
+    args.short = args.words[0]
+    return _page_open(args, short_dir(args.short))
+
+
+def _page_serve(args) -> dict:
+    """The detached page server's own process: serve the workspace until idle."""
+    from bsa.review import launch
+
+    ws = args.workspace or settings.load_settings().get("workspace")
+    if not ws or not Path(ws).is_dir():
+        raise CliError("page serve needs --workspace PATH (an existing folder) or the workspace setting")
+    launch.run_server(Path(ws).resolve(), args.lan)
+    return {"stopped": True}
+
+
+def _page_open(args, sdir: Path) -> dict:
+    """Start or reuse the workspace's server, run doctor when this short has never had one, and open the page."""
+    from bsa.review import launch, stages
+
+    if args.stage is not None and args.stage not in stages.PAGE_STAGES:
+        raise CliError(f"unknown stage {args.stage!r}; expected one of {', '.join(stages.PAGE_STAGES)}")
+    if args.stage is not None and args.stage not in _page_stages(sdir):
+        raise CliError(NOT_A_STAGE)  # the camera stage of a short that doesn't have it: no hidden stage opens
+    ws = sdir.parent  # the server serves the shorts of the folder this one is in
+    lan = bool(args.lan or (settings.load_settings().get("page") or {}).get("lan") is True)
+    try:
+        info, failed = launch.ensure_server(ws, lan=lan), None
+    except launch.ServerUnavailable as exc:
+        info, failed = None, exc
+    doctor_json = sdir / "review" / "doctor.json"
+    if not doctor_json.is_file():
+        _doctor_checks(sdir, ws, info, save=True)
+
+    def ensure(_ws):
+        if failed is not None:
+            raise failed
+        return info
+
+    out = launch.open_page(ws, sdir, stage=args.stage, force=args.open, ensure=ensure)
+    try:
+        checks = json.loads(doctor_json.read_text("utf-8")).get("checks") or []
+    except (OSError, ValueError, AttributeError):
+        checks = []
+    health = [c for c in checks if isinstance(c, dict) and c.get("level") != "ok"
+              and not (c.get("id") == "server" and out["mode"] == "server")]  # fmt: skip
+    phone = launch.phone_url(info, sdir.name) if info is not None else None  # with page.lan only
+    return {**out, "health": health, "phone": phone}
+
+
+def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool) -> list[dict]:
+    from bsa import doctor, fonts
+
+    short = None
+    if sdir is not None and short_json(sdir).is_file():
+        try:
+            short = load(sdir)
+        except CliError:
+            short = None  # a bad spec is validate's finding; the font check falls back to the brand font
+    checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
+    if save and sdir is not None:
+        doctor.save(sdir, checks)
+    return checks
+
+
+def cmd_doctor(args) -> dict:
+    from bsa.review import launch
+
+    sdir = short_dir(args.short) if args.short else None
+    ws = settings.load_settings().get("workspace")
+    ws = sdir.parent if sdir is not None else Path(ws) if ws else None  # where the short really is, as page SHORT
+    checks = _doctor_checks(sdir, ws, launch.server_info(ws) if ws else None, save=True)
+    return {"checks": checks, "ok": not any(c["level"] == "error" for c in checks)}
 
 
 def cmd_engine(args) -> dict:
@@ -362,30 +839,60 @@ def _reading_timeline(short):
 
 
 def cmd_validate(args) -> dict:
+    from bsa import post
     from bsa.short import spoken_warnings, validate
-    from bsa.timeline import length_warning
+    from bsa.timeline import WindowOverrun, length_warning
 
     sdir = short_dir(args.short)
     short = load(sdir)
-    rule_errors, rule_warnings = _rule_problems(short)
+    from bsa import kit
+
+    rule_errors, rule_warnings = _rule_problems(short, sdir)
     errors = validate(short) + rule_errors
+    post_errors, post_warnings = post.problems(short, settings.load_settings())
+    errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
-    warnings += rule_warnings
-    rows, source = [], None
+    warnings += rule_warnings + post_warnings
+    from bsa import translations
+
+    tr_errors, tr_warnings = translations.problems(short, settings.load_settings())
+    errors += tr_errors
+    warnings += tr_warnings
+    if not errors:  # a one-take short's window too short for its lines, at reading pace
+        try:
+            _reading_timeline(short)
+        except WindowOverrun as exc:
+            errors.append(str(exc))
+    rows, source, closing_out = [], None, None
     if not errors:
+        from bsa import closing
+
+        card = closing.resolve(settings.load_settings(), short)
+        take_s = _closing_take_s(sdir, short) if card else None  # it can hold the card past closing.seconds
+        closing_s = closing.card_seconds(card, take_s, short.fps)
+        if card:
+            closing_out = {"seconds": closing_s, "set_seconds": card["seconds"]}
         if short.length_s > 0:
-            msg = length_warning(short, _reading_timeline(short))
+            msg = length_warning(short, _reading_timeline(short), extra_s=closing_s or 0)
             if msg:
                 warnings.append(msg)
+        stretched = closing.stretch_warning(card, take_s, short.fps)
+        if stretched:
+            warnings.append(stretched)
         try:
             tl, from_takes = current_timeline(sdir, short)
-        except Exception:  # noqa: BLE001 - broken takes: pace it at reading speed (narrate reports the takes)
+        except Exception as exc:  # noqa: BLE001 - broken takes: pace it at reading speed (narrate reports the takes)
+            if isinstance(exc.__cause__, WindowOverrun):  # the takes overrun a window: CLI timeline would refuse
+                errors.append(f"with the narration's takes, {exc}")
             tl, from_takes = _reading_timeline(short), False
         rows, pace_warnings = _pacing(short, tl)
         warnings += pace_warnings
         source = "takes" if from_takes else "reading pace"
     warnings += _font_and_sound_warnings(sdir, short)
+    warnings += kit.problems(settings.load_settings(), short)
     out = {"ok": not errors, "errors": errors, "warnings": warnings, "pacing": rows, "pacing_from": source}
+    if closing_out:
+        out["closing"] = closing_out
     if errors:
         raise CliError(f"short.json has {len(errors)} problem(s): " + "; ".join(errors), out)
     return out
@@ -413,19 +920,106 @@ def cmd_timeline(args) -> dict:
     }
 
 
+def _restore_file(path: Path, data: bytes | None) -> str | None:
+    """Put a file's saved bytes back (or remove it when there were none). Returns why it couldn't, never raises."""
+    try:
+        if data is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(data)
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
+    """narrate --line ID [--say TEXT]: refuse (nothing touched) what can't be re-taken, write the respelling, and
+    throw the line's take away with the next seed. Returns {"line", "seed"}, or None without --line."""
+    from bsa.narrate import run as nrun
+    from bsa.short import save_short, validate
+
+    line_id, say = getattr(args, "line", None), getattr(args, "say", None)
+    whole = bool(getattr(args, "take", False))
+    if whole and line_id is None:
+        raise CliError("--take needs --line: say which line's paragraph to re-take")
+    if line_id is None:
+        if say is not None:
+            raise CliError("--say needs --line: say which line to re-take with these words.")
+        return None
+    if say is not None and not say.strip():
+        raise CliError("--say can't be empty: give the words the voice should say.")
+    if "narration" not in jobstate.load_state(sdir)["stages"]:
+        raise CliError("Narrate the short first: CLI narrate SHORT")
+    if (s.get("narrator") or {}).get("provider") in (None, "none"):
+        raise CliError("This short uses captions only, so there is no take to re-take.")
+    ids = [ln.id for ln in voiced.lines]
+    if line_id not in ids:
+        raise CliError(f"No line {line_id!r}; the lines are {', '.join(ids)}")
+    edited = None
+    if say is not None:
+        from bsa import closing
+
+        if line_id == closing.LINE_ID:
+            raise CliError("The closing line's words are the closing setting's voice_line: change it there.")
+        edited = copy.deepcopy(short)
+        next(ln for ln in edited.lines if ln.id == line_id).say = say
+        problems = validate(edited)
+        if problems:
+            raise CliError("That respelling isn't valid: " + "; ".join(problems))
+    problem = nrun.retake_problem(sdir / "audio" / "vo", line_id)  # every refusal before anything is written
+    if problem:
+        raise CliError(problem)
+    take = None
+    if whole:
+        if nrun.narrator_for(s, short).get("take_mode") != "paragraph":
+            raise CliError("--take is for paragraph takes: narrator.take_mode is line")
+        if say is not None:
+            raise CliError("--say and --take don't go together: respell the line with --line --say, then re-take it.")
+        found = nrun.take_of(sdir / "audio" / "vo", line_id)
+        if found is None:
+            raise CliError(f"line {line_id} was not spoken in a paragraph take: re-take it with --line alone")
+        take = found["id"]
+    try:
+        seed = (nrun.retake_take if whole else nrun.retake)(sdir / "audio" / "vo", line_id)
+    except (ValueError, OSError) as exc:
+        raise CliError(_one_line(exc)) from exc
+    if edited is not None:
+        try:
+            save_short(edited, short_json(sdir))
+        except OSError as exc:
+            raise CliError(f"The take was thrown away (next seed {seed}), but short.json couldn't be saved with the "
+                           f"new words ({_one_line(exc)}): run the same command again.") from exc  # fmt: skip
+        new = {ln.id: ln for ln in edited.lines}
+        short.lines = edited.lines  # the run below speaks the new words
+        voiced.lines = [new.get(ln.id, ln) for ln in voiced.lines]
+    return {"line": line_id, "seed": seed, **({"take": take} if take else {})}
+
+
 def cmd_narrate(args) -> dict:
-    from bsa.narrate.run import clear_stale_takes, narrate
+    from bsa.narrate.run import HEARD_FILE, check_line_ids, clear_stale_takes, narrate, narrator_for
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
-        raise CliError("Narration is made only after the storyboard is approved: show the storyboard page and get a "
-                       "yes first (then CLI state SHORT done storyboard).")  # fmt: skip
+        raise CliError("Narration is made only after the storyboard is approved: show the storyboard on the page "
+                       "and get a yes first (CLI page wait SHORT --stage storyboard, or CLI page decide SHORT "
+                       "storyboard approve --by chat).")  # fmt: skip
     short = load(sdir)
     s = settings.load_settings()
     from bsa import closing
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
-    narrator = s.get("narrator") or {}
+    narrator = narrator_for(s, short)
+    try:
+        check_line_ids(voiced)  # before anything is deleted or spoken
+    except ValueError as exc:
+        raise CliError(_one_line(exc)) from exc
+    from bsa.narrate import params as nparams
+
+    wrong = nparams.problems(narrator.get("provider"), narrator.get("params"))
+    if wrong:  # before anything is deleted or spoken: engine params this narrator doesn't take
+        raise CliError("; ".join(wrong) + " (CLI settings set narrator.params {} clears them; a short's own are "
+                       "its short.json narrator.params)")  # fmt: skip
+    retaken = _prepare_retake(sdir, short, voiced, s, args)
     clear_stale_takes(sdir / "audio" / "vo", voiced, narrator)
     from bsa.narrate import custom
 
@@ -436,23 +1030,59 @@ def cmd_narrate(args) -> dict:
     else:  # the story first, so a closing line the voice can't say never costs the short its voice
         result = narrate(sdir, short, s)
         if result.status == "ok" and voiced is not short:
+            heard_file = sdir / "audio" / "vo" / HEARD_FILE
+            story_heard = heard_file.read_bytes() if heard_file.is_file() else None
             extra = narrate(sdir, voiced, s)  # only the missing take is spoken
             if extra.status != "ok":
+                why = _restore_file(heard_file, story_heard)  # the voice check is of the story's takes
                 jobstate.mark_done(sdir, "narration", status="ok", provider=narrator.get("provider"),
                                    **({"message": result.message} if result.message else {}))  # fmt: skip
                 closing_note = (f"the closing line couldn't be narrated ({_one_line(extra.message)}), so the "
                                 "closing card is silent")  # fmt: skip
+                if why:
+                    closing_note += f"; the voice check's record couldn't be restored ({_one_line(why)})"
     out = {"status": result.status, "durations": result.durations, "message": result.message}
+    if result.status == "ok":  # where each line's audio came from: a paragraph take, its own, or its own after a take
+        from bsa.narrate.run import line_sources
+
+        found = line_sources(sdir / "audio" / "vo")
+        ids = [ln.id for ln in voiced.lines if ln.id in found]
+        out["sources"] = {i: found[i]["source"] for i in ids}
+        fallbacks = {i: found[i]["reason"] for i in ids if found[i]["source"] == "fallback"}
+        if fallbacks:
+            out["fallbacks"] = fallbacks
+    if retaken:
+        out["retake"] = retaken
+    from bsa.narrate.run import own_voice_dropped
+
+    meant = own_voice_dropped(s, short)
+    if meant:
+        names = settings._PROVIDER_NAMES
+        now = (s.get("narrator") or {}).get("provider")
+        now_name = names.get(now, now) if now not in (None, "none") else "no narrator"
+        out["notes"] = [(f"this short's own voice was chosen for {names.get(meant, meant)}, but you now use "
+                         f"{now_name}, so the voice from your settings was used")]  # fmt: skip
     log = sdir / "audio" / "vo" / custom.LOG_FILE
     if log.is_file():  # the user's own tool's output; its fallbacks and warnings would otherwise pass unseen
         out.update(voice_log=str(log), voice_log_notes=custom.log_notes(log.parent))
     if closing_note:
         out["warnings"] = [closing_note]
+    if result.status == "ok" and not closing_note:  # a closing line that failed leaves the card silent, as set
+        stretched = closing.stretch_warning(closing.resolve(s, short), _closing_take_s(sdir, short), short.fps)
+        if stretched:
+            out.setdefault("warnings", []).append(stretched)
     try:
         out["timeline"] = cmd_timeline(args)
     except Exception as exc:  # noqa: BLE001 - narration never blocks: fall back to captions-only timing
-        message = (f"The narration couldn't be timed ({_one_line(exc)}), so this short uses captions only; "
-                   "you can add a voice later.")  # fmt: skip
+        from bsa.timeline import WindowOverrun
+
+        if isinstance(exc.__cause__, WindowOverrun):  # a voice was made, but its takes don't fit the camera's windows
+            message = (f"The voice was made, but its takes don't fit the one-take windows ({_one_line(exc)}), so "
+                       "this short uses captions only for now. Shorten those lines, or give their shots more time "
+                       "(a later at, a longer camera.seconds), then run narrate again.")  # fmt: skip
+        else:
+            message = (f"The narration couldn't be timed ({_one_line(exc)}), so this short uses captions only; "
+                       "you can add a voice later.")  # fmt: skip
         jobstate.mark_done(sdir, "narration", status="captions-only", provider=(s.get("narrator") or {}).get(
             "provider"), message=message)  # fmt: skip
         out.update(status="captions-only", durations=None, message=message)
@@ -512,68 +1142,80 @@ def cmd_mix(args) -> dict:
     return out
 
 
-def _pending_assets(sdir: Path) -> list:
-    """Assets planned with `assets plan` and not downloaded yet."""
-    from bsa.short import Asset
+DEPRECATED_PAGE = "use CLI page SHORT"
 
-    path = _plan_path(sdir)
-    if not path.is_file():
-        return []
-    return [Asset(**a) for a in json.loads(path.read_text(encoding="utf-8"))]
+
+def _one_page(sdir: Path, stage: str, open_: bool) -> dict:
+    """The short's one review page at `stage`. With `open_` it is opened, or a tab already open switches to the
+    stage, exactly as `page SHORT --stage STAGE` (its url as "page", plus "opened", "already_open", "mode", "health"
+    and "phone"). Without, nothing is started: "page" is the link when the workspace's server already runs, else
+    None with "page_hint" saying how to open it."""
+    from bsa.review import launch
+
+    if open_:
+        out = _page_open(argparse.Namespace(stage=stage, open=False, lan=False), sdir)
+        keep = ("opened", "already_open", "mode", "health", "phone")
+        return {"page": out["url"], "stage": stage, **{k: out[k] for k in keep if k in out}}
+    info = launch.server_info(sdir.parent)
+    if info is None:
+        return {"page": None, "stage": stage,
+                "page_hint": f"The review page isn't running: CLI page SHORT --stage {stage} opens it."}  # fmt: skip
+    return {"page": launch.page_url(info, sdir.name, stage), "stage": stage}
+
+
+def cmd_captions(args) -> dict:
+    """Write the final video's caption files (out/<slug>.srt, .vtt and -transcript.txt), cue for cue with its captions.
+    Refused unless the final video was cut from the current timing."""
+    from bsa import captions
+
+    sdir = short_dir(args.short)
+    try:
+        return captions.write_files(sdir, load(sdir), settings.load_settings())
+    except captions.Stale as exc:
+        raise CliError(str(exc)) from exc
+
+
+def cmd_post(args) -> dict:
+    """Write out/post-pack.md: every post field and every output file in one place (written even with problems).
+    `post SHORT --posted URL [--platform P]` records where it went; `post related SHORT` lists posted shorts."""
+    from bsa import post, postpack
+
+    words = args.words
+    if words[0] == "related" and len(words) == 2:
+        if args.posted or args.platform is not None:
+            raise CliError("post related SHORT only lists posted shorts: record a post with post SHORT --posted URL")
+        sdir = short_dir(words[1])
+        load(sdir)
+        return {"related": post.related(sdir.parent, sdir)}
+    if len(words) != 1:
+        raise CliError("usage: post SHORT [--posted URL [--platform youtube]] | post related SHORT")
+    sdir = short_dir(words[0])
+    short = load(sdir)
+    if args.posted:
+        try:
+            return {"posted": post.add_posted(sdir, args.platform or "youtube", args.posted)}
+        except (ValueError, TimeoutError) as exc:
+            raise CliError(str(exc)) from exc
+    if args.platform is not None:
+        raise CliError("--platform goes with --posted URL")
+    path, changed = postpack.write(sdir, short)
+    errors, warnings = post.problems(short, settings.load_settings())
+    return {"pack": str(path), "changed": changed, "fields": post.fields(short), "counts": post.counts(short),
+            "errors": errors, "warnings": warnings}  # fmt: skip
 
 
 def cmd_review(args) -> dict:
-    from bsa.review import pages
-
+    """The one page at the story, storyboard or final stage (the separate review pages are retired)."""
     sdir = short_dir(args.short)
-    short = load(sdir)
-    out = sdir / "review" / f"{args.page}.html"
-    if args.page == "story":
-        styles_path = sdir / "source" / "styles.json"
-        options = None
-        look = settings.look_mode(settings.load_settings(), short)
-        if styles_path.is_file() and look != "brand":  # the brand has no look options
-            styles = json.loads(styles_path.read_text(encoding="utf-8"))
-            options = [{**o, "thumb": f"stills/style-{i}.jpg"} for i, o in enumerate(styles, 1)]
-        try:
-            tl, _ = current_timeline(sdir, short)
-        except Exception:  # noqa: BLE001 - broken takes: pace the page at reading speed
-            tl = _reading_timeline(short)
-        rows, _ = _pacing(short, tl)
-        page = pages.render_story(short, out, options, _pending_assets(sdir), pacing=rows, rules=_rule_rows(short),
-                                  look=look)
-    elif args.page == "storyboard":
-        tl, _ = current_timeline(sdir, short)
-        page = pages.render_storyboard(short, tl, sdir / "stills", out, rules=_rule_rows(short),
-                                       closing=_closing_info(sdir, short))
-    else:
-        final = sdir / "out" / f"{short.slug}.mp4"
-        mp4 = final if final.exists() else sdir / "out" / f"{short.slug}-preview.mp4"
-        findings, redo_all = pages.load_findings(sdir)  # rows as check and frame-check write them; unknown keys ignored
-        page = pages.render_final(short, findings, mp4, out, (sdir / "review" / "checks.json").is_file(), redo_all,
-                                  rules=_rule_rows(short), closing=_closing_info(sdir, short))  # fmt: skip
-    if args.open:
-        pages.open_page(page)
-    return {"page": str(page)}
-
-
-def _closing_info(sdir: Path, short) -> dict | None:
-    """The closing card for the review pages while the short has one (BLENDER stills, closing or edit make it)."""
-    from bsa import closing
-    from bsa.review import pages
-
-    if not closing.active(settings.load_settings(), short):
-        return None
-    return pages.closing_info(sdir / "stills")
+    return {**_one_page(sdir, args.page, args.open), "deprecated": DEPRECATED_PAGE}
 
 
 def cmd_render_status(args) -> dict:
     """Where the preview chain, a render or a check, frame-check or edit is: its status file plus `alive` (its
     Blender process is still running), `stale` (it says running but the process is gone), `step` (the current step
     and its progress), `idle` and `last_run` (how the last run ended, when nothing runs) and a one-line `summary`.
-    Rewrites the page when the run can't (it is not running) so the page shows the true state too."""
+    `page` is the one page's Render stage, which shows the same status live."""
     from bsa import render_status as rs
-    from bsa.review import pages
 
     sdir = short_dir(args.short)
     presets = [args.preset] if args.preset else ["preview", "final"]
@@ -596,13 +1238,9 @@ def cmd_render_status(args) -> dict:
         out["alive"] = False
     else:
         out = rs.describe(status)
-    page = rs.page_path(sdir, preset)
-    if not out["alive"] or not page.is_file():
-        pages.render_status_page(out, page)
-    out["page"] = str(page)
+    page = _one_page(sdir, "render", args.open)
+    out.update({k: v for k, v in page.items() if k != "stage"})
     out["status_file"] = str(rs.status_path(sdir, preset))
-    if args.open:
-        pages.open_page(page)
     return out
 
 
@@ -635,14 +1273,11 @@ def cmd_feedback(args) -> dict:
            "ask": feedback.should_ask(sdir, setting), "file": str(feedback.feedback_path(sdir))}  # fmt: skip
     if args.action == "list":
         return {**out, "entries": feedback.entries(sdir)}
+    feedback.allow_panel(sdir)  # the user said yes: the Post stage shows the notes, and they are not asked again
     rep = feedback.report(sdir, workspace=s.get("workspace"), scrub=feedback.settings_scrub(s) + _short_text(sdir),
-                          mark=True)  # fmt: skip
-    page = feedback.render_page(rep, sdir / "review" / "plugin-feedback.html")
-    if args.open:
-        from bsa.review import pages
-
-        pages.open_page(page)
-    return {"page": str(page), "title": rep["title"], "url": rep["url"], "shortened": rep["shortened"],
+                          mark=False)  # marked reported only when the user copies it or opens it on GitHub
+    page = _one_page(sdir, "post", args.open)
+    return {**page, "title": rep["title"], "url": rep["url"], "shortened": rep["shortened"],
             "entries": rep["entries"], "by_severity": rep["by_severity"]}  # fmt: skip
 
 
@@ -685,6 +1320,23 @@ def _voice_test_custom() -> dict:
     return {"path": str(out / "test.wav"), "seconds": seconds, "command": command}
 
 
+def _sample_params(model: str, short_name: str | None) -> dict | None:
+    """The narrator.params a voice sample is spoken with: the settings', with the short's own over them as narrate
+    merges them, when MODEL is the narrator they are for; None otherwise (the engine's own delivery)."""
+    from bsa.narrate import params as nparams
+    from bsa.narrate.run import narrator_for
+
+    s = settings.load_settings()
+    short = load(short_dir(short_name)) if short_name else None
+    narrator = narrator_for(s, short)
+    if narrator.get("provider") != model or not narrator.get("params"):
+        return None
+    wrong = nparams.problems(model, narrator["params"])
+    if wrong:
+        raise CliError("; ".join(wrong))
+    return narrator["params"]
+
+
 def cmd_voice(args) -> dict:
     from bsa.narrate import install
 
@@ -708,9 +1360,14 @@ def cmd_voice(args) -> dict:
         runner = install.install(args.args)
         return {"runner": str(runner), "installed": install.installed()}
     if args.action == "sample":
-        if len(args.args) != 2:
-            raise CliError("usage: voice sample MODEL VOICE")
-        return {"wav": str(install.sample(*args.args))}
+        if len(args.args) not in (2, 3):
+            raise CliError("usage: voice sample MODEL VOICE [SHORT]")
+        model, voice = args.args[:2]
+        params = _sample_params(model, args.args[2] if len(args.args) == 3 else None)
+        out = {"wav": str(install.sample(model, voice, params=params))}
+        if params:
+            out["params"] = params
+        return out
     # list
     if not args.args:
         reg, have = _registry(), install.installed()
@@ -730,7 +1387,8 @@ def cmd_voice(args) -> dict:
         raise CliError(f"unknown voice model {model!r}; have: elevenlabs, {', '.join(reg)}")
     m = reg[model]
     voices = [{"voice": k, **v} for k, v in m.get("voices", {}).items()]
-    return {"model": model, "default_voice": m.get("default_voice"), "voices": voices}
+    return {"model": model, "default_voice": m.get("default_voice"), "voices": voices,
+            "params": m.get("params") or {}, "param_ranges": m.get("param_ranges") or {}}  # narrator.params
 
 
 def cmd_fonts(args) -> dict:
@@ -823,6 +1481,243 @@ def cmd_assets(args) -> dict:
     return {"files": {k: [str(p) for p in v] for k, v in files.items()}}
 
 
+# --------------------------------------------------------------------------- workspace move
+
+
+RELINK_TIMEOUT = 900  # seconds for one short's BLENDER relink (opening, reloading linked files, saving)
+
+
+def _relink(exe: Path, sdir: Path, old: Path) -> tuple[dict | None, str]:
+    """Run `BLENDER relink SDIR --from OLD` in a background Blender: (its result, "") or (None, why it failed)."""
+    import subprocess
+
+    from bsa import proc
+
+    cmd = [str(exe), "-b", "--factory-startup", "--python-exit-code", "1", "--python",
+           str(PLUGIN_ROOT / "bsa_blender.py"), "--", "relink", str(sdir), "--from", str(old)]  # fmt: skip
+    try:
+        r = proc.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RELINK_TIMEOUT,
+                     check=False)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        return None, f"Blender took more than {RELINK_TIMEOUT // 60} minutes"
+    except OSError as exc:
+        return None, f"Blender couldn't start: {_one_line(exc)}"
+    result = None
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("BSA_RESULT "):
+            try:
+                result = json.loads(line[len("BSA_RESULT ") :])
+            except ValueError:
+                result = None
+    if r.returncode == 0 and isinstance(result, dict) and result.get("ok", True) is not False:
+        return {k: result[k] for k in ("relinked", "missing", "saved", "warnings") if k in result}, ""
+    err = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+    why = (result or {}).get("error") if isinstance(result, dict) else None
+    return None, _one_line(why or (err[-1] if err else f"Blender stopped with exit code {r.returncode}"))
+
+
+def cmd_workspace(args) -> dict:
+    """`workspace move NEW`: move the whole workspace and repoint the paths stored for it. Refuses while its page
+    server, a render or the GPU lock is live (and holds the GPU lock itself while the files move), and never deletes
+    the old folder (another drive: it is copied, every file's size checked, and the old folder kept for the user to
+    delete)."""
+    import os
+
+    from bsa import gpulock, wsmove
+    from bsa.review import launch, server
+
+    s = settings.load_settings()
+    if not s.get("workspace"):
+        raise CliError("No workspace is set yet: run settings set workspace PATH first.")
+    old = Path(s["workspace"])
+    new = Path(args.new).expanduser().resolve()
+    gone = wsmove.missing_drive(old)
+    if gone:
+        raise CliError(f"The drive {gone} of the workspace {old} is not there: plug it in (or map it again) and run "
+                       "it again. Nothing was changed.")  # fmt: skip
+    if not old.is_dir():
+        raise CliError(f"the workspace {old} is not there: if it was moved by hand, run settings set workspace "
+                       "PATH with where it is now")  # fmt: skip
+    gone = wsmove.missing_drive(new)
+    if gone:
+        raise CliError(f"The drive {gone} of {new} is not there: plug it in (or pick another folder) and run it "
+                       "again. Nothing was changed.")  # fmt: skip
+
+    def live() -> str | None:  # asked again right before the move and after a copy: a job may start meanwhile
+        gpu = gpulock.live_holder(gpulock.lock_path(old))
+        if gpu and gpu.get("pid") == os.getpid():
+            gpu = None  # the lock this move holds itself
+        return wsmove.busy(server=launch.server_process(old), running=server.jobs_running(old), gpu=gpu)
+
+    why = wsmove.refusal(old, new, server=launch.server_process(old), running=server.jobs_running(old),
+                         gpu=gpulock.live_holder(gpulock.lock_path(old)))  # fmt: skip
+    if why:
+        raise CliError(f"Can't move the workspace: {why}. Nothing was changed.")
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise CliError(f"Couldn't make the folder {new.parent}: {exc.strerror or exc}. Nothing was changed.") from None
+    lock = gpulock.lock_path(old)
+    try:  # no render starts in the workspace while its files move
+        took = gpulock.acquire(lock, short="workspace", command="move", wait=False)
+    except gpulock.GpuBusy as exc:
+        raise CliError(f"Can't move the workspace: {exc}. Nothing was changed.") from None
+    try:
+        how = _move_folder(old, new, live)
+    except BaseException:
+        if took:
+            gpulock.release(lock)
+            gpulock.release(gpulock.lock_path(new))  # a rename that went through before the failure took it along
+        raise
+    if took:
+        gpulock.release(lock)  # a copy keeps the old folder: its lock goes
+        gpulock.release(gpulock.lock_path(new))  # the lock was renamed or copied along with the folder
+    try:
+        return _repoint_moved(old, new, how)
+    except CliError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the folder has moved: say where it is, whatever failed
+        raise CliError(f"The workspace was {how} to {new}, but repointing its paths failed: {_one_line(exc)}. Run "
+                       f'settings set workspace "{new}" if settings show still names {old}, then BLENDER relink '
+                       f'SHORT --from "{old}" for each short.', {"from": str(old), "to": str(new), "how": how}) from None  # fmt: skip
+
+
+def _move_folder(old: Path, new: Path, live) -> str:
+    """Rename OLD to NEW (one drive) or copy it and check every size (another drive): "renamed" or "copied".
+    `live()` says why the move can't go on now (a job that started meanwhile): asked before, and after a copy."""
+    import errno
+    import shutil
+
+    from bsa import wsmove
+
+    why = live()
+    if why:
+        raise CliError(f"Can't move the workspace: {why}. Nothing was changed.")
+    how = "renamed" if wsmove.same_drive(old, new) else "copied"
+    if how == "renamed":
+        made_empty = new.is_dir()
+        if made_empty:
+            new.rmdir()  # empty (refusal checked): a rename can't land on an existing folder on Windows
+        try:
+            old.rename(new)
+        except OSError as exc:
+            if made_empty:
+                new.mkdir(exist_ok=True)
+            if exc.errno != errno.EXDEV:  # another file system behind one drive (Linux mounts): copy instead
+                raise CliError(f"Couldn't rename {old} to {new}: {exc.strerror or exc}. Close anything that has a "
+                               "file in it open (Blender, a player, a file window) and run it again. Nothing was "
+                               "changed.") from None  # fmt: skip
+            how = "copied"
+    if how == "copied":
+        try:
+            shutil.copytree(old, new, copy_function=shutil.copy2, dirs_exist_ok=True)
+        except (OSError, shutil.Error) as exc:
+            raise CliError(f"Couldn't copy the workspace to {new}: {_one_line(exc)}. Nothing was repointed and the "
+                           f"workspace is still {old}; delete the partial copy, free space or fix the cause, and run "
+                           "it again.") from None  # fmt: skip
+        bad = wsmove.size_mismatches(old, new)
+        if bad:
+            raise CliError(f"The copy in {new} doesn't match the workspace ({len(bad)} file(s) missing or of another "
+                           f"size, e.g. {bad[0]}). Nothing was repointed and the workspace is still {old}; check the "
+                           "disk, delete the copy and run it again.", {"from": str(old), "to": str(new),
+                           "mismatched": bad})  # fmt: skip
+        why = live()
+        if why:
+            raise CliError(f"Can't finish the move: {why} (it started during the copy). Nothing was repointed and "
+                           f"the workspace is still {old}; delete the copy in {new} and run it again once it ends.")  # fmt: skip
+    return how
+
+
+def _rewrite_plugin_json(path: Path, old: Path, new: Path) -> list[str]:
+    """Repoint every path under OLD in one of the plugin's own JSON files, written atomically; the dotted keys
+    changed. A file that isn't JSON is left as it is."""
+    from bsa import wsmove
+
+    raw = path.read_bytes()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return []
+    data, keys = wsmove.rewrite(data, old, new)
+    if keys:
+        text = json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if raw.endswith(b"\n") else "")
+        jobstate.write_atomic(path, text.encode("utf-8"))
+    return keys
+
+
+def _repoint_moved(old: Path, new: Path, how: str) -> dict:
+    """After the folder moved: repoint the settings, relink each .blend, rewrite the plugin's own JSON in each
+    short, and list what is left for the user (their own files)."""
+    import time
+
+    from bsa import locate, wsmove
+
+    changed: list[str] = []
+    not_fixed: list[dict] = []
+    relinked: list[dict] = []
+    s = settings.load_settings()  # read again: another command may have saved the settings while the files moved
+    s, keys = wsmove.rewrite(s, old, new)
+    if keys:
+        try:
+            settings.save_settings(s)
+        except OSError as exc:
+            raise CliError(f"The workspace was {how} to {new}, but the settings couldn't be saved: "
+                           f'{exc.strerror or exc}. Run settings set workspace "{new}", then BLENDER relink SHORT '
+                           f'--from "{old}" for each short.', {"from": str(old), "to": str(new), "how": how}) from None  # fmt: skip
+        changed += [f"settings: {k}" for k in keys]
+
+    try:
+        exe, no_blender = locate.find_blender(s), None  # the settings as repointed: Blender may live in the workspace
+    except locate.BlenderNotFound as exc:
+        exe, no_blender = None, _one_line(exc)
+    for blend in sorted(new.glob("*/blend/short.blend")):
+        sdir = blend.parent.parent
+        if exe is not None:
+            print(f"relinking {sdir.name}/blend/short.blend ...", file=sys.stderr, flush=True)
+        res, why = _relink(exe, sdir, old) if exe is not None else (None, no_blender)
+        if res is not None:
+            relinked.append({"short": sdir.name, **res})
+            for path in res.get("missing") or []:
+                not_fixed.append({"what": f"{sdir.name}: its .blend now points at {path}, which is not there",
+                                  "fix": f"put the file back at {path}, or pick it again in Blender in {blend}"})  # fmt: skip
+            for warning in res.get("warnings") or []:
+                not_fixed.append({"what": f"{sdir.name}: {warning}",
+                                  "fix": f"open {blend} in Blender and fix it by hand: reload the linked file "
+                                         "(Outliner, Blender File view) or set the path"})  # fmt: skip
+            continue
+        not_fixed.append({"what": f"{sdir.name}: its .blend still points at {old} for its images, sounds and linked "
+                                  f"files ({why})",
+                          "fix": f'BLENDER relink {workspace.short_key(sdir, new)} --from "{old}"'})  # fmt: skip
+    for sdir in sorted(p for p in new.iterdir() if p.is_dir()):
+        for path in wsmove.plugin_files(sdir):
+            rel = path.relative_to(new).as_posix()
+            try:
+                keys = _rewrite_plugin_json(path, old, new)
+            except OSError as exc:
+                not_fixed.append({"what": f"{rel}: couldn't be repointed ({exc.strerror or exc})",
+                                  "fix": f"edit {path}: change {old} to {new}"})  # fmt: skip
+                continue
+            changed += [f"{rel}: {k}" for k in keys]
+    for rel, key in wsmove.leftovers(new, old):  # the user's own files (source/short.json ...): only reported
+        not_fixed.append({"what": f"{rel}: {key} still names a path in {old}",
+                          "fix": f"edit {new / rel}: change {old} to {new} in {key}"})  # fmt: skip
+
+    out = {"from": str(old), "to": str(new), "how": how, "changed": changed, "relinked": relinked,
+           "not_fixed": not_fixed, "old_folder": None,
+           "note": "A short's stored fingerprints include its files' paths, so a short in progress re-renders and its "
+                   "checks run once more on its next run. Relinking saved each .blend, so its next preview marks the "
+                   "build again and reopens checks, preview, final and post for that short: approve them again then."}  # fmt: skip
+    if how == "copied":
+        out["old_folder"] = f"kept at {old}: delete it yourself once you have checked {new}"
+        try:
+            (old / "MOVED.txt").write_text(
+                f"This workspace was copied to {new} on {time.strftime('%Y-%m-%d %H:%M')}.\n"
+                "Check the copy, then delete this folder yourself. The plugin never deletes it.\n", encoding="utf-8")
+        except OSError:
+            pass
+    return out
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -832,9 +1727,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("where", help="plugin root, Blender, Blender's Python, settings path").set_defaults(fn=cmd_where)
 
-    sp = sub.add_parser("settings", help='show | set KEY VALUE | missing | summary | rules | rule add "TEXT" '
+    sp = sub.add_parser("settings", help='show | set KEY VALUE | missing | check | summary | rules | rule add "TEXT" '
                         "[--kind K] [--part-of ID] | rule remove ID | rule none")  # fmt: skip
-    sp.add_argument("action", choices=["show", "set", "missing", "summary", "rules", "rule"])
+    sp.add_argument("action", choices=["show", "set", "missing", "summary", "rules", "rule", "post-format", "check"])
     sp.add_argument("key", nargs="?")
     sp.add_argument("value", nargs="?")
     sp.add_argument("--kind", default=None, help="a rule kind the plugin checks itself (settings rules lists them)")
@@ -850,7 +1745,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--number", type=int, default=None, help="the folder number to use (refused if already used)")
     sp.add_argument("--topic", default=None, help="what a viewer should understand at the end (short.json topic)")
     sp.add_argument("--length", type=float, default=None, help="length in seconds, 15 to 90 (short.json length_s)")
+    sp.add_argument("--like", default=None, metavar="OTHER",
+                    help="start from an earlier short (folder name, number or slug): copies its look, length, pace, "
+                         "closing and voice, never its story or render engine")  # fmt: skip
     sp.set_defaults(fn=cmd_new_short)
+
+    sp = sub.add_parser("shorts", help="list the workspace's shorts: title, style, set, length, narrator")
+    sp.set_defaults(fn=cmd_shorts)
 
     sp = sub.add_parser("state", help="SHORT [done STAGE [--info JSON] | reset STAGE | restore]")
     sp.add_argument("short")
@@ -858,6 +1759,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("stage", nargs="?", choices=jobstate.STAGES)
     sp.add_argument("--info", default=None)
     sp.set_defaults(fn=cmd_state)
+
+    sp = sub.add_parser("page", help="decide SHORT STAGE approve|changes --by page|chat|settings [--choice ENGINE] "
+                        "[--note TEXT] [--version N] | decide SHORT thumbnail --choice N [--by page|chat] "
+                        "| note SHORT ID done|declined --reply TEXT | notes SHORT [--stage STAGE] "
+                        "| wait SHORT --stage STAGE [--timeout S] | SHORT [--open] [--stage STAGE] | serve")  # fmt: skip
+    sp.add_argument("words", nargs="+")
+    sp.add_argument("--open", action="store_true")
+    sp.add_argument("--stage", default=None)
+    sp.add_argument("--by", choices=["page", "chat", "settings"], default=None)
+    sp.add_argument("--choice", default=None)
+    sp.add_argument("--note", default=None)
+    sp.add_argument("--reply", default=None)
+    sp.add_argument("--version", type=int, default=None)
+    sp.add_argument("--timeout", type=float, default=None, help="seconds page wait waits (default 600)")
+    sp.add_argument("--poll", type=float, default=1.0)
+    sp.add_argument("--workspace", default=None)
+    sp.add_argument("--lan", action="store_true")
+    sp.set_defaults(fn=cmd_page)
+
+    sp = sub.add_parser("doctor", help="[SHORT]: check Blender, the GPU, the voice, the disk, the caption font and "
+                        "the page server (saved to the short's review/doctor.json)")  # fmt: skip
+    sp.add_argument("short", nargs="?", default=None)
+    sp.set_defaults(fn=cmd_doctor)
 
     sp = sub.add_parser("engine", help="SHORT: its render engine and where it comes from, and each engine's measured "
                         "seconds per frame and MP4")  # fmt: skip
@@ -867,29 +1791,50 @@ def build_parser() -> argparse.ArgumentParser:
     for name, fn, text in [
         ("validate", cmd_validate, "check short.json (sources, ids, sizes)"),
         ("timeline", cmd_timeline, "write source/timeline.json (from the takes if narrated)"),
-        ("narrate", cmd_narrate, "generate the narration (never blocks) and re-time the short"),
         ("mix", cmd_mix, "write audio/mix.wav (voice + effects + source/sound.py)"),
     ]:
         sp = sub.add_parser(name, help=text)
         sp.add_argument("short")
         sp.set_defaults(fn=fn)
 
-    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE | list [MODEL] | test-custom")
+    sp = sub.add_parser("captions", help="SHORT: write the final video's SRT, VTT and transcript beside it")
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_captions)
+
+    sp = sub.add_parser("post", help="SHORT: write out/post-pack.md with every post field and file; lists problems")
+    sp.add_argument("words", nargs="+")
+    sp.add_argument("--posted", default=None, metavar="URL", help="record where the short was posted (stored only)")
+    sp.add_argument("--platform", default=None, choices=["youtube", "instagram", "tiktok", "other"],
+                    help="with --posted: where (default youtube)")  # fmt: skip
+    sp.set_defaults(fn=cmd_post)
+
+    sp = sub.add_parser("narrate", help="SHORT [--line ID [--say TEXT]]: generate the narration (never blocks) and "
+                        "re-time the short; --line re-takes that one line with the next seed")  # fmt: skip
+    sp.add_argument("short")
+    sp.add_argument("--line", default=None, help="re-take this line only (a different reading)")
+    sp.add_argument("--say", default=None, help="with --line: respell the line's spoken words first")
+    sp.add_argument("--take", action="store_true",
+                    help="with --line (paragraph take mode): re-speak the whole paragraph holding that line")  # fmt: skip
+    sp.set_defaults(fn=cmd_narrate)
+
+    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE [SHORT] | list [MODEL] | test-custom")
     sp.add_argument("action", choices=["suggest", "plan", "install", "sample", "list", "test-custom"])
     sp.add_argument("args", nargs="*")
     sp.set_defaults(fn=cmd_voice)
 
-    sp = sub.add_parser("review", help="write (and --open) a review page")
+    sp = sub.add_parser("review", help="story|storyboard|final SHORT [--open]: the one page's link at that stage "
+                        "(deprecated: use page SHORT --stage STAGE)")  # fmt: skip
     sp.add_argument("page", choices=["story", "storyboard", "final"])
     sp.add_argument("short")
-    sp.add_argument("--open", action="store_true")
+    sp.add_argument("--open", action="store_true", help="open the page at that stage (page SHORT --stage STAGE)")
     sp.set_defaults(fn=cmd_review)
 
-    sp = sub.add_parser("render-status", help="SHORT [--preset preview|final] [--open]: where the preview chain or a render is")
+    sp = sub.add_parser("render-status", help="SHORT [--preset preview|final] [--open]: where the preview chain or a "
+                        "render is (the page's Render stage shows it live)")  # fmt: skip
     sp.add_argument("short")
     sp.add_argument("--preset", choices=["preview", "final"], help="default: the most recently updated")
     sp.add_argument("--tag", default=None, help="a side run's status (its tag: the engine's name for --engine alone)")
-    sp.add_argument("--open", action="store_true", help="open the live page review/render-<preset>.html")
+    sp.add_argument("--open", action="store_true", help="open the one page at its Render stage")
     sp.set_defaults(fn=cmd_render_status)
 
     sp = sub.add_parser("fonts", help="[NAME]: is NAME installed, plus a few installed fonts to suggest")
@@ -918,8 +1863,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--stage")
     sp.add_argument("--blender", help="Blender version, if known")
     sp.add_argument("--mode", choices=["script", "mcp"], help="script or MCP mode, if known")
-    sp.add_argument("--open", action="store_true", help="open review/plugin-feedback.html (report)")
+    sp.add_argument("--open", action="store_true", help="open the one page at its Post stage (report)")
     sp.set_defaults(fn=cmd_feedback)
+
+    sp = sub.add_parser("workspace", help="move NEW: move the whole workspace to NEW (renamed on one drive, copied and "
+                        "checked across drives, the old folder kept) and repoint the paths stored for it")  # fmt: skip
+    sp.add_argument("action", choices=["move"])
+    sp.add_argument("new")
+    sp.set_defaults(fn=cmd_workspace)
     return p
 
 
@@ -938,7 +1889,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     try:
         out = args.fn(args)
-    except (CliError, jobstate.StateDamaged) as exc:
+    except (CliError, jobstate.StateDamaged, store.StoreDamaged) as exc:
         if getattr(exc, "payload", None) is not None:
             print(json.dumps(exc.payload, indent=2, default=str))
         print(_one_line(exc), file=sys.stderr)
@@ -946,8 +1897,20 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
         print(_one_line(f"{type(exc).__name__}: {exc}"), file=sys.stderr)
         return 1
+    _add_page_notes(args, out)
     print(json.dumps(out, indent=2, default=str))
     return 0
+
+
+def _add_page_notes(args, out) -> None:
+    """A result for a short says what is waiting on its review page (notes, answers Claude hasn't acted on)."""
+    from bsa.review import inbox
+
+    try:
+        sdir = short_dir(args.short) if getattr(args, "short", None) else None
+    except Exception:  # noqa: BLE001 - a short that doesn't resolve has no page
+        sdir = None
+    inbox.attach(out, sdir)
 
 
 if __name__ == "__main__":

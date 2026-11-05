@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from bsa import proc as _proc
 from bsa import settings
 from bsa.narrate import contract, install
 from bsa.narrate import run as nrun
@@ -157,7 +158,7 @@ def test_cli_narrate_keeps_the_voice_tools_log(tmp_path):
     env = {**os.environ, "BSA_HOME": str(home)}
 
     def cli(*args):
-        proc = subprocess.run([sys.executable, str(root / "bsa_cli.py"), *map(str, args)], capture_output=True,
+        proc = _proc.run([sys.executable, str(root / "bsa_cli.py"), *map(str, args)], capture_output=True,
                               text=True, env=env, check=False)  # fmt: skip
         assert proc.returncode == 0, proc.stdout + proc.stderr
         return json.loads(proc.stdout)
@@ -165,8 +166,9 @@ def test_cli_narrate_keeps_the_voice_tools_log(tmp_path):
     cli("settings", "set", "workspace", ws)
     short = Path(cli("new-short", "Pendulum")["short"])
     shutil.copyfile(root / "tests" / "e2e" / "pendulum" / "source" / "short.json", short / "source" / "short.json")
-    for stage in ("interview", "story", "storyboard"):
-        cli("state", short, "done", stage)
+    cli("state", short, "done", "interview")
+    for stage in ("story", "storyboard"):
+        cli("page", "decide", short, stage, "approve", "--by", "chat")
     cli("settings", "set", "narrator.provider", "custom")
     cli("settings", "set", "narrator.command", f'"{sys.executable}" "{tool}" --lines {{lines}} --out {{out}}')
     cli("settings", "set", "narrator.verify", "false")
@@ -286,3 +288,41 @@ def test_float_wav_with_nan_and_inf_is_cleaned(tmp_path):
     with wave.open(str(p), "rb") as w:
         out = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
     assert (out[10], out[11], out[12]) == (0, 32767, -32767)
+
+
+def test_resampling_keeps_the_head_and_adds_no_pre_echo(tmp_path):
+    """FFT resampling is circular: a take loud up to its last sample must not wrap into its silent head, and the
+    first 50 ms of the voice must keep their energy."""
+    rate, n = 24000, 24000
+    t = np.arange(n) / rate
+    on, ramp = round(0.2 * rate), round(0.03 * rate)
+    x = 0.5 * np.sin(2 * np.pi * 300 * (t - t[-1]) + np.pi / 2)  # loud (+0.5) on the very last sample
+    x[:on] = 0.0
+    x[on : on + ramp] *= 0.5 - 0.5 * np.cos(np.pi * np.arange(ramp) / ramp)  # a soft onset
+    p = tmp_path / "a.wav"
+    write_pcm(p, x, rate, bits=32)
+    normalise_take(p)
+    with wave.open(str(p), "rb") as w:
+        assert w.getframerate() == 48000
+        y = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float64) / 32768.0
+    head = np.abs(y[: round(0.15 * 48000)]).max()
+    assert 20 * np.log10(max(head, 1e-9)) < -60, f"head peaks at {20 * np.log10(head):.1f} dBFS"
+
+    def rms_db(v):
+        return 10 * np.log10(np.mean(v**2))
+
+    before = rms_db(x[on : on + round(0.05 * rate)])
+    after = rms_db(y[round(0.2 * 48000) : round(0.25 * 48000)])
+    assert abs(after - before) <= 1.0, (before, after)
+    assert contract.leading_silence(p) == pytest.approx(0.2, abs=0.011)  # the wrap read as the voice starting at 0
+
+def test_take_placeholder_is_the_take_id_or_empty(tmp_path):
+    from bsa.narrate.custom import TAKE_PLACEHOLDER, takes_supported
+
+    calls = []
+    cmd = "tts --lines {lines} --out {out} --take {take}"
+    generate(cmd, lines("t01"), tmp_path, run=fake_run(calls), take="t01")
+    generate(cmd, lines("l01"), tmp_path, run=fake_run(calls))
+    assert [c[0][c[0].index("--take") + 1] for c in calls] == ["t01", ""]
+    assert TAKE_PLACEHOLDER == "{take}"
+    assert takes_supported(cmd) and not takes_supported("tts --lines {lines} --out {out}") and not takes_supported("")

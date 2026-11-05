@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import colorsys
 import re
 
 import numpy as np
 
 DELTA_E_LIMIT = 5.0  # a still's background further than this (CIE76) from the brand background is warned
+WORLD_MIN_SHARE = 0.15  # a still whose world shows in less than this share is not measured (too little to judge)
 _WHITE = np.array([0.95047, 1.0, 1.08883])  # D65
 _TO_XYZ = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750],
                     [0.0193339, 0.1191920, 0.9503041]])  # fmt: skip
@@ -22,6 +24,49 @@ def hex_to_srgb(value: str) -> tuple[float, float, float]:
 
 def srgb_to_hex(rgb) -> str:
     return "#" + "".join(f"{round(min(max(float(c), 0.0), 1.0) * 255):02X}" for c in rgb[:3])
+
+
+def mix(a: str, b: str, t: float) -> str:
+    """a + (b - a) * t on the sRGB values (0..1, not linear light) of two hex colours, as upper-case hex."""
+    ca, cb = hex_to_srgb(a), hex_to_srgb(b)
+    return srgb_to_hex([x + (y - x) * t for x, y in zip(ca, cb)])
+
+
+def _warm(value: str) -> str:
+    """The colour with its hue moved into 20-45 degrees (the nearer end) and its saturation at least 0.35."""
+    h, s, v = colorsys.rgb_to_hsv(*hex_to_srgb(value))
+    deg = h * 360
+    if not 20 <= deg <= 45:
+        # distance round the hue circle to each end
+        d20, d45 = abs((deg - 20 + 180) % 360 - 180), abs((deg - 45 + 180) % 360 - 180)
+        deg = 20 if d20 <= d45 else 45
+    return srgb_to_hex(colorsys.hsv_to_rgb(deg / 360, max(s, 0.35), v))
+
+
+def set_colours(kit) -> dict[str, str]:
+    """The scene set's colours derived from a kit: walls and floor off the background, wood off the accent (kept
+    warm), ground and hills off the motion colour, sky off the heat colour (the default code where the kit has none)."""
+    from bsa.kit import DEFAULT_CODE
+
+    pal = kit.palette
+    bg, ink, accent = pal["background"], pal["ink"], pal["accent"]
+    light = srgb_to_lab(hex_to_srgb(bg))[0] > 50
+    side = "#000000" if light else "#FFFFFF"
+    motion = kit.categories.get("motion") or DEFAULT_CODE["motion"]
+    heat = kit.categories.get("heat") or DEFAULT_CODE["heat"]
+    wood = _warm(mix(mix(accent, bg, 0.35), ink, 0.12))
+    return {
+        "wall": srgb_to_hex(hex_to_srgb(bg)),
+        "floor": mix(bg, side, 0.06),
+        "pattern": mix(bg, side, 0.16),
+        "wood": wood,
+        "wood_dark": mix(wood, ink, 0.30),
+        "ground": mix(motion, bg, 0.55),
+        "hills_near": mix(motion, ink, 0.20),
+        "hills_far": mix(motion, bg, 0.70),
+        "sky_top": srgb_to_hex(hex_to_srgb(heat)),
+        "sky_horizon": mix(heat, bg if light else "#FFFFFF", 0.65),
+    }
 
 
 def srgb_to_linear(rgb) -> np.ndarray:
@@ -49,10 +94,13 @@ def delta_e(a, b) -> float:
     return float(np.linalg.norm(np.subtract(srgb_to_lab(_rgb(a)), srgb_to_lab(_rgb(b)))))
 
 
-def dominant_colour(pixels: np.ndarray) -> tuple[float, float, float]:
+def dominant_colour(pixels: np.ndarray, mask: np.ndarray | None = None) -> tuple[float, float, float]:
     """The frame's most common colour (sRGB 0..1), the background of a frame on a plain backdrop: pixels binned 16
-    levels a channel, the fullest bin's mean."""
+    levels a channel, the fullest bin's mean. With `mask` (bool, the frame's height x width) only its True pixels
+    count."""
     rgb = pixels[..., :3].reshape(-1, 3).astype(np.float64)
+    if mask is not None:
+        rgb = rgb[np.asarray(mask, bool).reshape(-1)]
     if pixels.dtype == np.uint8:
         rgb /= 255.0
     bins = np.minimum((rgb * 16).astype(np.int64), 15)
@@ -86,7 +134,7 @@ def flat_backdrop(world, transparent: bool = False) -> bool:
     """True when a scene's world shows as one flat colour: a paper_world backdrop (stamped "bsa_backdrop": "paper"),
     a plain colour, or no world at all. A world fed by a texture (a sky, an HDRI, a gradient) is an environment, and a
     transparent film shows none: the background check and its paper_world advice do not apply to those."""
-    if transparent:
+    if transparent or (world is not None and world.get("bsa_backdrop") == "set"):  # a scene set's environment
         return False
     if world is None or world.get("bsa_backdrop") == "paper" or not world.use_nodes or world.node_tree is None:
         return True
@@ -94,10 +142,13 @@ def flat_backdrop(world, transparent: bool = False) -> bool:
 
 
 def background_warning(pixels: np.ndarray, want_hex: str, where: str, limit: float = DELTA_E_LIMIT,
-                       whose: str = "the brand background") -> str | None:  # fmt: skip
+                       whose: str = "the brand background", mask: np.ndarray | None = None) -> str | None:  # fmt: skip
     """A warning when a frame's background (its dominant colour) is more than `limit` ΔE from `want_hex` (`whose`
-    names it: "the brand background" or "the short's background")."""
-    got = dominant_colour(pixels)
+    names it: "the brand background" or "the short's background"). With `mask` (True where the world shows) only
+    the world is measured, and a still whose world is under WORLD_MIN_SHARE of it is not judged (None)."""
+    if mask is not None and np.asarray(mask, bool).mean() < WORLD_MIN_SHARE:
+        return None
+    got = dominant_colour(pixels, mask)
     d = delta_e(want_hex, got)
     if d <= limit:
         return None
@@ -105,3 +156,35 @@ def background_warning(pixels: np.ndarray, want_hex: str, where: str, limit: flo
     return (f"{where}: the background renders {srgb_to_hex(got)}, ΔE {d:.0f} from {whose} "
             f"{want_hex.upper()}: set the world with bsa.blender.look.paper_world(scene, \"{want_hex}\") (it solves "
             f"the colour through the view transform), or {view}")  # fmt: skip
+
+
+# Machado, Oliveira & Fernandes (2009), "A Physiologically-based Model for Simulation of Color Vision Deficiency",
+# IEEE TVCG 15(6): the severity 1.0 matrices, applied to linear RGB.
+CVD = {
+    "protanopia": np.array([[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216],
+                            [-0.003882, -0.048116, 1.051998]]),
+    "deuteranopia": np.array([[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413],
+                              [-0.011820, 0.042940, 0.968881]]),
+    "tritanopia": np.array([[1.255528, -0.076749, -0.178779], [-0.078411, 0.930809, 0.147602],
+                            [0.004733, 0.691367, 0.303900]]),
+}  # fmt: skip
+CVD_DELTA_E = 10.0  # two category colours closer than this (CIE76) under a deficiency look alike
+
+
+def simulate(hex_: str, kind: str) -> str:
+    """The colour as someone with `kind` (protanopia, deuteranopia or tritanopia) sees it, as hex."""
+    lin = np.clip(CVD[kind] @ srgb_to_linear(hex_to_srgb(hex_)), 0.0, 1.0)
+    return srgb_to_hex(linear_to_srgb(lin))
+
+
+def look_alike(colours: dict[str, str], limit: float = CVD_DELTA_E) -> list[tuple[str, str, str, float]]:
+    """(a, b, kind, ΔE) for each pair of named colours (dict order) within `limit` under any deficiency, with the kind
+    where they are closest."""
+    out = []
+    names = list(colours)
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            d, kind = min((delta_e(simulate(colours[a], k), simulate(colours[b], k)), k) for k in CVD)
+            if d <= limit:
+                out.append((a, b, kind, d))
+    return out

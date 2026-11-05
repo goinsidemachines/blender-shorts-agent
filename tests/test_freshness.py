@@ -1,6 +1,7 @@
 """Stale outputs are refused with a plain message: an old timeline, old frames, old or failed scene checks."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,8 @@ def test_check_timeline_detects_changed_timing(sdir):
     short.lines[0].text += " and a few more words so the line runs longer"
     with pytest.raises(freshness.StaleError, match="timing changed: run CLI timeline"):
         freshness.check_timeline(sdir, build_timeline(short, None))
+    with pytest.raises(freshness.StaleError, match="timing changed: run CLI timeline 12, then rebuild"):
+        freshness.check_timeline(sdir, build_timeline(short, None), "12")
 
 
 def test_timeline_hash_ignores_key_order():
@@ -197,12 +200,45 @@ def test_require_checks(sdir):
     _checks(sdir, None)  # written before checks were stamped
     with pytest.raises(freshness.StaleError, match="changed since the checks ran"):
         freshness.require_checks(sdir, "h1", keys)
-    _checks(sdir, {**freshness.checks_stamp("h1", keys), "code": "0:old"})  # the checks' code changed
+    _checks(sdir, {**freshness.checks_stamp("h1", keys, 5), "code": "0:old"})  # the checks' code changed
     with pytest.raises(freshness.StaleError, match="the checks code changed"):
         freshness.require_checks(sdir, "h1", keys)
-    _checks(sdir, freshness.checks_stamp("h1", keys), errors=2)
+    _checks(sdir, freshness.checks_stamp("h1", keys, 5), errors=2)
     with pytest.raises(freshness.StaleError, match="2 error"):
         freshness.require_checks(sdir, "h1", keys)
+
+
+def test_the_final_needs_checks_every_5_frames_or_finer(sdir):
+    """A check run with a coarse --every samples 1 frame in N: fine for a look at the preview, not for the final."""
+    keys = {"s01": "k1", "s02": "k2"}
+    _checks(sdir, freshness.checks_stamp("h1", keys, 50))
+    with pytest.raises(freshness.StaleError, match="--every 5 or finer") as err:
+        freshness.require_checks(sdir, "h1", keys, "the final edit")
+    assert "every 50th frame (--every 50)" in str(err.value) and "the final edit needs" in str(err.value)
+    assert "run BLENDER check SHORT --every 5 again" in str(err.value)
+    for every in (5, 1):  # the default and finer pass, nothing else changed
+        _checks(sdir, freshness.checks_stamp("h1", keys, every))
+        freshness.require_checks(sdir, "h1", keys)
+    _checks(sdir, freshness.checks_stamp("h1", keys))  # a stamp that does not say how finely it checked
+    with pytest.raises(freshness.StaleError, match="can't say how finely") as err:
+        freshness.require_checks(sdir, "h1", keys)
+    assert "--every 5 or finer" in str(err.value)
+    assert freshness.FINAL_MAX_EVERY == 5
+
+
+def test_failed_checks_count_only_when_they_ran_on_this_build(sdir):
+    """The errors review/checks.json found on the build and timing as they are now (what the preview render
+    refuses on); none when there are no checks, or they ran on another build, timing or checks code."""
+    keys = {"s01": "k1", "s02": "k2"}
+    assert freshness.failed_checks(sdir, "h1", keys) == 0
+    _checks(sdir, freshness.checks_stamp("h1", keys, 50), errors=3)  # any --every: the preview may check coarsely
+    assert freshness.failed_checks(sdir, "h1", keys) == 3
+    assert freshness.failed_checks(sdir, "h2", keys) == 0  # another timing
+    assert freshness.failed_checks(sdir, "h1", {**keys, "s02": "k2b"}) == 0  # a shot rebuilt since
+    _checks(sdir, {**freshness.checks_stamp("h1", keys, 5), "code": "0:old"}, errors=3)
+    assert freshness.failed_checks(sdir, "h1", keys) == 0  # older checks code
+    _checks(sdir, freshness.checks_stamp("h1", keys, 5))
+    assert freshness.failed_checks(sdir, "h1", keys) == 0
 
 
 def test_reusable_checks_keep_unchanged_shots_findings(sdir):
@@ -363,12 +399,78 @@ def test_hard_rules_that_scan_names_are_a_check_input_only_when_set(sdir):
 
 
 def test_require_checks_names_timing_and_code_separately(sdir):
-    _checks(sdir, freshness.checks_stamp("h", {"s01": _inputs()}, 5))
-    with pytest.raises(freshness.StaleError, match="the timing changed since the checks ran"):
-        freshness.require_checks(sdir, "h2", {"s01": _inputs()})
-    _checks(sdir, {**freshness.checks_stamp("h", {"s01": _inputs()}, 5), "code": "1:0000000000000000"})
-    with pytest.raises(freshness.StaleError, match="checks code changed since the checks ran"):
-        freshness.require_checks(sdir, "h", {"s01": _inputs()})
+    shots = {"s01": _inputs(), "s02": _inputs(span=Span("s02", 91, 180))}
+    msgs = []
+    _checks(sdir, freshness.checks_stamp("h", shots, 5))
+    with pytest.raises(freshness.StaleError, match="the timing changed since the checks ran") as err:
+        freshness.require_checks(sdir, "h2", shots, key="12")
+    msgs.append(str(err.value))
+    assert "run BLENDER check 12 again" in msgs[-1] and "it re-checks all 2 shots" in msgs[-1]
+    _checks(sdir, {**freshness.checks_stamp("h", shots, 5), "code": "1:0000000000000000"})
+    with pytest.raises(freshness.StaleError, match="checks code changed since the checks ran") as err:
+        freshness.require_checks(sdir, "h", shots, key="12")
+    msgs.append(str(err.value))
+    # every other refusal: too coarse, no --every, a shot changed, errors, an old stamp-less file, no checks
+    for stamp, errors in ((freshness.checks_stamp("h", shots, 50), 0), (freshness.checks_stamp("h", shots), 0),
+                          (freshness.checks_stamp("h", {**shots, "s02": _inputs(fp="x")}, 5), 0),
+                          (freshness.checks_stamp("h", shots, 5), 2), (None, 0)):  # fmt: skip
+        _checks(sdir, stamp, errors)
+        with pytest.raises(freshness.StaleError) as err:
+            freshness.require_checks(sdir, "h", shots, key="12")
+        msgs.append(str(err.value))
+    (sdir / "review" / "checks.json").unlink()
+    with pytest.raises(freshness.StaleError) as err:
+        freshness.require_checks(sdir, "h", shots, key="12")
+    msgs.append(str(err.value))
+    assert all("BLENDER check 12" in m and "SHORT" not in m for m in msgs), msgs
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _touch_newer(path: Path, than: Path) -> None:
+    t = than.stat().st_mtime_ns + 10**9
+    os.utime(path, ns=(t, t))
+
+
+def test_a_newer_imported_script_means_rebuild(sdir):
+    src = sdir / "source"
+    _write(src / "build.py", "import parts\nfrom gears import teeth\n")
+    _write(src / "parts.py", "import helpers\n")
+    helpers = _write(src / "helpers.py", "X = 1\n")
+    _write(src / "gears" / "__init__.py", "")
+    _write(src / "gears" / "teeth.py", "")
+    notes = _write(src / "notes.py", "")
+    blend = _write(sdir / "blend" / "short.blend", "blend")
+    for p in src.rglob("*.py"):  # every script older than the saved .blend
+        t = blend.stat().st_mtime_ns - 10**9
+        os.utime(p, ns=(t, t))
+    assert freshness.stale_build_file(sdir) is None and not freshness.build_changed(sdir)
+    assert freshness.build_inputs(sdir) == [src / "build.py", src / "gears" / "__init__.py", src / "gears" / "teeth.py",
+                                            src / "helpers.py", src / "parts.py"]  # fmt: skip
+    _touch_newer(notes, blend)  # imported by nothing
+    assert not freshness.build_changed(sdir)
+    _touch_newer(helpers, blend)
+    assert freshness.stale_build_file(sdir) == helpers and freshness.build_changed(sdir)
+    msg = "source/helpers.py (imported by build.py) changed since the scene was built: rebuild"
+    assert freshness.build_changed_message(sdir) == msg
+    with pytest.raises(freshness.StaleError, match=r"source/helpers\.py \(imported by build\.py\) changed"):
+        freshness.require_current_build(sdir, "the final edit")
+    _touch_newer(src / "build.py", blend)  # build.py itself comes first and keeps its own message
+    assert freshness.build_changed_message(sdir) == freshness.BUILD_CHANGED
+
+
+def test_build_inputs_skip_non_local_and_survive_cycles_and_syntax_errors(sdir):
+    src = sdir / "source"
+    _write(src / "build.py", "import math\nimport numpy as np\nimport bpy\nfrom bsa.blender import bake\nimport a\n")
+    _write(src / "a.py", "import b\n")
+    _write(src / "b.py", "from . import c\nimport a\n")
+    _write(src / "c.py", "def (:\n")
+    assert freshness.build_inputs(sdir) == [src / "build.py", src / "a.py", src / "b.py", src / "c.py"]
+    assert freshness.build_inputs(sdir.parent / "nowhere") == []
 
 
 def test_checks_from_before_check_inputs_stay_current(sdir):
@@ -414,7 +516,8 @@ def test_checks_code_covers_every_file_the_findings_come_from():
     root = freshness._CHECKS_CODE[0].parent.parent
     names = {p.relative_to(root).as_posix() for p in freshness._CHECKS_CODE}
     assert {"blender/checks.py", "viewer.py", "overlays.py", "findings.py", "blender/camera.py",
-            "layout.py", "rules.py", "blender/bake.py"} <= names, names  # fmt: skip
+            "layout.py", "rules.py", "blender/bake.py", "pops.py", "blender/anchors.py", "short.py",
+            "kitlayout.py"} <= names, names  # fmt: skip
     assert all(p.is_file() for p in freshness._CHECKS_CODE)
 
 
@@ -497,3 +600,134 @@ def test_a_change_shared_by_every_shot_is_said_once(sdir):
     assert msg.count("hard rules") == 1 and "(all 7 shots)" in msg
     assert "shot s03's scene content changed" in msg
     assert "run BLENDER check SHORT" in msg
+
+
+def test_object_keys_are_cached_and_never_part_of_the_check_key(sdir):
+    """The per-object keys and the rest's key are cached beside the fingerprints and recorded in a shot's check
+    inputs as information: the check key stays what it was without them."""
+    blend = sdir / "blend" / "short.blend"
+    blend.parent.mkdir()
+    blend.write_bytes(b"one")
+    objects = {"s01": {"objects": {"Cube": "k1", "Sphere": "k2"}, "rest": "r1"}}
+    freshness.save_fingerprints(sdir, "h", {"s01": "a"}, objects=objects)
+    assert freshness.load_fingerprints(sdir, "h") == {"s01": "a"}
+    assert freshness.has_object_keys(sdir)
+    assert freshness.load_fingerprint_objects(sdir, {"s01": "a"}) == objects
+    assert freshness.load_fingerprint_objects(sdir, {"s01": "b"}) == {}
+    assert freshness.load_fingerprint_objects(sdir, None) == {}
+    freshness.save_fingerprints(sdir, "h", {"s01": "a"})
+    assert freshness.load_fingerprint_objects(sdir, {"s01": "a"}) == {}  # a cache from before the keys
+    assert not freshness.has_object_keys(sdir)  # so the next Blender run computes the cache again, keys and all
+    freshness.save_fingerprints(sdir, "h", {"s01": "a"}, objects={})
+    assert freshness.has_object_keys(sdir)  # computed with keys, even none: never computed again for that
+    span = Span("s01", 1, 90)
+    plain = freshness.shot_check_inputs("a", span, _shot(), ["s01"])
+    keyed = freshness.shot_check_inputs("a", span, _shot(), ["s01"], objects=objects["s01"])
+    assert keyed["objects"] == {"Cube": "k1", "Sphere": "k2"} and keyed["rest"] == "r1"
+    assert "objects" not in plain and "rest" not in plain
+    assert freshness.checks_stamp("h", {"s01": plain})["shots"] == freshness.checks_stamp("h", {"s01": keyed})["shots"]
+    assert freshness.blend_stat(sdir) == freshness._blend_stat(sdir) == [3, blend.stat().st_mtime_ns]
+
+
+def _keyed(sid="s01", objects=None, rest="r1", fp="fp1", span=None, tags=None):
+    parts = {"tags": tags} if tags is not None else None
+    keys = {"objects": dict(objects or {"A": "ka", "B": "kb", "C": "kc"}), "rest": rest}
+    return freshness.shot_check_inputs(fp, span or Span(sid, 1, 90), _shot(id=sid), ("s01", "s02"), parts,
+                                       objects=keys)  # fmt: skip
+
+
+def _reuse(old_stamp, sid, now_stamp):
+    now = {**now_stamp["inputs"][sid], "_stamp": {"timeline": now_stamp["timeline"], "every": now_stamp["every"]}}
+    return freshness.object_reuse(old_stamp, sid, now)
+
+
+def test_object_reuse_rules():
+    """Which objects of a changed shot keep their own checks: only when nothing but object keys changed (same checks
+    code, timing, --every, frames, entry, shot list, rules, caption size, tags and rest), and then only the names
+    whose key is the same; None (re-check the whole shot) otherwise."""
+    base = {"s01": _keyed("s01", tags="t1"), "s02": _keyed("s02", tags="t1")}
+    old = freshness.checks_stamp("h", base, 5)
+
+    def now(sid="s01", every=5, tl="h", **over):
+        return freshness.checks_stamp(tl, {**base, sid: _keyed(sid, **{"tags": "t1", **over})}, every)
+
+    assert _reuse(old, "s01", now(objects={"A": "ka2", "B": "kb", "C": "kc"}, fp="fp2")) == {"B", "C"}
+    assert _reuse(old, "s02", now("s02", objects={"A": "ka", "B": "kb2", "C": "kc"}, fp="fp2")) == {"A", "C"}
+    assert _reuse(old, "s01", now(rest="r2", fp="fp2")) is None  # camera, lights, world, collections...
+    assert _reuse(old, "s01", now(tags="t2")) is None  # a tag changed anywhere in the shot
+    assert _reuse(old, "s01", now(span=Span("s01", 1, 80), fp="fp2")) is None  # its frames changed
+    assert _reuse(old, "s01", now(every=1, fp="fp2")) is None  # --every changed
+    assert _reuse(old, "s01", now(tl="h2", fp="fp2")) is None  # the timing changed
+    assert _reuse(old, "s01", now(objects={"A": "x", "B": "y", "C": "z"}, fp="fp2")) is None  # every key changed
+    assert _reuse({**old, "code": "0:old"}, "s01", now(fp="fp2")) is None  # the checks code changed
+    plain = freshness.checks_stamp("h", {sid: _inputs(span=Span(sid, 1, 90), shot=_shot(id=sid)) for sid in base}, 5)
+    assert _reuse(plain, "s01", now(fp="fp2")) is None  # old inputs without object keys
+    without = freshness.checks_stamp("h", {**base, "s01": _inputs(fp="fp2", parts={"tags": "t1"})}, 5)
+    assert freshness.object_reuse(old, "s01", {**without["inputs"]["s01"], "_stamp": {"timeline": "h", "every": 5}}) \
+        is None  # new inputs without object keys  # fmt: skip
+    new = {**now(fp="fp2")["inputs"]["s01"], "_stamp": {"timeline": "h", "every": 5}}
+    assert freshness.object_reuse(old, "s03", new) is None  # a shot the old checks never had
+
+
+def _row(check, obj=None, pair=None, sid="s01", **over):
+    return {"check": check, "severity": "error", "obj": obj, "frame": None, "message": f"{check} {obj or pair}",
+            "shot": sid, "shots": [sid], **({"pair": list(pair)} if pair else {}), **over}  # fmt: skip
+
+
+def _old_rows(sdir, rows, held=()):
+    base = {"s01": _keyed("s01", tags="t1"), "s02": _keyed("s02", tags="t1")}
+    data = {"stamp": freshness.checks_stamp("h", base, 5), "errors": len(rows), "warnings": 0, "findings": rows,
+            "held_back": list(held)}  # fmt: skip
+    (sdir / "review" / "checks.json").write_text(json.dumps(data), encoding="utf-8")
+    return base
+
+
+def test_partial_checks_keep_only_rows_of_unchanged_objects_and_pairs(sdir):
+    normals_a, materials_b = _row("normals", "A"), _row("materials", "B")
+    ab, ac = _row("overlap", "A", ("A", "B")), _row("overlap", "A", ("A", "C"))
+    floating, contact = _row("floating", "A"), _row("contact_parent", "A")
+    other = _row("normals", "A", sid="s02")
+    base = _old_rows(sdir, [normals_a, materials_b, ab, floating, contact, other], held=[ac])
+    changed_a = freshness.checks_stamp("h", {**base, "s01": _keyed(objects={"A": "ka2", "B": "kb", "C": "kc"},
+                                                                   fp="fp2", tags="t1")}, 5)  # fmt: skip
+    assert freshness.partial_checks(sdir, changed_a) == {"s01": ({"B", "C"}, [materials_b])}
+    changed_b = freshness.checks_stamp("h", {**base, "s01": _keyed(objects={"A": "ka", "B": "kb2", "C": "kc"},
+                                                                   fp="fp2", tags="t1")}, 5)  # fmt: skip
+    assert freshness.partial_checks(sdir, changed_b) == {"s01": ({"A", "C"}, [normals_a, ac])}
+    assert freshness.partial_checks(sdir, freshness.checks_stamp("h", base, 5)) == {}  # nothing changed: all kept
+    retagged = freshness.checks_stamp("h", {**base, "s01": _keyed(fp="fp2", tags="t2")}, 5)
+    assert freshness.partial_checks(sdir, retagged) == {}  # re-check the whole shot
+
+
+def test_an_overlap_row_without_its_pair_checks_the_whole_shot_again(sdir):
+    """An overlap row that doesn't name its two objects can't be kept or dropped by object: its shot is checked again
+    whole, and the other shot's partial reuse is not affected."""
+    no_pair = _row("overlap", "A")  # no "pair"
+    other = _row("normals", "A", sid="s02")
+    base = _old_rows(sdir, [_row("normals", "B"), no_pair, other])
+    changed = freshness.checks_stamp("h", {**base, "s01": _keyed(objects={"A": "ka2", "B": "kb", "C": "kc"},
+                                                                 fp="fp2", tags="t1")}, 5)  # fmt: skip
+    assert "s01" not in freshness.partial_checks(sdir, changed)
+    _old_rows(sdir, [_row("normals", "B"), other])  # the same without that row: s01 is reused by object
+    assert freshness.partial_checks(sdir, changed)["s01"][0] == {"B", "C"}
+
+
+def test_partial_reuse_drops_deleted_and_renamed_objects(sdir):
+    """A deleted object's findings are dropped and a pair with it is not kept; a renamed (or new) object has no old
+    key, so its checks run and its pairs are tested again."""
+    rows = [_row("normals", "C"), _row("overlap", "A", ("A", "C")), _row("materials", "D"), _row("faceted", "A"),
+            _row("overlap", "A", ("A", "D")), _row("overlap", "A", ("A", "B"))]  # fmt: skip
+    old = {"s01": _keyed(objects={"A": "ka", "B": "kb", "C": "kc", "D": "kd"}, tags="t1"),
+           "s02": _keyed("s02", tags="t1")}  # fmt: skip
+    data = {"stamp": freshness.checks_stamp("h", old, 5), "errors": 0, "warnings": 0, "findings": rows}
+    (sdir / "review" / "checks.json").write_text(json.dumps(data), encoding="utf-8")
+    deleted = freshness.checks_stamp("h", {**old, "s01": _keyed(objects={"A": "ka", "B": "kb", "D": "kd"}, fp="fp2",
+                                                                tags="t1")}, 5)  # fmt: skip
+    kept, kept_rows = freshness.partial_checks(sdir, deleted)["s01"]
+    assert kept == {"A", "B", "D"} and not [r for r in kept_rows if "C" in (r["obj"], *r.get("pair", ()))]
+    assert kept_rows == [rows[2], rows[3], rows[4], rows[5]]
+    renamed = freshness.checks_stamp("h", {**old, "s01": _keyed(objects={"A": "ka", "B": "kb", "C": "kc", "E": "kd"},
+                                                                fp="fp2", tags="t1")}, 5)  # fmt: skip
+    kept, kept_rows = freshness.partial_checks(sdir, renamed)["s01"]
+    assert kept == {"A", "B", "C"} and "E" not in kept
+    assert kept_rows == [rows[0], rows[1], rows[3], rows[5]]  # nothing of D, nor of the pair A-D

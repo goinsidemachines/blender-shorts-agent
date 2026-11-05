@@ -15,6 +15,7 @@ def test_scene_render_in_blender(blender_run):
         "test_render_still_jpeg",
         "test_resume_rerenders_empty_placeholders",
         "test_keyframe_series",
+        "test_keyframe_series_leaves_the_value_it_found",
         "test_tags_merge",
         "test_estimate_restores_scene_state",
         "test_render_range_raises_on_failed_render",
@@ -24,5 +25,7 @@ def test_scene_render_in_blender(blender_run):
         "test_presets_and_look_helpers",
         "test_eevee_estimate_times_a_warm_frame",
         "test_cycles_estimate_times_one_frame",
+        "test_world_mask_marks_only_where_the_world_shows",
+        "test_world_mask_restores_everything_when_the_render_raises",
     ):
         assert f"PASS {name}" in result.stdout

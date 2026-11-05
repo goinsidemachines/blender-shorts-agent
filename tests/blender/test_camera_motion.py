@@ -440,3 +440,139 @@ def test_move_pushes_in_to_a_part():
     assert abs((x1 - x0) - area.w) < 4 or abs((y1 - y0) - area.h) < 4, (x0, y0, x1, y1)
     d = np.array(out["distances"])
     assert d[-1] < 0.5 * d[0] and np.all(np.diff(d) < 1e-6), d  # it moves in all the way, never back out
+
+
+def _keyed_box(name, size, keys, axis):
+    """A box keyed along one axis: `keys` (frame, value) pairs."""
+    obj = _box(name, size, (0.0, 0.0, size[2] / 2))
+    for f, v in keys:
+        obj.location[axis] = v
+        obj.keyframe_insert("location", index=axis, frame=f)
+    return obj
+
+
+def _in_band(sc, cam, objs, frames, tol=1.0):
+    area = target_area()
+    for f in frames:
+        x0, y0, x1, y1 = _projected(sc, cam, objs, [f])
+        assert x0 >= area.x - tol and x1 <= area.right + tol and y0 >= area.y - tol and y1 <= area.bottom + tol, (
+            f, (x0, y0, x1, y1), area)
+
+
+def test_follow_tracks_a_moving_part_from_a_fixed_place():
+    """Track: the camera stays where it is (backing off only along its view axis when the part would leave the band)
+    and turns to keep a sliding part in the band."""
+    sc, cam = _scene()
+    sc.frame_end = 60
+    slider = _keyed_box("Slider", (0.4, 0.4, 0.4), [(1, 0.0), (60, 4.0)], 0)
+    cam.location = (2.0, -6.0, 1.5)
+    sc.frame_set(1)
+    camera.frame_objects(cam, [slider], aim=True, key=1)
+    start = np.array(cam.matrix_world.translation)
+    out = camera.follow(cam, slider, 1, 60, shot="s03")
+    assert out["keys"][:3] == [1, 3, 5] and out["keys"][-1] == 60, out["keys"]
+    assert len(out["distances"]) == len(out["keys"]) and out["warnings"] == [], out
+    for f in out["keys"]:
+        sc.frame_set(f)
+        moved = np.array(cam.matrix_world.translation) - start
+        if np.linalg.norm(moved) > 1e-4:
+            back = np.array(cam.matrix_world.col[2][:3])
+            back /= np.linalg.norm(back)
+            along = moved / np.linalg.norm(moved)
+            assert along @ back > 0.995, (f, moved, back)  # only backed off, along its view axis
+    _in_band(sc, cam, [slider], (1, 30, 60))
+    sc.frame_set(1)
+    first = cam.matrix_world.col[2].to_3d()
+    sc.frame_set(60)
+    assert first.angle(cam.matrix_world.col[2].to_3d()) > math.radians(10)  # it turned to follow the part
+
+
+def test_follow_rides_with_a_part_keeping_its_offset():
+    """Ride: the camera keeps its start offset from a piston going up and down (within the smoothing's lag) and
+    keeps it in the band."""
+    sc, cam = _scene()
+    sc.frame_end = 120
+    piston = _keyed_box("Piston", (0.3, 0.3, 0.6), [(1, 0.3), (60, 0.8), (120, 0.3)], 2)
+    cam.location = (1.5, -4.0, 1.2)
+    sc.frame_set(1)
+    camera.frame_objects(cam, [piston], aim=True, key=1, margin=150)  # room to spare: no backing off
+    offset = cam.matrix_world.translation - piston.matrix_world.translation
+    out = camera.follow(cam, [piston], 1, 120, mode="ride")
+    assert out["warnings"] == [], out
+    for f in (1, 20, 40):
+        sc.frame_set(f)
+        now = cam.matrix_world.translation - piston.matrix_world.translation
+        assert (now - offset).length < 0.02, (f, now, offset)
+    sc.frame_set(1)
+    low = cam.matrix_world.translation.z
+    sc.frame_set(60)
+    assert cam.matrix_world.translation.z > low + 0.4, (low, cam.matrix_world.translation.z)  # it rode up
+    _in_band(sc, cam, [piston], (1, 20, 40, 60, 120))
+
+
+def test_follow_refuses_an_unknown_mode():
+    _sc, cam = _scene()
+    wheel = _box("Wheel", (0.5, 0.5, 0.5), (0, 0, 0.25))
+    try:
+        camera.follow(cam, wheel, 1, 30, mode="orbit")
+    except ValueError as e:
+        assert "track" in str(e) and "ride" in str(e), e
+    else:
+        raise AssertionError("an unknown mode was accepted")
+    try:
+        camera.follow(cam, wheel, 30, 30)
+    except ValueError as e:
+        assert "f1" in str(e), e
+    else:
+        raise AssertionError("f1 <= f0 was accepted")
+
+
+def _fast_slide(name, size, y=0.0):
+    """A box sliding 6 m along X from frame 11 to 60, faster and faster (x = 6 t^2), keyed every frame."""
+    obj = _box(name, size, (0.0, y, size[2] / 2))
+    for f in range(11, 61):
+        obj.location.x = 6.0 * ((f - 11) / 49) ** 2
+        obj.keyframe_insert("location", index=0, frame=f)
+    return obj
+
+
+def _location_keys(cam):
+    return {kp.co[0]: tuple(fc.evaluate(kp.co[0]) for fc in extremes.fcurves(cam) if fc.data_path == "location")
+            for fc in extremes.fcurves(cam) if fc.data_path == "location" for kp in fc.keyframe_points}
+
+
+def test_follow_keeps_keys_outside_and_a_fast_part_in_the_band_in_both_modes():
+    """Keys before f0 and after f1 stay as they were and a stale key inside is replaced; a part sliding faster and
+    faster stays in the band at every key, tracked (a list of two parts) and ridden; band=False does not move a
+    tracking camera."""
+    for mode in ("track", "ride"):
+        sc, cam = _scene()
+        sc.frame_end = 80
+        parts = [_fast_slide("Slider", (0.4, 0.4, 0.4))]
+        if mode == "track":
+            parts.append(_fast_slide("Rail", (0.6, 0.2, 0.2), y=0.4))
+        cam.location = (3.0, -7.0, 2.0) if mode == "track" else (1.0, -3.0, 1.0)
+        sc.frame_set(11)
+        camera.frame_objects(cam, parts, aim=True, key=11)
+        for f, where in ((1, (9.0, -9.0, 3.0)), (30, (0.0, 0.0, 9.0)), (70, (-9.0, -9.0, 3.0))):
+            cam.location = where
+            cam.keyframe_insert("location", frame=f)
+            cam.keyframe_insert("rotation_euler", frame=f)
+        before = _location_keys(cam)
+        sc.frame_set(11)
+        out = camera.follow(cam, parts if mode == "track" else parts[0], 11, 60, mode=mode)
+        after = _location_keys(cam)
+        assert after[1.0] == before[1.0] and after[70.0] == before[70.0], (mode, before, after)
+        assert 30.0 not in after and set(after) == {1.0, 70.0} | set(map(float, out["keys"])), (mode, sorted(after))
+        assert out["warnings"] == [], (mode, out["warnings"])
+        _in_band(sc, cam, parts, out["keys"])
+    sc, cam = _scene()
+    slider = _fast_slide("Slider", (0.4, 0.4, 0.4))
+    cam.location = (3.0, -7.0, 2.0)
+    sc.frame_set(11)
+    camera.frame_objects(cam, [slider], aim=True, key=11)
+    start = np.array(cam.matrix_world.translation)
+    out = camera.follow(cam, slider, 11, 60, band=False)
+    for f in out["keys"]:
+        sc.frame_set(f)
+        assert np.linalg.norm(np.array(cam.matrix_world.translation) - start) < 1e-5, f  # turned, never moved

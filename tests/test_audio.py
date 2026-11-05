@@ -46,6 +46,15 @@ def test_mix_length_exact():
     assert np.abs(out).max() <= 1.0
 
 
+def test_mix_refuses_a_span_id_that_is_not_a_plain_file_name(tmp_path):
+    outside = tmp_path / "x.wav"
+    _write_take(outside, 0.5 * np.ones(SR))
+    for bad in ("C:x", "../x", "a/b", "nul"):
+        tl = Timeline(30, 300, [Span("s01", 1, 300)], [Span(bad, 31, 60)], [])
+        with pytest.raises(ValueError, match="rename it"):
+            mix(tl, _short([]), tmp_path / "vo")
+
+
 def test_levels(tmp_path):
     t = np.arange(SR) / SR
     _write_take(tmp_path / "l1.wav", 0.5 * np.sin(2 * np.pi * 440 * t))
@@ -167,3 +176,50 @@ def test_levels_measure_what_the_targets_mean(tmp_path):
     mono = out.mean(axis=1)
     effect = mono[9 * SR : int(9.6 * SR)]  # the whoosh, in the clear: sparse effects are not boosted over the voice
     assert 20 * np.log10(np.sqrt(np.mean(effect**2))) < VOICE_DBFS - 4
+
+
+def _speech_head_take(seconds: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+    """(take, burst): 50 ms of a 2 kHz burst from sample 0, then a 300 Hz tone loud up to the last sample."""
+    t = np.arange(round(seconds * SR)) / SR
+    head = round(0.05 * SR)
+    x = 0.3 * np.sin(2 * np.pi * 300 * t)
+    x[:head] = 0.3 * np.sin(2 * np.pi * 2000 * t[:head])
+    return x, x[:head].copy()
+
+
+def _head_ratio_db(x: np.ndarray, at: int) -> float:
+    """Energy of [at, at + 50 ms] over [at + 50 ms, at + 100 ms], in dB."""
+    w = round(0.05 * SR)
+    return float(10 * np.log10(np.sum(x[at : at + w] ** 2) / np.sum(x[at + w : at + 2 * w] ** 2)))
+
+
+@pytest.mark.parametrize(("lead_s", "gap_s", "n_lines"), [(0.2, 0.35, 1), (0.2, 0.0, 2), (0.0, 0.35, 1)],
+                         ids=["one-line", "back-to-back", "on-frame-1"])  # fmt: skip
+def test_first_50_ms_of_speech_survive_the_mix(tmp_path, monkeypatch, lead_s, gap_s, n_lines):
+    from bsa import timeline
+    from bsa.audio.mix import _idx
+    from bsa.short import Line
+
+    monkeypatch.setattr(timeline, "LEAD_IN_S", lead_s)
+    monkeypatch.setattr(timeline, "GAP_S", gap_s)
+    take, burst = _speech_head_take()
+    ids = [f"l{i}" for i in range(1, n_lines + 1)]
+    for i in ids:
+        _write_take(tmp_path / f"{i}.wav", take)
+    short = Short(slug="t", title="T", length_s=3, shots=[Shot("s01", "Hook", "pic", "Scene")],
+                  lines=[Line(i, "Words here", "s01") for i in ids])  # fmt: skip
+    tl = build_timeline(short, {i: len(take) / SR for i in ids})
+    out, _ = mix(tl, short, tmp_path)
+    mono = out.mean(axis=1)
+    if lead_s == 0:
+        assert tl.lines[0].f0 == 1
+    if gap_s == 0:
+        assert tl.lines[1].f0 == tl.lines[0].f1 + 1  # back to back: the previous take is loud up to this line
+    want = _head_ratio_db(take, 0)
+    for span in tl.lines:
+        at = _idx(span.f0, tl.fps)
+        assert abs(_head_ratio_db(mono, at) - want) <= 1.0, (span.id, _head_ratio_db(mono, at), want)
+        lo = max(at - round(0.1 * SR), 0)
+        seg = mono[lo : at + round(0.15 * SR)]
+        lag = lo + int(np.argmax(np.correlate(seg, burst, mode="valid")))
+        assert abs(lag - at) <= 1, (span.id, lag, at)

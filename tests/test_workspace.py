@@ -133,3 +133,21 @@ def test_chosen_number_claimed_by_another_session_is_refused(tmp_path):
         workspace.new_short(root, "Mine", number=4)
     assert ".numbers" in str(err.value)
     assert not any(p.name.startswith("04-") for p in root.iterdir())
+
+
+def test_short_key(tmp_path):
+    """What a message tells the user to type for this short: its number inside the workspace, else its path."""
+    ws = tmp_path / "ws"
+    inside = ws / "12-how-a-gear-train-works"
+    inside.mkdir(parents=True)
+    assert workspace.short_key(inside, ws) == "12"
+    assert workspace.short_key(inside, str(ws)) == "12"
+    outside = tmp_path / "elsewhere" / "07-how-a-hinge-swings"
+    outside.mkdir(parents=True)
+    assert workspace.short_key(outside, ws) == f'"{outside}"'
+    assert workspace.short_key(inside, None) == f'"{inside}"'
+    unnumbered = ws / "my-short"
+    unnumbered.mkdir()
+    assert workspace.short_key(unnumbered, ws) == f'"{unnumbered}"'
+    (ws / "12-copy").mkdir()  # "12" would no longer find it
+    assert workspace.short_key(inside, ws) == f'"{inside}"'

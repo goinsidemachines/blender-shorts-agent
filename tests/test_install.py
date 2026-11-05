@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from bsa import proc as _proc
 from bsa.machine import Gpu, Machine
 from bsa.narrate import install
 from bsa.narrate.contract import NarrationError
@@ -178,7 +179,7 @@ def test_no_personal_paths():
     """Nothing in the repo points at one person's machine: no absolute paths on another drive (Z: is the tests' made-up drive), and no user folder
     other than the `you` placeholder."""
     banned = [re.compile(r"\b[D-Y]:[\/]"), re.compile(r"Users[\/](?!you\b)[A-Za-z]\w*[\/]")]
-    files = subprocess.run(
+    files = _proc.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT, check=True, capture_output=True, text=True,
     ).stdout.splitlines()  # fmt: skip

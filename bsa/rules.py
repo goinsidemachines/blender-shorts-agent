@@ -65,8 +65,18 @@ KINDS: dict[str, Kind] = {
 _ID = re.compile(r"^r(\d+)$")
 
 # Phrases whose words never mean what a rule forbids, whatever the rule: physics terms ("rigid body" is no one's
-# body). Only phrases: the word alone is still flagged.
-INNOCENT_PHRASES = ("rigid body", "soft body")
+# body) and machine terms whose body-part word is not a person ("cylinder head", "clock hand", "eye bolt"). Only
+# whole phrases, matched word by word (plurals too): the word alone, or in a name that is no known machine term
+# ("Head white plastic", "worker's hand"), is still flagged. Keep it a plain sorted tuple.
+INNOCENT_PHRASES = (
+    "bolt head", "cam face", "cam follower", "car body", "chair leg", "clock face", "clock hand", "comb tooth",
+    "control arm", "crane arm", "crank arm", "cutter head", "cylinder head", "dial face", "drill head", "eye bolt",
+    "gear face", "gear tooth", "hammer head", "head bolt", "head gasket", "head unit", "hook eye", "hour hand",
+    "lens body", "lever arm", "minute hand", "nail head", "needle eye", "piston head", "pitman arm", "print head",
+    "pump body", "pump head", "read head", "rigid body", "rivet head", "robot arm", "rocker arm", "saw tooth",
+    "screw head", "second hand", "shower head", "soft body", "sprinkler head", "sprocket tooth", "swing arm",
+    "table leg", "throttle body", "tone arm", "tripod leg", "valve body", "valve face", "wiper arm", "write head",
+)
 # Names Blender gives its own data (a rigid-body world's collections, made by bpy.ops.rigidbody.world_add): the
 # user never chose them, so the scene-name scan skips them. A ".001" suffix is Blender's too.
 BLENDER_MADE = re.compile(r"^(RigidBodyWorld|RigidBodyConstraints)(\.\d{3})?$")
@@ -250,19 +260,38 @@ def _places(short) -> list[tuple[str, str]]:
     out = []
     for ln in short.lines:
         out.append((f"line {ln.id}", " ".join(x for x in (ln.text, ln.say) if isinstance(x, str))))
-    from bsa.short import label_text
+    from bsa.short import bar_items, bar_text, bar_verdict, category_text, label_text, title_lines
 
     for sh in short.shots:  # each text on its own, so a warning quotes the one label it is in
         out.append((f"shot {sh.id} title", sh.title))
         out.append((f"shot {sh.id} picture", sh.picture))
         out += [(f"shot {sh.id} label", label_text(lb)) for lb in sh.labels]
+        out += [(f"shot {sh.id} title card", line) for line in title_lines(sh)[0]]
+        if isinstance(sh.category, str) and sh.category.strip():
+            out.append((f"shot {sh.id} category", category_text(sh.category)))
+        for item in bar_items(sh):
+            out.append((f"shot {sh.id} value bar", str(item.get("label") or "")))
+            out.append((f"shot {sh.id} value bar", bar_text(item)))
+        if bar_verdict(sh):
+            out.append((f"shot {sh.id} verdict", bar_verdict(sh)))
         if sh.badge:
             out.append((f"shot {sh.id} badge", sh.badge))
     for fx in short.sfx:
         out.append((f"sfx {fx.kind!r} in shot {fx.shot}", fx.kind))
     for a in short.assets:
         out.append((f"asset {a.id}", f"{a.name} {a.id}"))
-    return out
+    tr = getattr(short, "captions_translations", None)
+    for lang, entry in (tr.items() if isinstance(tr, dict) else ()):
+        if not isinstance(entry, dict):
+            continue
+        got = entry.get("lines")
+        for lid, text in (got.items() if isinstance(got, dict) else ()):
+            out.append((f"line {lid} ({lang})", text if isinstance(text, str) else ""))
+        if isinstance(entry.get("closing"), str):
+            out.append((f"closing ({lang})", entry["closing"]))
+    from bsa import post
+
+    return out + post.rule_places(short)
 
 
 def _shape_errors(short, global_ids: set[str]) -> list[str]:
@@ -310,10 +339,10 @@ def context(text: str, token: str, n: int = CONTEXT_WORDS) -> str:
     return ("…" if lo > 0 else "") + snippet + ("…" if hi < len(words) else "")
 
 
-def _word_warnings(r: dict, kind: Kind, places, skip) -> list[str]:
+def _word_warnings(r: dict, kind: Kind, places, skip, key: str = "SHORT") -> list[str]:
     """One warning per flagged word (its places, each with the words around it), then one hint to clear words that
     keep the rule. The rule's words are never narrowed: this only says the same thing with less noise. `skip`:
-    (cleared words, phrases) from _skip."""
+    (cleared words, phrases) from _skip. `key`: what the user types for this short (workspace.short_key)."""
     words_, phrases = skip
     by_word: dict[str, list[tuple[str, str, str]]] = {}
     for where, text in places:
@@ -335,15 +364,16 @@ def _word_warnings(r: dict, kind: Kind, places, skip) -> list[str]:
                    f"Where it does not (a tooth's face, a clock's hand), say why once in "
                    f"rules_check.{r.get('id')}.cleared, e.g. {example}: that clears the word everywhere in this short. A "
                    'phrase ("driver pin") clears the word only where it stands in that phrase.'
-                   + (" Clearing a word changes what the scene checks look for, so run BLENDER check SHORT again "
+                   + (f" Clearing a word changes what the scene checks look for, so run BLENDER check {key} again "
                       "after." if kind.scene else ""))  # fmt: skip
     return out
 
 
-def problems(short, s: dict) -> tuple[list[str], list[str]]:
+def problems(short, s: dict, key: str = "SHORT") -> tuple[list[str], list[str]]:
     """(errors, warnings) of the short against the hard rules. Errors: a rule with no rules_check entry, a
     malformed short rule or entry, a short that would loosen a rule. Warnings: words that may break a rule (an
-    answer in rules_check "cleared" silences one), on-screen text under the captions-only rule."""
+    answer in rules_check "cleared" silences one), on-screen text under the captions-only rule. `key`: what the user
+    types for this short in a command a message suggests (workspace.short_key)."""
     errors, warnings = [], []
     errors += _shape_errors(short, {str(r.get("id")) for r in global_rules(s)})
     rules = effective(s, short)
@@ -374,11 +404,21 @@ def problems(short, s: dict) -> tuple[list[str], list[str]]:
             errors.append(f"sound_policy {short.sound_policy!r} would loosen hard rule {describe(r)}: remove it "
                           f"(the rule makes it {kind.sound})")  # fmt: skip
         if kind.words:
-            warnings += _word_warnings(r, kind, places, _skip(rc.get(r.get("id")), kind.words))
+            warnings += _word_warnings(r, kind, places, _skip(rc.get(r.get("id")), kind.words), key)
+        if r.get("kind") == "no_brand_logos":
+            from bsa import kit
+
+            own = kit.kit_for(s, short)
+            if own is not None and own.logo:
+                warnings.append(f"hard rule {describe(r)}: your logo badge shows a logo on every short: ask the user "
+                                "whether their own logo is allowed")  # fmt: skip
         if r.get("kind") == "no_text_on_screen_except_captions":
             for sh in short.shots:
                 if sh.labels:
                     warnings.append(f"hard rule {describe(r)}: shot {sh.id} has on-screen labels: remove them")
+                if sh.title_card or sh.category or sh.step or sh.bars:
+                    warnings.append(f"hard rule {describe(r)}: shot {sh.id} has a title card, category, step or "
+                                    "value bars: remove them")  # fmt: skip
                 if sh.badge:
                     warnings.append(f"hard rule {describe(r)}: shot {sh.id} has a badge ({sh.badge!r}): ask the user "
                                     "(say it in the narration instead, or show the motion true to life)")  # fmt: skip

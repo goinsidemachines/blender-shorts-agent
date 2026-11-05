@@ -6,6 +6,7 @@ screen before anything renders. Pixels, origin at the top-left of the 1080x1920 
 from __future__ import annotations
 
 import math
+import re
 
 from bsa.layout import H, Rect, caption_rect, place_label, safe_rect
 
@@ -19,6 +20,33 @@ SMALL_MARGIN = 0.010
 STACK_GAP_PX = 12
 NEAR_GAP_PX = 16  # a near label's box sits this far above its object's top
 NEAR_WRAP_PX = 420  # near labels wrap narrower than the safe area
+BOX_COLOR = (0.02, 0.025, 0.03, 0.55)  # the captions' dark see-through box
+BADGE_COLOR = (1.0, 0.8, 0.35, 1.0)
+
+
+def hex_colour(value, alpha: float = 1.0):
+    """'#RRGGBB' or '#RRGGBBAA' as an RGBA tuple of 0..1 floats; None when it is not one. A colour the user gives
+    as 6 digits is opaque (alpha 1, the default); 8 digits keep their own alpha."""
+    text = str(value or "").strip().lstrip("#")
+    if not re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text):
+        return None
+    rgba = [int(text[i : i + 2], 16) / 255 for i in range(0, len(text), 2)]
+    return tuple(rgba) if len(rgba) == 4 else (*rgba, alpha)
+
+
+def caption_colours(short, settings: dict) -> tuple[tuple, tuple]:
+    """(text, box) colours of the captions: `brand.caption` `color` and `box` from settings (not for a short with its
+    own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark see-through box
+    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#14161A80") keep their alpha."""
+    from bsa.settings import brand_for
+
+    cap = {}
+    for src in (brand_for(settings, short).get("caption"), (short.style or {}).get("caption")):
+        if isinstance(src, dict):
+            cap.update(src)
+    text = hex_colour(cap.get("color") or cap.get("colour"), 1.0) or (1.0, 1.0, 1.0, 1.0)
+    box = hex_colour(cap.get("box") or cap.get("box_color") or cap.get("box_colour"), 1.0) or BOX_COLOR
+    return text, box
 
 
 def est_lines(text: str, size_px: float, wrap_px: float) -> int:
@@ -46,9 +74,18 @@ def caption_size(short) -> int:
     return int(((getattr(short, "style", None) or {}).get("caption") or {}).get("size") or CAPTION_SIZE)
 
 
+def captions_drawn(short) -> bool:
+    """False when the short's own `style.caption.draw` is false: then no caption shows (the voice alone)."""
+    draw = ((getattr(short, "style", None) or {}).get("caption") or {}).get("draw", True)
+    return not (draw is False or (isinstance(draw, str) and draw.strip().lower() == "false"))
+
+
 def captions(short, tl) -> list[tuple[int, int, Rect, Rect, float]]:
     """(f0, f1, band, box, text bottom y) per caption card: `band` is the full safe width the card may take (near
-    labels keep off it), `box` the estimated box the text is drawn in (centred, as wide as its longest line)."""
+    labels keep off it), `box` the estimated box the text is drawn in (centred, as wide as its longest line).
+    Empty when the short's `style.caption.draw` is false."""
+    if not captions_drawn(short):
+        return []
     safe = safe_rect()
     size = caption_size(short)
     wrap_px = safe.w - 2 * CAPTION_MARGIN * H
@@ -111,15 +148,17 @@ def near_label_size(text: str) -> tuple[float, float]:
 
 
 def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), placed: dict | None = None,
-           heroes: dict | None = None, near: str | None = None, frames=None) -> dict[int, tuple[float, float, Rect]]:  # fmt: skip
+           heroes: dict | None = None, near: str | None = None, frames=None,
+           size: tuple[float, float] | None = None) -> dict[int, tuple[float, float, Rect]]:  # fmt: skip
     """{frame: (centre x, text bottom y, box)} of a near label at each frame of its shot (`frames`, default f0..f1):
     just above its object's top on screen (`points`: {"f0", "points": [[x, y] or None per frame]}), inside the safe
     area and never on a caption shown at that frame (`caption_bands`: (f0, f1, band) or captions() rows), the shot's
     badge and stacked labels (`fixed`) or the near labels already placed in that frame (`placed`: {frame: [Rect]},
     which this label's own box is added to). It keeps off the shot's heroes too where it can (`heroes`: the shot's
     {"f0", "boxes"}), except its own object `near` and a hero whose box holds the anchor (the assembly the part
-    belongs to). Frames where the object is behind the camera keep the last position."""
-    w, h = near_label_size(text)
+    belongs to). Frames where the object is behind the camera keep the last position. `size`: the label's (w, h) in
+    px instead of the estimate from its text (a kit card's size; its box is still SMALL_MARGIN * H around it)."""
+    w, h = near_label_size(text) if size is None else size
     m = SMALL_MARGIN * H
     pts = list(points.get("points") or [])
     p0 = int(points.get("f0", f0))
@@ -141,12 +180,18 @@ def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), p
 
 
 def shot_boxes(short, tl, shot, span, anchors: dict | None = None, heroes: dict | None = None,
-               frames=None) -> dict[int, list[tuple[str, str, str | None, Rect]]]:  # fmt: skip
+               frames=None, kit=None, font=None) -> dict[int, list[tuple[str, str, str | None, Rect]]]:  # fmt: skip
     """{frame: [(kind, text, near object or None, box)]}: every text box the edit puts on screen at each frame of
     `shot` (`frames`, default all of its span): "caption", "badge", "label" (stacked) and "near" labels.
-    `anchors`: {object: {"f0", "points"}} for this shot's near labels (a near label without them is left out);
-    `heroes`: this shot's {"f0", "boxes"} (near labels keep off them, as in the edit)."""
-    from bsa.short import label_near, label_text
+    `anchors`: {anchor key (bsa.short.label_anchor): {"f0", "points"}} for this shot's near labels (a near label
+    without them is left out);
+    `heroes`: this shot's {"f0", "boxes"} (near labels keep off them, as in the edit). With a brand `kit` (and its
+    card `font`) the kit's cards instead: bsa.kitlayout.shot_rects."""
+    if kit is not None:
+        from bsa import kitlayout
+
+        return kitlayout.shot_rects(short, tl, shot, span, kit, font, anchors, heroes, frames)
+    from bsa.short import label_anchor, label_near, label_text
 
     frames = list(range(span.f0, span.f1 + 1) if frames is None else frames)
     caps = captions(short, tl)
@@ -158,7 +203,7 @@ def shot_boxes(short, tl, shot, span, anchors: dict | None = None, heroes: dict 
     placed: dict = {}
     for label in getattr(shot, "labels", None) or []:
         near = label_near(label)
-        points = (anchors or {}).get(near) if near else None
+        points = (anchors or {}).get(label_anchor(label)) if near else None
         if points is None:
             continue
         text = label_text(label)

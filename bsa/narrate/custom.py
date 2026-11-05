@@ -4,12 +4,25 @@ Everything the tool prints (stdout and stderr) is appended to <out>/narrator.log
 that mention a fallback, a warning or an error, for the narrate result.
 
 The command has placeholders {lines} (a lines JSON file), {out} (the folder for the takes), {seed}, and optionally
-{voice} and {speed}. It must write <out>/<id>.wav for every line. Whatever WAV it writes is normalised to the
+{voice}, {speed} and {take}. It must write <out>/<id>.wav for every line. Whatever WAV it writes is normalised to the
 contract (48 kHz mono 16-bit). The command is run without a shell, so a path with spaces stays one argument.
+
+Paragraph takes (narrator.take_mode paragraph) need {take} in the command. The contract:
+- For a paragraph take, {take} is the take's id (t01, t02, ...) and the {lines} file holds one item:
+  {"id": "t01", "text": <the take's lines joined with spaces>, "lines": [line ids], "texts": [each line's text]}.
+  The tool speaks "text" in one go (it may use "lines"/"texts", e.g. to put a pause between lines; that is optional)
+  and writes <out>/t01.wav. The plugin cuts that take back into one WAV per line; the tool never cuts.
+- For a line spoken on its own (line mode, a line the take couldn't be cut at, a retry, the closing line), {take} is
+  empty ("") and the {lines} file holds the lines as usual ({"id", "text"}); the tool writes <out>/<line id>.wav.
+  The tool must accept an empty {take}.
+- Take ids are reused: t01 is always a short's first paragraph, whatever its words are now. A tool must not cache
+  its output by id (and should not skip a take whose file already exists).
+A command without {take} is always run line by line, also in paragraph mode.
 """
 
 from __future__ import annotations
 
+import json
 import struct
 import subprocess
 import wave
@@ -17,18 +30,26 @@ from pathlib import Path
 
 import numpy as np
 
+from bsa import proc as _proc
 from bsa.messages import trim
 from bsa.narrate import contract
 from bsa.narrate.contract import SR, NarrationError
 from bsa.settings import split_command
+from bsa.short import spoken_text
 
 _START_HINT = "put the program that runs it first, e.g. python script.py"
 _ADAPTER_HINT = "ask Claude to write a small adapter that turns your tool's output into WAV files"
 
 
 LOG_FILE = "narrator.log"  # everything the tool printed, per run, in the takes folder
+TAKE_PLACEHOLDER = "{take}"
 _NOTE_WORDS = ("fallback", "fall back", "fell back", "warning", "error")
 LOG_NOTES_MAX = 20
+
+
+def takes_supported(command: str) -> bool:
+    """The command can speak a paragraph take: it has the {take} placeholder."""
+    return TAKE_PLACEHOLDER in str(command or "")
 
 
 def _log(out_dir: Path, argv: list[str], lines, proc=None, failure: str | None = None) -> None:
@@ -87,13 +108,27 @@ def _argv(command: str, values: dict[str, str | None]) -> list[str]:
 
 
 def generate(
-    command: str, lines, out_dir: Path, seed: int = 7, voice=None, speed: float = 1.0, run=subprocess.run
+    command: str,
+    lines,
+    out_dir: Path,
+    seed: int = 7,
+    voice=None,
+    speed: float = 1.0,
+    run=_proc.run,
+    take: str | None = None,
+    parts=None,
 ) -> dict[str, float]:
-    """Run the command for `lines` and return seconds per line, measured from the (normalised) WAVs."""
+    """Run the command for `lines` and return seconds per line, measured from the (normalised) WAVs. `take` fills
+    {take}: a paragraph take's id, or None (empty) for lines spoken on their own. `parts` (a take's own lines) adds
+    their ids and texts to the take's item in the lines file (see the module doc)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     lines_file = out_dir / "lines.json"
     contract.write_lines(lines_file, lines)
+    if parts and len(lines) == 1:
+        item = {"id": lines[0].id, "text": spoken_text(lines[0]), "lines": [ln.id for ln in parts],
+                "texts": [spoken_text(ln) for ln in parts]}  # fmt: skip
+        lines_file.write_text(json.dumps([item], ensure_ascii=False), encoding="utf-8")
     argv = _argv(
         command,
         {
@@ -102,6 +137,7 @@ def generate(
             "seed": str(seed),
             "voice": str(voice) if voice else None,
             "speed": str(speed),
+            "take": str(take or ""),
         },
     )
     for ln in lines:  # an old take must not pass for the tool's new one
@@ -177,14 +213,17 @@ def _read_wav(path: Path) -> tuple[np.ndarray, int]:
 
 
 def _resample(x: np.ndarray, rate: int) -> np.ndarray:
-    """FFT resampling (numpy only): keeps the spectrum below the lower Nyquist, so downsampling is band-limited."""
+    """FFT resampling (numpy only): keeps the spectrum below the lower Nyquist, so downsampling is band-limited. The
+    take is padded with as many zeros as it has samples first and cut back after: the FFT is circular, and without
+    the pad a take loud up to its last sample rings into its own silent head (a click before the first word)."""
     n = len(x)
     m = round(n * SR / rate)
-    spec = np.fft.rfft(x)
-    out = np.zeros(m // 2 + 1, dtype=complex)
+    spec = np.fft.rfft(np.concatenate([x, np.zeros(n)]))
+    m2 = round(2 * n * SR / rate)
+    out = np.zeros(m2 // 2 + 1, dtype=complex)
     k = min(len(spec), len(out))
     out[:k] = spec[:k]
-    return np.fft.irfft(out, m) * (m / n)
+    return np.fft.irfft(out, m2)[:m] * (m2 / (2 * n))
 
 
 def normalise_take(path: Path) -> None:

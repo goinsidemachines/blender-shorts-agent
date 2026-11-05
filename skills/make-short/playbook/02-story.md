@@ -1,6 +1,6 @@
 # 02 Story (approval)
 
-Goal: a story the user approves on an HTML page: the hook, the beats, the facts with their sources, the closing line,
+Goal: a story the user approves on the review page: the hook, the beats, the facts with their sources, the closing line,
 and (for no-brand users) a choice of look. Read `craft-short-form.md` and `honesty.md` before writing it.
 
 ## 1. Research the facts first
@@ -33,7 +33,10 @@ and (for no-brand users) a choice of look. Read `craft-short-form.md` and `hones
   fast-paced, see `craft-short-form.md` "Pacing"); `still_at` (0 to 1) is where in the shot the
   storyboard still is taken (pick the most telling moment); `labels` are on-screen words: a plain string is stacked in the top-left corner for
   the whole shot; `{"text": "Light", "near": "Light bob"}` sits just above that object and follows it (`near` is the
-  object's exact name in build.py, so label the things the picture shows by name); `badge` is the honesty
+  object's exact name in build.py, so label the things the picture shows by name). To point at one spot on an
+  object, add `"at": [x, y, z]`, that point in the object's local space (`{"text": "Stop", "near": "Tape", "at":
+  [0, 0.01, 0.002]}`), or name an Empty placed there (it anchors at its origin): either instead of a helper sphere,
+  which would show in the video; `badge` is the honesty
   badge ("Motion exaggerated", "Simplified") or `null`; `hold` (optional) marks a deliberate freeze, `true` for the
   whole shot or `[[from_s, to_s], ...]` seconds from its start, so frame-check does not call it stuck.
 - **Sound:** plan effects per shot now (`sound.md`); no music.
@@ -127,8 +130,28 @@ are never flagged. Word checks only catch words; you still judge every rule, inc
 
 ## 6. Show it
 
-`CLI review story SHORT --open` (its "Your hard rules" panel shows each rule and how this short keeps it). In chat, give two or three sentences: the hook, the angle, what you cut and why
-(myths especially), and the question: "Happy with this story, or what should change?"
+`CLI page SHORT --stage story` switches the page to the story (its "Your hard rules" panel shows each rule and how
+this short keeps it); say "the page has switched to the story". If the page isn't open, this opens it: the same
+`opened` rule as at the interview (false: say so and give the `url` as a link). In chat, give two or three
+sentences: the hook, the angle, what you cut and why (myths especially), and the question: "Happy with this story?
+Approve it on the page, or tell me what should change."
 
-Revise until the user approves. Then `CLI state SHORT done story` (it refuses while `CLI validate SHORT` reports
-errors).
+Then run `CLI page wait SHORT --stage story` with `run_in_background: true` and end your turn. When it returns:
+
+- `applied: true` with an `approve` decision: the user approved on the page and the stage is marked done. Go on to
+  `03-storyboard.md`.
+- `notes` (the user sent them; or a `changes` decision): revise the story, answer each note with `CLI page note
+  SHORT ID done --reply "..."` (or `declined` and why), then show it again and wait again.
+- `timed_out: true`: nothing yet. Run the wait again in the background only while the story still waits for a
+  yes (`CLI state SHORT` still has `next` story); otherwise drop it.
+
+A yes in chat instead: `CLI page decide SHORT story approve --by chat`. Either way the approval refuses while `CLI
+validate SHORT` reports errors: fix them first.
+
+Notes and decisions from the page: when a result carries `page_notes`, `CLI page notes SHORT --stage story`
+lists them. Decisions first, before you change anything: an unapplied decision is applied by `CLI page wait SHORT
+--stage story`, which returns at once; one on an older version of the story is dropped automatically
+(`superseded`) and the page asks the user again for the new version. Then act only on `sent` notes (an `open` note
+is the user still writing: leave it). Coming back to a short whose `next` is the story: when `CLI page notes SHORT`
+lists story in `waiting_for_yes`, the page already asks for it, so don't redo this chapter: just run that wait in
+the background again and end your turn.

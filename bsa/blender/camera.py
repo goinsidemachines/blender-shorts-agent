@@ -8,6 +8,7 @@ screen rows (`px_top`, `px_bottom`). Pixels are in the 1080x1920 layout frame, t
 camera's real lens and sensor fit for that frame. `frame_box` does the same for a box given by its corners (in the
 world, or in one object's own coordinates): a part of one long mesh, with no helper object. `move` keys a smooth
 orbit or dolly between two framed poses, framing a pose every MOVE_EVERY frames so the subject stays in the band.
+`follow` keys a camera that tracks (stays put and turns) or rides (moves with) a moving part, smoothed, in the band.
 
 The camera never ends up under the ground (`above_ground=True`, the default): centring slides it along its own up
 axis, so a camera aimed up from low down sinks; when the first surface straight above it faces up, or there is a
@@ -41,7 +42,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from bsa import viewer
+from bsa import smoothing, viewer
 from bsa.blender.bake import is_overlay, is_surface
 from bsa.findings import FRAMING_PROP, framing_notes
 from bsa.image_checks import Finding
@@ -292,22 +293,20 @@ def _clear_between(cam, f0: int, f1: int) -> None:
 MOVE_SMOOTH = 6.0  # frames: the camera's distance along a move is eased over about this long (a Gaussian's sigma)
 
 
-def _ease_distances(cam, poses, every: int, above_ground: bool) -> list[float]:
+def _ease_distances(cam, poses, every: int, above_ground: bool, depth=None, sigma: float | None = None) -> list[float]:
     """Ease the distance of each keyed pose of a move: the fit takes the larger of the width and the height limit, so
     its distance turns a corner where one takes over from the other (a bump in the dolly). The distances along each
     pose's view axis are smoothed (never nearer than fitted, so the subject stays in the band; the first and last
-    keys keep their framing) and the location is keyed again. Returns the camera's distance to the framed box's centre at each key."""
+    keys keep their framing) and the location is keyed again. `depth`: the amounts to smooth instead (how far back
+    along its view axis each pose is, from any base: camera.follow's backing off), `sigma` in keys (default
+    MOVE_SMOOTH / every). Returns the camera's distance to the framed box's centre at each key."""
     out = []
     if cam.data.type != "ORTHO" and len(poses) > 2:
-        depth = np.array([float((c - m[:3, 3]) @ -(m[:3, 2] / np.linalg.norm(m[:3, 2]))) for _f, m, c in poses])
-        sigma = MOVE_SMOOTH / max(1, every)
-        k = np.arange(-math.ceil(3 * sigma), math.ceil(3 * sigma) + 1)
-        w = np.exp(-0.5 * (k / sigma) ** 2)
-        w /= w.sum()
-        pad = min(len(k) // 2, len(depth) - 1)  # mirrored through the end values: the first and last keys stay put
-        w = w[len(k) // 2 - pad : len(k) // 2 + pad + 1]
-        w /= w.sum()
-        eased = np.convolve(np.pad(depth, pad, mode="reflect", reflect_type="odd"), w, mode="valid")
+        if depth is None:
+            depth = np.array([float((c - m[:3, 3]) @ -(m[:3, 2] / np.linalg.norm(m[:3, 2]))) for _f, m, c in poses])
+        depth = np.asarray(depth, dtype=np.float64)
+        # mirrored through the end values: the first and last keys stay put
+        eased = smoothing.gaussian(depth, MOVE_SMOOTH / max(1, every) if sigma is None else sigma)
         for (f, m, _c), d0, d1 in zip(poses, depth, eased, strict=True):
             back = m[:3, 2] / np.linalg.norm(m[:3, 2])
             step = back * max(0.0, float(d1 - d0))
@@ -421,6 +420,190 @@ def move(cam, objs, f0: int, f1: int, orbit: float = 0.0, tilt: float = 0.0, to=
         warnings.warn(w, FramingWarning, stacklevel=2)
     return {"keys": frames, "start": (math.degrees(az0), math.degrees(el0)),
             "end": (math.degrees(end[0]), math.degrees(end[1])), "distances": distances, "warnings": found}
+
+
+FOLLOW_TRIES = 30  # camera.follow's steps back along the view axis before a key that still does not fit is warned
+TURN_STEPS = 12  # camera.follow's corrections turning the aim point onto the band's centre
+TURN_TOL_PX = 0.5  # ... and how near (px) it must end up, else a warning
+
+
+def _matrices(obj, scene, frames) -> list[np.ndarray]:
+    """`obj`'s evaluated world matrix at each frame (keys, parents, constraints); the scene comes back to its frame."""
+    depsgraph = _depsgraph(scene)
+    original = scene.frame_current
+    out = []
+    try:
+        for f in frames:
+            scene.frame_set(f)
+            depsgraph.update()
+            out.append(np.array(obj.evaluated_get(depsgraph).matrix_world, dtype=np.float64))
+    finally:
+        scene.frame_set(original)
+    return out
+
+
+def _turn_to(project, focal: float, m: np.ndarray, point: np.ndarray, want: np.ndarray) -> tuple[np.ndarray, bool]:
+    """(`m` turned about its own position (world Z up, no roll) so the world `point` projects onto the pixel `want`,
+    whether it got there: within TURN_TOL_PX, in front of the camera)."""
+    m = _look_at(m, point)
+    for step in range(TURN_STEPS + 1):
+        x, y, depth = project(m, point[None])
+        off = (float(x[0]) - want[0], float(y[0]) - want[1])
+        if max(abs(off[0]), abs(off[1])) < 0.05 or step == TURN_STEPS:
+            break
+        right = m[:3, 0] / np.linalg.norm(m[:3, 0])
+        yaw = np.array(Matrix.Rotation(-math.atan2(off[0], focal), 3, "Z"))  # point right of want: turn right
+        pitch = np.array(Matrix.Rotation(-math.atan2(off[1], focal), 3, Vector(right.tolist())))  # below: look down
+        m = m.copy()
+        m[:3, :3] = yaw @ pitch @ m[:3, :3]
+    return m, bool(depth[0] > 0 and max(abs(off[0]), abs(off[1])) < TURN_TOL_PX)
+
+
+def _back_off(project, focal: float, m: np.ndarray, pts: np.ndarray, area: Rect, aim: np.ndarray,
+              want: np.ndarray) -> tuple[np.ndarray, bool, bool]:  # fmt: skip
+    """(`m` moved back along its view axis, turned to `aim` again each step, just until the world points `pts` fit
+    `area`; never nearer, whether they fit, whether the last turn got there)."""
+    turned = True
+    half = np.array([area.w / 2, area.h / 2])
+    span = max(float(np.ptp(pts, axis=0).max()), 1e-3)
+    for _ in range(FOLLOW_TRIES):
+        back = m[:3, 2] / np.linalg.norm(m[:3, 2])
+        local_depth = (pts - m[:3, 3]) @ -back
+        if local_depth.min() < 0.05 * span:  # behind or too close
+            step = span + 0.1 - float(local_depth.min())
+        else:
+            x, y, _depth = project(m, pts)
+            reach = max(max(want[0] - x.min(), x.max() - want[0]) / half[0],
+                        max(want[1] - y.min(), y.max() - want[1]) / half[1])  # fmt: skip
+            if reach <= 1 + 1e-4:
+                return m, True, turned
+            step = max(float((aim - m[:3, 3]) @ -back) * (reach - 1) * 1.01, 1e-4)
+        m = m.copy()
+        m[:3, 3] += back * step
+        m, turned = _turn_to(project, focal, m, aim, want)
+    return m, False, turned
+
+
+def follow(cam, target, f0: int, f1: int, mode: str = "track", offset=None, smooth: float = MOVE_SMOOTH,
+           band: bool = True, every: int = MOVE_EVERY, scene=None, shot: str | None = None,
+           safe_rect: Rect | None = None, avoid=_DEFAULT, margin: float = 24, top=_DEFAULT,
+           above_ground: bool = True) -> dict:  # fmt: skip
+    """Key the camera from frame `f0` to `f1` to follow a moving part (`target`: an object, or a list of objects
+    framed as their joint box), keeping it in the band (`bsa.layout.target_area`, the same options as frame_objects).
+
+    - `mode="track"`: the camera stays where it is now and turns to keep the part's box centred in the band (a
+      gear's tooth going round, a slider crossing the frame).
+    - `mode="ride"`: the camera moves with the part, keeping `offset` from it: a vector in the first target's own
+      space (default: where the camera is now, in that space at `f0`), so it rides up and down with a piston and
+      turns with a wheel. It aims at the box's centre as in track.
+
+    Every `every` frames (and at `f1`) the box is measured where the part is then (keys, parents) and the camera is
+    keyed (location and rotation; Euler keys without flips). The aim point (the box's centre) and, riding, the
+    position are smoothed with the Gaussian `camera.move` eases its distance with (`smooth` frames, its sigma; 0 for
+    none): no jitter from a part that shakes or turns a corner, the first and last keys kept. With `band` (the
+    default), a key where the box does not fit the band backs the camera off along its view axis just enough, never
+    nearer than the smoothed position, and those backing-off distances are eased too (never nearer than fitted).
+    With `above_ground`, a camera under the ground is lifted as frame_objects does, which refits that key into the
+    band (centred, the camera moved and turned) even with `band=False`. Every pose is worked out before any key
+    changes (an error leaves the camera's keys as they were); then its keys strictly between `f0` and `f1` are
+    replaced, and keys outside stay. A perspective camera only (an orthographic one is refused: it has no distance
+    to back off along). A key the camera could not turn to aim at is warned about.
+
+    Returns {"keys": the keyed frames, "distances": the camera's distance to the box's centre at each key,
+    "warnings": the framing warnings, each once (also issued as FramingWarning and kept on the scene with `shot`
+    for the checks)}."""
+    objs = list(target) if isinstance(target, (list, tuple)) else [target]
+    if mode not in ("track", "ride"):
+        raise ValueError(f"camera.follow: mode {mode!r} is not 'track' (the camera stays put and turns) or 'ride' "
+                         "(it moves with the part)")  # fmt: skip
+    if f1 <= f0:
+        raise ValueError(f"camera.follow: f1 ({f1}) must come after f0 ({f0})")
+    if not objs:
+        raise ValueError("camera.follow needs a target object")
+    if cam.data.type == "ORTHO":
+        raise ValueError(f"camera.follow: camera {cam.name!r} is orthographic; follow needs a perspective camera "
+                         "(frame each pose with frame_objects and key=)")  # fmt: skip
+    scene = _scene_of(cam, objs, scene)
+    area = _area(safe_rect, avoid, margin, top, None, None, None, None)
+    every = max(1, int(every))
+    frames = list(range(f0, f1 + 1, every))
+    if frames[-1] != f1:
+        frames.append(f1)
+    what = ", ".join(repr(o.name) for o in objs[:4]) + (f" and {len(objs) - 4} more" if len(objs) > 4 else "")
+    pose = _pose(cam)  # the pose now: measuring other frames would snap a keyed camera back to its keys
+    boxes = [_corners(objs, scene, [f]) for f in frames]
+    lead = _matrices(objs[0], scene, frames) if mode == "ride" else None
+    _set_pose(cam, pose)
+    _depsgraph(scene).update()
+    for pts in boxes:
+        if not np.all(np.isfinite(pts)) or float(np.ptp(pts, axis=0).max()) < MIN_SIZE:
+            raise ValueError(f"camera.follow: {what} has no size to frame (no geometry, or every point in one "
+                             "place): follow objects with geometry")  # fmt: skip
+    m0 = np.array(cam.matrix_world, dtype=np.float64)
+    sigma = max(0.0, float(smooth)) / every
+    aims = smoothing.gaussian(np.array([(b.min(0) + b.max(0)) / 2 for b in boxes]), sigma)
+    if mode == "track":
+        places = np.repeat(m0[None, :3, 3], len(frames), axis=0)
+    else:
+        local = np.r_[np.asarray(offset, dtype=np.float64), 1.0] if offset is not None else (
+            np.linalg.inv(lead[0]) @ np.r_[m0[:3, 3], 1.0])  # fmt: skip
+        places = smoothing.gaussian(np.array([(mw @ local)[:3] for mw in lead]), sigma)
+    project, focal = _projector(cam, scene)
+    want = np.array([area.x + area.w / 2, area.y + area.h / 2])
+    skip = frozenset(o.name for o in objs)
+    planned = []  # every pose first: an error part way (FramingError from the lift) leaves the camera's keys alone
+    for f, pts, aim, place in zip(frames, boxes, aims, places, strict=True):
+        m = m0.copy()
+        m[:3, 3] = place
+        m, turned = _turn_to(project, focal, m, aim, want)
+        settled = True
+        if band:
+            m, settled, turned_back = _back_off(project, focal, m, pts, area, aim, want)
+            turned = turned and turned_back
+        if above_ground:
+            m, settled, _lifted = _lift(cam, scene, m, pts, area, True, settled, what, shot, False, skip)
+        planned.append((f, pts, aim, place, m, settled, turned))
+    _clear_between(cam, f0, f1)
+    euler = cam.rotation_mode not in ("QUATERNION", "AXIS_ANGLE")
+    prev = None
+    found: list[str] = []
+    poses = []
+    backs = []
+    for f, pts, aim, place, m, settled, turned in planned:
+        back = m[:3, 2] / np.linalg.norm(m[:3, 2])
+        backs.append(float((m[:3, 3] - place) @ back))
+        cam.matrix_world = Matrix(m.tolist())
+        cam.keyframe_insert("location", frame=f)
+        if euler:  # the same turn as the key before, not one 360 degrees away
+            e = cam.rotation_euler.copy() if prev is None else cam.matrix_basis.to_euler(cam.rotation_mode, prev)
+            cam.rotation_euler = e
+            cam.keyframe_insert("rotation_euler", frame=f)
+            prev = e.copy()
+        elif cam.rotation_mode == "QUATERNION":  # the same sign as the key before: no flick between opposite keys
+            q = cam.rotation_quaternion.copy()
+            if prev is not None and prev.dot(q) < 0:
+                cam.rotation_quaternion = -q
+            cam.keyframe_insert("rotation_quaternion", frame=f)
+            prev = cam.rotation_quaternion.copy()
+        else:
+            cam.keyframe_insert("rotation_axis_angle", frame=f)
+        x, y, depth = project(m, pts)
+        box = (float(x.min()), float(y.min()), float(x.max()), float(y.max()))
+        msgs = _absurd(cam, what, pts, place, m[:3, 3], box, depth, settled, False)
+        below = None if above_ground else _under(scene, m[:3, 3], what, pts, skip)
+        if below:
+            msgs.insert(len(msgs) - (not settled), below)
+        if not turned:
+            msgs.append(f"camera.follow: the camera could not turn to put {what}'s centre on the band's centre at "
+                        f"frame {f} (it aims {_fmt(aim)} from {_fmt(m[:3, 3])}): look at the still")  # fmt: skip
+        _note(scene, cam, f, shot, msgs)
+        found += msgs
+        poses.append((f, m, aim))
+    distances = _ease_distances(cam, poses, every, above_ground, depth=backs, sigma=sigma)
+    found = list(dict.fromkeys(found))
+    for w in found:
+        warnings.warn(w, FramingWarning, stacklevel=2)
+    return {"keys": frames, "distances": distances, "warnings": found}
 
 
 def _fmt(v) -> str:

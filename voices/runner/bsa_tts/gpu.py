@@ -6,7 +6,9 @@ import subprocess
 from dataclasses import dataclass
 from shutil import which
 
-_run = subprocess.run
+from bsa_tts import proc as _proc
+
+_run = _proc.run
 _TIMEOUT = 15
 
 

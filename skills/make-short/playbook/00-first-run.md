@@ -19,6 +19,13 @@ created). Tell the user where it is and how to change it: "Say 'save my shorts s
 remember the workspace in your memory too ("Want me to note that in my memory as well?"); the plugin itself always
 reads the settings file.
 
+To move the workspace later ("save my shorts somewhere else" with the shorts going too), use `CLI workspace move
+NEW`; never move it by hand (the settings, render statuses and each short's .blend name the old folder). It
+re-points each short's .blend in Blender (`BLENDER relink`), and says what it changed, what it couldn't fix with the
+command for each, and, across drives, that the old folder is kept for the user to delete once they've checked the new
+one. `settings set workspace` only points future shorts at another
+folder; it moves nothing.
+
 ## 2. Narrator
 
 Ask exactly this first: **"Do you already have a voice tool, or would you like me to set one up?"** Then:
@@ -86,22 +93,44 @@ added later, and move on. Never let narrator setup stop the short.
 `render.engine` as `cycles` or `eevee` for "always", or `ask-always` for "ask me each time" (that counts as answered,
 so this question is not repeated; the engine stage then estimates and asks for every short).
 
-## 4. Brand or a fresh style
+## 4. Your brand
 
-"Do you have a brand look for every short, or should I suggest a fresh style each time?"
+"Do you have a brand? Colours, a logo, a font."
 
-- **Fresh style**: `brand.mode fresh`. Each story page then shows 2 to 3 style options (`playbook/02-story.md`).
-- **Brand**: `brand.mode brand`, then collect the essentials into `brand.*`: `brand.palette` (accent and background
-  colours as hex), `brand.font` (an installed font name; `settings set brand.font NAME` checks it like `CLI fonts "NAME"` and its
-  result has a `font_check`: when it has a `warning` (a variable font, which Blender draws in its Light default, or
-  a font that is not installed), tell the user now and offer the fix it names, an installed static weight's path or
-  a static weight to download at the first short, as `look-and-brand.md` "Checking the font" says), `brand.caption` (a JSON object: `size`, `color` and `box` as hex, e.g.
-  `'{"color": "#FFD000", "box": "#000000"}'`: 6 hex digits are opaque, 8 keep their alpha, `#00000099`; captions are
-  white on a see-through dark box when unset), `brand.material` (overall
-  feel: matte clay, brushed metal, glossy toy...), optionally `brand.exposure` (stops, e.g. `0.3`) and `brand.look`
-  (e.g. `Punchy`) for the view (a plain paper backdrop is set with `look.paper_world`, `look-and-brand.md`), and where their handle or logo should sit: `brand.handle_place`
-  (the handle goes on the end card after the last line, in the upper third of the safe area unless a hero is there; a logo, if they have one, is built into the scene as an
-  object or a sign, never over the captions or the platform buttons). See `playbook/look-and-brand.md`.
+- **No**: `brand.mode fresh`, and set no kit keys: every short keeps today's look, and each story page shows 2 to 3
+  style options (`playbook/02-story.md`).
+- **Yes**: `brand.mode brand`, then collect the kit. Ask for each part in plain words and accept a "skip":
+  - the colours as hex: background, ink (outlines and shadows) and accent; card, text and highlight are optional (the
+    defaults stay unless the user gives them; the sample shows how the cards look);
+  - the category colours, one per kind of part (offer the `kit.DEFAULT_CODE` names as a starting point: force, energy,
+    motion, heat, fluid, with their colours, and let the user rename, recolour or drop them);
+  - the font: an installed font name. `settings set brand.font NAME` checks it like `CLI fonts "NAME"` and its result
+    has a `font_check`: when it has a `warning` (a variable font, which Blender draws in its Light default, or a font
+    that is not installed), tell the user now and offer the fix it names, an installed static weight's path or a
+    static weight to download at the first short, as `look-and-brand.md` "Checking the font" says;
+  - the logo, optional: a PNG file (not an SVG) and its corner, `brand.logo '{"file": "C:/path/logo.png", "place":
+    "top-left"}'` (`top-left` or `top-right`);
+  - outline and shadow: offer "outlined toy" (`outline_px 3`, `shadow_px 5`) or "clean, no outlines" (both 0);
+  - the style: realistic, toy, toon, clay, blueprint, paper or pencil (`playbook/look-and-brand.md` "Styles" says how
+    each looks). Offer a one-frame look at all seven: `BLENDER style-sample --styles
+    realistic,toy,toon,clay,blueprint,paper,pencil --engine <their engine> --out <scratch folder>/styles.png`, then
+    show the image. It needs the engine they use: when `render.engine` is not `cycles` or `eevee` (`ask-always` or
+    unset), ask which one they want for the sample first, and never pick one for them. Save the choice as
+    `brand.style`;
+  - `brand.set` `auto`, and `brand.caption.opacity 1` for a solid caption bar (`brand.caption` also takes `size`,
+    `color` and `box` as hex: 6 digits are opaque, 8 keep their alpha); and optionally `brand.material` (overall
+    feel: matte clay, brushed metal, glossy toy...), `brand.exposure` (stops, e.g. `0.3`), `brand.look` (e.g.
+    `Punchy`) and `brand.handle_place` (the handle goes on the end card after the last line; a logo is a card in
+    the video, drawn from their own file, never over the captions or the platform buttons).
+  - Hold these values in a JSON object (the brand), do not save them yet. Run
+    `BLENDER kit-sample --kit '<json>' --out <scratch folder>/kit-sample.png`, show the image, and ask whether it
+    looks right. Fix what the user points at and sample again. Only on a yes: `settings set brand '<json>'` (it merges
+    the given keys into the brand: `brand.mode` and any key the JSON does not name stay as they are), then
+    `settings check` and tell the user anything it names. A `kit-sample` error names the value to fix; it writes nothing
+    to the settings.
+- **Existing brand users** (`brand.mode brand` already, no `brand.style`): the `settings check` advice says how their
+  `brand.palette` categories move. Offer the same questions once, and rewrite nothing without their yes. See
+  `playbook/look-and-brand.md`.
 
 ## 5. Hard rules
 
@@ -171,6 +200,14 @@ settings, image and site stay in the user's own settings folder, never in a shor
 Don't ask about this. Add one line to the summary at the end of the first run: "If I hit a problem in the plugin
 itself I'll note it and, at the end, ask whether you want to send it to its authors. Change with settings set
 feedback never|off" (`never`: still note, never ask; `off`: don't note). Nothing is sent unless they choose to.
+
+## Phone access (no question)
+
+Don't ask about this. Phone access is off by default. When the user wants to review on their phone, `CLI settings set
+page.lan true` makes the review page server also answer on the local network (the same Wi-Fi), still behind the
+page's own key; the next `CLI page SHORT` restarts the server with it and returns a `phone` link, and the page shows
+it with a QR code under "Open on your phone". Tell them anyone on that network who gets the link can see the short.
+Setting it back to `false` turns it off.
 
 ## Changing a setting later
 

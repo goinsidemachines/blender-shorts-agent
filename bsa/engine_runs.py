@@ -97,9 +97,9 @@ def mp4_path(short_dir: Path, slug: str, preset: str, run: EngineRun) -> Path:
 
 
 def status_key(preset: str, run: EngineRun | None) -> str:
-    """The name a run's live status goes under (bsa.render_status: review/render-status-<key>.json, the page
-    review/render-<key>.html and the thumbnails render-status/<key>-<shot>.jpg): the preset for the approved run, as
-    always; `<preset>-<tag>` for a side run, so it never touches the approved run's status, page or thumbnails."""
+    """The name a run's live status goes under (bsa.render_status: review/render-status-<key>.json and the
+    thumbnails render-status/<key>-<shot>.jpg): the preset for the approved run, as always; `<preset>-<tag>` for a
+    side run, so it never touches the approved run's status or thumbnails."""
     return f"{preset}{run.suffix if run is not None else ''}"
 
 
@@ -160,10 +160,22 @@ def record_render(short_dir: Path, preset: str, run: EngineRun, *, frames: int, 
     return row
 
 
-def record_mp4(short_dir: Path, preset: str, run: EngineRun, mp4: Path) -> None:
+def record_mp4(short_dir: Path, preset: str, run: EngineRun, mp4: Path, edit: dict | None = None) -> None:
+    """Note the run's MP4 and, when given, what that edit was cut from (see bsa_blender._edit_record)."""
     data = load_runs(short_dir)
-    _entry(data, short_dir, preset, run)["mp4"] = str(mp4)
+    row = _entry(data, short_dir, preset, run)
+    row["mp4"] = str(mp4)
+    if edit is not None:
+        row["edit"] = edit
     _save(short_dir, data)
+
+
+def edit_info(short_dir: Path, key: str) -> dict | None:
+    """The edit record of run `key` ("final", "preview", "preview-eevee", ...); None when never recorded or of the
+    wrong shape."""
+    row = load_runs(short_dir).get(key)
+    rec = row.get("edit") if isinstance(row, dict) else None
+    return rec if isinstance(rec, dict) else None
 
 
 def compare(short_dir: Path, preset: str | None = None) -> list[dict]:

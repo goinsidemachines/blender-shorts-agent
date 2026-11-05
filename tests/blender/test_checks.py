@@ -1,7 +1,10 @@
 import math
+import os
+import sys
 import tempfile
 from itertools import pairwise
 from pathlib import Path
+from types import SimpleNamespace
 
 import bmesh
 import bpy
@@ -11,6 +14,9 @@ from bsa.blender import bake, checks, look
 from bsa.timeline import Span, Timeline
 
 N = 30
+
+# Settings of their own (none): the kit a user set up never changes what these tests find
+os.environ["BSA_HOME"] = tempfile.mkdtemp()
 
 
 def _material(obj, name="mat"):
@@ -334,6 +340,97 @@ def test_contact_parent_check_allows_sliding_and_hinged_parts():
     assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
 
 
+def test_a_later_moves_tag_on_the_same_pair_is_read():
+    """Every contact tag on the pair counts: a later contact:<other>:moves is not hidden by an earlier contact:<other>."""
+    sc = _scene()
+    left, right = _empty(sc, "Left"), _empty(sc, "Right")
+    a = _cube("A", (0, 0, 1.0), size=0.1)
+    b = _cube("B", (0, 0, 1.3), size=0.5)
+    _parent(a, left)
+    _parent(b, right)
+    _move_x(left, [0.4 * math.sin(i / 4) for i in range(N)])
+    _move_x(right, [-0.4 * math.sin(i / 4) for i in range(N)])
+    bake.tag(a, "contact:B", "contact:B:moves")
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+
+def test_a_hooked_mesh_follows_its_hooks():
+    """A mesh deformed by a Hook modifier follows the hook object and its moving parents; one with an Armature
+    modifier follows the armature. Two parts under different moving parents are still warned."""
+    sc = _scene()
+    carriage = _empty(sc, "Carriage")
+    slider = _cube("Slider", (0, 0, 1.0), size=0.3)
+    _parent(slider, carriage)
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0, 0, 1.15))
+    tape = bpy.context.object
+    tape.name = "Tape"
+    _material(tape)
+    hook = _empty(sc, "Hook", (0, 0, 1.15))
+    _parent(hook, slider)
+    tape.vertex_groups.new(name="all").add(range(len(tape.data.vertices)), 1.0, "REPLACE")
+    mod = tape.modifiers.new("Hook", "HOOK")
+    mod.object, mod.vertex_group = hook, "all"
+    bake.tag(slider, "contact:Tape")
+    _move_x(carriage, [0.5 * i / (N - 1) for i in range(N)])  # the slider runs 0.5 m and takes the tape along
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+    tape.modifiers.remove(mod)
+    rig = bpy.data.objects.new("Rig", bpy.data.armatures.new("Rig"))
+    sc.collection.objects.link(rig)
+    slider.parent = None
+    _parent(slider, rig)
+    tape.modifiers.new("Armature", "ARMATURE").object = rig
+    _move_x(rig, [0.5 * i / (N - 1) for i in range(N)])
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+    sc2 = _scene()
+    deck, other = _empty(sc2, "Deck"), _empty(sc2, "Other")
+    rod = _cube("Rod", (0, 0, 1.0), size=0.1)
+    body = _cube("Body", (0, 0, 1.3), size=0.5)
+    _parent(rod, deck)
+    _parent(body, other)
+    bake.tag(rod, "contact:Body")
+    _move_x(deck, [0.4 * math.sin(i / 4) for i in range(N)])
+    _move_x(other, [-0.4 * math.sin(i / 4) for i in range(N)])
+    assert len(_found(sc2, "contact_parent", severity="warning")) == 1
+
+
+
+def _hooked_tape(hook):
+    bpy.ops.mesh.primitive_plane_add(size=1.0, location=(0, 0, 1.15))
+    tape = bpy.context.object
+    tape.name = "Tape"
+    _material(tape)
+    tape.vertex_groups.new(name="all").add(range(len(tape.data.vertices)), 1.0, "REPLACE")
+    mod = tape.modifiers.new("Hook", "HOOK")
+    mod.object, mod.vertex_group = hook, "all"
+    return tape
+
+
+def test_a_mesh_hooked_to_a_keyed_hook_follows_it_and_one_hooked_elsewhere_is_warned():
+    """A Hook object keyed itself (no moving parent) carries its mesh: a slider under that hook, in contact with the
+    tape, is fine. The same tape hooked to a hook that moves another way than the slider's carrier is warned."""
+    sc = _scene()
+    hook = _empty(sc, "Hook", (0, 0, 1.15))
+    slider = _cube("Slider", (0, 0, 1.0), size=0.3)
+    _parent(slider, hook)
+    _hooked_tape(hook)
+    bake.tag(slider, "contact:Tape")
+    _move_x(hook, [0.5 * i / (N - 1) for i in range(N)])
+    assert not _found(sc, "contact_parent"), _found(sc, "contact_parent")
+
+    sc = _scene()
+    carriage, hook = _empty(sc, "Carriage"), _empty(sc, "Hook", (0, 0, 1.15))
+    slider = _cube("Slider", (0, 0, 1.0), size=0.3)
+    _parent(slider, carriage)
+    _hooked_tape(hook)
+    bake.tag(slider, "contact:Tape")
+    _move_x(carriage, [0.4 * math.sin(i / 4) for i in range(N)])
+    _move_x(hook, [-0.4 * math.sin(i / 4) for i in range(N)])
+    found = _found(sc, "contact_parent", severity="warning")
+    assert len(found) == 1 and "'Hook'" in found[0].message and "'Carriage'" in found[0].message, found
+
+
 def test_arc_length_path_moves_without_pops():
     """keyframe_path: one easing over the whole polyline, so a long leg and a short leg move at one speed."""
     sc = _scene()
@@ -374,6 +471,9 @@ def test_every_offending_pair_is_listed_up_to_a_cap():
     assert len(pairs) == checks.OVERLAP_MAX_FINDINGS, found
     hidden = [f for f in found if "not listed" in f.message]
     assert len(hidden) == 1 and "4 more" in hidden[0].message, hidden
+    assert "A20-23 vs B20-23: 4 pairs" in hidden[0].message, hidden  # no overlap_summary here: it names them itself
+    assert "overlap_summary" not in hidden[0].message, hidden
+    assert all(f.kind == "penetrate" and f.depth > 0 for f in pairs), pairs  # 30 cm in: a measured, real clip
 
 
 def test_a_static_overlap_is_one_finding_for_every_shot_it_is_in():
@@ -419,11 +519,18 @@ def test_tags_must_name_objects_in_the_scene():
     assert len(found) == 1 and "'Yoke'" in found[0].message and found[0].obj == "Rod", found
 
 
+def test_unknown_tags_are_names_errors():
+    sc = _scene()
+    _cube("Cube", (0, 0, 0.5))["bsa_tags"] = "contcat:Floor"  # a typo bake.tag would refuse, written by hand
+    found = _found(sc, "names", "Cube", "error")
+    assert len(found) == 1 and "did you mean 'contact:'" in found[0].message, found
+
+
 def test_near_labels_and_hero_shots_must_exist():
     from types import SimpleNamespace
 
     sc = _scene()
-    bake.tag(_cube("Person.001", (0, 0, 0.5)), "hero:s1,s9")
+    bake.tag(_cube("Person.001", (0, 0, 0.5)), "hero:s1@0.5,s9")
     shot = SimpleNamespace(id="s1", labels=["plain", {"text": "You", "near": "Person"}])
     short = SimpleNamespace(shots=[shot])
     found = [f for f in checks.run_checks(sc, _timeline(), short=short) if f.check == "names" and f.severity == "error"]
@@ -504,6 +611,24 @@ def test_hero_leaving_frame_found():
     assert found[0].severity == "error" and "% of 'Hero' is outside the camera frame at frame" in found[0].message
 
 
+def test_a_hero_entering_at_0_6_is_not_framed_before_it():
+    """hero:s1@0.6: a subject the camera reaches later is framed from 60% of the shot on (frame 18 of 1-30)."""
+    sc = _scene()
+    hero = _cube("Hero", (0, 0, 0.5))
+    bake.tag(hero, "hero:s1@0.6")
+    _move_x(hero, [10.0] * 17 + [0.0] * (N - 17))  # outside the frame for frames 1-17, centred from 18 on
+    assert bake.hero_start(0.6, 1, N) == 18
+    assert _found(sc, "frame_edge", "Hero") == []
+    hero["bsa_tags"] = "hero:s1"
+    found = _found(sc, "frame_edge", "Hero")
+    assert len(found) == 1 and found[0].frame < 18, found
+    hero["bsa_tags"] = "hero:s1@0.6"  # still a hero of s1 from frame 18: leaving the frame then is found
+    hero.animation_data_clear()
+    _move_x(hero, [10.0] * 17 + [0.0] * 8 + [10.0] * (N - 25))
+    found = _found(sc, "frame_edge", "Hero")
+    assert len(found) == 1 and found[0].frame >= 26, found
+
+
 def _switch_on(obj, frame):
     obj.hide_render = True
     obj.keyframe_insert("hide_render", frame=1)
@@ -556,6 +681,57 @@ def test_pop_found():
     _move_x(cube, [0.02 * i + (2.0 if i >= 14 else 0.0) for i in range(N)])
     found = _found(sc, "pops", "Popper", "error")
     assert [f.frame for f in found] == [15], found
+
+
+def test_a_pop_on_the_last_frame_of_the_short_is_judged():
+    """A jump into the short's last frame is a pop, whatever the action does past the end (no frame outside the
+    short is a reference); a steady move that carries on past the end is none."""
+    sc = _scene()
+    cube = _cube("Ender", (0, 0, 0.5))
+    _move_x(cube, [0.02 * i + (0.6 if i == N - 1 else 0.0) for i in range(N)])
+    assert [f.frame for f in _found(sc, "pops", "Ender", "error")] == [N]
+    for fc in bake._fcurves(cube.animation_data.action):
+        fc.extrapolation = "LINEAR"  # frame N+1 carries the jump on: it used to hide it
+    assert [f.frame for f in _found(sc, "pops", "Ender", "error")] == [N]
+    _move_x(cube, [0.02 * i for i in range(N)])  # same curves: still extrapolated linearly past N, now no jump
+    assert not _found(sc, "pops", "Ender"), _found(sc, "pops", "Ender")
+
+
+def test_a_pose_across_a_cut_to_another_scene_hides_no_pop():
+    """The frame before a shot is a reference for its first moves only when the shot before is in the same scene:
+    where a part stood during another scene's shot (2 m away) does not hide a jump just after the cut."""
+    from bsa.short import Short, Shot
+
+    sc = _scene()
+    cube = _cube("Mover", (0, 0, 0.5))
+    half = N // 2
+    xs = [0.02 * i + (2.0 if i < half else 0.0) + (0.6 if i > half else 0.0) for i in range(N)]
+    _move_x(cube, xs)  # 2 m away in s1; in s2 steady, but for a 0.6 m jump into its second frame
+    tl = Timeline(30, N, [Span("s1", 1, half), Span("s2", half + 1, N)], [], [])
+
+    def pops(scene_of_s1):
+        shots = [Shot(id="s1", title="t", picture="p", scene=scene_of_s1),
+                 Shot(id="s2", title="t", picture="p", scene=sc.name)]  # fmt: skip
+        short = Short(slug="t", title="T", length_s=1, shots=shots)
+        return [f for f in checks.run_checks(sc, tl, short=short) if f.check == "pops" and f.obj == "Mover"]
+
+    assert [f.frame for f in pops("Other scene")] == [half + 2], pops("Other scene")
+    assert pops(sc.name) == [], pops(sc.name)  # same scene: the 2 m move into the shot is its reference
+
+
+def test_fast_tag_lets_a_part_flick_but_still_checks_overlaps():
+    """A part that really moves that quickly (a flick, a snap) is tagged "fast": no pop, but still every other check."""
+    sc = _scene()
+    flick = _cube("Flick", (0, 0, 0.5))
+    _move_x(flick, [0.0] * 10 + [1.5] * (N - 10))  # still, then 1.5 m in one frame, then still
+    found = _found(sc, "pops", "Flick", "error")
+    assert len(found) == 1 and "tag it 'fast'" in found[0].message, found
+    bake.tag(flick, "fast")
+    assert not _found(sc, "pops", "Flick"), _found(sc, "pops", "Flick")
+    bake.tag(_cube("Snap", (-1.5, 0, 1.0), size=0.6), "fast")  # sunk halfway into the block below
+    _cube("Block", (-1.5, 0, 0.5))
+    overlaps = [f for f in _found(sc, "overlap", severity="error") if "Snap" in f"{f.obj} {f.message}"]
+    assert overlaps, checks.run_checks(sc, _timeline())
 
 
 def test_floating_found():
@@ -1111,9 +1287,9 @@ def test_contact_moves_tag_allows_designed_motion_but_keeps_the_depth_limit():
     assert not _found(sc, "overlap"), _found(sc, "overlap")  # still a contact pair: touching is fine
     rod["bsa_tags"] = ""
     bake.tag(rod, "contact:Body:0.001:moves")  # depth and qualifier together, either order
-    assert checks._contact_target("Body:0.001:moves", ()) == "Body"
-    assert checks._contact_target("Body:moves:0.001", ()) == "Body"
-    assert checks._contact_target("Body:moves", ()) == "Body"
+    assert bake.contact_tag("Body:0.001:moves")[0] == "Body"
+    assert bake.contact_tag("Body:moves:0.001")[0] == "Body"
+    assert bake.contact_tag("Body:moves")[0] == "Body"
     assert not _found(sc, "contact_parent")
     sunk = _cube("Sunk", (3, 0, 0.5), size=1.0)
     pin = _cube("Pin", (3, 0, 1.0), size=0.3)  # 15 cm into Sunk: deeper than any allowance
@@ -1200,3 +1376,524 @@ def test_a_subject_in_one_half_leaves_the_other_empty():
     bake.tag(_cube("Hero", (0, 0, _z_at_row(sc, 450)), size=1.6), "hero")  # rows about 300-600: the top half only
     found = _seen(sc, "framing", _seen_short(sc))
     assert len(found) == 1 and "bottom half" in found[0].message, found
+
+
+def test_any_part_on_screen_fills_the_top_half():
+    """A hero low in the frame leaves the top half empty unless another part reaches it; the warning names the
+    largest parts on screen, never the hero itself."""
+    sc = _scene()
+    bake.tag(_cube("Hero", (0, 0, _z_at_row(sc, 1150)), size=1.6), "hero")  # the bottom half only
+    found = _seen(sc, "framing", _seen_short(sc))
+    assert len(found) == 1 and "top half" in found[0].message, found
+    assert "The largest part" in found[0].message and "'Hero'" not in found[0].message, found[0].message
+    _cube("Frame", (0, 0, _z_at_row(sc, 450)), size=1.6)  # a part of the machine, high in the frame
+    assert not _seen(sc, "framing", _seen_short(sc))
+
+
+def _with_kit(brand):
+    """Point BSA_HOME at a folder whose settings hold `brand` (None: no settings): run_checks reads the kit there."""
+    import json
+    import os
+
+    home = Path(tempfile.mkdtemp())
+    if brand is not None:
+        (home / "settings.json").write_text(json.dumps({"brand": brand}), encoding="utf-8")
+    os.environ["BSA_HOME"] = str(home)
+
+
+def test_the_covered_check_measures_the_kits_cards():
+    """With a brand kit the edit draws the kit's cards, so the covered check measures them: a title card (drawn only
+    with a kit) over the hero is reported; without a kit the same short has nothing there."""
+    import sys
+
+    from bsa import cards, kit, kitlayout
+    from bsa.layout import safe_rect
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from kitfix import KIT
+
+    sc = _scene()
+    sc.camera.location = (0, -6, 1.5)
+    short = _seen_short(sc, title_card={"lines": ["How a lever", "lifts more"], "highlight": 1})
+    k = kit.kit_from(KIT)
+    band = kitlayout.top_band(short, short.shots[0], k, cards.card_font(k))
+    hero = _cube("Hero", (0, 0, _z_at_row(sc, band.bottom - 120)), size=0.6)  # under the title card's lower half
+    bake.tag(hero, "hero")
+    assert band.bottom - 120 > safe_rect().y + 300
+    try:
+        _with_kit(None)
+        assert not _seen(sc, "covered", short)  # no kit: no title card
+        _with_kit(KIT)
+        found = _seen(sc, "covered", short)
+        assert found and "How a lever" in found[0].message and found[0].obj == "Hero", found
+        hero.location.z = _z_at_row(sc, 1000)  # below the cards: clear
+        assert not _seen(sc, "covered", short)
+        many = _seen_short(sc, labels=[f"L{i}" for i in range(kitlayout.MAX_LABELS + 1)])
+        found = _seen(sc, "covered", many)  # more labels than a kit draws: one plain error, no crash
+        assert len(found) == 1 and found[0].severity == "error" and "at most" in found[0].message, found
+    finally:
+        _with_kit(None)
+
+
+# --- styles and sets ----------------------------------------------------------------------------------------------
+
+
+def _fixtures():
+    here = Path(__file__).resolve().parent
+    for p in (here.parent, here / "fixtures"):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
+
+
+def _kit_box(name, location, size=0.6, rotation=(0.0, 0.0, 0.0)):
+    """A cube with a kit material (a style bevels it), turned by `rotation`."""
+    obj = _cube(name, location, size=size, material=False)
+    obj.rotation_euler = rotation
+    look.assign(obj, look.kit_material(name, "plastic", "#808080"))
+    return obj
+
+
+def _bevel_scene():
+    """A grounded box standing on one edge on the floor, and a box resting on its edge 5 mm into another's top."""
+    sc = _scene()
+    s = 0.6
+    r = s / math.sqrt(2)
+    bake.tag(_kit_box("OnEdge", (0, 0, r), s, (0, math.radians(45), 0)), "grounded")
+    _kit_box("Base", (2, 0, s / 2), s)
+    tipped = _kit_box("Tipped", (2, 0, s + r - 0.005), s, (0, math.radians(45), 0))
+    tipped.scale.y = 0.9  # its sides inside the base's: no coplanar faces
+    return sc
+
+
+def _physical(sc):
+    return sorted((f.check, f.obj, f.message) for f in checks.run_checks(sc, _timeline())
+                  if f.check in ("floating", "overlap"))  # fmt: skip
+
+
+def test_style_bevels_change_no_floating_or_overlap_finding():
+    """The style bevel rounds every edge (toy, clay, paper): measured as rendered, a box standing on an edge floats
+    and a box sunk 5 mm by its edge is clear. The checks measure the parts without it, as built."""
+    _fixtures()
+    from kitfix import KIT
+
+    from bsa.blender import styles
+    from bsa.kit import kit_from
+
+    plain = _physical(_bevel_scene())
+    assert [c for c, _, _ in plain] == ["overlap"], plain  # the 5 mm sink; nothing floats
+    assert "'Tipped'" in plain[0][2] and "'Base'" in plain[0][2], plain
+    for style in ("toy", "clay", "paper"):
+        sc = _bevel_scene()
+        styles.apply(sc, kit_from({**KIT, "style": style}), target="OnEdge", size=3.0)
+        mods = [o.modifiers.get(styles.BEVEL) for o in sc.objects if o.name in ("OnEdge", "Base", "Tipped")]
+        assert len(mods) == 3 and all(m is not None and m.show_viewport and m.show_render for m in mods), style
+        got = _physical(sc)
+        assert got == plain, (style, got)
+        assert all(m.show_viewport and m.show_render for m in mods), style  # put back as found
+
+
+def _lever(set_name, style, labels=(), heroes=()):
+    """The demo lever (rocking) in a fresh file, with the set `set_name` (based and dressed) and the style `style`
+    (None: neither), and a timeline of its main-scene shot "s1" only. `labels`: shot s1's labels; `heroes`: parts
+    tagged hero (before the set is dressed)."""
+    _fixtures()
+    from dataclasses import replace
+
+    from kitfix import KIT
+    from sets_short import two_shot
+
+    from bsa.blender import demo, sets, styles
+    from bsa.blender.scene import setup_scene
+    from bsa.kit import kit_from
+    from bsa.timeline import build_timeline
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    short = two_shot(sc.name, "lever")
+    short.shots[0].labels = list(labels)
+    setup_scene(sc, short, "eevee", "still")
+    k = kit_from({**KIT, "style": style or "toy"})
+    if set_name:
+        sets.base(sc, k, set_name, 3.6)
+    built = demo.lever(sc, k)
+    pivot = bpy.data.objects["LeverPivot"]
+    for f, deg in ((1, 11.0), (15, -11.0), (30, 11.0)):
+        pivot.rotation_euler = (0.0, math.radians(deg), 0.0)
+        pivot.keyframe_insert("rotation_euler", frame=f)
+    for name in heroes:
+        bake.tag(bpy.data.objects[name], "hero")
+    full = build_timeline(short, {"l1": 0.6, "l2": 0.4})
+    if style:
+        styles.apply(sc, k, **{key: built[key] for key in ("target", "size", "key")})
+    dressed = sets.dress(sc, k, short, full, None) if set_name else {}
+    return sc, short, replace(full, shots=[s for s in full.shots if s.id == "s1"]), dressed
+
+
+def _lever_findings(sc, short, tl, style="toon"):
+    _fixtures()
+    from kitfix import KIT
+
+    try:
+        _with_kit({**KIT, "style": style})
+        return checks.run_checks(sc, tl, short=short)
+    finally:
+        _with_kit(None)
+
+
+def _as_rows(found):
+    return sorted((f.check, f.severity, f.obj, f.frame or 0, f.message) for f in found)
+
+
+def test_toon_lever_with_lines_gives_no_new_findings():
+    """The workbench set and the toon style with its ink lines add no finding to the demo lever."""
+    base = _as_rows(_lever_findings(*_lever(None, None)[:3]))
+    sc, short, tl, dressed = _lever("workbench", "toon")
+    assert dressed["kept"], dressed
+    assert sc.render.use_freestyle
+    assert [o for o in sc.objects if bake.set_role(o) == "floor"]
+    got = _as_rows(_lever_findings(sc, short, tl))
+    assert got == base, (got, base)
+
+
+def _set_box(name, location, role="prop", size=0.6):
+    obj = _cube(name, location, size=size)
+    obj["bsa_tags"] = f"set:{role}"
+    return obj
+
+
+def test_set_props_are_not_heroes_and_set_pairs_are_not_tested():
+    sc = _scene()
+    sc.objects["Floor"]["bsa_tags"] = "set:floor"
+    bake.tag(_cube("Crate", (0, 0, 0.5)), "grounded")  # on the set's floor: held up by it
+    _set_box("Jar", (2.0, 0, 0.3))
+    _set_box("Toolbox", (2.4, 0, 0.3)).scale.y = 0.9  # 20 cm into the jar: both scenery, not tested
+    stray = _set_box("Ruler", (3.4, 0, 0.5))
+    stray["bsa_tags"] = "set:prop,hero,grounded"  # a hand-written hero tag: still scenery; floats, not checked
+    stray.location.x = 6.0  # half out of the frame: no frame_edge for scenery
+    _move_x(_set_box("Hammer", (-3.0, 0, 0.3)), [-3.0] * 14 + [-2.0] * 16)  # a jump: no pop for scenery
+    found = checks.run_checks(sc, _timeline())
+    bad = [f for f in found if f.check in ("overlap", "floating", "pops", "pop_in", "frame_edge", "framing")]
+    assert not bad, bad
+    _set_box("Sunk", (0, 0, 1.25))  # 5 cm into the crate: the subject is still checked against a set prop
+    found = [f for f in checks.run_checks(sc, _timeline()) if f.check == "overlap"]
+    assert len(found) == 1 and "'Crate'" in found[0].message and "'Sunk'" in found[0].message, found
+
+
+def _clearance(found):
+    return [f for f in found if f.check == "set_clearance"]
+
+
+def _a_prop(sc):
+    return min((o for o in sc.objects if bake.set_role(o) == "prop"), key=lambda o: o.name)
+
+
+def test_set_clearance_flags_a_prop_moved_onto_the_subject():
+    sc, short, tl, _ = _lever("workbench", "toon")
+    assert not _clearance(_lever_findings(sc, short, tl))
+    prop = _a_prop(sc)
+    crate = bpy.data.objects["Crate"].matrix_world.translation.copy()
+    prop.location = crate + 0.4 * (sc.camera.matrix_world.translation - crate)  # between the camera and the crate
+    found = _clearance(_lever_findings(sc, short, tl))
+    assert len(found) == 1 and found[0].severity == "warning" and found[0].obj == prop.name, found
+    msg = found[0].message
+    assert f"set prop {prop.name!r} is over the subject in shot 's1'" in msg, msg
+    assert f"place it again with sets.dress(..., replace=[{prop['bsa_prop']!r}])" in msg, msg
+
+
+def test_set_clearance_flags_a_prop_under_the_caption():
+    _fixtures()
+    from kitfix import KIT
+
+    from bsa import cards, overlays
+    from bsa.fonts import font_caches
+    from bsa.kit import kit_from
+
+    sc, short, tl, _ = _lever("workbench", "toon")
+    span = tl.shots[0]
+    frame = (span.f0 + span.f1) // 2
+    k = kit_from({**KIT, "style": "toon"})  # the kit and card font the checks measure (_lever_findings)
+    boxes = overlays.shot_boxes(short, tl, short.shots[0], span, None, None, [frame], kit=k,
+                                font=cards.card_font(k, font_caches(None)))[frame]  # fmt: skip
+    cap = next(b for kind, _, _, b in boxes if kind == "caption")
+    sc.frame_set(frame)
+    cam = sc.camera
+    tr, br, bl, tl_ = (cam.matrix_world @ v for v in cam.data.view_frame(scene=sc))
+    u, v = (cap.x + cap.w / 2) / 1080, (cap.y + cap.h / 2) / 1920
+    on_frame = tl_.lerp(tr, u).lerp(bl.lerp(br, u), v)
+    origin = cam.matrix_world.translation
+    prop = _a_prop(sc)
+    prop.location = origin + (on_frame - origin).normalized() * 3.0
+    prop.scale = (0.1, 0.1, 0.1)  # small: under the caption only
+    found = _clearance(_lever_findings(sc, short, tl))
+    assert len(found) == 1 and found[0].obj == prop.name, found
+    assert "over the caption in shot 's1'" in found[0].message, found[0].message
+
+
+def test_set_clearance_measures_the_shots_heroes():
+    """With a hero in the shot, the subject is the hero: a prop in front of another part is fine, in front of the
+    hero it is not."""
+    sc, short, tl, _ = _lever("workbench", "toon", heroes=("Crate",))
+    assert not _clearance(_lever_findings(sc, short, tl))
+    prop = _a_prop(sc)
+    prop.scale = (0.3, 0.3, 0.3)
+    cam = sc.camera.matrix_world.translation
+
+    def in_front_of(name):
+        at = bpy.data.objects[name].matrix_world.translation.copy()
+        prop.location = at + 0.4 * (cam - at)
+
+    in_front_of("StandPlate")  # not a hero in this shot
+    assert not _clearance(_lever_findings(sc, short, tl))
+    in_front_of("Crate")
+    found = _clearance(_lever_findings(sc, short, tl))
+    assert len(found) == 1 and "over the subject" in found[0].message, found
+
+
+def test_set_clearance_keeps_props_off_near_labels():
+    """Placement keeps props off near labels as the edit places them (the same text rects the check measures): a
+    long label near the crate lands where a prop went without it, and the dressed set gets no warning."""
+    sc, short, tl, dressed = _lever("workbench", "toon", labels=[{"text": "A long label for this part here",
+                                                                   "near": "Crate"}])  # fmt: skip
+    assert dressed["kept"], dressed
+    assert not _clearance(_lever_findings(sc, short, tl))
+
+
+def test_style_bevels_are_put_back_when_the_checks_fail():
+    _fixtures()
+    from types import SimpleNamespace
+
+    from kitfix import KIT
+
+    from bsa.blender import styles
+    from bsa.kit import kit_from
+
+    sc = _bevel_scene()
+    styles.apply(sc, kit_from({**KIT, "style": "toy"}), target="OnEdge", size=3.0)
+    mods = [o.modifiers[styles.BEVEL] for o in sc.objects if o.name in ("OnEdge", "Base", "Tipped")]
+    run = checks._Run
+
+    def broken(scene):
+        assert not any(m.show_viewport or m.show_render for m in mods)  # hidden while the checks measure
+        raise RuntimeError("stopped")
+
+    checks._Run = broken
+    try:
+        checks.run_checks(sc, _timeline())
+        raise AssertionError("run_checks should have raised")
+    except RuntimeError as exc:
+        assert str(exc) == "stopped"
+    finally:
+        checks._Run = run
+    assert all(m.show_viewport and m.show_render for m in mods)
+
+    class Stuck:  # a modifier that can't be switched off: hiding stops part-way
+        name, show_viewport, show_render = styles.BEVEL, True, True
+
+        def __setattr__(self, key, value):
+            if not value:
+                raise RuntimeError("can't switch it off")
+
+    stuck = SimpleNamespace(type="MESH", library=None, modifiers={styles.BEVEL: Stuck()})
+    first = sc.objects["OnEdge"]
+    hidden = []
+    try:
+        checks._hide_style_bevels(SimpleNamespace(objects=[first, stuck]), hidden)
+        raise AssertionError("hiding should have stopped")
+    except RuntimeError:
+        pass
+    assert not first.modifiers[styles.BEVEL].show_viewport
+    checks._restore_modifiers(hidden)
+    assert first.modifiers[styles.BEVEL].show_viewport and first.modifiers[styles.BEVEL].show_render
+
+
+def test_a_swap_that_matches_is_not_a_pop_in_and_one_that_does_not_is_warned():
+    """A part tagged swap:<other> that takes over from the other on the same frame at the same place is not a pop-in;
+    one put somewhere else, or switched on frames away from the other going off, is a swap warning."""
+    sc = _scene()
+    a = _cube("Blade A", (0, 0, 0.5), size=0.5)
+    a.hide_render = False
+    a.keyframe_insert("hide_render", frame=1)
+    a.hide_render = True
+    a.keyframe_insert("hide_render", frame=16)  # shown frames 1-15
+    b = _cube("Blade B", (0, 0, 0.5), size=0.5)
+    _switch_on(b, 16)
+    bake.tag(b, "swap:Blade A")
+
+    def found(check):
+        return [f for f in checks.run_checks(sc, _timeline()) if f.check == check]
+
+    assert found("pop_in") == [] and found("swap") == [], (found("pop_in"), found("swap"))
+    b.location.x = 0.4  # moved sideways
+    swaps = found("swap")
+    assert len(swaps) == 1 and swaps[0].obj == "Blade B" and swaps[0].frame == 16, swaps
+    assert swaps[0].severity == "warning" and "differ" in swaps[0].message and "'Blade A'" in swaps[0].message
+    assert "frame 16" in swaps[0].message, swaps
+    b.location.x = 0.0
+    a.keyframe_delete("hide_render", frame=16)  # A goes off at 20 instead
+    a.hide_render = True
+    a.keyframe_insert("hide_render", frame=20)
+    swaps = found("swap")
+    assert len(swaps) == 1 and "4 frames apart" in swaps[0].message, swaps
+    assert found("pop_in") == []
+    b["bsa_tags"] = "swap:Blade C"  # an object the scene does not have
+    names = [f for f in found("names") if f.severity == "error"]
+    assert len(names) == 1 and "'Blade C'" in names[0].message, names
+
+
+def test_report_swaps_leaves_the_shot_s_last_frame_even_when_it_fails():
+    sc = _scene()
+    _cube("Blade A", (0, 0, 0.5), size=0.5)
+    bake.tag(_cube("Blade B", (0, 0, 0.5), size=0.5), "swap:Blade A")
+    run = checks._Run(sc)
+    run.switches = {"Blade B": {"on": [16], "off": []}, "Blade A": {"on": [], "off": [16]}}
+    shot = SimpleNamespace(id="s01", f0=1, f1=N)
+    real = checks._rect
+
+    def broken(_box):
+        raise RuntimeError("measuring failed")
+
+    checks._rect = broken
+    try:
+        try:
+            run.report_swaps(shot)
+            raise AssertionError("report_swaps should have raised")
+        except RuntimeError:
+            pass
+    finally:
+        checks._rect = real
+    assert sc.frame_current == N, sc.frame_current
+
+
+def test_a_rigid_parent_and_its_children_are_one_solid():
+    """A forged part built from several meshes (its parent tagged rigid) is one solid: its meshes may sink into each
+    other, but a part outside the group clipping any of them is an overlap."""
+    sc = _scene()
+    crank = _cube("Crank", (0, 0, 0.5))
+    bake.tag(crank, "rigid")
+    pin = _cube("Pin", (0, 0, 1.18), size=0.4)  # 2 cm into Crank's top
+    _parent(pin, crank)
+    web = _cube("Web", (0.02, 0.01, 1.0), size=0.3)  # deep in Pin and in Crank (its grandparent)
+    _parent(web, pin)
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+    _cube("Case", (0.3, 0.1, 1.25), size=0.3)  # not in the group: clips Pin
+    found = _found(sc, "overlap", severity="error")
+    assert found and all("'Case'" in f.message for f in found), found
+    assert any("'Pin'" in f.message for f in found), found
+
+
+def test_a_keyed_child_under_a_rigid_parent_is_not_in_its_group():
+    """A rigid group is a parent and its children that don't move on their own: a keyed child (a piston under an
+    engine block tagged rigid) clipping its parent is still an error; a static child sunk as deep is not."""
+    sc = _scene()
+    block = _cube("Block", (0, 0, 0.5))
+    bake.tag(block, "rigid")
+    boss = _cube("Boss", (0.6, 0, 0.5), size=0.5)  # 15 cm into Block, static: one solid with it
+    _parent(boss, block)
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+    piston = _cube("Piston", (-0.6, 0, 0.5), size=0.5)  # 15 cm into Block, keyed: moves on its own
+    _parent(piston, block)
+    _move_x(piston, [-0.6] * N)
+    found = _found(sc, "overlap", severity="error")
+    assert found and all("'Piston'" in f.message for f in found), found
+    assert any("'Block'" in f.message for f in found), found
+
+
+def test_two_rigid_groups_are_still_tested_against_each_other():
+    sc = _scene()
+    bake.tag(_cube("CrankA", (0, 0, 0.5)), "rigid")
+    bake.tag(_cube("CrankB", (0.9, 0, 0.5)), "rigid")  # 10 cm into CrankA
+    found = [f for f in _found(sc, "overlap", severity="error") if f.kind == "penetrate"]
+    assert len(found) == 1 and "'CrankA'" in found[0].message and "'CrankB'" in found[0].message, found
+
+
+def test_two_assemblies_are_still_tested_against_each_other():
+    sc = _scene()
+    bake.tag(_cube("Plate", (0, 0, 0.5)), "assembly:Train")
+    bake.tag(_cube("Bridge", (0.9, 0, 0.5)), "assembly:Escapement")  # 10 cm into Plate
+    found = [f for f in _found(sc, "overlap", severity="error") if f.kind == "penetrate"]
+    assert len(found) == 1 and "'Plate'" in found[0].message and "'Bridge'" in found[0].message, found
+
+
+def _cylinder(name, radius, depth, location, rotation=(0, 0, 0)):
+    bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=depth, location=location, rotation=rotation)
+    obj = bpy.context.object
+    obj.name = name
+    _material(obj)
+    return obj
+
+
+def test_assembly_members_mesh_but_a_member_clipping_a_non_member_is_an_error():
+    """Members of one assembly (a gear train) may mesh with each other; a member against anything else is checked as
+    usual: a balance wheel clipping its cock is still caught."""
+    sc = _scene()
+    along_y = (math.radians(90), 0, 0)
+    bake.tag(_cylinder("Wheel", 0.5, 0.1, (0, 0, 1.0), along_y), "assembly:Train")
+    bake.tag(_cylinder("Arbor", 0.05, 0.6, (0, 0, 1.0), along_y), "assembly:Train")  # through the wheel
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+    _cube("Cock", (0.5, 0.02, 1.0), size=0.3)  # not a member: clips the wheel's rim
+    found = _found(sc, "overlap", severity="error")
+    assert len(found) == 1 and "'Cock'" in found[0].message and "'Wheel'" in found[0].message, found
+
+
+def test_assembly_depth_caps_how_deep_members_go():
+    sc = _scene()
+    bake.tag(_cube("Plate", (0, 0, 0.5)), "assembly:Train:0.002")
+    bridge = _cube("Bridge", (0.99, 0.2, 0.6))  # 1 cm into Plate
+    bake.tag(bridge, "assembly:Train:0.002")
+    found = _found(sc, "overlap", severity="error")
+    assert len(found) == 1 and "assembly 'Train'" in found[0].message and "2 mm" in found[0].message, found
+    assert "assembly:Train:<max depth m>" in found[0].message, found  # how to allow it by design
+    bridge.location = (0.999, 0.2, 0.6)  # 1 mm in
+    assert not _found(sc, "overlap"), _found(sc, "overlap")
+
+
+def test_volume_fills_round_solids_but_still_pops():
+    """Gas round a solid is no overlap, z-fighting or floating, and holds nothing up; a jump is still a pop."""
+    sc = _scene()
+    _cube("Core", (0, 0, 0.5))
+    gas = _material_boxes("Gas", [((0, 0, 1), (2, 2, 2), "white"), ((0, 0, 1.9), (3, 3, 0.2), "glass")], (0, 0, 0.1))
+    bake.tag(gas, "volume", "grounded", "hero")  # floats 10 cm over the floor, round Core, with coplanar caps
+    bake.tag(_cube("Lid", (0, 0, 2.35), size=0.5), "grounded")  # sits on the gas: nothing solid under it
+    for check in ("overlap", "self_zfight", "self_overlap"):
+        assert not _found(sc, check), (check, _found(sc, check))
+    assert [f.obj for f in _found(sc, "floating")] == ["Lid"], _found(sc, "floating")
+    _move_x(gas, [0.0] * 10 + [1.5] * (N - 10))
+    found = _found(sc, "pops", "Gas", "error")
+    assert len(found) == 1, found
+
+
+def test_a_volume_still_pops_in_and_must_stay_in_the_frame():
+    """volume leaves only the solid checks: steam switched on mid-shot on screen pops in, and a hero flame that
+    drifts out of the camera frame is a frame_edge error."""
+    sc = _scene()
+    steam = _cube("Steam", (0, 0, 1.0), size=0.5)
+    bake.tag(steam, "volume")
+    _switch_on(steam, 16)
+    assert [f.obj for f in _found(sc, "pop_in")] == ["Steam"], _found(sc, "pop_in")
+    sc = _scene()
+    flame = _cube("Flame", (0, 0, 1.0), size=0.5)
+    bake.tag(flame, "volume", "hero")
+    _move_x(flame, [10 * i / (N - 1) for i in range(N)])
+    found = _found(sc, "frame_edge", "Flame", "error")
+    assert len(found) == 1, found
+
+def test_kept_objects_are_not_checked_again_but_others_are():
+    """keep_objects: the objects whose own checks still hold (a re-check of a shot where only others changed) are
+    not checked alone again, and a pair is skipped only when both of its objects are kept."""
+    sc = _scene()
+    flipped = _cube("N", (-2, 0, 1.5))  # in the air: no face on the floor
+    bm = bmesh.new()
+    bm.from_mesh(flipped.data)
+    bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    bm.to_mesh(flipped.data)
+    bm.free()
+    _cube("P", (2, 0, 0.5))
+    _cube("Q", (2.5, 0.2, 0.7))  # half a metre into P, no face on a plane of P's
+
+    def found(keep):
+        return [f for f in checks.run_checks(sc, _timeline(), keep_objects=keep) if f.check in ("normals", "overlap")]
+
+    assert {(f.check, f.obj) for f in found(None)} == {("normals", "N"), ("overlap", "P")}, found(None)
+    assert not found({"N", "P", "Q"}), found({"N", "P", "Q"})
+    again = found({"N", "P"})
+    assert [(f.check, tuple(f.pair)) for f in again] == [("overlap", ("P", "Q"))], again

@@ -2,6 +2,9 @@
 
 import platform
 
+import pytest
+from fontbuild import build_font
+
 from bsa import fonts
 
 
@@ -50,18 +53,79 @@ def test_suggestions_are_installed_fonts(tmp_path):
 
 def test_cli_fonts(tmp_path):
     import json
-    import subprocess
     import sys
     from pathlib import Path
 
+    from bsa import proc as _proc
+
     cli = Path(__file__).resolve().parent.parent / "bsa_cli.py"
-    out = subprocess.run([sys.executable, str(cli), "fonts", "No Such Font Anywhere"], capture_output=True, text=True,
+    out = _proc.run([sys.executable, str(cli), "fonts", "No Such Font Anywhere"], capture_output=True, text=True,
                          check=True).stdout  # fmt: skip
     data = json.loads(out)
     assert data["name"] == "No Such Font Anywhere" and data["installed"] is False and data["file"] is None
     assert isinstance(data["suggestions"], list)
     if platform.system() == "Windows":
         assert "Segoe UI" in data["suggestions"]
-        data = json.loads(subprocess.run([sys.executable, str(cli), "fonts", "Segoe UI"], capture_output=True,
+        data = json.loads(_proc.run([sys.executable, str(cli), "fonts", "Segoe UI"], capture_output=True,
                                          text=True, check=True).stdout)  # fmt: skip
         assert data["installed"] is True and data["file"].lower().endswith("segoeui.ttf")
+
+
+def test_text_items_include_card_text():
+    from bsa.short import Line, Short, Shot
+    from tests.kitfix import KIT
+
+    sh = Shot("s1", "t", "p", "S", title_card=["Push", "lift"], category="spark", step=[2, 4],
+              bars={"items": [{"label": "Bar", "value": 2, "text": "2 kg"}, {"label": "Cup", "value": 1}],
+                    "verdict": "Bar wins"})  # fmt: skip
+    short = Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Hi", "s1")], shots=[sh])
+    items = fonts.text_items(short, {"handle": "", "brand": {**KIT, "logo": {"file": "x.png", "name": "Acme"}}})
+    for item in (("shot s1 title card", "Push"), ("shot s1 title card", "lift"), ("shot s1 category", "Spark"),
+                 ("shot s1 step", "Step 2 of 4"), ("shot s1 value bar", "Bar"), ("shot s1 value bar", "2 kg"),
+                 ("shot s1 value bar", "1"), ("shot s1 verdict", "Bar wins"), ("logo badge", "Acme")):
+        assert item in items, item
+
+
+def test_advance_em_sums_hmtx(tmp_path):
+    p = tmp_path / "a.ttf"
+    p.write_bytes(build_font("AB", advance=500))  # upm 1000
+    assert fonts.advance_em(p, "ABA") == pytest.approx(1.5)
+    p.write_bytes(build_font("AB", advance={"A": 600, "B": 300, "": 250}, cmap_format=12))
+    assert fonts.advance_em(p, "AB A") == pytest.approx(0.6 + 0.3 + 0.25 + 0.6)
+    assert fonts.advance_em(p, "Z") == pytest.approx(0.25)  # a missing glyph counts glyph 0
+    p.write_bytes(build_font("AB", advance={"": 700, " ": 100, "A": 200, "B": 900}, n_metrics=2))
+    assert fonts.advance_em(p, "AB") == pytest.approx(0.2)  # ids past numberOfHMetrics take the last advance
+    assert fonts.advance_em(p, "") == 0
+    assert fonts.advance_em(tmp_path / "missing.ttf", "A") is None
+    p.write_bytes(build_font("AB"))  # no hmtx
+    assert fonts.advance_em(p, "A") is None
+
+
+def test_captions_fall_back_to_the_brand_font():
+    from bsa.short import Line, Short, Shot
+
+    def short(**kw):
+        return Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Lift", "s1")],
+                     shots=[Shot("s1", "a", "p", "S")], **kw)  # fmt: skip
+
+    s = {"brand": {"font": "Inter"}}
+    assert fonts.caption_font_name(short(), s) == "Inter"
+    assert fonts.caption_font_name(short(style={"font": "Roboto"}), s) == "Roboto"  # the short's own font wins
+    assert fonts.caption_font_name(short(look="fresh"), s) == ""  # the brand off for this short: no brand font
+    assert fonts.caption_font_name(short(), {"brand": {"mode": "fresh", "font": "Inter"}}) == ""
+    assert fonts.caption_font_name(short(), {}) == ""
+
+
+def test_variable_warning_reads_the_caption_font(tmp_path):
+    from fontbuild import build_variable
+
+    from bsa.short import Line, Short, Shot
+
+    d = tmp_path / "fonts"
+    d.mkdir()
+    vf = d / "Varia-VF.ttf"
+    vf.write_bytes(build_variable("Lift", family="Varia"))
+    short = Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Lift", "s1")],
+                  shots=[Shot("s1", "a", "p", "S")])  # fmt: skip
+    warnings = fonts.glyph_warnings(short, {"handle": "", "brand": {"font": str(vf)}}, [d], system="Windows")
+    assert len(warnings) == 1 and "variable" in warnings[0] and "Varia" in warnings[0], warnings

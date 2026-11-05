@@ -261,12 +261,28 @@ OGA_METAL_WOOD_NAMES = (
 KENNEY_UI_NAMES = ([f"click{i}" for i in range(1, 6)] + ["mouseclick1", "mouserelease1"]
                    + [f"rollover{i}" for i in range(1, 7)] + [f"switch{i}" for i in range(1, 39)])  # fmt: skip
 
+SFX100V2_NAMES = (
+    [f"sfx100v2_air_0{i}" for i in (1, 2, 3)] + [f"sfx100v2_door_0{i}" for i in range(1, 6)]
+    + [f"sfx100v2_footstep_0{i}" for i in (1, 2)] + [f"sfx100v2_footstep_wet_0{i}" for i in (1, 2, 3)]
+    + [f"sfx100v2_footstep_wood_0{i}" for i in range(1, 5)] + [f"sfx100v2_glass_0{i}" for i in range(1, 7)]
+    + [f"sfx100v2_hit_0{i}" for i in (1, 2, 3)] + [f"sfx100v2_items_0{i}" for i in (1, 2)]
+    + ["sfx100v2_lock_open_01"] + [f"sfx100v2_loop_ambient_0{i}" for i in range(1, 5)]
+    + ["sfx100v2_loop_construction_site", "sfx100v2_loop_highway"]
+    + [f"sfx100v2_loop_machine_0{i}" for i in range(1, 5)] + [f"sfx100v2_loop_water_0{i}" for i in (1, 2, 3)]
+    + [f"sfx100v2_metal_0{i}" for i in range(1, 7)] + [f"sfx100v2_metal_hit_0{i}" for i in (1, 2)]
+    + [f"sfx100v2_misc_{i:02d}" for i in range(1, 38)] + [f"sfx100v2_stones_0{i}" for i in (1, 2, 3)]
+    + ["sfx100v2_switch_01", "sfx100v2_switch_02", "sfx100v2_thunder_01"]
+    + [f"sfx100v2_wood_0{i}" for i in range(1, 5)] + [f"sfx100v2_wood_hit_0{i}" for i in (1, 2, 3)]
+)  # fmt: skip
+STEAM_HISSES_NAMES = [f"steam hisses - Marker #{i}" for i in range(1, 6)]
+
 
 def _kinds_of(names):
     return {k for n in names for k in sounds.auto_kinds(n + ".ogg")}
 
 
-@pytest.mark.parametrize("pid,names", [("oga-metal-wood", OGA_METAL_WOOD_NAMES), ("kenney-ui-sfx", KENNEY_UI_NAMES)])
+@pytest.mark.parametrize("pid,names", [("oga-metal-wood", OGA_METAL_WOOD_NAMES), ("kenney-ui-sfx", KENNEY_UI_NAMES),
+                                       ("oga-sfx-100-v2", SFX100V2_NAMES), ("oga-steam-hisses", STEAM_HISSES_NAMES)])
 def test_a_packs_search_kinds_are_the_kinds_its_clips_get(pid, names):
     """Search must not promise a kind (thud) that indexing the pack's files never tags."""
     assert set(sounds.PACKS[pid]["kinds"]) == _kinds_of(names)
@@ -274,6 +290,40 @@ def test_a_packs_search_kinds_are_the_kinds_its_clips_get(pid, names):
     out = sounds.search(sounds.PACKS[pid]["name"], http=FakeHttp({q: _commons_json()}), freesound_key=None)
     (hit,) = [r for r in out["results"] if r["id"] == f"pack:{pid}"]
     assert set(hit["kinds"]) == _kinds_of(names) and hit["kinds_from"] == "catalogue"
+
+
+def test_machinery_packs_cover_hiss_and_rumble_and_never_promise_a_thud_their_names_do_not_have():
+    """The two machinery packs between them give a steam or air hiss and a machine or thunder rumble. Neither has a
+    clip named for a thud (their hits are "hit", so impact), so no thud is promised."""
+    assert {"hiss", "rumble"} <= _kinds_of(SFX100V2_NAMES)
+    assert _kinds_of(STEAM_HISSES_NAMES) == {"hiss"}
+    assert "thud" not in sounds.PACKS["oga-sfx-100-v2"]["kinds"]
+    assert all(sounds.PACKS[p]["license"] == "CC0" for p in ("oga-sfx-100-v2", "oga-steam-hisses"))
+
+
+def test_new_kind_words_do_not_change_other_packs():
+    for pid, names in (("oga-metal-wood", OGA_METAL_WOOD_NAMES), ("kenney-ui-sfx", KENNEY_UI_NAMES)):
+        assert _kinds_of(names) == set(sounds.PACKS[pid]["kinds"]), pid
+    assert sounds.auto_kinds("loop_machine_01.ogg") == ["rumble"] and sounds.auto_kinds("thunder_01.ogg") == ["rumble"]
+
+
+def test_new_kind_words_never_retag_clips_already_in_the_library(tmp_path):
+    """Kinds are stored per clip when it is indexed; a mix reads only the stored kinds. So a clip indexed before
+    "thunder" / "machine" meant rumble (or with no stored kinds at all) keeps what it had, and a re-mix of an
+    existing short picks the same clips."""
+    lib = recorded.Library(tmp_path)
+    for rel in ("sounds/a/thunder_machine_01.wav", "sounds/a/machine_hit.wav"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"RIFF")
+    lib.add([{"path": "sounds/a/thunder_machine_01.wav", "asset": "sfx-a", "name": "thunder_machine_01"},  # no kinds
+             {"path": "sounds/a/machine_hit.wav", "kinds": ["impact"], "asset": "sfx-a", "name": "machine_hit"}])
+    lib.save()
+    before = recorded.library_path(tmp_path).read_bytes()
+    assert sounds.adopt_legacy(tmp_path) == []  # nothing re-indexes clips already there
+    again = recorded.Library(tmp_path)
+    assert again.clips_for("rumble") == []
+    assert [c["path"] for c in again.clips_for("impact")] == ["sounds/a/machine_hit.wav"]
+    assert recorded.library_path(tmp_path).read_bytes() == before
 
 
 def test_every_pack_lists_only_valid_kinds():

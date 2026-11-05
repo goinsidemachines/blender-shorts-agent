@@ -536,3 +536,130 @@ def shading_findings(lum: np.ndarray, faces, frame: int | None) -> list[Finding]
             "lamps (bsa.blender.look.lights), or move the area lights further away; check that an edge or facing "
             "effect in the material does not darken it either"))  # fmt: skip
     return out
+
+
+# --------------------------------------------------------------------------- checks on a made thumbnail
+
+AA_LARGE = 3.0  # WCAG AA contrast for large text
+FEED_W = 180  # a thumbnail's width in the feed, in px
+MIN_CAP_PX = 7  # the title's cap height there must be at least this
+CAP_RATIO = 0.7  # cap height / font size
+BUSY_LIMIT = 0.08  # more of the background than this on edges is busy
+EDGE_LEVEL = 48  # a luminance step (0-255) between neighbouring pixels this big is an edge, as text has
+TEXT_DISTANCE = 0.25  # a pixel this far (RGB 0..1) from the text colour is the box, not the text
+
+
+def _srgb_lum(rgb) -> float:
+    """WCAG 2.x relative luminance of an sRGB colour (0..1 channels; alpha ignored)."""
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (float(v) for v in rgb[:3])]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def contrast_ratio(a: tuple, b: tuple) -> float:
+    """The WCAG 2.x contrast ratio of two sRGB colours (0..1), 1 to 21."""
+    la, lb = _srgb_lum(a), _srgb_lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _rect_xywh(rect) -> tuple[float, float, float, float]:
+    if isinstance(rect, list | tuple):
+        return tuple(float(v) for v in rect)
+    return float(rect.x), float(rect.y), float(rect.w), float(rect.h)
+
+
+def _region(shape, rect) -> tuple[int, int, int, int]:
+    """(y0, y1, x0, x1) of a rect [x, y, w, h] clipped to an image of `shape` (ends exclusive)."""
+    x, y, w, h = _rect_xywh(rect)
+    hh, ww = shape[:2]
+    x0, y0 = min(max(round(x), 0), ww), min(max(round(y), 0), hh)
+    return y0, min(max(round(y + h), y0), hh), x0, min(max(round(x + w), x0), ww)
+
+
+def _unit(px: np.ndarray) -> np.ndarray:
+    rgb = px[..., :3].astype(np.float32)
+    return rgb / 255.0 if px.dtype == np.uint8 else rgb
+
+
+def seen_box(px: np.ndarray, rect, text: tuple) -> tuple[float, float, float]:
+    """The colour a card's box shows as in the made thumbnail (0..1 RGB): the median of the rect's pixels farther
+    than TEXT_DISTANCE from the text colour (a see-through box over a photo is what is behind it, mixed). The text
+    colour when every pixel is near it."""
+    y0, y1, x0, x1 = _region(px.shape, rect)
+    area = _unit(px[y0:y1, x0:x1]).reshape(-1, 3)
+    ink = np.asarray([float(v) for v in text[:3]], np.float32)
+    far = area[np.linalg.norm(area - ink, axis=1) > TEXT_DISTANCE]
+    if not len(far):
+        return tuple(float(v) for v in ink)
+    return tuple(float(v) for v in np.median(far, axis=0))
+
+
+def feed_cap_px(size_px: float, width: int, feed_w: int = FEED_W) -> float:
+    """The cap height, in px, of text `size_px` big on a thumbnail `width` px wide, shown `feed_w` px wide."""
+    return size_px * CAP_RATIO * feed_w / width
+
+
+def _edges(lum: np.ndarray) -> np.ndarray:
+    """(h - 1, w - 1) booleans: the pixel steps by more than EDGE_LEVEL to its right or lower neighbour."""
+    gx = np.abs(np.diff(lum, axis=1))[:-1, :]
+    gy = np.abs(np.diff(lum, axis=0))[:, :-1]
+    return np.maximum(gx, gy) > EDGE_LEVEL
+
+
+def edge_share(lum: np.ndarray) -> float:
+    """The share of pixels on an edge, for luminance in levels 0..255."""
+    if lum.shape[0] < 2 or lum.shape[1] < 2:
+        return 0.0
+    return float(np.mean(_edges(lum)))
+
+
+BUSY_SKIPPED = "busy background not measured on a preview frame"
+
+
+def thumb_findings(px: np.ndarray, lay: dict, size_key: str, busy: bool = True) -> list[dict]:
+    """The checks on one made thumbnail (`px`, top row first; `lay` its bsa.thumbs.layout_dict): each card's text
+    against its box as seen (an error under AA_LARGE), the title's cap height in the feed (a warning under
+    MIN_CAP_PX), and how busy the frame is around the subject (the share of edges in the shown frame outside the
+    hero box and the cards; a warning over BUSY_LIMIT, else reported as "info"). With `busy` False (a preview frame,
+    scaled up: resampling softens its edges) the busy check is an "info" row saying it was not measured."""
+    rows = []
+
+    def row(check: str, severity: str, message: str, value: float) -> None:
+        rows.append({"check": check, "severity": severity, "size": size_key, "message": message, "value": value})
+
+    cards = [c for c in lay.get("cards") or [] if isinstance(c, dict)]
+    for c in cards:
+        ratio = round(contrast_ratio(c["colour"], seen_box(px, c["rect"], c["colour"])), 2)
+        if ratio < AA_LARGE:
+            row("contrast", "error", f"the {c['kind']} text is hard to read on its box ({ratio:.1f}:1; it needs "
+                f"{AA_LARGE:g}:1)", ratio)  # fmt: skip
+    title = next((c for c in cards if c.get("kind") == "title"), None)
+    if title is not None:
+        cap = feed_cap_px(float(title["size"]), int(lay["size"][0]))
+        if cap < MIN_CAP_PX:
+            row("legibility", "warning", "the title is too small to read in the feed", cap)
+    h, w = px.shape[:2]
+    if not busy:
+        row("busy", "info", BUSY_SKIPPED, None)
+    elif h >= 2 and w >= 2:
+        keep = np.zeros((h - 1, w - 1), bool)
+        y0, y1, x0, x1 = _region(keep.shape, lay.get("dst") or [0, 0, w, h])
+        keep[y0:y1, x0:x1] = True
+        for r in [lay.get("hero"), *(c["rect"] for c in cards)]:
+            if r:
+                y0, y1, x0, x1 = _region(keep.shape, r)
+                keep[y0:y1, x0:x1] = False
+        edges = _edges(luminance(px) * np.float32(255.0))
+        share = float(edges[keep].mean()) if keep.any() else 0.0
+        message = f"the background behind the subject is busy ({share:.0%} edges): a plainer frame may read better"
+        row("busy", "warning" if share > BUSY_LIMIT else "info", message, round(share, 4))
+    return rows
+
+
+def png_size(path: Path) -> tuple[int, int]:
+    """(width, height) of a PNG, from its IHDR chunk."""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if len(head) < 24 or not head.startswith(_PNG_SIG) or head[12:16] != b"IHDR":
+        raise ValueError(f"{path}: not a PNG file")
+    w, h = struct.unpack(">II", head[16:24])
+    return int(w), int(h)

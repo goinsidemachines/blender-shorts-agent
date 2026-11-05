@@ -13,7 +13,8 @@ from pathlib import Path
 DEFAULTS = {
     "workspace": None,
     "blender_exe": None,
-    "narrator": {"provider": None, "voice": None, "speed": 1.0, "command": None, "label": None},
+    "narrator": {"provider": None, "voice": None, "speed": 1.0, "command": None, "label": None,
+                 "take_mode": "line", "lead_in": 0.0, "params": {}},
     "render": {"engine": "ask"},
     "brand": {"mode": None},
     "handle": None,
@@ -28,6 +29,9 @@ DEFAULTS = {
     "rules": [],  # the user's hard rules for every video, in their own words (bsa.rules; CLI settings rule add)
     "rules_asked": False,  # the hard-rules question was answered (asked once, existing users too)
     "feedback": "ask",  # problems in the plugin itself (bsa.feedback): "ask" at the end, "never" ask, or "off"
+    "post_format": {},  # the user's own post format (bsa.post.FORMAT_KEYS)
+    "post_format_asked": False,  # the post-format question was answered
+    "page": {"lan": False},  # phone access: the review page server also answers on the local network (token-protected)
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -36,11 +40,39 @@ SECRET_KEYS = ("freesound.api_key",)
 # "ask-always": ask for the engine for every short.
 ENUMS = {
     "narrator.provider": ("none", "elevenlabs", "kokoro", "chatterbox", "chatterbox-turbo", "custom"),
+    "narrator.take_mode": ("line", "paragraph"),  # one take per line, or one take for the whole story
     "render.engine": ("cycles", "eevee", "ask-always"),
     "brand.mode": ("brand", "fresh"),
     "sound_policy": ("any", "natural-only"),
     "feedback": ("ask", "never", "off"),
 }
+
+# narrator.lead_in: seconds of quiet before the voice starts in each take.
+LEAD_IN_RANGE_S = (0.0, 1.0)
+
+
+def lead_in_ok(seconds: float) -> bool:
+    """A lead-in in range (settings and a short's own narrator share this check)."""
+    return LEAD_IN_RANGE_S[0] <= seconds <= LEAD_IN_RANGE_S[1]
+
+
+def lead_in_error(value) -> str:
+    return f"narrator.lead_in must be seconds from {LEAD_IN_RANGE_S[0]:g} to {LEAD_IN_RANGE_S[1]:g}, got {value!r}"
+
+
+# narrator.params: the voice engine's own parameters (bsa.narrate.params), given to it last; {} = its defaults.
+
+
+def narrator_problems(s: dict) -> list[str]:
+    """Why the narrator settings can't be used as they are: engine params the provider doesn't take."""
+    from bsa.narrate import params
+
+    narrator = s.get("narrator") if isinstance(s.get("narrator"), dict) else {}
+    return params.problems(narrator.get("provider"), narrator.get("params"))
+
+
+# Settings that are true or false (JSON booleans on the command line).
+BOOLEANS = ("page.lan", "post_format_asked")
 
 _PROVIDER_NAMES = {
     "elevenlabs": "ElevenLabs",
@@ -139,6 +171,47 @@ def check_value(path: str, value):
             return float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{value!r} is not a valid brand.exposure: use a number of stops, e.g. 0.3") from None
+    if path == "brand":  # the whole object: every key checked as its own brand.KEY (set_value merges it in)
+        if not isinstance(value, dict):
+            raise ValueError(f"brand must be an object of brand settings, got {value!r}")
+        return {k: check_value(f"brand.{k}", v) for k, v in value.items()}
+    if path.startswith("brand.") and path not in ("brand.mode", "brand.exposure"):
+        from bsa import kit
+
+        return kit.check(path[6:], value)
+    if path == "post_format" or path.startswith("post_format."):
+        from bsa import post
+
+        if path == "post_format":
+            return post.format_value(value)
+        key = path.split(".", 1)[1]
+        return post.format_value({key: value})[key]
+    if path == "narrator.params" or path.startswith("narrator.params."):
+        from bsa.narrate import params
+
+        if path == "narrator.params":
+            wrong = params.shape_problems(value)
+        elif value is None:  # null removes the key
+            return None
+        else:
+            wrong = params.shape_problems({path.split(".", 2)[2]: value})
+        if wrong:
+            raise ValueError("; ".join(wrong))
+        return {k: float(v) for k, v in value.items()} if path == "narrator.params" else float(value)
+    if path == "narrator.lead_in":
+        seconds = None
+        if not isinstance(value, bool):
+            try:
+                seconds = float(value)
+            except (TypeError, ValueError):
+                pass
+        if seconds is None or not lead_in_ok(seconds):
+            raise ValueError(lead_in_error(value))
+        return seconds
+    if path in BOOLEANS:
+        if not isinstance(value, bool):
+            raise ValueError(f"{value!r} is not a valid {path}: use true or false")
+        return value
     choices = ENUMS.get(path)
     if choices is None:
         return value
@@ -149,14 +222,23 @@ def check_value(path: str, value):
 
 
 def set_value(path: str, value) -> dict:
+    """Store `value` at `path`. A whole `brand` object merges into the stored brand key by key (the setup flow sets
+    brand.mode first, then the sampled kit: the kit never drops mode, exposure or a note it does not name)."""
     s = load_settings()
+    if path == "brand" and isinstance(value, dict):  # a null value deletes that key (brand.style null: no kit)
+        old = s.get("brand") if isinstance(s.get("brand"), dict) else {}
+        value = {k: v for k, v in {**old, **value}.items() if v is not None}
     node = s
     keys = path.split(".")
     for k in keys[:-1]:
         if not isinstance(node.get(k), dict):
             node[k] = {}
         node = node[k]
-    node[keys[-1]] = value
+    if value is None and path.startswith(("brand.", "narrator.params.")):  # brand.style none, brand.logo null,
+        # narrator.params.temperature null: the key is removed
+        node.pop(keys[-1], None)
+    else:
+        node[keys[-1]] = value
     save_settings(s)
     return s
 

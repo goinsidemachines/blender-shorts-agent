@@ -4,11 +4,163 @@
 
 `settings` `brand.mode`:
 
-- **`brand`**: the user's look for every short, stored under `brand` (palette, font, caption style, material feel).
-  Copy it into each short's `short.json` `style` (`palette`, `font`, `caption.size`) and follow it in the build. Do
-  not offer style options.
+- **`brand`**: the user's look for every short, stored under `brand` (palette, font, caption style, material
+  feel). Copy only `font`, `palette.background` and `caption.size` into each short's `short.json` `style` and
+  follow the brand in the build (the kit is read from the settings, so nothing else is copied). Do not offer
+  style options.
 - **`fresh`**: suggest 2 to 3 looks that fit each topic on the story page, each with a rendered thumbnail of the
   hook shot (`02-story.md`); the user picks one.
+
+### Your brand kit
+
+The kit is the structured part of `brand`. It is set up once (`00-first-run.md` section 4) and every brand short
+uses it. Cards turn on only with **`brand.style`**: without it every short keeps today's text captions, badges and
+labels, and the kit-only fields below only warn. `settings set brand.style none` (or `null`, or `""`) turns the
+kit off and keeps the rest of the brand; `brand.logo null` removes the logo, and a `null` in `settings set brand
+'<json>'` removes that key (the object merges into the brand otherwise). Check the stored kit any time with `CLI settings check`; it names
+any bad value and says how to fix it. A bad value is ignored (the plain value is used), never a crash.
+
+**Keys** (set with `settings set brand.KEY VALUE`; numbers and `true`/`false` are read as JSON):
+
+| Key | Values |
+|---|---|
+| `style` | `realistic`, `toy`, `toon`, `clay`, `blueprint`, `paper`, `pencil` (`3d` is read as realistic, `flat` as toon) |
+| `palette` | hex colours: `background`, `ink` (outlines and shadows), `card`, `text`, `accent`, `highlight` |
+| `categories` | a name and a hex for each kind of part, e.g. `{"spark": "#D9483B", "flow": "#3B8ED9"}` |
+| `outline_px`, `shadow_px`, `corner_px`, `pill_corner_px` | whole pixels: 0 to 12, 0 to 24, 0 to 80, 0 to 80 |
+| `font` | an installed font name, or `Name@600` for a static weight (see "Checking the font") |
+| `caption` | `color`, `box` (hex; 8 digits keep alpha), `size` 32 to 120, `opacity` 0 to 1, `corner_px` 0 to 80, `pad_px` 0 to 60, `draw` true or false |
+| `logo` | `{"file": "C:/path/logo.png", "place": "top-left" or "top-right", "name": "up to 36 characters"}` |
+| `progress` | true or false |
+| `set` | `auto`, `workbench`, `graph`, `outdoor`, `studio`, `none` |
+
+The seven styles are realistic, toy, toon, clay, blueprint, paper, pencil: see "Styles" below for how each one
+looks. `brand.material`, `brand.cards` and `brand.handle_place` are notes Claude reads; the cards use the kit's
+values, not those notes. Old flat keys still work: a hex under `brand.palette` that is not one of the six
+roles, and `brand.background`, are read as category colours and `palette.background` once `brand.style` is set
+(`settings check` says how to move them). The render engine is never part of the kit: it is always the user's choice.
+
+**The cards.** With a kit the edit draws eight kinds of card as pictures (no scene render). Each comes from a field
+of the shot in `short.json`:
+
+| Card | Field |
+|---|---|
+| caption bar | the narration line, as today |
+| title card | `title_card`: text, a list of 1 or 2 lines, or `{"lines": ["Line one", "Line two"], "highlight": 0}` (`highlight` is the index of the line drawn bigger, in the highlight colour `palette.highlight`) |
+| honesty pill | `badge` ("Simplified", "Motion exaggerated") |
+| category tag | `category`: a name from `brand.categories`, shown at the top right |
+| step tag | `step`: `[2, 4]` shows "Step 2 of 4" (whole numbers, 1 to 20) |
+| stacked labels | each entry of `labels` without `near`; `{"text": "1.4 m", "kind": "measure"}` is a measure label |
+| near labels | each entry of `labels` with `near`: a card by the part, with a pointer line and a dot; the dot takes the colour of the part's `category:<name>` tag (`06-build.md`) |
+| value bars | `bars`: `{"items": [{"label": "Short arm", "value": 1, "text": "1x", "category": "spark"}, ...], "verdict": "3x the lift", "max": 3}` (2 to 4 items; `text`, `category`, `verdict` and `max` are optional) |
+
+The **progress bar** runs under the caption bar and fills over the short; `brand.progress false` turns it off.
+`brand.caption.draw false` (or `style.caption.draw false` for one short) draws no caption bar at all.
+A kit draws at most 6 labels per shot (`CLI validate` and the edit refuse more): move some to another shot.
+The static top cards (logo, badge, step, stacked labels, category tag, title card, value bars) must end above the
+captions and the progress bar: when the corner stack is too tall its stacked labels move to the right column under
+the category tag; still too tall, `CLI validate` and the edit refuse the shot and name what to drop (a badge, step,
+two labels, a two-line title and three bars with a verdict is already too much for one shot).
+
+**`badge` is not `category`.** `badge` is the honesty pill: it says the picture was simplified or exaggerated
+(`honesty.md`), so keep it truthful and short. `category` is the kind of thing the shot is about (force, heat...)
+and only picks a colour from the kit. A `category` the kit does not define shows in the accent colour and
+`CLI validate` names the shot. A title card, category, step or bars on a short without a kit only warn.
+
+**The logo badge.** With `brand.logo.file` the edit, thumbnails and closing card draw a small badge with the
+user's logo (and `name`, if they gave one) in `place`. The file must be a PNG: an SVG is refused, so ask for a PNG
+export. Only the user's own logo ever shows. If the file is later moved or deleted, no badge is drawn and the
+result says so once: ask the user to set `brand.logo.file` again.
+
+**One short that differs.** Put kit keys in the short's own `style` (for example `"style": {"palette":
+{"accent": "#2E7D6B"}, "outline_px": 0}`): they win over the brand key by key, and the rest of the kit stays. A short
+with `"look": "fresh"` (below) drops the brand kit, so only its own `style` can give it one.
+
+**Preview.** `BLENDER kit-sample --kit '<json>' --out sample.png` draws a sample sheet of a kit before it is
+saved (without `--kit` it uses the saved brand). It writes nothing to the settings.
+
+### Styles
+
+`brand.style` is one of seven. The kit's colours, its materials (`look.kit_material`, `06-build.md`), the lights, the
+world and the ink lines follow it. Every one works in EEVEE and in Cycles. The render engine is the user's choice:
+the plugin never changes it, and no style prefers one. Whichever engine the scene renders with, the `BLENDER` render
+commands (stills, preview, render, extremes, estimate) match the lights and the world to it themselves. Only a render
+you start by hand after the user switches engine needs `look.match_engine(scene)` first (it reads the engine and sets
+the stamped light values; it never sets the engine).
+
+| Style | How it looks |
+|---|---|
+| `realistic` | Today's look made from the kit: plastic, metal and glass as before, the AgX view. |
+| `toy` | Glossy toy plastic with a clear coat, edges lifted toward a pale tint, soft shadows; the kit's colours read true. |
+| `toon` | Cel shading: flat kit colours with one darker step in shadow, one sun, ink lines round every part. |
+| `clay` | Matte modelling clay with a faint grain and a warm tone, soft light, no lines. |
+| `blueprint` | A drawing on grid paper: parts are see-through fills with white-blue lines, the key parts in the accent colour. |
+| `paper` | Folded paper: parts crumpled into flat tilted facets (the crumple is in the shader, not extra geometry), a fine grain, one sun. |
+| `pencil` | A sketch on cream paper: grey shading and hatching, sketchy graphite lines, colour only on the key parts. |
+
+- **Lines** are Freestyle ink lines. They add no geometry (no shells, no extra faces, so no new overlaps). They are on
+  by nature in `toon`, `blueprint` and `pencil`, and off in the others unless the kit says `brand.outline_3d true`
+  (`outline_px` sets their width). A part tagged `lines:off` never gets one (`06-build.md`).
+- **`blueprint` and `pencil` need `key=[...]`.** They draw colour only on the key parts, so
+  `styles.apply(..., key=[names])` takes the names of the parts the shot is about (usually the heroes). Without it
+  `apply` warns.
+- **Glass does not work in EEVEE** (transmission needs ray-traced refraction there). For water and clear parts use
+  `look.toy_water` (`look.kit_material(name, "toy_water", colour)` makes the same): it looks right in both engines,
+  and every style keeps it as it is made.
+- Parts not made with `look.kit_material` are left as they were made, and `apply` says which. Build parts with it
+  from the start.
+- **See them before choosing.** `BLENDER style-sample --styles realistic,toy,toon,clay,blueprint,paper,pencil
+  --engine <their engine> --out <scratch folder>/styles.png` draws the demo machine in each style on one sheet
+  (`--set NAME` picks the set, `studio` by default; `--kit '<json>'` a kit not saved yet; `--scale 0.5`). It needs the
+  user's engine: `--engine eevee` or `--engine cycles`, or the `render.engine` setting. When `render.engine` is
+  `ask-always` (or unset), ask the user which engine to use for the sample, and never choose one for them. It
+  writes nothing to the settings.
+
+### Sets
+
+A kit short stands its subject in a set, so it is not floating on an empty backdrop. `brand.set` (or the short's
+`style.set`) is one of:
+
+- `auto`: the plugin picks by the subject's real size. Five metres or more is `outdoor`; a short that explains by
+  measuring is `graph`; 1.5 metres or less is `workbench`; anything between is `studio`.
+- `workbench`: a wooden bench top and a pegboard wall, with a toolbox, a jar, small boxes, and a hammer, wrench and
+  pliers on the wall.
+- `graph`: graph paper for the floor and the wall, with a ruler, a pencil and a set square lying on it.
+- `outdoor`: ground, two layers of hills, trees and clouds.
+- `studio`: a plain sweep (the floor curving up into the wall) in the paper colour, no props.
+- `none`: no set (the style's own paper backdrop). To leave one scene without a set, pass `None` as the set name to
+  `sets.base` for that scene (`06-build.md`).
+
+How a set is made: `sets.base` builds the floor, walls and backdrop before the subject. After the motion is baked,
+`sets.dress` sizes them to what the cameras see and places the props clear of the subject and of every card, caption
+and label. The props are objects only (never people, faces or animals). The arrangement is saved in
+`<short>/source/sets.json` once the storyboard is approved, and a rebuild keeps it, so what the user approved is what
+renders. When a change moves the subject, the `set_clearance` check (`07-checks.md`) names the prop that is now in the
+way. The background colour check (`BLENDER stills`) only runs for `studio`, whose backdrop is the paper colour; the
+other sets are scenes, not a flat backdrop.
+
+### Look preview
+
+With a brand kit, `BLENDER stills` is followed by `BLENDER look SHORT`: three frames (the first shot, a middle one and
+the last) in the kit's style and set, with the kit's cards on top, the kit sheet, and `stills/look.json`. It runs in a
+background Blender, writes nothing to the settings and never saves the `.blend`. `--style NAME` and `--set NAME` (a
+set, or `none`) show another style or set on those frames, in memory only, so the user can compare. It needs the
+engine: `--engine eevee` or `--engine cycles`, else the short's approved engine or `render.engine`. When there is
+none (`ask-always`), ask the user, and never choose for them. The page shows the frames under "Look" on the
+Storyboard stage, and the user approves them together with the storyboard (one approval, not two).
+
+When the user wants another look, they leave a `look` note (`id` `style` or `set`, text "Use the toon style", "Use the
+studio set" or "Use no set"). Run `BLENDER look SHORT --style toon` (or `--set studio`) with `run_in_background:
+true`, look at the frames yourself, answer the note, and show the page again. When the user is happy with the new
+choice, save it:
+
+- the first brand short in the workspace (`look.json` `first` is true): `settings set brand.style toon` (or
+  `brand.set studio`), so every short has it;
+- any later short: ask whether it is for every short (the settings) or for this short only (`short.json` `style`:
+  `{"style": {"style": "toon"}}`, or `{"style": {"set": "studio"}}`).
+
+Then rebuild (`BLENDER preview SHORT`, or build.py and the stills again) so the scenes carry the new look, and run
+`BLENDER look SHORT` again to confirm.
 
 ### One short with its own look
 
@@ -104,8 +256,8 @@ A look is a few decisions held consistently across every shot:
 - **World:** an HDRI (CC0, downloaded only after a yes) or a simple gradient world; never a pure black void unless
   that is the look.
 - **A plain backdrop in an exact colour** (a brand's paper, say): never set the world to the hex and hope. Under AgX
-  a world of #F3F2EE at strength 1 renders about #C5C5C3, grey, and saturated colours wash out. Use
-  `bsa.blender.look.paper_world(scene, "#F3F2EE", light=1.0)` after `setup_scene`: it solves the colour the camera
+  a world set to the plain hex at strength 1 renders as a duller, greyer colour, and saturated colours wash out. Use
+  `bsa.blender.look.paper_world(scene, "#F4EFE6", light=1.0)` after `setup_scene`: it solves the colour the camera
   sees through the scene's view transform, look and exposure (Blender's own colour management), and lights the
   scene separately with the plain colour times `light`. It returns the colour it reached and its `delta_e`; over
   2 the view can't reach it, and the result has a `warning` (also printed) naming the colour it shows instead.
@@ -123,20 +275,20 @@ A look is a few decisions held consistently across every shot:
 Two things go wrong with a brand font, and both are caught before anything renders:
 
 - **Variable fonts draw the wrong weight.** A family installed only as a variable font (one file such as
-  `Fredoka-VF.ttf` or `Inter[wght].ttf`) loads in Blender as its default instance, which is often Light: captions and
+  `Inter-VF.ttf` or `Source[wght].ttf`) loads in Blender as its default instance, which is often Light: captions and
   3D text come out thin. `CLI fonts "NAME"` reports `variable`, the `default_weight` and `default_instance` Blender
   will use, a `warning`, and any installed `static_weights` of the family. Use a static weight instead: set
-  `brand.font` and `style.font` to the family with its weight, `"Fredoka@600"` (a file path still works too). It
+  `brand.font` and `style.font` to the family with its weight, `"Inter@600"` (a file path still works too). It
   loads an installed static file of exactly that weight, else the one `CLI assets` downloaded into
-  `<workspace>/.assets-cache/fonts/` (`Fredoka-600.ttf`). `CLI fonts "Fredoka@600"` says which file that is; when
+  `<workspace>/.assets-cache/fonts/` (`Inter-600.ttf`). `CLI fonts "Inter@600"` says which file that is; when
   neither exists it warns (and `CLI validate` and the edit's `font_fallback` say so) and the text uses the family as
-  installed. Then offer to download it: `CLI assets plan SHORT "font:Fredoka@600"` plans a static weight from Google
+  installed. Then offer to download it: `CLI assets plan SHORT "font:Inter@600"` plans a static weight from Google
   Fonts (its licence is checked: OFL, Apache 2.0 or Ubuntu Font Licence), shown and approved like any asset
-  (`assets.md`); after the yes, `assets download SHORT` puts it in the cache, where `"Fredoka@600"` finds it for
-  every short of the workspace. In `build.py`, load the same file for 3D text: `bsa.fonts.resolve("Fredoka@600",
+  (`assets.md`); after the yes, `assets download SHORT` puts it in the cache, where `"Inter@600"` finds it for
+  every short of the workspace. In `build.py`, load the same file for 3D text: `bsa.fonts.resolve("Inter@600",
   cache_dirs=bsa.fonts.font_caches(SHORT_DIR))[0]`. Don't thicken thin text with `curve.offset` instead. For a brand, this is checked once,
   at setup: `settings set brand.font NAME` returns a `font_check` with the same facts and a `warning` that says how
-  to fix it in the brand (set `brand.font` to a static weight, `"Fredoka@600"` or a file path, then every brand
+  to fix it in the brand (set `brand.font` to a static weight, `"Inter@600"` or a file path, then every brand
   short uses it). While a brand short still uses a variable `brand.font`, `CLI validate` says so in one short line
   that points at the setting, rather than repeating the full advice on every short.
 - **Missing glyphs draw as boxes.** Every character of the captions, labels, badges (upper case, as drawn) and the

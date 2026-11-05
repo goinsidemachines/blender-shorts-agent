@@ -533,3 +533,109 @@ def test_an_even_face_a_shadow_edge_and_a_gentle_gradient_are_not_found():
     for lum in (even, shadow, gentle):
         assert shading_findings(lum, [("Tower", *_face())], frame=1) == []
     assert shading_findings(even, [("Tower", np.array([5]), np.array([5]))], frame=1) == []  # too few pixels
+
+
+# --------------------------------------------------------------------------- checks on a made thumbnail
+
+
+def test_contrast_ratio_matches_wcag():
+    from bsa import image_checks
+
+    assert image_checks.contrast_ratio((1, 1, 1), (0, 0, 0)) == pytest.approx(21.0)
+    assert image_checks.contrast_ratio((0x77 / 255,) * 3, (1, 1, 1)) == pytest.approx(4.48, abs=0.01)
+    assert image_checks.contrast_ratio((1, 1, 1, 1), (0, 0, 0, 0.5)) == pytest.approx(21.0)  # alpha ignored
+
+
+def test_seen_box_is_the_box_not_the_text():
+    from bsa import image_checks
+    from bsa.layout import Rect
+
+    px = np.zeros((40, 40, 3), np.uint8)
+    px[10:30, 10:20] = 255  # the white text pixels: half the rect
+    px[10:30, 20:30] = (round(0.1 * 255), round(0.2 * 255), round(0.3 * 255))  # the box
+    seen = image_checks.seen_box(px, Rect(10, 10, 20, 20), (1.0, 1.0, 1.0, 1.0))
+    assert seen == pytest.approx((0.1, 0.2, 0.3), abs=1 / 255)
+    assert image_checks.seen_box(px, [10, 10, 20, 20], (1.0, 1.0, 1.0)) == pytest.approx(seen)  # a list rect
+    assert image_checks.seen_box(px, Rect(12, 12, 4, 4), (1.0, 1.0, 1.0)) == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_feed_cap_height():
+    from bsa import image_checks
+
+    assert image_checks.feed_cap_px(112, 1080) == pytest.approx(13.07, abs=0.01)
+    assert image_checks.feed_cap_px(60, 1280) < image_checks.MIN_CAP_PX
+    assert (image_checks.AA_LARGE, image_checks.FEED_W, image_checks.MIN_CAP_PX) == (3.0, 180, 7)
+    assert (image_checks.CAP_RATIO, image_checks.BUSY_LIMIT, image_checks.EDGE_LEVEL) == (0.7, 0.08, 48)
+
+
+def test_edge_share_moved_from_closing():
+    from bsa import closing, image_checks
+
+    flat = np.full((10, 10), 100.0)
+    stripes = np.tile([0.0, 255.0], (10, 5))
+    assert image_checks.edge_share(flat) == 0.0 and image_checks.edge_share(stripes) == 1.0
+    assert image_checks.edge_share(np.zeros((1, 5))) == 0.0
+    assert closing._edge_share(stripes) == 1.0 and closing.EDGE_LEVEL == image_checks.EDGE_LEVEL
+
+
+def _thumb(busy: bool, box_grey: float, title_size: int):
+    """A 1080x1920 thumbnail: a background (2 px checks, or flat), a hero square, a title card of white text on a
+    grey box; with its layout dict."""
+    px = np.full((1920, 1080, 3), 90, np.uint8)
+    if busy:
+        yy, xx = np.mgrid[0:1920, 0:1080]
+        px[((yy // 2 + xx // 2) % 2) == 1] = 200
+    px[800:1100, 400:700] = (220, 30, 30)  # the hero
+    px[100:300, 100:500] = round(box_grey * 255)  # the title's box ...
+    px[150:250:4, 140:460] = 255  # ... with white text strokes in it
+    lay = {"size": [1080, 1920], "src": [0, 0, 1080, 1920], "dst": [0, 0, 1080, 1920], "hero": [400, 800, 300, 300],
+           "cards": [{"kind": "title", "text": "Hi", "size": title_size, "rect": [100, 100, 400, 200],
+                      "colour": [1.0, 1.0, 1.0, 1.0], "box": [box_grey] * 3 + [1.0], "pad": 28}],
+           "placement": "top band", "panel": None, "panel_colour": None, "backdrop": None, "warnings": [],
+           "covered": 0.0}  # fmt: skip
+    return px, lay
+
+
+def test_thumb_findings_report_contrast_legibility_and_busy():
+    from bsa import image_checks
+
+    px, lay = _thumb(busy=True, box_grey=0.6, title_size=50)
+    rows = image_checks.thumb_findings(px, lay, "1080x1920")
+    by = {r["check"]: r for r in rows}
+    assert set(by) == {"contrast", "legibility", "busy"} and all(r["size"] == "1080x1920" for r in rows)
+    assert by["contrast"]["severity"] == "error" and by["contrast"]["value"] < 3
+    assert by["contrast"]["message"] == f"the title text is hard to read on its box ({by['contrast']['value']:.1f}:1; it needs 3:1)"
+    assert by["legibility"] == {"check": "legibility", "severity": "warning", "size": "1080x1920",
+                                "message": "the title is too small to read in the feed",
+                                "value": pytest.approx(image_checks.feed_cap_px(50, 1080))}  # fmt: skip
+    assert by["busy"]["severity"] == "warning" and by["busy"]["value"] > 0.3
+    assert by["busy"]["message"] == (f"the background behind the subject is busy ({by['busy']['value']:.0%} edges): a "
+                                     "plainer frame may read better")  # fmt: skip
+
+    px, lay = _thumb(busy=False, box_grey=0.1, title_size=112)
+    rows = image_checks.thumb_findings(px, lay, "1080x1920")
+    assert [(r["check"], r["severity"]) for r in rows] == [("busy", "info")]  # the share, reported under the limit
+    assert rows[0]["value"] < image_checks.BUSY_LIMIT
+
+
+def test_png_size_reads_the_header(tmp_path):
+    import pagefix
+
+    from bsa import image_checks
+
+    pagefix.write_png(tmp_path / "a.png", np.zeros((8, 8, 3), np.uint8))
+    assert image_checks.png_size(tmp_path / "a.png") == (8, 8)
+    pagefix.write_png(tmp_path / "b.png", np.zeros((3, 5, 3), np.uint8))
+    assert image_checks.png_size(tmp_path / "b.png") == (5, 3)
+    (tmp_path / "c.png").write_bytes(b"not a png")
+    with pytest.raises(ValueError):
+        image_checks.png_size(tmp_path / "c.png")
+
+
+def test_busy_is_not_measured_when_asked_not_to():
+    from bsa import image_checks
+
+    px, lay = _thumb(busy=True, box_grey=0.1, title_size=112)
+    rows = image_checks.thumb_findings(px, lay, "1080x1920", busy=False)
+    assert rows == [{"check": "busy", "severity": "info", "size": "1080x1920",
+                     "message": "busy background not measured on a preview frame", "value": None}]  # fmt: skip

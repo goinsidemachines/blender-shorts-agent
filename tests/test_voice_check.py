@@ -1,0 +1,206 @@
+"""The voice check: word differences, the per-line block, and that it never moves the narration version."""
+
+import json
+import os
+import time
+
+import pagefix
+
+from bsa.narrate import run
+from bsa.narrate.local import WER_LIMIT
+from bsa.review import snapshot, voice, worddiff
+from bsa.short import load_short
+
+
+def test_word_diff_marks_changed_missing_and_extra():
+    assert worddiff.diff("Length sets the beat.", "length set the the beat") == [
+        ["same", "length"], ["changed", "set", "sets"], ["same", "the"], ["extra", "the"], ["same", "beat"]]  # fmt: skip
+    assert worddiff.diff("Four times longer", "four longer") == [
+        ["same", "four"], ["missing", "times"], ["same", "longer"]]  # fmt: skip
+
+
+def test_words_normalise_case_punctuation_and_dashes():
+    assert worddiff.words("It's a ten-metre\u2014tall \u201cclock\u201d!") == [
+        "it's", "a", "ten", "metre", "tall", "clock"]  # fmt: skip
+    assert worddiff.words("It takes 5 seconds") == ["it", "takes", "5", "seconds"]
+
+
+def _block(sdir):
+    return voice.block(sdir, load_short(sdir / "source" / "short.json"), {})
+
+
+def test_voice_block_marks_failed_lines(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork", "l02": "length set the"})
+    rows = _block(sdir)["lines"]
+    assert [r["id"] for r in rows] == ["l01", "l02", "l03", "l04"]
+    assert rows[0]["ok"] is True and rows[0]["wer"] == 0.0
+    assert rows[1]["ok"] is False and rows[1]["wer"] == 0.5
+    assert rows[2]["ok"] is None and rows[2]["said"] is None  # never heard
+
+
+def test_no_heard_file_is_not_narrated_yet(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    assert _block(sdir) == {"lines": [], "checked": False, "why_not": "Not narrated yet.", "log_notes": [], "log": None}
+    assert "voice" not in snapshot.build(sdir, settings={})["stages"][4]["content"]
+
+
+def test_heard_entry_for_old_words_is_not_a_diff(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l02": "length sets the tempo"})
+    path = sdir / "audio" / "vo" / run.HEARD_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["lines"]["l02"]["text"] = "Length sets the tempo."  # the voice was asked for other words
+    path.write_text(json.dumps(data), encoding="utf-8")
+    row = _block(sdir)["lines"][1]
+    assert row["stale"] is True and row["diff"] is None and row["ok"] is None and row["said"] is None
+
+
+def test_a_line_whose_take_was_deleted_shows_unchecked_not_the_old_heard_text(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l02": "length set the beat"})
+    (sdir / "audio" / "vo" / "l02.wav").unlink()  # what a re-take does
+    row = _block(sdir)["lines"][1]
+    assert row["waiting"] is True
+    assert row["said"] is None and row["diff"] is None and row["ok"] is None and row["wer"] is None
+
+
+def test_heard_with_a_reason_it_was_not_checked(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {}, checked=False, why_not=run.WHISPER_MISSING)
+    b = _block(sdir)
+    assert b["checked"] is False and b["why_not"] == run.WHISPER_MISSING and b["lines"][0]["ok"] is None
+
+
+def test_voice_never_moves_the_narration_version(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l02": "length sets the beat"})
+    ctx = snapshot.load_ctx(sdir, {})
+    before = snapshot.stage_version(sdir, "narration", ctx)
+    pagefix.write_heard(sdir, {"l02": "length set the beat"})
+    assert snapshot.stage_version(sdir, "narration", snapshot.load_ctx(sdir, {})) == before
+
+
+def test_a_take_newer_than_heard_json_is_waiting_not_the_old_diff(tmp_path):
+    """A re-take writes the new wav before heard.json is rewritten: until then the old words must not show."""
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l02": "length set the beat"})
+    vo = sdir / "audio" / "vo"
+    old = time.time() - 100
+    os.utime(vo / run.HEARD_FILE, (old, old))
+    (vo / "l02.wav").write_bytes(b"RIFF")  # touched after heard.json
+    row = _block(sdir)["lines"][1]
+    assert row["waiting"] is True
+    assert row["said"] is None and row["diff"] is None and row["ok"] is None and row["wer"] is None
+
+
+def test_word_diff_slides_over_a_run_of_equal_words():
+    assert worddiff.diff("go on now", "go on on now") == [
+        ["same", "go"], ["same", "on"], ["extra", "on"], ["same", "now"]]  # fmt: skip
+    assert worddiff.diff("the the the cat", "the the cat") == [
+        ["same", "the"], ["same", "the"], ["missing", "the"], ["same", "cat"]]  # fmt: skip
+    assert worddiff.diff("a b b b c", "a x b b b c")[:3] == [["same", "a"], ["extra", "x"], ["same", "b"]]
+
+
+def test_a_corrupt_heard_file_says_so(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    vo = sdir / "audio" / "vo"
+    vo.mkdir(parents=True, exist_ok=True)
+    (vo / run.HEARD_FILE).write_text("{not json", encoding="utf-8")
+    b = _block(sdir)
+    assert b == {"lines": [], "checked": False, "why_not": "The voice check file can't be read.", "log_notes": [], "log": None}
+    (vo / run.HEARD_FILE).write_text("[1]", encoding="utf-8")
+    assert _block(sdir)["why_not"] == "The voice check file can't be read."
+
+
+def test_a_word_error_rate_at_the_limit_passes(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork"})
+    path = sdir / "audio" / "vo" / run.HEARD_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["lines"]["l01"]["wer"] = WER_LIMIT
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert _block(sdir)["lines"][0]["ok"] is True
+    data["lines"]["l01"]["wer"] = WER_LIMIT + 0.01
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert _block(sdir)["lines"][0]["ok"] is False
+
+
+def _heard_closing(sdir, said: str) -> None:
+    path = sdir / "audio" / "vo" / run.HEARD_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    want = "Visit example dot com."
+    data["lines"]["closing"] = {"text": want, "said": said, "wer": pagefix._wer(want, said)}
+    (sdir / "audio" / "vo" / "closing.wav").write_bytes(b"RIFF")
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+CLOSING_SETTINGS = {"website": "example.com", "closing": {"voice_line": "Visit example dot com."}}
+
+
+def test_the_closing_line_shows_once_heard_json_has_it(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork"})
+    narration = snapshot.build(sdir, settings=CLOSING_SETTINGS)["stages"][4]["content"]
+    assert [r["id"] for r in narration["voice"]["lines"]] == ["l01", "l02", "l03", "l04"]  # not narrated: no row
+    _heard_closing(sdir, "visit example dot calm")
+    rows = snapshot.build(sdir, settings=CLOSING_SETTINGS)["stages"][4]["content"]["voice"]["lines"]
+    assert [r["id"] for r in rows] == ["l01", "l02", "l03", "l04", "closing"]
+    assert rows[-1]["text"] == "Visit example dot com." and rows[-1]["ok"] is False and rows[-1]["diff"]
+    rows = snapshot.build(sdir, settings={})["stages"][4]["content"]["voice"]["lines"]
+    assert [r["id"] for r in rows] == ["l01", "l02", "l03", "l04"]  # no closing line set any more: no row
+
+
+def test_the_voice_check_retries_a_heard_file_being_replaced(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from bsa.review import store
+
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork"})
+    real, denied = Path.read_bytes, []
+
+    def flaky(self):
+        if self.name == run.HEARD_FILE and len(denied) < 2:
+            denied.append(self)
+            raise PermissionError(13, "Access is denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(store, "_RETRY_DENIED", True)
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: flaky(self).decode("utf-8"))
+    assert _block(sdir)["lines"][0]["ok"] is True and len(denied) == 2
+
+
+def _record(sdir, sources, reasons=None, log=None):
+    vo = sdir / "audio" / "vo"
+    vo.mkdir(parents=True, exist_ok=True)
+    (vo / "narrator.json").write_text(json.dumps({"sources": sources, "reasons": reasons or {}}), encoding="utf-8")
+    if log is not None:
+        (vo / "narrator.log").write_text(log, encoding="utf-8")
+
+
+def test_rows_carry_the_source_and_the_log_notes(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    pagefix.write_heard(sdir, {"l01": "a pendulum swings like clockwork", "l02": "length sets the beat"})
+    plain = _block(sdir)
+    assert plain["log_notes"] == [] and plain["log"] is None
+    assert [(r["source"], r["reason"]) for r in plain["lines"]] == [(None, None)] * 4
+    _record(sdir, {"l01": "take", "l02": "line", "l03": "fallback"}, {"l03": "no pause between l02 and l03"},
+            log="=== run ===\nfine\n[x] warning: fell back\n")  # fmt: skip
+    b = _block(sdir)
+    rows = {r["id"]: r for r in b["lines"]}
+    assert (rows["l01"]["source"], rows["l01"]["reason"]) == ("take", None)
+    assert (rows["l02"]["source"], rows["l02"]["reason"]) == ("line", None)
+    assert (rows["l03"]["source"], rows["l03"]["reason"]) == ("fallback", "no pause between l02 and l03")
+    assert rows["l04"]["source"] is None
+    assert b["log_notes"] == ["[x] warning: fell back"] and b["log"] == "audio/vo/narrator.log"
+
+
+def test_the_log_notes_show_even_before_a_voice_check_exists(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "narration")
+    _record(sdir, {}, log="warning: slow\n")
+    b = _block(sdir)
+    assert b["lines"] == [] and b["why_not"] == "Not narrated yet."
+    assert b["log_notes"] == ["warning: slow"] and b["log"] == "audio/vo/narrator.log"

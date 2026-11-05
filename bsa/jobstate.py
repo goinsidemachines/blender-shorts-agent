@@ -12,8 +12,10 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-STAGES = ["interview", "story", "storyboard", "engine", "narration", "build", "checks", "preview", "final", "post"]
-APPROVALS = {"story", "storyboard", "engine"}
+# Every stage a short can have. "camera" is optional: only a short that asks for it has it (wanted_stages).
+STAGES = ["interview", "story", "storyboard", "camera", "engine", "narration", "build", "checks", "preview", "final",
+          "post"]  # fmt: skip
+APPROVALS = {"story", "storyboard", "camera", "engine"}
 BACKUP = "state.json.bak"
 
 
@@ -167,9 +169,21 @@ def mark_done(short_dir: Path, stage: str, **info) -> None:
     _save(short_dir, state)
 
 
+def wanted_stages(short_dir: Path) -> list[str]:
+    """The stages of this short, in order: STAGES without "camera" unless source/short.json asks for the camera
+    approval (a one-take short, or camera.approve). A short.json that can't be read has no camera stage."""
+    from bsa.short import camera_stage_wanted, load_short
+
+    try:
+        wanted = camera_stage_wanted(load_short(Path(short_dir) / "source" / "short.json"))
+    except Exception:  # noqa: BLE001 - missing, not JSON or of the wrong shape: the stages every short has
+        wanted = False
+    return [s for s in STAGES if wanted or s != "camera"]
+
+
 def next_stage(short_dir: Path) -> str | None:
     done = load_state(short_dir)["stages"]
-    return next((s for s in STAGES if s not in done), None)
+    return next((s for s in wanted_stages(short_dir) if s not in done), None)
 
 
 def reset_from(short_dir: Path, stage: str) -> None:

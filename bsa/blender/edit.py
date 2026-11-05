@@ -7,13 +7,13 @@ Text strip geometry: the VSE places text by a normalised anchor (0-1, origin bot
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
 import bpy
 
 from bsa.fonts import (  # noqa: F401 - find_font_file, font_dirs re-exported
+    caption_font_name,
     cover_font,
     family_of,
     find_font_file,
@@ -25,8 +25,10 @@ from bsa.fonts import (  # noqa: F401 - find_font_file, font_dirs re-exported
     resolve,
 )
 from bsa.layout import H, Rect, W, caption_rect, end_card_band, safe_rect
-from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-exported for callers of the edit
+from bsa.overlays import (  # noqa: F401 - the text sizes, estimates and colours are re-exported for callers
+    BADGE_COLOR,
     BADGE_SIZE,
+    BOX_COLOR,
     CAPTION_MARGIN,
     CAPTION_SIZE,
     CHAR_W,
@@ -36,6 +38,7 @@ from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-e
     NEAR_WRAP_PX,
     SMALL_MARGIN,
     STACK_GAP_PX,
+    caption_colours,
     caption_size,
     captions,
     corner_stack,
@@ -44,15 +47,14 @@ from bsa.overlays import (  # noqa: F401 - the text sizes and estimates are re-e
 )
 from bsa.overlays import est_lines as _est_lines
 from bsa.overlays import est_width as _est_width
+from bsa.overlays import hex_colour as _hex_colour  # noqa: F401 - moved to overlays; closing_card imports it here
 from bsa.settings import end_card
-from bsa.short import Short, label_near, label_text
+from bsa.short import Short, label_anchor, label_near, label_text
 from bsa.timeline import Timeline, end_card_start
 
 END_SIZE = 72
 END_LINE_SIZE = 44
 END_GAP_PX = 24  # clear space between the end-card line's box and the @handle box
-BOX_COLOR = (0.02, 0.025, 0.03, 0.55)
-BADGE_COLOR = (1.0, 0.8, 0.35, 1.0)
 
 CH_SOUND, CH_CAPTION, CH_BADGE, CH_LABEL, CH_END = 2, 10, 11, 12, 30
 
@@ -60,6 +62,7 @@ FONT_NOTE_PROP = "bsa_font_fallback"
 FONT_USED_PROP = "bsa_font_used"
 END_NOTE_PROP = "bsa_end_card_note"
 GLYPH_NOTE_PROP = "bsa_glyph_fallbacks"
+KIT_CARDS_PROP = "bsa_kit_cards"
 
 
 def text_strip_rect(strip) -> Rect:
@@ -101,29 +104,9 @@ def font_note(scene) -> str | None:
     return scene.get(FONT_NOTE_PROP) or None
 
 
-def _hex_colour(value, alpha: float = 1.0):
-    """'#RRGGBB' or '#RRGGBBAA' as an RGBA tuple of 0..1 floats; None when it is not one. A colour the user gives
-    as 6 digits is opaque (alpha 1, the default); 8 digits keep their own alpha."""
-    text = str(value or "").strip().lstrip("#")
-    if not re.fullmatch(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text):
-        return None
-    rgba = [int(text[i : i + 2], 16) / 255 for i in range(0, len(text), 2)]
-    return tuple(rgba) if len(rgba) == 4 else (*rgba, alpha)
-
-
-def caption_colours(short: Short, settings: dict) -> tuple[tuple, tuple]:
-    """(text, box) colours of the captions: `brand.caption` `color` and `box` from settings (not for a short with its
-    own look, "look": "fresh"), overridden by the short's own `style.caption`; white text on the dark see-through box
-    (BOX_COLOR) when neither sets them. A `box` of 6 hex digits is opaque; 8 digits ("#14161A80") keep their alpha."""
-    from bsa.settings import brand_for
-
-    cap = {}
-    for src in (brand_for(settings, short).get("caption"), short.style.get("caption")):
-        if isinstance(src, dict):
-            cap.update(src)
-    text = _hex_colour(cap.get("color") or cap.get("colour"), 1.0) or (1.0, 1.0, 1.0, 1.0)
-    box = _hex_colour(cap.get("box") or cap.get("box_color") or cap.get("box_colour"), 1.0) or BOX_COLOR
-    return text, box
+def kit_cards(scene) -> int:
+    """How many card images a brand kit placed in the edit (0 without a kit)."""
+    return int(scene.get(KIT_CARDS_PROP, 0))
 
 
 def glyph_fallbacks(scene) -> list[str]:
@@ -163,7 +146,10 @@ class _Texts:
         return self.font
 
     def add(self, text, f0, f1, channel, size, loc, anchor, margin, color=(1, 1, 1, 1), bold=True, wrap_px=None,
-            box=BOX_COLOR):
+            box=BOX_COLOR, frame=(W, H)):
+        """A text strip. `loc` is normalised by `frame` (the render's size: the edit's by default) and the text
+        wraps at `wrap_px` (default: the safe width less the box), as a share of the frame's width. `margin` is the
+        strip's box_margin as given (Blender takes it as a share of the image width)."""
         s = self.strips.new_effect(f"T_{text[:18]}", "TEXT", channel, f0, length=f1 - f0 + 1)
         s.text = text
         font = self._font_for(text)
@@ -175,7 +161,7 @@ class _Texts:
         s.location = loc
         s.anchor_x, s.anchor_y = anchor
         s.alignment_x = anchor[0]
-        s.wrap_width = (wrap_px if wrap_px is not None else safe_rect().w - 2 * margin * H) / W
+        s.wrap_width = (wrap_px if wrap_px is not None else safe_rect().w - 2 * margin * H) / frame[0]
         s.use_shadow = False  # the box gives the contrast
         s.use_box = True
         s.box_color = box
@@ -222,8 +208,8 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
     size = caption_size(short)
     cx = safe.x + safe.w / 2
     colour, box = caption_colours(short, settings)
-    cards = captions(short, tl)  # near labels keep off the caption bands
-    for card, (f0, f1, _, _, bottom) in zip(tl.cards, cards, strict=True):
+    cards = captions(short, tl)  # near labels keep off the caption bands; none with style.caption.draw false
+    for card, (f0, f1, _, _, bottom) in zip(tl.cards if cards else [], cards, strict=True):
         texts.add(card.text, f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
                   color=colour, box=box)  # fmt: skip
 
@@ -244,13 +230,38 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
             text, near = label_text(label), label_near(label)
             if not near:
                 continue
-            points = ((anchors or {}).get(shot.id) or {}).get(near)
+            points = ((anchors or {}).get(shot.id) or {}).get(label_anchor(label))
             if points is None:
                 raise ValueError(f"no anchors for label {text!r} near {near!r} in shot {shot.id}: run BLENDER "
                                  "anchors SHORT")  # fmt: skip
             strip = texts.add(text, span.f0, span.f1, CH_LABEL + i, LABEL_SIZE, (0.5, 0.5), ("CENTER", "BOTTOM"),
                               SMALL_MARGIN, bold=False, wrap_px=NEAR_WRAP_PX)  # fmt: skip
             _follow(strip, points, span, cards, fixed, placed, (label_heroes or {}).get(shot.id), near)
+
+
+_TEMP_CARD_DIRS: list = []  # the edits' temp card folders without a short folder (tempfile.TemporaryDirectory)
+
+
+def _add_kit(short: Short, tl: Timeline, seq, k, sdir: Path | None, anchors: dict | None,
+             label_heroes: dict | None) -> tuple[int, list[str], Path | None]:  # fmt: skip
+    """The brand kit's cards as image strips where bsa.kitlayout puts them, drawn into `sdir`/cards (a temp folder
+    without a short folder). Returns (card images placed, notes: the card font's and the layout's, the card font)."""
+    import tempfile
+
+    from bsa import cards, kitlayout
+    from bsa.blender.cards import add_overlay
+
+    font, note = cards.card_font_and_note(k, font_caches(sdir))
+    ov = kitlayout.build(short, tl, k, font, anchors, label_heroes)
+    if sdir is not None:
+        cache_dir = Path(sdir) / "cards"
+    else:  # one temp folder per call, kept until Blender exits (the strips are encoded after this returns)
+        _TEMP_CARD_DIRS.append(tempfile.TemporaryDirectory(prefix="bsa-cards-", ignore_cleanup_errors=True))
+        cache_dir = Path(_TEMP_CARD_DIRS[-1].name)
+    before = {s.name for s in seq.strips_all}
+    add_overlay(seq, ov, cache_dir)
+    placed = sum(1 for s in seq.strips_all if s.type == "IMAGE" and s.name not in before)
+    return placed, [n for n in [note, *ov.notes] if n], font
 
 
 def _add_end_card(tl: Timeline, texts: _Texts, settings: dict, heroes: dict | None = None, short=None) -> str | None:
@@ -351,8 +362,10 @@ def build_edit(
     closing: dict | None = None,
 ):
     """Create the `Edit` scene: shot frames, captions, badges, labels, optional @handle end card, the closing card
-    and sound. `closing` ({"png", "f0", "n_frames"}, bsa.closing.plan) holds the closing card's PNG after the story,
-    from frame f0 (the frame after the timeline) for n_frames; the mix already covers them. `anchors`
+    and sound. With a brand kit (bsa.kit.kit_for: brand.style set) the captions, badges and labels are the kit's
+    cards (image strips, bsa.kitlayout); without one, today's text strips, unchanged. The end card is text in both.
+    `closing` ({"png", "f0", "n_frames"}, bsa.closing.plan) holds the closing card's PNG after the story, from frame
+    f0 (the frame after the timeline) for n_frames; the mix already covers them. `anchors`
     ({shot: {object: {"f0", "points"}}}, from source/anchors.json) places labels that are near an object; `hero_boxes`
     (the last shot's {"f0", "boxes", "scenery"} from anchors.json) keeps the end card off its heroes, then off its
     other meshes; `label_heroes` ({shot: {"f0", "boxes"}}) keeps near labels off the other heroes of their shot."""
@@ -368,14 +381,31 @@ def build_edit(
         card = seq.strips.new_image("Closing card", str(closing["png"]), 1, closing["f0"], fit_method="FIT")
         card.frame_final_duration = closing["n_frames"]
     sdir = Path(out_mp4).parent.parent if Path(out_mp4).parent.name == "out" else None  # <short>/out/<slug>.mp4
-    font, used, note = _load_font(short.style.get("font"), font_caches(sdir))
+    from bsa import kit as kit_mod
+
+    k = kit_mod.kit_for(settings, short)
+    # without a kit the captions fall back to brand.font (a fresh look gets none); a kit keeps its own card font
+    name = short.style.get("font") if k is not None else caption_font_name(short, settings)
+    font, used, note = _load_font(name or None, font_caches(sdir))
     if note:
         scene[FONT_NOTE_PROP] = note
     if used:
         scene[FONT_USED_PROP] = used
     texts = _Texts(seq.strips, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
-    _add_overlays(short, tl, texts, settings, anchors, label_heroes)
-    note = _add_end_card(tl, texts, settings, hero_boxes, short)
+    if k is None:  # no brand.style: exactly today's text captions, badges and labels
+        _add_overlays(short, tl, texts, settings, anchors, label_heroes)
+    else:
+        n, notes, card_font = _add_kit(short, tl, seq, k, sdir, anchors, label_heroes)
+        scene[KIT_CARDS_PROP] = n
+        texts.notes += notes
+        if not short.style.get("font") and card_font is not None:  # the end card in the kit's font, as its cards
+            try:
+                texts.font = bpy.data.fonts.load(str(card_font), check_existing=True)
+                texts.font_path = Path(card_font)
+                scene[FONT_USED_PROP] = family_of(card_font)
+            except RuntimeError:
+                pass
+    note = _add_end_card(tl, texts, settings, hero_boxes, short)  # today's text strips, with a kit too
     if note:
         scene[END_NOTE_PROP] = note
     if texts.notes:

@@ -2,20 +2,27 @@
 Blender's Python, BLENDER commands in background Blender), JSON on stdout or a BSA_RESULT line, one plain line on
 stderr on failure. Integration bugs are fixed in the owning modules, never here."""
 
-import html
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source"
 RESULT = "BSA_RESULT "
 
 pytestmark = [pytest.mark.blender, pytest.mark.slow]
+
+
+def _stage(short: Path, stage: str) -> dict:
+    """One stage of the short's page, as the page's snapshot gives it."""
+    from bsa.review import snapshot
+
+    return next(s for s in snapshot.build(short, settings={})["stages"] if s["id"] == stage)
 
 
 class Pipeline:
@@ -33,7 +40,7 @@ class Pipeline:
             import sys
 
             cmd = [sys.executable, *cmd[1:]]
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env=self.env, cwd=str(self.home), timeout=timeout)  # fmt: skip
         assert proc.returncode == 0, f"{cmd[-4:]} failed:\n{proc.stdout[-4000:]}\n{proc.stderr[-4000:]}"
         return json.loads(proc.stdout)
@@ -44,7 +51,7 @@ class Pipeline:
     def blender_cmd(self, *args, blend: Path | None = None, timeout=1800) -> dict:
         cmd = [self.blender, "-b", *([str(blend)] if blend else []), "--factory-startup", "--python-exit-code", "1",
                "--python", str(ROOT / "bsa_blender.py"), "--", *map(str, args)]  # fmt: skip
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env=self.env, cwd=str(self.home), timeout=timeout)  # fmt: skip
         assert proc.returncode == 0, f"{args} failed:\n{proc.stdout[-4000:]}\n{proc.stderr[-4000:]}"
         lines = [ln for ln in proc.stdout.splitlines() if ln.startswith(RESULT)]
@@ -54,16 +61,15 @@ class Pipeline:
     def build(self, short: Path) -> None:
         cmd = [self.blender, "-b", "--factory-startup", "--python-exit-code", "1",
                "--python", str(short / "source" / "build.py"), "--", str(ROOT), str(short)]  # fmt: skip
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                               env=self.env, cwd=str(self.home), timeout=600)  # fmt: skip
         assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
         assert (short / "blend" / "short.blend").is_file()
 
 
-def test_script_mode_end_to_end(tmp_path):
-    home = tmp_path / "bsa_home"
-    home.mkdir()
-    p = Pipeline(home)
+def _to_build(p: Pipeline, tmp_path: Path) -> Path:
+    """The sample short from a new workspace up to the build marked done (narrated, rebuilt to the final timing,
+    mixed). Returns the short's folder."""
     workspace = tmp_path / "My Shorts é"
     p.cli("settings", "set", "workspace", workspace)
     p.cli("settings", "set", "narrator.provider", "none")
@@ -75,19 +81,19 @@ def test_script_mode_end_to_end(tmp_path):
     shutil.copyfile(SAMPLE / "short.json", short / "source" / "short.json")
     shutil.copyfile(SAMPLE / "build.py", short / "source" / "build.py")
     blend = short / "blend" / "short.blend"
-    findings = []
 
     assert p.cli("validate", "pendulum")["ok"]
     p.cli("state", "pendulum", "done", "interview")
-    p.cli("state", "pendulum", "done", "story")
-    timeline = p.cli("timeline", "pendulum")
+    p.cli("page", "decide", "pendulum", "story", "approve", "--by", "chat")
+    p.cli("timeline", "pendulum")
     p.build(short)
     stills = p.blender_cmd("stills", "pendulum", blend=blend)["stills"]
     assert len(stills) == 3 and all(Path(s).stat().st_size > 0 for s in stills)
-    board = Path(p.cli("review", "storyboard", "pendulum")["page"])
-    assert board == short / "review" / "storyboard.html" and board.is_file()
-    p.cli("state", "pendulum", "done", "storyboard")
-    p.cli("state", "pendulum", "done", "engine", "--info", json.dumps({"engine": "eevee"}))
+    board = p.cli("review", "storyboard", "pendulum")  # the old command now gives the one page's link
+    assert board["page"] is None and board["deprecated"] == "use CLI page SHORT"  # no page server: none started
+    assert _stage(short, "storyboard")["needs_yes"] is True
+    p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
+    p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
 
     narration = p.cli("narrate", "pendulum")
     assert narration["status"] == "captions-only"
@@ -96,6 +102,54 @@ def test_script_mode_end_to_end(tmp_path):
     mix = p.cli("mix", "pendulum")
     assert mix["n_frames"] == timeline["n_frames"]
     p.cli("state", "pendulum", "done", "build")
+    return short
+
+
+def _pipeline(tmp_path: Path) -> Pipeline:
+    home = tmp_path / "bsa_home"
+    home.mkdir()
+    return Pipeline(home)
+
+
+def _render_settings(p: Pipeline, blend: Path) -> dict:
+    """Each scene's render engine and resolution percentage, read from the saved .blend in a fresh Blender."""
+    code = ("import bpy, json; print('BSA_SETTINGS ' + json.dumps({s.name: [s.render.engine, "
+            "s.render.resolution_percentage] for s in bpy.data.scenes}))")  # fmt: skip
+    proc = _proc.run([p.blender, "-b", str(blend), "--factory-startup", "--python-expr", code], check=False,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=p.env,
+                          timeout=300)  # fmt: skip
+    line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("BSA_SETTINGS "))
+    return json.loads(line[len("BSA_SETTINGS ") :])
+
+
+def _camtest(p: Pipeline, short: Path, blend: Path, timeline: dict) -> None:
+    """BLENDER camtest on the built short, the real way: a Workbench grey clip of s01 at 5 % (54x96), its sheet and a
+    current record; the .blend is never saved, and its engine and resolution are as they were."""
+    from bsa import camtest, freshness
+    from bsa.timeline import timeline_hash
+
+    settings, stamp = _render_settings(p, blend), blend.stat().st_mtime_ns
+    out = p.blender_cmd("camtest", "pendulum", "--scale", "0.05", "--shots", "s01")
+    s01 = next(s for s in timeline["shots"] if s["id"] == "s01")
+    n = s01["f1"] - s01["f0"] + 1
+    assert out["shots"] == ["s01"] and out["frames"] == n and out["percent"] == 5
+    info = p.blender_cmd("probe", out["mp4"])
+    assert (info["width"], info["height"], info["frames"]) == (54, 96, n), info
+    assert Path(out["sheet"]).is_file() and Path(out["sheet"]).stat().st_size > 0
+    rec = json.loads((short / camtest.FOLDER / camtest.RECORD).read_text(encoding="utf-8"))
+    assert camtest.stale(rec, freshness.blend_stat(short), timeline_hash(timeline)) is None
+    assert blend.stat().st_mtime_ns == stamp
+    assert _render_settings(p, blend) == settings
+    assert all(engine != "BLENDER_WORKBENCH" for engine, _ in settings.values())
+
+
+def test_script_mode_end_to_end(tmp_path):
+    p = _pipeline(tmp_path)
+    short = _to_build(p, tmp_path)
+    blend = short / "blend" / "short.blend"
+    timeline = json.loads((short / "source" / "timeline.json").read_text(encoding="utf-8"))
+    findings = []
+    _camtest(p, short, blend, timeline)
 
     check = p.blender_cmd("check", "pendulum", blend=blend)
     findings += check["findings"]
@@ -108,8 +162,7 @@ def test_script_mode_end_to_end(tmp_path):
     assert status["settings"]["engine"] == "eevee" and status["settings"]["percent"] == 50
     assert status["checks"]["frames_checked"] >= 1 and status["checks"]["errors"] == 0
     assert all((short / "review" / sh["thumb"]).is_file() for sh in status["shots"] if sh["thumb"])
-    assert Path(status["page"]) == short / "review" / "render-preview.html"
-    assert "Done" in Path(status["page"]).read_text(encoding="utf-8")
+    assert status["page"] is None and not list((short / "review").glob("*.html"))
     assert status["kind"] == "render" and status["previous"]["kind"] == "check"  # the check's run, superseded
     assert status["previous"]["state"] == "done"
     again = p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)  # resumed: nothing to render
@@ -139,8 +192,26 @@ def test_script_mode_end_to_end(tmp_path):
     assert probe["fps"] == pytest.approx(30.0)
     assert probe["frames"] == timeline["n_frames"]
     assert probe["has_audio"] is True
-    assert (short / "review" / "storyboard.html").is_file()
     assert p.cli("state", "pendulum")["next"] == "final"
+
+    # ---- thumbnails from the preview frames, both sizes at their real pixels
+    sjson = short / "source" / "short.json"
+    original = sjson.read_bytes()
+    data = json.loads(original)
+    data["post"]["thumbnail"] = {"title": ["Why it", "keeps time"], "kicker": "Pendulums"}
+    sjson.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    s01_mid, s03_mid = ((s["f0"] + s["f1"]) // 2 for s in timeline["shots"] if s["id"] in ("s01", "s03"))
+    thumbs_out = p.blender_cmd("thumbs", "pendulum", "--hero", f"s01@{s01_mid}", "--hero", f"s03@{s03_mid}",
+                               blend=blend)  # fmt: skip
+    sjson.write_bytes(original)  # the rest of the run is on the sample as it was
+    assert thumbs_out["thumbs"] == "review/thumbs.json"
+    assert [c["n"] for c in thumbs_out["candidates"]] == [1, 2]
+    assert all(c["source"] == "preview" for c in thumbs_out["candidates"])
+    from bsa import image_checks
+
+    for c in thumbs_out["candidates"]:
+        assert image_checks.png_size(short / c["files"]["1080x1920"]) == (1080, 1920)
+        assert image_checks.png_size(short / c["files"]["1280x720"]) == (1280, 720)
 
     # ---- only what changed renders again
     cache = short / "blend" / "short.fingerprints.json"
@@ -155,7 +226,7 @@ def test_script_mode_end_to_end(tmp_path):
     tweak = tmp_path / "tweak.py"  # move only shot s03's camera (the Clock scene)
     tweak.write_text("import bpy\nbpy.data.objects['Clock camera'].data.lens = 55.0\nbpy.ops.wm.save_mainfile()\n",
                      encoding="utf-8")  # fmt: skip
-    proc = subprocess.run([p.blender, "-b", str(blend), "--factory-startup", "--python-exit-code", "1", "--python",
+    proc = _proc.run([p.blender, "-b", str(blend), "--factory-startup", "--python-exit-code", "1", "--python",
                            str(tweak)], check=False, capture_output=True, text=True, timeout=300)  # fmt: skip
     assert proc.returncode == 0, proc.stderr[-2000:]
     changed = p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)
@@ -164,7 +235,6 @@ def test_script_mode_end_to_end(tmp_path):
     assert by["s03"]["rendered"] == by["s03"]["frames"] and by["s03"]["why"] == "fingerprint changed"
     status = p.cli("render-status", "pendulum", "--preset", "preview")
     assert [sh["reason"] for sh in status["shots"]] == [None, None, "fingerprint changed"]
-    assert "rendered again: fingerprint changed" in Path(status["page"]).read_text(encoding="utf-8")
     check = p.blender_cmd("check", "pendulum", blend=blend)
     assert check["checked"] == ["s03"] and sorted(check["kept"]) == ["s01", "s02"]
 
@@ -186,8 +256,8 @@ def test_script_mode_end_to_end(tmp_path):
     redo = p.blender_cmd("render", "pendulum", "--preset", "preview", "--redo-flagged", blend=blend)
     assert redo["redo"] == {"s02": f"{s02['f0'] + 4}-{s02['f0'] + 6}"}
     frame_check = p.blender_cmd("frame-check", "pendulum", "--preset", "preview")
-    for f in frame_check["findings"]:
-        assert f["shot"] and (f["frame"] is None or f["redo"].startswith("BLENDER render"))
+    for f in frame_check["findings"]:  # shading is the scene's light, not a bad render: no redo for it
+        assert f["shot"] and (f["frame"] is None or f["check"] == "shading" or f["redo"].startswith("BLENDER render"))
     cache.unlink()  # the edit fingerprints the .blend itself when no cache is current, then edits as before
     edit = p.blender_cmd("edit", "pendulum", "--preset", "preview")
     assert p.blender_cmd("probe", edit["mp4"])["frames"] == timeline["n_frames"]
@@ -208,20 +278,86 @@ def test_script_mode_end_to_end(tmp_path):
     assert [s["rendered"] for s in same["shots"]] == [0, 0, 0], same["shots"]
     p.blender_cmd("edit", "pendulum", "--preset", "preview")
 
-    # ---- review final reads what check and frame-check wrote (issue #13)
-    page = Path(p.cli("review", "final", "pendulum")["page"]).read_text(encoding="utf-8")
+    # ---- the page's Final stage reads what check and frame-check wrote (issue #13)
+    final = _stage(short, "final")["content"]
+    wheres = [f["where"] for f in final["findings"]]
     for f in json.loads((short / "review" / "checks.json").read_text(encoding="utf-8"))["findings"]:
-        assert f"shot{'s' if len(f['shots']) > 1 else ''} {', '.join(f['shots'])}" in page
+        assert any(f"shot{'s' if len(f['shots']) > 1 else ''} {', '.join(f['shots'])}" in w for w in wheres)
+    redos = {f["redo"] for f in final["findings"]}
     for f in frame_check["findings"]:
         if f.get("redo"):
-            assert html.escape(f["redo"]) in page
+            assert f["redo"] in redos
 
     # ---- a refusal still prints its BSA_RESULT, with the error
     cmd = [p.blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", str(ROOT / "bsa_blender.py"),
            "--", "edit", "pendulum", "--preset", "final"]  # fmt: skip
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env=p.env, cwd=str(p.home), timeout=600)  # fmt: skip
     assert proc.returncode != 0
     (line,) = [ln for ln in proc.stdout.splitlines() if ln.startswith(RESULT)]
     result = json.loads(line[len(RESULT) :])
     assert result["ok"] is False and "final" in result["error"] and result["error"] in proc.stderr
+
+
+def test_preview_runs_the_checks_beside_the_render(tmp_path):
+    """BLENDER preview checks in a second Blender while it renders: in its status the check and render steps
+    overlap, the checks are written with their stamp and the checks stage is marked."""
+    p = _pipeline(tmp_path)
+    short = _to_build(p, tmp_path)
+    out = p.blender_cmd("preview", "pendulum")
+    assert [s["step"] for s in out["steps"]][-3:] == ["frame-check", "check", "edit"], out["steps"]
+    assert "warnings" not in out or not any("checks.json" in w for w in out["warnings"]), out.get("warnings")
+    status = json.loads((short / "review" / "render-status-preview.json").read_text(encoding="utf-8"))
+    by = {s["name"]: s for s in status["run"]["steps"]}
+    check, render = by["check"], by["render"]
+    assert status["state"] == "done" and check["state"] == render["state"] == "done", status["run"]["steps"]
+    assert check["started"] < render["finished"] and render["started"] < check["finished"]
+    assert check["progress"]["done"] == check["progress"]["total"] > 0  # its progress came through the chain
+    assert json.loads((short / "review" / "checks.json").read_text(encoding="utf-8"))["stamp"]
+    assert "checks" in p.cli("state", "pendulum")["stages"]
+
+
+def test_one_take_short_builds_and_edits(tmp_path):
+    """A one-take short through the pipeline: its shots are the windows on the camera path (build.py drives the
+    camera from them), and check, render and edit work per shot as for cuts."""
+    from bsa.short import load_short
+    from bsa.timeline import window_frames
+
+    p = _pipeline(tmp_path)
+    workspace = tmp_path / "My Shorts é"
+    p.cli("settings", "set", "workspace", workspace)
+    p.cli("settings", "set", "narrator.provider", "none")
+    p.cli("settings", "set", "render.engine", "eevee")
+    p.cli("settings", "set", "handle", "")  # no end card: three 3 s windows have no room for one
+    short = Path(p.cli("new-short", "Pendulum")["short"])
+    for name in ("short.json", "build.py"):
+        shutil.copyfile(ROOT / "tests" / "e2e" / "one_take" / "source" / name, short / "source" / name)
+    blend = short / "blend" / "short.blend"
+
+    assert p.cli("validate", "pendulum")["ok"]
+    p.cli("state", "pendulum", "done", "interview")
+    p.cli("page", "decide", "pendulum", "story", "approve", "--by", "chat")
+    out = p.cli("timeline", "pendulum")
+    windows = window_frames(load_short(short / "source" / "short.json"))
+    assert {s["id"]: (s["f0"], s["f1"]) for s in out["shots"]} == windows == {
+        "s01": (1, 90), "s02": (91, 180), "s03": (181, 270)}  # fmt: skip
+    assert out["n_frames"] == 270
+    p.build(short)
+    p.cli("page", "decide", "pendulum", "storyboard", "approve", "--by", "chat")
+    assert p.cli("state", "pendulum")["next"] == "camera"  # a one-take short's camera is approved before the engine
+    clip = p.blender_cmd("camtest", "pendulum", "--scale", "0.1", blend=blend)
+    assert clip["shots"] == ["s01", "s02", "s03"] and clip["frames"] == 270
+    p.cli("page", "decide", "pendulum", "camera", "approve", "--by", "chat")
+    p.cli("page", "decide", "pendulum", "engine", "approve", "--by", "chat", "--choice", "eevee")
+    timeline = p.cli("narrate", "pendulum")["timeline"]
+    assert timeline["n_frames"] == 270  # the picture sets the clock: narration never moves a window
+    p.build(short)
+    p.cli("mix", "pendulum")
+    p.cli("state", "pendulum", "done", "build")
+
+    findings = p.blender_cmd("check", "pendulum", "--every", "5", blend=blend)["findings"]
+    p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)
+    edit = p.blender_cmd("edit", "pendulum", "--preset", "preview")
+    probe = p.blender_cmd("probe", edit["mp4"])
+    assert probe["frames"] == 270 and (probe["width"], probe["height"]) == (1080, 1920)
+    assert [f for f in findings if f["severity"] == "error"] == [], findings

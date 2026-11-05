@@ -4,9 +4,10 @@ changes one shot leaves the other shots' frames, checks and anchors current.
 Two parts:
 
 - static: every datablock the shot's scene reaches (render settings, world, view layers and collections, objects
-  and their modifiers, constraints and particle settings, mesh / curve / text data, materials and node trees, images
-  and fonts with their files' size and time, lights, cameras, the compositor), walked generically through RNA, so a
-  property nobody thought of is still in it. Animated and driven properties are left out of this part.
+  and their modifiers with their geometry nodes inputs, constraints and particle settings, mesh / curve / text
+  data, materials and node trees, images and fonts with their files' size and time, lights, cameras, the
+  compositor), walked generically through RNA, so a property nobody thought of is still in it. Animated and driven
+  properties are left out of this part.
 - per frame, for every frame of the shot: each object's evaluated world matrix and visibility, the scene camera,
   every animated or driven property's value, and the evaluated geometry of objects that change with time on their
   own (geometry nodes reading the scene time or simulating, physics, wave and build modifiers).
@@ -125,6 +126,8 @@ class _Hasher:
             mine: list = []
             self._walk(idb, h, 0, set(), _animated_paths(idb), mine)
             self._extra(idb, h)
+            if isinstance(idb, bpy.types.Object):
+                self._nodes_inputs(idb, h, mine)
             self.id_hash[k], self.children[k] = h.digest(), mine
         found += self.children[k]
         return self.id_hash[k]
@@ -151,6 +154,30 @@ class _Hasher:
             self._file(idb.filepath, idb, h)
         if isinstance(idb, (bpy.types.Sound, bpy.types.MovieClip, bpy.types.CacheFile, bpy.types.Volume)):
             self._file(getattr(idb, "filepath", ""), idb, h)
+
+    def _nodes_inputs(self, obj, h, found: list) -> None:
+        """The values of `obj`'s geometry nodes modifier inputs (an ID input by identity: it is walked like any
+        datablock pointed to); an animated one is sampled per frame instead. Nothing at all for an object without
+        such inputs, so its hash is what it was before inputs counted."""
+        inputs = _nodes_inputs(obj)
+        if not inputs:
+            return
+        animated = _animated_paths(obj)
+        for path, name, value in inputs:
+            if value is GN_UNREADABLE:  # a stable marker: the same unreadable input hashes the same every time
+                h.update(b"gn:err:" + path.encode("utf-8", "replace"))
+                continue
+            h.update(b"gn:" + path.encode("utf-8", "replace"))
+            if path in animated:
+                h.update(b"~")
+            elif isinstance(value, bpy.types.ID):
+                if type(value).__name__ in _SKIP_ID_TYPES:
+                    h.update(b"id:" + value.name.encode())
+                else:
+                    h.update(b"id:" + repr(self.key(value)).encode())
+                    found.append(value)
+            else:
+                h.update(_enc(value))
 
     def _file(self, filepath: str, idb, h) -> None:
         path = bpy.path.abspath(filepath, library=getattr(idb, "library", None)) if filepath else ""
@@ -231,6 +258,62 @@ class _Hasher:
                 self._walk(value, h, depth + 1, seen, animated, found)
         else:
             h.update(_enc(value))
+
+
+GN_UNREADABLE = object()  # an input whose value could not be read: hashed as a stable "gn:err:<path>"
+
+
+def _escape(name: str) -> str:
+    """A name as Blender writes it inside a data path's ["..."] (so it matches the fcurves' data_path)."""
+    esc = getattr(getattr(bpy, "utils", None), "escape_identifier", None)
+    return esc(name) if esc else name.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _nodes_inputs(obj) -> list[tuple[str, str, object]]:
+    """(data path, input, value) of every geometry nodes modifier input on `obj`. Blender 5 keeps them in the
+    modifier's `properties.inputs` (whose address is the modifier's own, so the generic walk takes it for visited and
+    never sees them); before, they were the modifier's ID properties, which RNA does not list. An input that can't
+    be read gives GN_UNREADABLE as its value instead of stopping the fingerprint."""
+    out = []
+    for mod in getattr(obj, "modifiers", ()):
+        if mod.type != "NODES":
+            continue
+        base = f'modifiers["{_escape(mod.name)}"]'
+        try:
+            inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+        except Exception:  # noqa: BLE001 - an odd modifier never stops a fingerprint
+            inputs = None
+        if inputs is not None:
+            try:
+                props = [p.identifier for p in inputs.bl_rna.properties]
+            except Exception:  # noqa: BLE001
+                out.append((f"{base}.properties.inputs", "", GN_UNREADABLE))
+                continue
+            for ident in props:
+                if ident in ("rna_type", "name"):
+                    continue
+                path = f"{base}.properties.inputs.{ident}.value"
+                try:
+                    item = getattr(inputs, ident, None)
+                    if item is None or not hasattr(item, "value"):
+                        continue
+                    value = item.value
+                except Exception:  # noqa: BLE001
+                    value = GN_UNREADABLE
+                out.append((path, ident, value))
+            continue
+        try:
+            names = list(mod.keys())  # a struct's ID properties (before Blender 5)
+        except TypeError:
+            continue
+        for name in names:
+            path = f'{base}["{_escape(name)}"]'
+            try:
+                value = mod[name]
+            except Exception:  # noqa: BLE001
+                value = GN_UNREADABLE
+            out.append((path, name, value))
+    return out
 
 
 def _identity(struct) -> str:
@@ -467,11 +550,11 @@ def _geometry_digest(obj, depsgraph, h) -> None:
         ev.to_mesh_clear()
 
 
-def _matrices(objects, depsgraph) -> bytes:
+def _matrix_rows(objects, depsgraph) -> np.ndarray:
     out = np.empty((len(objects), 16), np.float32)
     for i, obj in enumerate(objects):
         out[i] = np.asarray(obj.evaluated_get(depsgraph).matrix_world, np.float32).ravel()
-    return out.tobytes()
+    return out
 
 
 # --------------------------------------------------------------------------- the fingerprints
@@ -514,10 +597,157 @@ def _tags(scene) -> str:
     """A hash of every object's bsa_* custom properties in `scene` (the tags the checks read)."""
     h = hashlib.sha256()
     for obj in sorted(scene.objects, key=lambda o: o.name):
-        props = sorted((k, str(obj[k])) for k in obj.keys() if k.startswith("bsa_"))  # noqa: SIM118 - an ID, not a dict
+        props = _bsa_props(obj)
         if props:
             h.update(repr((obj.name, props)).encode("utf-8", "replace"))
     return _short(h)
+
+
+def _bsa_props(obj) -> list:
+    return sorted((k, str(obj[k])) for k in obj.keys() if k.startswith("bsa_"))  # noqa: SIM118 - an ID, not a dict
+
+
+# --------------------------------------------------------------------------- a key per object
+
+_CHECKED_TYPES = frozenset({"MESH", "CURVE", "FONT", "SURFACE", "META"})  # the objects the checks look at
+_CLOSURE_STOP = ("Object", "Collection", "Scene", "World")  # a closure does not reach past these
+
+
+def _closure(hasher: _Hasher, obj) -> dict[tuple, bytes]:
+    """{key: static hash} of `obj` and every datablock it reaches (hasher.children), not past another object, a
+    collection, a scene or a world."""
+    out: dict[tuple, bytes] = {}
+    todo = [obj]
+    while todo:
+        idb = todo.pop()
+        k = hasher.key(idb)
+        if k in out or k not in hasher.id_hash:  # every datablock the scene reaches was hashed by _reachable
+            continue
+        out[k] = hasher.id_hash[k]
+        todo += [c for c in hasher.children.get(k, ()) if type(c).__name__ not in _CLOSURE_STOP]
+    return out
+
+
+def _object_deps(hasher: _Hasher, obj, closure: dict) -> list:
+    """The objects whose keys go into `obj`'s: every object a datablock of its closure points to (its parent, modifier
+    targets such as a boolean cutter or a hook, geometry nodes object inputs, constraint and bone constraint targets,
+    particle instances...) and every object of a collection one points to (a collection info input, an instanced
+    collection), sorted by name. Generic, so a target nobody listed still counts."""
+    deps: dict[str, object] = {}
+
+    def add(c) -> None:
+        kind = type(c).__name__
+        if kind == "Object":
+            deps.setdefault(c.name, c)
+        elif kind == "Collection":
+            for o in c.all_objects:
+                deps.setdefault(o.name, o)
+
+    for k in closure:
+        for c in hasher.children.get(k, ()):
+            add(c)
+    deps.pop(obj.name, None)
+    return [deps[n] for n in sorted(deps)]
+
+
+class _ObjectKeys:
+    """Per span: a key per checked object and one for the rest of the shot, fed the same per-frame values the
+    fingerprint samples (scene_fingerprints), split by whose they are."""
+
+    def __init__(self, hasher: _Hasher, objects: list, ids: list, channels: list, drivers: bytes):
+        self.hasher = hasher
+        self.objects = objects
+        self.checked = {o.name for o in objects if o.type in _CHECKED_TYPES}
+        self.closures = {o.name: _closure(hasher, o) for o in objects}
+        static = {}
+        for o in objects:
+            h = hashlib.sha256()
+            for k, digest in sorted(self.closures[o.name].items()):
+                h.update(repr(k).encode() + digest)
+            h.update(repr(_bsa_props(o)).encode("utf-8", "replace"))
+            static[o.name] = h.digest()
+        self.static = static
+        in_checked = set().union(*(self.closures[n] for n in self.checked)) if self.checked else set()
+        rest = hashlib.sha256()
+        for k in sorted(hasher.key(i) for i in ids):
+            if k not in in_checked:
+                rest.update(repr(k).encode() + hasher.id_hash[k])
+        rest.update(drivers)
+        self.rest_static = rest.digest()
+        # each animation channel goes to every object whose closure holds its datablock, else to the rest
+        self.channel_owners = []
+        for idb, *_ in channels:
+            k = hasher.key(idb)
+            self.channel_owners.append([o.name for o in objects if k in self.closures[o.name]])
+        self.deps = {o.name: _object_deps(hasher, o, self.closures[o.name]) for o in objects}
+
+    def start(self, span) -> None:
+        self.own = {}
+        for o in self.objects:
+            self.own[o.name] = hashlib.sha256(self.static[o.name])
+            self.own[o.name].update(b"span %d %d" % (span.f0, span.f1))
+        self.memo: dict[str, bytes] = {}
+        self.rest = hashlib.sha256(self.rest_static)
+        self.rest.update(b"span %d %d" % (span.f0, span.f1))
+
+    def frame(self, frame: int, rows: np.ndarray, visible: list, camera: bytes) -> None:
+        tag = b"f%d" % frame
+        self.rest.update(tag + camera)
+        for i, o in enumerate(self.objects):
+            data = tag + rows[i].tobytes() + repr(visible[i]).encode()
+            self.own[o.name].update(data)
+            if o.name not in self.checked:
+                self.rest.update(o.name.encode() + data)
+
+    def channel(self, i: int, data: bytes) -> None:
+        owners = self.channel_owners[i]
+        for name in owners:
+            self.own[name].update(data)
+        if not any(n in self.checked for n in owners):
+            self.rest.update(data)
+
+    def hash_of(self, obj):
+        return self.own[obj.name]
+
+    def _outside(self, obj) -> tuple[bytes, list]:
+        """The static hash and dependencies of an object outside the scene (reached through a pointer: it is not
+        sampled per frame, but its data still counts)."""
+        closure = _closure(self.hasher, obj)
+        h = hashlib.sha256(b"outside " + repr(obj.name).encode())
+        for k, digest in sorted(closure.items()):
+            h.update(repr(k).encode() + digest)
+        return h.digest(), _object_deps(self.hasher, obj, closure)
+
+    def _key(self, obj, visiting: frozenset) -> tuple[bytes, bool]:
+        """(`obj`'s key, whether a dependency cycle was cut below it). A key with no cut is the same from any path
+        and is memoized, so a dependency shared by many objects is hashed once; one with a cut depends on where
+        the walk started and is not."""
+        if obj.name in self.memo:
+            return self.memo[obj.name], False
+        own = self.own.get(obj.name)
+        if own is not None:
+            h, deps = own.copy(), self.deps[obj.name]
+        else:
+            static, deps = self._outside(obj)
+            h = hashlib.sha256(static)
+        cut = False
+        for dep in deps:
+            if dep.name in visiting:
+                h.update(b"cycle:" + dep.name.encode())
+                cut = True
+            else:
+                key, below = self._key(dep, visiting | {dep.name})
+                h.update(b"dep:" + dep.name.encode() + key)
+                cut = cut or below
+        digest = h.digest()
+        if not cut:
+            self.memo[obj.name] = digest
+        return digest, cut
+
+    def result(self) -> dict:
+        keys = {o.name: self._key(o, frozenset({o.name}))[0].hex()[:16] for o in self.objects
+                if o.name in self.checked}  # fmt: skip
+        return {"objects": keys, "rest": _short(self.rest)}
 
 
 def _static_parts(hasher: _Hasher, ids) -> dict[str, str]:
@@ -537,11 +767,16 @@ def _static_parts(hasher: _Hasher, ids) -> dict[str, str]:
 
 
 def scene_fingerprints(scene, spans, hasher: _Hasher | None = None, reached=None,
-                       parts: dict | None = None) -> dict[str, str]:  # fmt: skip
+                       parts: dict | None = None, objects: dict | None = None) -> dict[str, str]:  # fmt: skip
     """{shot id: fingerprint} for the shots (bsa.timeline.Span) that `scene` renders. The scene's current frame is
     restored. `reached` is _reachable's result when the caller walked the scene already. `parts`, when given, gets
     {shot id: {part: hash}}: the static data per datablock type, drivers, animation (the per-frame part) and code
-    (version, Blender, render presets), so a changed fingerprint can say which part changed."""
+    (version, Blender, render presets), so a changed fingerprint can say which part changed. `objects`, when given,
+    gets {shot id: {"objects": {name: key}, "rest": key}}: a key per object the checks look at (mesh, curve, text,
+    surface, metaball: its data, materials, modifiers, tags, parent chain and hook / armature targets, and its
+    motion, visibility, animated values and changing geometry over the shot) and one for everything else (camera,
+    lights, empties, world, collections, drivers). Neither changes the fingerprints."""
+    keys_out = objects  # `objects` is the scene's objects below
     hasher = hasher or _Hasher()
     static, ids = reached or _reachable(hasher, scene)
     head = hashlib.sha256()
@@ -563,6 +798,7 @@ def scene_fingerprints(scene, spans, hasher: _Hasher | None = None, reached=None
     channels = [(idb, path, index, fc) for idb in ids for path, index, fc in _anim_channels(idb)
                 if not (isinstance(idb, bpy.types.Object) and idb.name in in_scene and path in _TRANSFORM_PATHS)]
     timed = [o for o in objects if _time_dependent(o)]
+    keyed = _ObjectKeys(hasher, objects, ids, channels, drivers.digest()) if keys_out is not None else None
     depsgraph = _depsgraph(scene)
     original = scene.frame_current
     out = {}
@@ -572,37 +808,49 @@ def scene_fingerprints(scene, spans, hasher: _Hasher | None = None, reached=None
             motion = hashlib.sha256()
             h = _Tee(fp, motion)  # the per-frame bytes go into the fingerprint and its "animation" part
             h.update(b"span %d %d" % (span.f0, span.f1))
+            if keyed is not None:
+                keyed.start(span)
             for frame in range(span.f0, span.f1 + 1):
                 scene.frame_set(frame)
                 depsgraph.update()  # a scene that is not the context scene is not evaluated by frame_set alone
                 h.update(b"f%d" % frame)
-                h.update(_matrices(objects, depsgraph))
-                h.update(repr([(o.hide_render, o.visible_get(view_layer=scene.view_layers[0])) for o in objects])
-                         .encode())  # fmt: skip
-                h.update(_enc(scene.camera.name if scene.camera else None))
-                for idb, path, index, fc in channels:
+                rows = _matrix_rows(objects, depsgraph)
+                h.update(rows.tobytes())
+                visible = [(o.hide_render, o.visible_get(view_layer=scene.view_layers[0])) for o in objects]
+                h.update(repr(visible).encode())
+                camera = _enc(scene.camera.name if scene.camera else None)
+                h.update(camera)
+                if keyed is not None:
+                    keyed.frame(frame, rows, visible, camera)
+                for i, (idb, path, index, fc) in enumerate(channels):
                     ev = idb.evaluated_get(depsgraph) if hasattr(idb, "evaluated_get") else idb
-                    h.update(_enc(_value(ev, path, index)))
+                    data = _enc(_value(ev, path, index))
                     if fc is not None:
-                        h.update(_enc(fc.evaluate(frame)))
+                        data += _enc(fc.evaluate(frame))
+                    h.update(data)
+                    if keyed is not None:
+                        keyed.channel(i, data)
                 for obj in timed:
-                    _geometry_digest(obj, depsgraph, h)
+                    _geometry_digest(obj, depsgraph, h if keyed is None else _Tee(h, keyed.hash_of(obj)))
             out[span.id] = fp.hexdigest()[:32]
             if parts is not None:
                 parts[span.id] = {**common, "animation": _short(motion)}
+            if keys_out is not None:
+                keys_out[span.id] = keyed.result()
     finally:
         scene.frame_set(original)
     return out
 
 
-def fingerprints(groups, parts: dict | None = None) -> tuple[dict[str, str], dict[str, list]]:
+def fingerprints(groups, parts: dict | None = None,
+                 objects: dict | None = None) -> tuple[dict[str, str], dict[str, list]]:  # fmt: skip
     """{shot id: fingerprint} for every (scene, [spans]) in `groups`, and the external files that went in
     ({path: [size, mtime_ns] or None}): a cache of the fingerprints is valid only while those are unchanged.
-    `parts`, when given, gets each shot's parts (scene_fingerprints)."""
+    `parts` and `objects`, when given, get each shot's parts and its object keys (scene_fingerprints)."""
     hasher = _Hasher()
     groups = list(groups)
     reached = [_reachable(hasher, scene) for scene, _ in groups]  # every static walk before any frame changes
     out: dict[str, str] = {}
     for (scene, spans), r in zip(groups, reached, strict=True):
-        out.update(scene_fingerprints(scene, spans, hasher, r, parts))
+        out.update(scene_fingerprints(scene, spans, hasher, r, parts, objects))
     return out, hasher.files

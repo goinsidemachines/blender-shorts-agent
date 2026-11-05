@@ -87,6 +87,21 @@ PACKS = {
         "tags": "wind blow gust breeze air weather outdoor nature ambience",
         "kinds": ["wind"], "fallback_kinds": ["wind"],  # every clip in it is wind, whatever its file name says
     },
+    "oga-sfx-100-v2": {
+        "name": "100 CC0 SFX #2 (air, machine loops, metal, doors, thunder)", "author": "rubberduck", "license": "CC0",
+        "approx_bytes": 2_367_871, "page": "https://opengameart.org/content/100-cc0-sfx-2",
+        "url": "https://opengameart.org/sites/default/files/sfx_100_v2.zip",
+        "tags": "machine machinery engine motor rumble hum loop air hiss thunder metal hit door lock switch construction "
+                "wood glass footstep ambient",
+        "kinds": ["impact", "click", "creak", "rumble", "hiss", "water"],  # no clip is named for a thud
+    },
+    "oga-steam-hisses": {
+        "name": "Steam release sounds", "author": "bart", "license": "CC0", "approx_bytes": 622_313,
+        "page": "https://opengameart.org/content/steam-release-sounds",
+        "url": "https://opengameart.org/sites/default/files/steam_hisses.zip",
+        "tags": "steam hiss release valve pressure boiler steampunk machine machinery",
+        "kinds": ["hiss"], "fallback_kinds": ["hiss"],  # five steam hisses, whatever their file names say
+    },
 }  # fmt: skip
 # `tags` are words a search matches. `kinds` are the sfx kinds the pack's clips get when indexed (auto_kinds of its
 # file names): search shows these, never kinds read off the tags, so it promises no kind the library will not have.
@@ -100,7 +115,7 @@ KIND_WORDS = {
     "scrape": ("scrape", "scratch", "grind", "rasp", "scraping"),
     "slide": ("slide", "sliding", "drag", "draw", "shove", "push"),
     "creak": ("creak", "creaking", "squeak", "door", "hinge", "groan"),
-    "rumble": ("rumble", "quake", "earthquake"),
+    "rumble": ("rumble", "quake", "earthquake", "thunder", "machine"),
     "hiss": ("hiss", "steam", "spray", "air"),
     "wind": ("wind", "gust", "breeze"),
     "water": ("water", "splash", "splashes", "bubble", "bubbles", "drip", "drips", "rain", "stream", "river", "wave",

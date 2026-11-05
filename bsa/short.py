@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import asdict, dataclass, fields
 from dataclasses import field as dc_field
 from pathlib import Path
@@ -45,6 +47,16 @@ class Shot:
     # A deliberately wide or off-centre framing: true, a reason ("establishing shot of the whole bridge") or
     # [[from_s, to_s], ...] as for hold. The framing checks (subject too small, an empty half) skip those frames.
     wide: bool | str | list = False
+    # Brand-kit cards (bsa.cards; only drawn with a kit): a title card (one line, 1-2 lines, or {"lines": [...],
+    # "highlight": index of the line drawn bigger in palette.highlight}), a category tag, a step tag [n, of] and value bars
+    # {"items": [{"label", "value", "text"?, "category"?}], "verdict"?, "max"?}.
+    title_card: str | list | dict | None = None
+    category: str | None = None
+    step: list | None = None
+    bars: dict | None = None
+    # A one-take short's shot: the second its window starts on the camera path (the first is 0). None = a cuts short's
+    # shot, whose length comes from its lines. Not written when None.
+    at: float | None = None
 
 
 @dataclass
@@ -103,6 +115,26 @@ class Short:
     # This short's render choices: {"engine": "cycles" | "eevee"} is the engine the engine stage proposes (the
     # approved engine stays the engine stage's own). Empty = the setting.
     render: dict = dc_field(default_factory=dict)
+    # This short's camera: {"style": "cuts" | "one-take", "seconds": the camera path's length, "approve": true to ask
+    # for the camera stage}. A one-take short is one continuous move: each shot is a fixed window on it (Shot.at) and
+    # the picture sets the clock. Empty = cuts, and not written.
+    camera: dict = dc_field(default_factory=dict)
+    # This short's own narration choices over the narrator settings: voice, speed, take_mode, lead_in, params (the
+    # engine's parameters, merged key by key over narrator.params; never the provider or command). Empty = the
+    # settings. "voice_for" names the provider its voice and speed were chosen for
+    # (new-short --like): under another provider they are not used. Without it (older shorts) they always apply.
+    narrator: dict = dc_field(default_factory=dict)
+    # Guidance for the storyboard copied from an earlier short (`new-short --like`): {"shots": count, "min_s": the
+    # median shot length, "holds": shots with a hold}. Empty = none.
+    pace: dict = dc_field(default_factory=dict)
+    # Where this short started from: {"short": folder name, "copied": [keys], "at": ISO-8601 UTC}. None = from scratch.
+    like: dict | None = None
+    # Subtitles in other languages (bsa.translations): {lang: {"lines": {line id: text}, "closing": text}}.
+    # None = not asked yet; {} = asked, none wanted.
+    captions_translations: dict | None = None
+
+
+NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "params", "voice_for")
 
 
 def _build(cls, data: dict):
@@ -121,7 +153,93 @@ def load_short(path: Path) -> Short:
 def save_short(short: Short, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(short), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    data = asdict(short)
+    if not data["camera"]:  # a cuts short's file is written exactly as before one-take shorts
+        del data["camera"]
+    for shot in data["shots"]:
+        if shot["at"] is None:
+            del shot["at"]
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+CAMERA_STYLES = ("cuts", "one-take")
+
+
+def one_take(short) -> bool:
+    """Whether the short is one continuous camera move, each shot a fixed window on it."""
+    camera = getattr(short, "camera", None)
+    return isinstance(camera, dict) and camera.get("style") == "one-take"
+
+
+def camera_stage_wanted(short) -> bool:
+    """Whether the camera approval stage is offered: always for a one-take short, else when camera.approve is true."""
+    camera = getattr(short, "camera", None)
+    return one_take(short) or (isinstance(camera, dict) and camera.get("approve") is True)
+
+
+def camera_problems(short) -> list[str]:
+    """Problems of the short's camera and of its shots' `at` (the windows of a one-take short)."""
+    camera = short.camera
+    if not isinstance(camera, dict):
+        return [f"camera must be an object such as {{\"style\": \"one-take\", \"seconds\": 30}}, got {camera!r}"]
+    out = []
+    extra = sorted(set(camera) - {"style", "seconds", "approve"})
+    if extra:
+        out.append(f"camera has unknown keys {extra}: use style, seconds and approve")
+    if "style" in camera and camera["style"] not in CAMERA_STYLES:
+        out.append(f"camera.style must be {' or '.join(CAMERA_STYLES)}, got {camera['style']!r}")
+    if "approve" in camera and not isinstance(camera["approve"], bool):
+        out.append(f"camera.approve must be true or false, got {camera['approve']!r}")
+    seconds = camera.get("seconds")
+    seconds_ok = _number(seconds) and seconds > 0
+    if not one_take(short):
+        if "seconds" in camera and not seconds_ok:
+            out.append(f"camera.seconds must be the length of the camera path in seconds (a number above 0), got "
+                       f"{seconds!r}")  # fmt: skip
+        out += [f"shot {s.id} has 'at' but camera.style is not one-take" for s in short.shots if s.at is not None]
+        return out
+    if not seconds_ok:
+        out.append(f"camera.seconds must be the length of the camera path in seconds (a number above 0) for a "
+                   f"one-take short, got {seconds!r}: set it to when the last window ends")  # fmt: skip
+    fps = short.fps if _number(short.fps) and short.fps > 0 else FPS
+    prev = None  # (shot id, at) of the last shot with a usable at
+    for i, s in enumerate(short.shots):
+        if s.at is None:
+            out.append(f"shot {s.id} has no 'at': give it the second its window starts on the camera path")
+            continue
+        if not _number(s.at):
+            out.append(f"shot {s.id}: 'at' must be seconds on the camera path (a number), got {s.at!r}")
+            continue
+        at = float(s.at)
+        if i == 0 and at != 0:
+            out.append(f"shot {s.id}: 'at' {at} must be 0: the first window starts the camera path")
+        elif prev is not None and at <= prev[1]:
+            out.append(f"shot {s.id}: 'at' {at} must be after {prev[0]}'s {prev[1]}")
+        elif prev is not None and round(at * fps) <= round(prev[1] * fps):
+            out.append(f"shot {s.id}: 'at' {at} starts on the same frame as {prev[0]}'s {prev[1]}: move it at least "
+                       "one frame later")  # fmt: skip
+        elif seconds_ok and (at >= seconds or round(at * fps) >= round(seconds * fps)):
+            out.append(f"shot {s.id}: 'at' {at} must be before camera.seconds {float(seconds)}: move {s.id}'s start "
+                       "earlier or make camera.seconds longer")  # fmt: skip
+        prev = (s.id, at)
+    return out
+
+
+_LINE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def line_id_problem(line_id) -> str | None:
+    """Why a line id can't be used (None when it can). A take is audio/vo/<id>.wav, so an id must be a plain file
+    name on every system: letters, digits, "_", "-" and "." (not first), no trailing dot, no Windows device name."""
+    if not isinstance(line_id, str) or not _LINE_ID.fullmatch(line_id):
+        return (f"line id {line_id!r} must be letters, digits, \"_\", \"-\" or \".\" and start with a letter or "
+                "digit: rename it")
+    if line_id.endswith("."):
+        return f"line id {line_id!r} must not end with a dot: rename it"
+    if line_id.split(".")[0].lower() in _RESERVED:
+        return f"line id {line_id!r} is a reserved file name on Windows: rename it"
+    return None
 
 
 def label_text(label) -> str:
@@ -136,6 +254,30 @@ def label_near(label) -> str | None:
     return str(label.get("near") or "").strip() or None
 
 
+def label_at(label) -> tuple[float, float, float] | None:
+    """The point a near label points at ("at": [x, y, z] in its object's local space), or None (the object's top,
+    or an Empty's origin)."""
+    at = label.get("at") if isinstance(label, dict) else None
+    if not (isinstance(at, list | tuple) and len(at) == 3 and all(_number(v) for v in at)):
+        return None
+    return float(at[0]), float(at[1]), float(at[2])
+
+
+def label_anchor(label) -> str | None:
+    """The key of a near label's anchor in anchors.json: its object's name, or "name@x,y,z" with an "at" point (two
+    labels near one object at different points get their own anchors). None for a plain label."""
+    name = label_near(label)
+    at = label_at(label)
+    if name is None or at is None:
+        return name
+    return f"{name}@{at[0]:g},{at[1]:g},{at[2]:g}"
+
+
+def label_kind(label) -> str:
+    """"measure" for a label object with "kind": "measure" (a measure label), else "label"."""
+    return "measure" if isinstance(label, dict) and label.get("kind") == "measure" else "label"
+
+
 def _label_problem(label) -> str | None:
     if isinstance(label, str):
         return None if label.strip() else "is empty"
@@ -143,14 +285,139 @@ def _label_problem(label) -> str | None:
         return f"must be text or an object with text and near, got {label!r}"
     if not isinstance(label.get("text"), str) or not label["text"].strip():
         return f"{label!r} needs a non-empty text"
-    if not isinstance(label.get("near"), str) or not label["near"].strip():
+    if label.get("kind") not in (None, "measure"):
+        return f"{label!r} has an unknown kind: the only kind is \"measure\""
+    near = label.get("near")
+    if "at" in label:
+        if near is None:
+            return f"{label!r} has at but no near: at is a point on the near object"
+        if label_at(label) is None:
+            return f"{label!r} at must be three numbers [x, y, z], a point in the near object's local space"
+    if near is None and label.get("kind") == "measure":
+        return None  # a measure label without near is stacked
+    if not isinstance(near, str) or not near.strip():
         return f"{label!r} needs near: the name of the object it sits next to"
+    return None
+
+
+def _clean_lines(value) -> tuple[str, ...]:
+    return tuple(v.strip() for v in value if isinstance(v, str) and v.strip()) if isinstance(value, list) else ()
+
+
+def title_lines(shot) -> tuple[tuple[str, ...], int | None]:
+    """(the title card's lines, the index of the highlighted one or None). ((), None) without a title card."""
+    card = getattr(shot, "title_card", None)
+    if isinstance(card, str):
+        return ((card.strip(),) if card.strip() else ()), None
+    if isinstance(card, list):
+        return _clean_lines(card), None
+    if isinstance(card, dict):
+        lines = _clean_lines(card.get("lines"))
+        hl = card.get("highlight")
+        return lines, (hl if isinstance(hl, int) and not isinstance(hl, bool) and 0 <= hl < len(lines) else None)
+    return (), None
+
+
+def _step_ok(step) -> bool:
+    return (isinstance(step, list) and len(step) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in step)
+            and 1 <= step[0] <= step[1] <= 20)  # fmt: skip
+
+
+def step_text(shot) -> str | None:
+    """"Step 2 of 4" for a shot with step [2, 4], else None."""
+    step = getattr(shot, "step", None)
+    return f"Step {step[0]} of {step[1]}" if _step_ok(step) else None
+
+
+def category_text(name) -> str:
+    """The category as shown on its tag: first letter upper case."""
+    text = str(name or "").strip()
+    return text[:1].upper() + text[1:]
+
+
+def bar_text(item) -> str:
+    """The words on a value bar: its `text`, else its value (3.0 -> "3")."""
+    if not isinstance(item, dict):
+        return ""
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    value = item.get("value")
+    return f"{value:g}" if isinstance(value, int | float) and not isinstance(value, bool) else ""
+
+
+def bar_items(shot) -> list[dict]:
+    """The shot's value bars, [] without any (or when they are not a list of objects)."""
+    bars = getattr(shot, "bars", None)
+    items = bars.get("items") if isinstance(bars, dict) else None
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def bar_verdict(shot) -> str:
+    bars = getattr(shot, "bars", None)
+    v = bars.get("verdict") if isinstance(bars, dict) else None
+    return v.strip() if isinstance(v, str) else ""
+
+
+def _number(v) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _title_card_problem(card) -> str | None:
+    bad = "title_card must be text, 1-2 lines of text, or {\"lines\": [1-2 lines], \"highlight\": 0 or 1}"
+    if isinstance(card, str):
+        return None if card.strip() else f"{bad}; it is empty"
+    lines = card
+    if isinstance(card, dict):
+        extra = sorted(set(card) - {"lines", "highlight"})
+        if extra:
+            return f"title_card has unknown keys {extra}: use lines and highlight"
+        lines = card.get("lines")
+    if (not isinstance(lines, list) or not 1 <= len(lines) <= 2
+            or not all(isinstance(x, str) and x.strip() for x in lines)):  # fmt: skip
+        return f"{bad}, got {card!r}"
+    hl = card.get("highlight") if isinstance(card, dict) else None
+    if hl is not None and (not isinstance(hl, int) or isinstance(hl, bool) or not 0 <= hl < len(lines)):
+        return f"title_card highlight must be the index of a line (0 to {len(lines) - 1}), got {hl!r}"
+    return None
+
+
+def _bars_problem(bars) -> str | None:
+    if not isinstance(bars, dict):
+        return f"bars must be {{\"items\": [2-4 bars], \"verdict\": text, \"max\": number}}, got {bars!r}"
+    extra = sorted(set(bars) - {"items", "verdict", "max"})
+    if extra:
+        return f"bars has unknown keys {extra}: use items, verdict and max"
+    items = bars.get("items")
+    if not isinstance(items, list) or not 2 <= len(items) <= 4:
+        return "bars needs items: a list of 2 to 4 bars"
+    for it in items:
+        if not (isinstance(it, dict) and isinstance(it.get("label"), str) and it["label"].strip()
+                and _number(it.get("value")) and it["value"] >= 0):  # fmt: skip
+            return f"bars item {it!r} needs a label (text) and a value (a number, 0 or more)"
+        extra = sorted(set(it) - {"label", "value", "text", "category"})
+        if extra:
+            return f"bars item {it['label']!r} has unknown keys {extra}: use label, value, text and category"
+        for key in ("text", "category"):
+            if key in it and (not isinstance(it[key], str) or not it[key].strip()):
+                return f"bars item {it['label']!r} {key} must be text, got {it[key]!r}"
+    if "verdict" in bars and (not isinstance(bars["verdict"], str) or not bars["verdict"].strip()):
+        return f"bars verdict must be text, got {bars['verdict']!r}"
+    if "max" in bars and not (_number(bars["max"]) and bars["max"] > 0):
+        return f"bars max must be a number above 0, got {bars['max']!r}"
     return None
 
 
 def near_labels(short) -> list[tuple[str, str, str]]:
     """(shot id, label text, object name) for every label placed next to an object."""
     return [(s.id, label_text(lb), label_near(lb)) for s in short.shots for lb in s.labels if label_near(lb)]
+
+
+def near_anchors(short) -> list[tuple[str, str, str, str, tuple | None]]:
+    """(shot id, label text, object name, anchor key, at point or None) for every label placed next to an object."""
+    return [(s.id, label_text(lb), label_near(lb), label_anchor(lb), label_at(lb))
+            for s in short.shots for lb in s.labels if label_near(lb)]  # fmt: skip
 
 
 def spoken_text(line) -> str:
@@ -193,6 +460,16 @@ def _has_digit(text: str) -> bool:
     return any(ch.isdigit() for ch in text)
 
 
+def line_fact_flags(line: Line, fact_ids: set[str]) -> list[tuple[str, str | None]]:
+    """What is wrong with a line's facts, as (code, fact id): ("unknown_fact", id) for each cited id not in
+    `fact_ids`, then ("number_without_fact", None) when its caption or its spoken words have a digit and it cites no known fact."""
+    flags: list[tuple[str, str | None]] = [("unknown_fact", fid) for fid in line.facts if fid not in fact_ids]
+    spoken = line.say if isinstance(line.say, str) else ""
+    if (_has_digit(line.text) or _has_digit(spoken)) and not any(fid in fact_ids for fid in line.facts):
+        flags.append(("number_without_fact", None))
+    return flags
+
+
 def _dupes(kind: str, ids: list[str]) -> list[str]:
     seen: set[str] = set()
     out = []
@@ -217,6 +494,102 @@ def _render_problems(render) -> list[str]:
     return out
 
 
+def _narrator_problems(narrator) -> list[str]:
+    from bsa.settings import ENUMS, lead_in_error, lead_in_ok
+
+    if not isinstance(narrator, dict):
+        return [f"narrator must be an object such as {{\"take_mode\": \"paragraph\"}}, got {narrator!r}"]
+    out = []
+    extra = sorted(set(narrator) - set(NARRATOR_KEYS))
+    if extra:
+        out.append(f"narrator has unknown keys {extra}: use {', '.join(NARRATOR_KEYS)}")
+    speed = narrator.get("speed")
+    if "speed" in narrator and (isinstance(speed, bool) or not isinstance(speed, (int, float))
+                                or not 0.5 <= speed <= 2.0):  # fmt: skip
+        out.append(f"narrator.speed must be a number from 0.5 to 2.0, got {speed!r}")
+    if "take_mode" in narrator and narrator["take_mode"] not in ENUMS["narrator.take_mode"]:
+        out.append(f"narrator.take_mode must be {' or '.join(ENUMS['narrator.take_mode'])}, got "
+                   f"{narrator['take_mode']!r}")  # fmt: skip
+    lead = narrator.get("lead_in")
+    if "lead_in" in narrator and (isinstance(lead, bool) or not isinstance(lead, (int, float)) or not lead_in_ok(lead)):
+        out.append(lead_in_error(lead))
+    if "params" in narrator:  # the keys and ranges are the engine's: checked against the provider when narrating
+        from bsa.narrate.params import shape_problems
+
+        out += shape_problems(narrator["params"])
+    if "voice_for" in narrator and (not isinstance(narrator["voice_for"], str) or not narrator["voice_for"].strip()):
+        out.append(f"narrator.voice_for must name the narrator its voice was chosen for, such as \"kokoro\", got "
+                   f"{narrator['voice_for']!r}")  # fmt: skip
+    return out
+
+
+def _pace_problems(pace) -> list[str]:
+    if not isinstance(pace, dict):
+        return [f"pace must be an object such as {{\"shots\": 6, \"min_s\": 4.0, \"holds\": 1}}, got {pace!r}"]
+    out = []
+    extra = sorted(set(pace) - {"shots", "min_s", "holds"})
+    if extra:
+        out.append(f"pace has unknown keys {extra}: use shots, min_s and holds")
+    for key, low in (("shots", 1), ("holds", 0)):
+        v = pace.get(key)
+        if key in pace and (not isinstance(v, int) or isinstance(v, bool) or v < low):
+            out.append(f"pace.{key} must be a whole number, {low} or more, got {v!r}")
+    if "min_s" in pace and not (_number(pace["min_s"]) and pace["min_s"] > 0):
+        out.append(f"pace.min_s must be seconds above 0, got {pace['min_s']!r}")
+    return out
+
+
+def _like_problems(like) -> list[str]:
+    from bsa.like import COPY_KEYS
+
+    if like is None:
+        return []
+    if not isinstance(like, dict):
+        return [f"like must be {{\"short\", \"copied\", \"at\"}} (where this short started from), got {like!r}"]
+    out = []
+    extra = sorted(set(like) - {"short", "copied", "at", "title", "style_keys"})
+    if extra:
+        out.append(f"like has unknown keys {extra}: use short, copied, at, title and style_keys")
+    if "title" in like and not isinstance(like["title"], str):
+        out.append(f"like.title must be the earlier short's title (text), got {like['title']!r}")
+    keys = like.get("style_keys")
+    if "style_keys" in like and not (isinstance(keys, list) and all(isinstance(k, str) for k in keys)):
+        out.append(f"like.style_keys must be a list of the style keys copied, got {keys!r}")
+    if not isinstance(like.get("short"), str) or not like["short"].strip():
+        out.append(f"like.short must be the earlier short's folder name, got {like.get('short')!r}")
+    copied = like.get("copied")
+    if not isinstance(copied, list) or not all(isinstance(k, str) and k in COPY_KEYS for k in copied):
+        out.append(f"like.copied must be a list of {', '.join(COPY_KEYS)}, got {copied!r}")
+    if not isinstance(like.get("at"), str) or not like["at"].strip():
+        out.append(f"like.at must be the time it was copied (ISO-8601), got {like.get('at')!r}")
+    return out
+
+
+def _card_problems(s: Shot, cited: bool) -> list[str]:
+    """Problems of a shot's title card, category, step and value bars (all optional)."""
+    out = []
+    if s.title_card is not None:
+        problem = _title_card_problem(s.title_card)
+        if problem:
+            out.append(f"shot {s.id} {problem}")
+        else:
+            for text in title_lines(s)[0]:
+                if _has_digit(text) and not cited:
+                    out.append(f"shot {s.id} title card {text!r} contains a number but no line in the shot cites a fact")
+    if s.category is not None and (not isinstance(s.category, str) or not s.category.strip()):
+        out.append(f"shot {s.id} category must be a name (non-empty text), got {s.category!r}")
+    if s.step is not None and not _step_ok(s.step):
+        out.append(f"shot {s.id} step must be [n, of] whole numbers with 1 <= n <= of <= 20, got {s.step!r}")
+    if s.bars is not None:
+        problem = _bars_problem(s.bars)
+        if problem:
+            out.append(f"shot {s.id} {problem}")
+        elif not cited:
+            names = ", ".join(str(i["label"]) for i in s.bars["items"])
+            out.append(f"shot {s.id} value bars ({names}) contains a number but no line in the shot cites a fact")
+    return out
+
+
 def validate(short: Short) -> list[str]:
     """Return a list of human-readable problems; empty means the spec is sound."""
     errors: list[str] = []
@@ -226,6 +599,7 @@ def validate(short: Short) -> list[str]:
     errors += _dupes("fact", [f.id for f in short.facts])
     errors += _dupes("shot", [s.id for s in short.shots])
     errors += _dupes("line", [ln.id for ln in short.lines])
+    errors += [p for p in (line_id_problem(ln.id) for ln in short.lines) if p]
     errors += _dupes("asset", [a.id for a in short.assets])
 
     if not short.lines:
@@ -243,16 +617,15 @@ def validate(short: Short) -> list[str]:
     for ln in short.lines:
         if ln.shot not in shot_ids:
             errors.append(f"line {ln.id} refers to unknown shot {ln.shot!r}")
-        for fid in ln.facts:
-            if fid not in fact_ids:
+        flags = line_fact_flags(ln, fact_ids)
+        for code, fid in flags:
+            if code == "unknown_fact":
                 errors.append(f"line {ln.id} cites unknown fact {fid!r}")
-        cites = any(fid in fact_ids for fid in ln.facts)
-        if cites:
+        if any(fid in fact_ids for fid in ln.facts):
             cited_by_shot[ln.shot] = True
         if ln.say is not None and (not isinstance(ln.say, str) or not ln.say.strip()):
             errors.append(f"line {ln.id} say must be the spoken words (non-empty text), got {ln.say!r}")
-        spoken = ln.say if isinstance(ln.say, str) else ""
-        if (_has_digit(ln.text) or _has_digit(spoken)) and not cites:
+        if any(code == "number_without_fact" for code, _ in flags):
             errors.append(f"line {ln.id} contains a number but cites no fact")
 
     # A label's number counts as sourced when a line in the same shot cites a fact.
@@ -265,6 +638,7 @@ def validate(short: Short) -> list[str]:
             text = label_text(label)
             if _has_digit(text) and not cited_by_shot.get(s.id):
                 errors.append(f"shot {s.id} label {text!r} contains a number but no line in the shot cites a fact")
+        errors += _card_problems(s, cited_by_shot.get(s.id, False))
         if not 0 <= s.still_at <= 1:
             errors.append(f"shot {s.id} still_at must be between 0 and 1")
         if _hold_problem(s.hold):
@@ -293,6 +667,10 @@ def validate(short: Short) -> list[str]:
     if short.look not in (None, "fresh", "brand"):
         errors.append(f"look must be \"fresh\" (this short's own style, the brand off) or \"brand\", got {short.look!r}")
     errors += _render_problems(short.render)
+    errors += camera_problems(short)
+    errors += _narrator_problems(short.narrator)
+    errors += _pace_problems(short.pace)
+    errors += _like_problems(short.like)
     if short.sound_policy not in SOUND_POLICIES:
         errors.append(f"sound_policy must be one of {', '.join(p for p in SOUND_POLICIES if p)} (or empty), got "
                       f"{short.sound_policy!r}")  # fmt: skip

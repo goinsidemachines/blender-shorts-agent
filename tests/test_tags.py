@@ -64,3 +64,169 @@ def test_other_tags_still_refuse_commas():
         bake.tag(Obj(), "contact:a,b")
     with pytest.raises(ValueError):
         bake.tag(Obj(), "hero:")
+
+
+def test_category_tag_parses_after_a_hero_list():
+    """category:<name> starts a new tag after a hero:<shot ids> list; bake.category reads its name, lower case."""
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "category:Spark")
+    assert bake.tags(o) == ["hero:s01,s02", "category:Spark"]
+    assert bake.category(o) == "spark" and bake.is_hero(o, "s02") and not bake.is_hero(o, "category:Spark")
+    assert bake.category(Obj()) is None
+    o2 = Obj()
+    o2["bsa_tags"] = "hero:s01,s02,category:spark"
+    assert bake.tags(o2) == ["hero:s01,s02", "category:spark"] and bake.category(o2) == "spark"
+    o3 = Obj()
+    o3["bsa_tags"] = "category: , grounded"  # an empty name is no category
+    assert bake.category(o3) is None
+
+
+def test_set_tags_parse_and_set_objects_cannot_be_heroes():
+    """set:<role> marks a set's scenery (floor, wall, backdrop, prop); lines:off keeps a part out of the ink lines.
+    A set object is never a hero, whichever order the tags come in."""
+    for role in ("floor", "wall", "backdrop", "prop"):
+        o = Obj()
+        bake.tag(o, f"set:{role}", "grounded")
+        assert bake.tags(o) == [f"set:{role}", "grounded"]
+        assert bake.set_role(o) == role and bake.is_set(o)
+    assert bake.set_role(Obj()) is None and not bake.is_set(Obj())
+    for t in ("set:floor", "set:wall", "set:backdrop", "set:prop", "lines:off"):
+        assert t in bake.TAGS
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "lines:off")
+    assert bake.tags(o) == ["hero:s01,s02", "lines:off"] and not bake.is_set(o)
+    o2 = Obj()
+    o2["bsa_tags"] = "set:prop,lines:off"
+    assert bake.tags(o2) == ["set:prop", "lines:off"] and bake.set_role(o2) == "prop"
+    o3 = Obj()
+    o3["bsa_tags"] = "hero:s01,s02,lines:off"  # lines:off starts a tag: not read as another shot id
+    assert bake.tags(o3) == ["hero:s01,s02", "lines:off"] and not bake.is_hero(o3, "lines:off")
+    with pytest.raises(ValueError, match="set objects are scenery, never heroes"):
+        floor = Obj()
+        bake.tag(floor, "set:floor")
+        bake.tag(floor, "hero")
+    with pytest.raises(ValueError, match="set objects are scenery, never heroes"):
+        bake.tag(Obj(), "hero:s01", "set:wall")
+    with pytest.raises(ValueError, match="floor"):
+        bake.tag(Obj(), "set:ceiling")
+
+
+def test_tag_typos_are_refused_with_a_suggestion():
+    with pytest.raises(ValueError, match="did you mean 'contact:'"):
+        bake.tag(Obj(), "contcat:Floor")
+    with pytest.raises(ValueError, match="'hero'"):
+        bake.tag(Obj(), "heros")
+    for empty in ("contact:", "category:"):
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), empty)
+    assert bake.tag_problem("contcat:Floor") == "unknown tag 'contcat:Floor' (did you mean 'contact:'?)"
+    assert bake.tag_problem("contact:") == "tag 'contact:' names no object"
+    assert bake.tag_problem("category:") == "tag 'category:' names no category"
+    assert bake.tag_problem("hero:") == "tag 'hero:' lists no shot"
+    for t in ("hero", "hero:s01,s02", "grounded", "contact:A:0.01:moves", "overlay", "overlay:may-exit",
+              "surface", "category:gear", "set:prop", "lines:off", "fast"):
+        assert bake.tag_problem(t) is None, t
+
+
+def test_contact_tags_on_a_pair_merge():
+    """Every contact tag on either part that names the other counts: the deepest depth, and moves if any says so."""
+    c = bake.merged_contact("A", ["contact:B", "contact:B:0.004:moves"], "B", ["contact:A:0.01"])
+    assert c is not None and c.depth == 0.01 and c.moves is True
+    assert "'B'" in c.why and "contact:A:0.01" in c.why
+    c = bake.merged_contact("A", ["contact:B"], "B", [])
+    assert c == bake.Contact("contact:B tag on 'A'", None, False)
+    assert bake.merged_contact("A", ["contact:C", "grounded"], "B", ["contact:D:moves", "hero"]) is None
+    assert bake.merged_contact("A", [], "B:0.05", ["contact:A"]).why == "contact:A tag on 'B:0.05'"
+    assert bake.merged_contact("A", ["contact:B:0.05"], "B:0.05", []).depth is None  # an object really named so
+    assert bake.contact_tag("Body:moves:0.001") == ("Body", 0.001, True)
+    assert bake.metres_value("-1") is None and bake.metres_value("0.5") == 0.5 and bake.MOVES == "moves"
+
+
+def test_follow_differs():
+    """A contact pair is flagged only when neither part follows the other and they follow different things."""
+    assert not bake.follow_differs("Tape", frozenset({"Slider"}), "Slider", frozenset())
+    assert bake.follow_differs("A", frozenset({"P1"}), "B", frozenset({"P2"}))
+    assert not bake.follow_differs("A", frozenset({"P0"}), "B", frozenset({"P0"}))
+    assert bake.follow_differs("A", frozenset({"P1", "P0"}), "B", frozenset({"P0"}))
+
+
+def test_new_tags_end_a_hero_shot_list():
+    o = Obj()
+    o["bsa_tags"] = "hero:s03,s04,fast"
+    assert bake.tags(o) == ["hero:s03,s04", "fast"]
+    assert bake.is_fast(o) and not bake.is_fast(Obj())
+    o["bsa_tags"] = "hero:s07@0.6,s08,rigid"
+    assert bake.tags(o) == ["hero:s07@0.6,s08", "rigid"]
+
+
+def test_hero_from_a_fraction_of_the_shot():
+    """hero:s07@0.6 is a hero of s07 from 60% of the shot on (a subject the camera reaches later)."""
+    o = Obj()
+    bake.tag(o, "hero:s07@0.6,s08")
+    assert bake.hero_from(o, "s07") == 0.6
+    assert bake.hero_from(o, "s08") == 0.0
+    assert bake.hero_from(o, "s01") is None
+    assert bake.is_hero(o, "s07") and bake.is_hero(o, "s08") and not bake.is_hero(o, "s01")
+    plain = Obj()
+    bake.tag(plain, "hero")
+    assert bake.hero_from(plain, "s07") == 0.0
+    assert bake.hero_start(0.6, 101, 201) == 161
+    for bad in ("hero:s07@1.2", "hero:s07@x", "hero:s07@0", "hero:s07@1", "hero:s07@"):
+        assert bake.tag_problem(bad)
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), bad)
+    assert bake.tag_problem("hero:s07@0.6,s08") is None
+
+
+def test_swap_tag():
+    """swap:<object> names the part this one takes over from on screen."""
+    o = Obj()
+    bake.tag(o, "swap:Tape blade", "hero")
+    assert bake.swap_of(o) == "Tape blade" and bake.swap_of(Obj()) is None
+    with pytest.raises(ValueError):
+        bake.tag(Obj(), "swap:")
+    assert bake.tag_problem("swap:") == "tag 'swap:' names no object"
+    assert bake.tag_problem("swap:Blade A") is None
+
+
+def test_rigid_assembly_and_volume_tags():
+    """rigid (one solid of several meshes), assembly:<name>[:<max depth m>] (members mesh with each other only) and
+    volume (gas or flame round solids)."""
+    o = Obj()
+    bake.tag(o, "hero:s01,s02", "rigid", "volume", "assembly:Balance")
+    assert bake.tags(o) == ["hero:s01,s02", "rigid", "volume", "assembly:Balance"]
+    assert bake.is_rigid(o) and bake.is_volume(o) and not bake.is_rigid(Obj()) and not bake.is_volume(Obj())
+    assert bake.RIGID == "rigid" and bake.VOLUME == "volume"
+    assert bake.assembly(o) == ("Balance", None) and bake.assembly(Obj()) is None
+    for t, want in (("assembly:Balance:0.002", ("Balance", 0.002)), ("assembly:Gear:train", ("Gear:train", None)),
+                    ("assembly:Train:0", ("Train", 0.0)), ("assembly:0.002", ("0.002", None))):
+        p = Obj()
+        bake.tag(p, t)
+        assert bake.assembly(p) == want, t
+    for bad in ("assembly:", "assembly::0.002"):
+        assert bake.tag_problem(bad) == f"tag {bad!r} names no assembly"
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), bad)
+    assert "did you mean 'rigid'" in bake.tag_problem("rigdi")
+
+def test_a_misspelt_set_tag_still_ends_a_hero_list():
+    """"set:wal" is not read as a shot id of the hero list before it: the names check reports it as a tag."""
+    o = Obj()
+    o["bsa_tags"] = "hero:s03,s04,set:wal"
+    assert bake.tags(o) == ["hero:s03,s04", "set:wal"]
+    assert "set tag is one of" in bake.tag_problem("set:wal")
+
+
+def test_a_hero_list_with_spaces_or_empty_ids_is_a_problem():
+    """Shot ids are separated by commas only: the checks' names error reads the same rule as bake.tag."""
+    for bad in ("hero:s01, s02", "hero:s01,,s02", "hero:s01 s02"):
+        assert "commas only" in bake.tag_problem(bad), bad
+        with pytest.raises(ValueError):
+            bake.tag(Obj(), bad)
+
+
+def test_a_shot_listed_twice_in_one_hero_tag_takes_its_earliest_start():
+    """As across two tags (hero_from takes the minimum), so within one."""
+    o = Obj()
+    o["bsa_tags"] = "hero:s07@0.6,s07@0.2"
+    assert bake.hero_from(o, "s07") == 0.2

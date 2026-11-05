@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from bsa import feedback, settings
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "bsa_cli.py"
@@ -146,16 +147,6 @@ def test_long_report_is_shortened_in_the_url(short):
     assert "problem 39" in rep["body"]  # the full text is still on the page
 
 
-def test_report_page_has_copy_and_github_button(short):
-    feedback.add(short, "blocking", "edit crashed", happened="<script>alert(1)</script>")
-    rep = feedback.report(short)
-    page = feedback.render_page(rep, short / "review" / "plugin-feedback.html")
-    html = page.read_text(encoding="utf-8")
-    assert "Copy" in html and "Open on GitHub" in html
-    assert "<script>alert(1)</script>" not in html
-    assert "Submit" in html  # the user submits on GitHub themselves
-
-
 def test_feedback_module_never_touches_the_network():
     src = (ROOT / "bsa" / "feedback.py").read_text(encoding="utf-8")
     for word in ("urllib.request", "http.client", "socket", "requests", "webbrowser"):
@@ -179,7 +170,7 @@ def test_feedback_setting(bsa_home):
 
 def run(home: Path, *args) -> subprocess.CompletedProcess:
     env = {**os.environ, "BSA_HOME": str(home)}
-    return subprocess.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
+    return _proc.run([sys.executable, str(CLI), *map(str, args)], check=False, capture_output=True, text=True,
                           env=env, cwd=str(home), timeout=120)  # fmt: skip
 
 
@@ -207,12 +198,11 @@ def test_cli_add_list_report_decline(cli_short):
     assert lst["pending"] == 1 and lst["ask"] and lst["setting"] == "ask"
     assert lst["by_severity"] == {"wrong-output": 1}
     rep = ok(run(home, "feedback", "report", sdir))
-    page = Path(rep["page"])
-    assert page == sdir / "review" / "plugin-feedback.html" and page.is_file()
-    assert rep["url"].startswith(feedback.REPO)
+    assert rep["page"] is None and not (sdir / "review" / "plugin-feedback.html").exists()
+    assert rep["url"].startswith(feedback.REPO) and feedback.panel_allowed(sdir, "ask")
     assert not ok(run(home, "feedback", "list", sdir))["ask"]
     ok(run(home, "feedback", "add", sdir, "--severity", "rough-edge", "--summary", "later"))
-    assert ok(run(home, "feedback", "decline", sdir))["declined"] == 1
+    assert ok(run(home, "feedback", "decline", sdir))["declined"] == 2  # report marks nothing: the page does
 
 
 def test_cli_setting_off_and_never(cli_short):
@@ -244,7 +234,8 @@ def test_skill_says_when_to_note_feedback():
 
 def test_post_chapter_asks_once_and_never_submits():
     text = _flat(ROOT / "skills" / "make-short" / "playbook" / "09-post.md")
-    for words in ("feedback list", "feedback report SHORT --open", "feedback decline", "Submit", "Never submit"):
+    for words in ("feedback list", "feedback report SHORT", "CLI page SHORT --stage post", "feedback decline", "Submit",
+                  "Never submit"):  # fmt: skip
         assert words in text, words
 
 
@@ -265,3 +256,53 @@ def test_issue_form_matches_the_report():
         assert field in form, field
     for words in ("blocking", "wrong-output", "rough-edge", "Workaround", "Error line"):
         assert words in form, words
+
+
+# --------------------------------------------------------------------------- locked writes
+
+
+@pytest.mark.parametrize("damage", [b"", b"{not json", b"[1, 2]", b'{"entries": 3}'])
+def test_a_damaged_feedback_file_is_never_written_over(short, damage):
+    from bsa.review import store
+
+    path = feedback.feedback_path(short)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(damage)
+    for write in (lambda: feedback.add(short, "rough-edge", "x"), lambda: feedback.decline(short),
+                  lambda: feedback.allow_panel(short), lambda: feedback.mark_reported(short, ["f1"])):  # fmt: skip
+        with pytest.raises(store.StoreDamaged):
+            write()
+        assert path.read_bytes() == damage
+    feedback.report(short, mark=True)  # nothing readable to mark: nothing written
+    assert path.read_bytes() == damage
+
+
+def test_feedback_writes_take_the_store_lock(short, monkeypatch):
+    from bsa.review import store
+
+    taken = []
+    real = store.locked
+
+    def spy(path, *a, **k):
+        taken.append(Path(path).name)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(store, "locked", spy)
+    feedback.add(short, "rough-edge", "one")
+    feedback.allow_panel(short)
+    feedback.mark_reported(short, ["f1"])
+    feedback.add(short, "rough-edge", "two")
+    feedback.decline(short)
+    assert taken == ["plugin-feedback.json"] * 5
+    assert [e["status"] for e in feedback.entries(short)] == ["reported", "declined"]
+
+
+def test_concurrent_feedback_adds_lose_nothing(short):
+    import threading
+
+    threads = [threading.Thread(target=lambda k=k: [feedback.add(short, "rough-edge", f"{k}-{i}") for i in range(10)])
+               for k in range(4)]  # fmt: skip
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    got = feedback.entries(short)
+    assert len(got) == 40 and len({e["id"] for e in got}) == 40

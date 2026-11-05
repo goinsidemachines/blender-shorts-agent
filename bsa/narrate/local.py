@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
+from bsa import proc as _proc
 from bsa.messages import trim
 from bsa.narrate import contract, install
+from bsa.narrate import params as _params
 from bsa.narrate.contract import NarrationError
 from bsa.settings import bsa_home
 
 WER_LIMIT = 0.15
-RETRY_SEEDS = (8, 9)
+WHISPER_MODEL = "whisper-small.en"
+RETRIES = 2  # an unclear take is spoken again with its seed + 1, then + 2
 _GPU_DEFAULT = "the GPU is busy or out of memory"
 
 
@@ -42,8 +44,10 @@ def _tail(proc) -> str:
 
 
 def generate(
-    model: str, lines, voice, speed: float, out_dir: Path, run=subprocess.run, seed: int = 7
+    model: str, lines, voice, speed: float, out_dir: Path, run=_proc.run, seed: int = 7, params: dict | None = None
 ) -> dict[str, float]:
+    """Speak `lines` into out_dir/<id>.wav. `params` (narrator.params) go to the runner as `--param KEY=VALUE`, over
+    the model's and the voice's own; without them the command is exactly as before."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     lines_file = out_dir / "lines.json"
@@ -52,9 +56,14 @@ def generate(
     if voice:
         cmd += ["--voice", str(voice)]
     cmd += ["--speed", str(speed), "--lines", str(lines_file), "--out", str(out_dir)]
-    cmd += ["--seed", str(seed), "--cpu-fallback"]
+    cmd += ["--seed", str(seed), "--cpu-fallback", *_params.as_args(params)]
     proc = run(cmd, check=False, capture_output=True, text=True)
     code = proc.returncode
+    if code == 2 and params and "--param" in (proc.stderr or ""):  # a runner installed before narrator.params
+        raise NarrationError(
+            f"the installed voice runner is older than the plugin and doesn't take narrator.params; update it with "
+            f"CLI voice install {model}"
+        )
     if code == 5:
         raise NarrationError(f"the {model} voice engine is not installed")
     if code in (3, 4):
@@ -68,8 +77,20 @@ def generate(
     return contract.read_durations(out_dir, [ln.id for ln in lines])
 
 
-def verify(lines, out_dir: Path, run=subprocess.run) -> dict[str, float] | None:
-    """Word error rate per line, or None when Whisper isn't installed."""
+def whisper_installed() -> bool:
+    """The Whisper check's environment and weights are in <bsa_home>/voices (no process started, nothing synced)."""
+    try:
+        return bool(install.installed().get(WHISPER_MODEL))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def hear(lines, out_dir: Path, run=None) -> dict[str, dict] | None:
+    """What Whisper heard in each take and its word error rate, {id: {"said", "wer"}}; None when Whisper isn't
+    installed. Nothing is started when it isn't (a `uv run` on a missing runner could sync, i.e. download)."""
+    if not whisper_installed():
+        return None
+    run = run or _proc.run
     out_dir = Path(out_dir)
     lines_file = out_dir / "lines.json"
     contract.write_lines(lines_file, lines)
@@ -80,4 +101,45 @@ def verify(lines, out_dir: Path, run=subprocess.run) -> dict[str, float] | None:
     if proc.returncode != 0:
         raise NarrationError(f"verification failed (exit {proc.returncode}): {_tail(proc)}")
     data = _last_json(proc.stdout)
-    return {i: float(v["wer"]) for i, v in data.items() if isinstance(v, dict) and "wer" in v}
+    return {
+        i: {"said": str(v.get("text") or ""), "wer": float(v["wer"])}
+        for i, v in data.items()
+        if isinstance(v, dict) and "wer" in v
+    }
+
+
+def word_times(lines, takes_dir: Path, run=None) -> dict[str, list[tuple[str, float, float]]] | None:
+    """Whisper's word timings per take, {id: [(word, start_s, end_s), ...]}. Best-effort: None when Whisper isn't
+    installed or the run fails; a take whose words are malformed is left out."""
+    try:
+        if not whisper_installed():
+            return None
+        run = run or _proc.run
+        takes_dir = Path(takes_dir)
+        lines_file = takes_dir / "lines.json"
+        contract.write_lines(lines_file, lines)
+        proc = run(
+            _base("verify", "--lines", str(lines_file), "--takes", str(takes_dir), "--words"),
+            check=False, capture_output=True, text=True,
+        )  # fmt: skip
+        if proc.returncode != 0:
+            return None
+        out: dict[str, list[tuple[str, float, float]]] = {}
+        for i, v in _last_json(proc.stdout).items():
+            try:
+                # A word without a time (Whisper can give an end of None) drops the whole take's words, never just
+                # that word: the cut then goes by characters for it rather than by timings with a gap in them.
+                out[i] = [(str(w[0]), float(w[1]), float(w[2])) for w in v["words"] if len(w) == 3]
+                if len(out[i]) != len(v["words"]):
+                    del out[i]
+            except (KeyError, TypeError, ValueError, IndexError):
+                out.pop(i, None)
+        return out
+    except (NarrationError, OSError, AttributeError):  # AttributeError: the JSON isn't an object of takes
+        return None
+
+
+def verify(lines, out_dir: Path, run=None) -> dict[str, float] | None:
+    """Word error rate per line, or None when Whisper isn't installed."""
+    heard = hear(lines, out_dir, run=run)
+    return None if heard is None else {i: v["wer"] for i, v in heard.items()}

@@ -225,3 +225,29 @@ def test_target_area_takes_explicit_screen_rows():
     for left, right in ((600, 500), (-1, 500), (100, W + 1)):
         with pytest.raises(ValueError, match="columns"):
             target_area(px_left=left, px_right=right)
+
+def test_follow_takes_a_card_size_instead_of_the_estimated_text():
+    from bsa import overlays
+
+    points = {"f0": 1, "points": [[540, 900]] * 3}
+    est = overlays.follow("Bob", points, 1, 3, [])
+    card = overlays.follow("Bob", points, 1, 3, [], size=(300, 80))
+    m = overlays.SMALL_MARGIN * H
+    assert est[1][2].w == overlays.near_label_size("Bob")[0] + 2 * m  # no size: today's estimate
+    assert (card[1][2].w, card[1][2].h) == (300 + 2 * m, 80 + 2 * m)
+    assert card[1][1] == est[1][1] == 900 - overlays.NEAR_GAP_PX - m  # the same anchor rule
+
+
+def test_shot_boxes_without_a_kit_are_todays():
+    from bsa import overlays
+    from bsa.short import Short, Shot
+    from bsa.timeline import Card, Span, Timeline
+
+    shot = Shot(id="s1", title="t", picture="p", scene="Main", badge="b", labels=["Up", {"text": "Bob", "near": "Bob"}],
+                title_card="A title", category="spark", step=[1, 2])  # fmt: skip
+    short = Short(slug="x", title="X", length_s=2, shots=[shot])
+    tl = Timeline(30, 60, [Span("s1", 1, 60)], [], [Card("Hello there", "l1", 1, 10)])
+    anchors = {"Bob": {"f0": 1, "points": [[540, 900]] * 60}}
+    boxes = overlays.shot_boxes(short, tl, shot, tl.shots[0], anchors, frames=[5])
+    assert sorted(k for k, *_ in boxes[5]) == ["badge", "caption", "label", "near"]  # kit-only fields draw nothing
+    assert boxes == overlays.shot_boxes(short, tl, shot, tl.shots[0], anchors, frames=[5], kit=None, font=None)

@@ -12,8 +12,10 @@ make frames or checks stale. Pure: no bpy."""
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from bsa.timeline import Span, Timeline, timeline_hash, to_json
@@ -28,18 +30,20 @@ class StaleError(Exception):
 # --------------------------------------------------------------------------- timeline
 
 
-def check_timeline(short_dir: Path, tl: Timeline) -> str:
+def check_timeline(short_dir: Path, tl: Timeline, key: str = "SHORT") -> str:
     """The hash of source/timeline.json, which must equal the timeline recomputed from short.json and the takes
-    (else build.py animated a different timing from the one shots, captions and narration now use)."""
+    (else build.py animated a different timing from the one shots, captions and narration now use). A refusal names
+    the command with `key`, what the user types for this short (workspace.short_key)."""
     path = Path(short_dir) / "source" / "timeline.json"
+    run = f"run CLI timeline {key}"
     if not path.is_file():
-        raise StaleError("source/timeline.json is missing: run CLI timeline SHORT, then rebuild (source/build.py)")
+        raise StaleError(f"source/timeline.json is missing: {run}, then rebuild (source/build.py)")
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
     except ValueError as exc:
-        raise StaleError(f"source/timeline.json is not valid JSON ({exc}): run CLI timeline SHORT, then rebuild") from exc
+        raise StaleError(f"source/timeline.json is not valid JSON ({exc}): {run}, then rebuild") from exc
     if saved != json.loads(json.dumps(to_json(tl))):
-        raise StaleError("timing changed: run CLI timeline SHORT, then rebuild (source/build.py)")
+        raise StaleError(f"timing changed: {run}, then rebuild (source/build.py)")
     return timeline_hash(saved)
 
 
@@ -57,16 +61,113 @@ def check_scene_stamp(scene_name: str, stamp, want: str) -> None:
 BUILD_CHANGED = "build.py changed since the scene was built: rebuild"
 
 
+def _local_module(base: Path, name: str, src: Path) -> Path | None:
+    """The file module `name` ("p.q") is under `base`: base/p/q.py or base/p/q/__init__.py, if it exists inside
+    `src` (stdlib, numpy, bpy and bsa never live there)."""
+    parts = [p for p in name.split(".") if p]
+    if not parts:
+        return None
+    for cand in (base.joinpath(*parts[:-1], parts[-1] + ".py"), base.joinpath(*parts, "__init__.py")):
+        cand = Path(os.path.normpath(cand))
+        try:
+            inside = cand.resolve().is_relative_to(src.resolve())
+        except OSError:
+            continue
+        if inside and cand.is_file():
+            return cand
+    return None
+
+
+def _prefixes(name: str) -> list[str]:
+    parts = name.split(".")
+    return [".".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _imports(path: Path, src: Path) -> list[Path]:
+    """The local files `path` imports: `import a.b` means a and a.b, `from a.b import c` means a, a.b and a.b.c (c
+    may be a module); relative imports resolve against the file's own folder. A file that can't be read or parsed
+    imports nothing (it still counts by its time)."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, OSError, ValueError):  # ValueError: not UTF-8, or a null byte
+        return []
+    wanted: list[tuple[Path, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            wanted += [(src, n) for alias in node.names for n in _prefixes(alias.name)]
+        elif isinstance(node, ast.ImportFrom):
+            base = src
+            if node.level:  # from . import c / from ..m import c: against the importing file's folder
+                base = path.parent
+                for _ in range(node.level - 1):
+                    base = base.parent
+            module = node.module or ""
+            wanted += [(base, n) for n in (_prefixes(module) if module else [])]
+            wanted += [(base, f"{module}.{alias.name}" if module else alias.name)
+                       for alias in node.names if alias.name != "*"]  # fmt: skip
+    found = (_local_module(base, name, src) for base, name in wanted)
+    return [f for f in found if f is not None]
+
+
+def build_inputs(short_dir: Path) -> list[Path]:
+    """source/build.py and every local script it imports, followed through their imports (a visited set ends
+    cycles): the files whose edits make the scene file out of date. build.py first, the rest sorted; [] without
+    build.py."""
+    src = Path(short_dir) / "source"
+    build = src / "build.py"
+    if not build.is_file():
+        return []
+    seen = {build.resolve()}
+    out: list[Path] = []
+    todo = [build]
+    while todo:
+        for f in _imports(todo.pop(), src):
+            key = f.resolve()
+            if key not in seen:
+                seen.add(key)
+                out.append(f)
+                todo.append(f)
+    return [build, *sorted(out)]
+
+
+def stale_build_file(short_dir: Path) -> Path | None:
+    """The first of build_inputs edited after blend/short.blend was saved (None when none was, or there is no .blend
+    or build.py): the scenes are not what build.py now makes."""
+    blend = Path(short_dir) / "blend" / "short.blend"
+    try:
+        saved = blend.stat().st_mtime_ns
+    except OSError:
+        return None
+    for f in build_inputs(short_dir):
+        try:
+            if f.stat().st_mtime_ns > saved:
+                return f
+        except OSError:
+            continue
+    return None
+
+
 def build_changed(short_dir: Path) -> bool:
-    """source/build.py was edited after blend/short.blend was saved: the scenes are not what build.py now makes."""
-    build, blend = Path(short_dir) / "source" / "build.py", Path(short_dir) / "blend" / "short.blend"
-    return build.is_file() and blend.is_file() and build.stat().st_mtime_ns > blend.stat().st_mtime_ns
+    """build.py, or a script it imports, was edited after blend/short.blend was saved."""
+    return stale_build_file(short_dir) is not None
+
+
+def build_changed_message(short_dir: Path, stale: Path | None = None) -> str:
+    """What changed since the scene was built: BUILD_CHANGED for build.py itself, else the imported script. `stale`:
+    the file stale_build_file already found (else it is looked for again)."""
+    f = stale if stale is not None else stale_build_file(short_dir)
+    src = Path(short_dir) / "source"
+    if f is None or f == src / "build.py":
+        return BUILD_CHANGED
+    rel = Path(os.path.relpath(f, src)).as_posix()
+    return f"source/{rel} (imported by build.py) changed since the scene was built: rebuild"
 
 
 def require_current_build(short_dir: Path, command: str) -> None:
-    """The final render and edit refuse a scene file older than build.py; `command` names which ("the final edit")."""
+    """The final render and edit refuse a scene file older than build.py or a script it imports; `command` names
+    which ("the final edit")."""
     if build_changed(short_dir):
-        raise StaleError(f"{BUILD_CHANGED} (run source/build.py) before {command}")
+        raise StaleError(f"{build_changed_message(short_dir)} (run source/build.py) before {command}")
 
 
 # --------------------------------------------------------------------------- shot fingerprints
@@ -75,8 +176,12 @@ FINGERPRINT_VERSION = 1  # bump when what goes into a fingerprint changes (bsa.b
 FINGERPRINTS = "short.fingerprints.json"
 
 
-def _blend_stat(short_dir: Path) -> list | None:
+def blend_stat(short_dir: Path) -> list | None:
+    """[size, mtime_ns] of blend/short.blend, or None when there is none."""
     return _file_stat(Path(short_dir) / "blend" / "short.blend")
+
+
+_blend_stat = blend_stat  # the old name
 
 
 def _file_stat(path) -> list | None:
@@ -102,16 +207,18 @@ def fingerprint_code(blender: str | None) -> str:
 
 
 def save_fingerprints(short_dir: Path, tl_hash: str, shots: dict, files: dict | None = None, *, code: str | None = None,
-                      parts: dict | None = None) -> None:  # fmt: skip
+                      parts: dict | None = None, objects: dict | None = None) -> None:  # fmt: skip
     """Cache the fingerprints of blend/short.blend as it is on disk now, for this timing (and `code`,
     fingerprint_code). `parts` ({shot id: {part: hash}}) records what each fingerprint is made of, so a later
-    refusal can say which part changed."""
-    blend = _blend_stat(short_dir)
+    refusal can say which part changed; `objects` ({shot id: {"objects": {name: key}, "rest": key}}) a key per
+    object of the shot and one for the rest of it (bsa.blender.fingerprint)."""
+    blend = blend_stat(short_dir)
     if blend is None:
         return
     path = Path(short_dir) / "blend" / FINGERPRINTS
     data = {"version": FINGERPRINT_VERSION, "blend": blend, "timeline": tl_hash, "shots": shots,
-            "files": files or {}, **({"code": code} if code else {}), **({"parts": parts} if parts else {})}  # fmt: skip
+            "files": files or {}, **({"code": code} if code else {}), **({"parts": parts} if parts else {}),
+            **({"objects": objects} if objects is not None else {})}  # fmt: skip
     path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
 
 
@@ -129,7 +236,7 @@ def load_fingerprints(short_dir: Path, tl_hash: str, code: str | None = None) ->
     data = _read_cache(short_dir)
     if data is None or data.get("version") != FINGERPRINT_VERSION or data.get("timeline") != tl_hash:
         return None
-    if data.get("blend") != _blend_stat(short_dir) or not isinstance(data.get("shots"), dict):
+    if data.get("blend") != blend_stat(short_dir) or not isinstance(data.get("shots"), dict):
         return None
     if code is not None and data.get("code") not in (None, code):  # a cache from before the code was recorded holds
         return None
@@ -148,6 +255,23 @@ def load_fingerprint_parts(short_dir: Path, fingerprints: dict | None) -> dict:
         return {}
     return {sid: parts[sid] for sid, fp in (fingerprints or {}).items()
             if fp is not None and shots.get(sid) == fp and isinstance(parts.get(sid), dict)}  # fmt: skip
+
+
+def has_object_keys(short_dir: Path) -> bool:
+    """The fingerprint cache records the per-object keys (a cache from before them still loads, but gives the checks
+    no object to reuse: compute it again once)."""
+    return isinstance((_read_cache(short_dir) or {}).get("objects"), dict)
+
+
+def load_fingerprint_objects(short_dir: Path, fingerprints: dict | None) -> dict:
+    """{shot id: {"objects": {name: key}, "rest": key}} from the cache, for the shots whose cached fingerprint is the
+    one given; {} for a cache from before the object keys were recorded."""
+    data = _read_cache(short_dir) or {}
+    shots, objects = data.get("shots"), data.get("objects")
+    if not isinstance(shots, dict) or not isinstance(objects, dict):
+        return {}
+    return {sid: objects[sid] for sid, fp in (fingerprints or {}).items()
+            if fp is not None and shots.get(sid) == fp and isinstance(objects.get(sid), dict)}  # fmt: skip
 
 
 _PART_WORDS = {"Object": "objects", "Camera": "camera", "Material": "materials", "Mesh": "meshes",
@@ -242,8 +366,9 @@ def load_hero_boxes(short_dir: Path, fingerprints: dict | None, tl_hash: str, sh
 
 
 def load_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str, need=()) -> dict:
-    """source/anchors.json's shots ({shot: {object: {"f0", "points"}}}), which must be from this timing and each
-    needed shot's current fingerprint, and hold every (shot id, label text, object name) in `need`."""
+    """source/anchors.json's shots ({shot: {anchor key: {"f0", "points"}}}), which must be from this timing and each
+    needed shot's current fingerprint, and hold every (shot id, label text, anchor key) in `need` (the key is the
+    object's name for a label without "at": bsa.short.label_anchor)."""
     shots = _read_anchors(short_dir, fingerprints, tl_hash, sorted({s for s, _, _ in need})).get("shots") or {}
     for shot_id, text, name in need:
         if name not in (shots.get(shot_id) or {}):
@@ -419,9 +544,11 @@ _BSA = Path(__file__).resolve().parent
 # the code the scene checks' findings come from: the checks, the viewer checks (framing, covered) and the edit's text
 # boxes they measure, the framing band they measure against, the framing_call notes (findings, camera), the hard-rule
 # words (rules) and the object tags (bake: hero, overlay, may-exit)
+# short.py: the near labels' anchors (label_at, label_anchor); kitlayout.py: a kit's card boxes (covered)
 _CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
                 _BSA / "findings.py", _BSA / "blender" / "camera.py", _BSA / "rules.py",
-                _BSA / "blender" / "bake.py")  # fmt: skip
+                _BSA / "blender" / "bake.py", _BSA / "pops.py", _BSA / "blender" / "anchors.py",
+                _BSA / "short.py", _BSA / "kitlayout.py")  # fmt: skip
 
 
 def checks_code() -> str:
@@ -453,14 +580,17 @@ def shot_check_key(fingerprint: str | None, span: Span, shot: dict) -> str:
 
 
 def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=(), parts: dict | None = None,
-                      rules: list | None = None, caption_size: int | None = None) -> dict:  # fmt: skip
+                      rules: list | None = None, caption_size: int | None = None,
+                      objects: dict | None = None) -> dict:  # fmt: skip
     """What one shot's scene checks depend on, and nothing else: its content (fingerprint), its frames, the fields
     of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture or still_at), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
     text, sound levels and other settings are not in it. `parts` is information (which part of the fingerprint
     changed), not part of the key, except its "tags" part: the objects' tags (contact, hero...) change what the checks
     find but are not in the fingerprint, since they change no pixel. `caption_size` (bsa.overlays.caption_size: the
-    short's style.caption.size) sizes the caption box the covered check measures, so it is in the key too."""
+    short's style.caption.size) sizes the caption box the covered check measures, so it is in the key too.
+    `objects` ({"objects": {name: key}, "rest": key}, load_fingerprint_objects) is information too, recorded under
+    "objects" and "rest": which objects of the shot changed."""
     out = {"fingerprint": fingerprint, "frames": [span.f0, span.f1],
            "entry": {k: shot.get(k) for k in CHECKED_FIELDS}, "shot_ids": sorted(shot_ids),
            "parts": dict(parts or {}), "legacy": shot_check_key(fingerprint, span, shot)}  # fmt: skip
@@ -470,11 +600,14 @@ def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=
         out["caption_size"] = caption_size
     if parts and parts.get("tags") is not None:
         out["tags"] = parts["tags"]
+    if objects:
+        out["objects"] = dict(objects.get("objects") or {})
+        out["rest"] = objects.get("rest")
     return out
 
 
 def _input_key(inputs: dict) -> str:
-    core = {k: v for k, v in inputs.items() if k not in ("parts", "legacy")}
+    core = {k: v for k, v in inputs.items() if k not in ("parts", "legacy", "objects", "rest")}
     text = json.dumps(core, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
@@ -590,28 +723,139 @@ def reusable_checks(short_dir: Path, stamp: dict) -> dict[str, list]:
     return out
 
 
-def require_checks(short_dir: Path, tl_hash: str, shots: dict, command: str = "the final render") -> None:
+# the checks of one object alone: their findings hold while that object's key (bsa.blender.fingerprint: its data,
+# materials, modifiers, parent chain, what it reads and its motion over the shot) and the rest of the shot (camera,
+# lights, world, collections, tags) are unchanged. Every other check is run again on a shot that changed: floating
+# (it depends on what holds the object up), contact_parent (it depends on the parents), pops, pop_in, swaps,
+# framing, frame_edge, covered, names, hard rules and the camera checks. An overlap belongs to its pair.
+OBJECT_CHECKS = ("boolean", "faceted", "normals", "materials", "images", "self_overlap", "self_zfight")
+_REUSE_SAME = ("frames", "entry", "shot_ids", "rules", "caption_size", "tags", "rest")
+
+
+def object_reuse(old: dict, sid: str, now: dict) -> set[str] | None:
+    """The names of shot `sid`'s objects whose own checks (OBJECT_CHECKS, and overlaps of two such objects) still
+    hold, or None: check the whole shot again. `old` is the stamp of review/checks.json, `now` the shot's
+    shot_check_inputs as they are now with the new stamp's {"timeline", "every"} under "_stamp". None unless the
+    checks code, the timing and --every are the same, both inputs hold object keys and the rest's key, and nothing
+    but object keys changed (frames, short.json entry, shot list, rules, caption size, tags, rest); then the names
+    whose key is the same (a new or renamed object has no old key, so it is checked), None when there are none."""
+    if not isinstance(old, dict) or not isinstance(now, dict) or old.get("code") != checks_code():
+        return None
+    new = now.get("_stamp") if isinstance(now.get("_stamp"), dict) else {}
+    if any(old.get(k) != new.get(k) for k in ("timeline", "every")):
+        return None
+    inputs = old.get("inputs") if isinstance(old.get("inputs"), dict) else {}
+    had = inputs.get(sid)
+    if not isinstance(had, dict) or not isinstance(had.get("objects"), dict) or "rest" not in had:
+        return None
+    if not isinstance(now.get("objects"), dict) or "rest" not in now or had.get("rest") is None:
+        return None
+    if any(had.get(k) != now.get(k) for k in _REUSE_SAME):
+        return None
+    kept = {n for n, k in now["objects"].items() if k is not None and had["objects"].get(n) == k}
+    return kept or None
+
+
+def partial_checks(short_dir: Path, stamp: dict) -> dict[str, tuple[set[str], list[dict]]]:
+    """{shot id: (the names object_reuse keeps, the old rows that still hold)} for each shot of `stamp` whose checks
+    are not reusable as a whole (reusable_checks) but whose unchanged objects' are: the rows of an OBJECT_CHECKS
+    check on a kept object, and of an overlap whose two objects are both kept. The rows come from the findings and
+    the ones the overlap cap held back, split per shot as reusable_checks does. A shot whose old overlap rows can't
+    say their pair is checked again whole."""
+    data = read_checks(short_dir) or {}
+    old = data.get("stamp")
+    inputs = stamp.get("inputs") if isinstance(stamp.get("inputs"), dict) else {}
+    if not isinstance(old, dict) or stamp.get("code") != checks_code() or not inputs:
+        return {}
+    whole = reusable_checks(short_dir, stamp)
+    new = {"timeline": stamp.get("timeline"), "every": stamp.get("every")}
+    keep: dict[str, set[str]] = {}
+    for sid in stamp.get("shots") or {}:
+        if sid in whole or not isinstance(inputs.get(sid), dict):
+            continue
+        kept = object_reuse(old, sid, {**inputs[sid], "_stamp": new})
+        if kept:
+            keep[sid] = kept
+    out: dict[str, tuple[set[str], list[dict]]] = {sid: (names, []) for sid, names in keep.items()}
+    broken: set[str] = set()
+    for f in [*(data.get("findings") or []), *(data.get("held_back") or [])]:
+        if not isinstance(f, dict) or "capped" in f:
+            continue
+        shots = f.get("shots") if isinstance(f.get("shots"), list) else [f.get("shot")]
+        for sid in shots:
+            if sid not in out:
+                continue
+            names = keep[sid]
+            if f.get("check") == "overlap":
+                pair = f.get("pair")
+                if not isinstance(pair, list | tuple) or len(pair) != 2:
+                    broken.add(sid)  # can't tell which pair: the shot is checked again whole
+                    continue
+                hold = all(isinstance(n, str) and n in names for n in pair)
+            else:
+                hold = f.get("check") in OBJECT_CHECKS and isinstance(f.get("obj"), str) and f["obj"] in names
+            if hold:
+                out[sid][1].append(f if f.get("shot") == sid else {**f, "shot": sid})
+    return {sid: v for sid, v in out.items() if sid not in broken}
+
+
+FINAL_MAX_EVERY = 5  # the final needs checks that sampled at least every 5th frame (BLENDER check's default)
+
+
+def _nth(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def failed_checks(short_dir: Path, tl_hash: str, shots: dict) -> int:
+    """How many errors review/checks.json found on the build and timing as they are now (`shots` as for
+    require_checks; any --every): 0 when there are no checks, or they ran on another timing, checks code or shot.
+    The preview render warns of these (it still renders): a preview made after the checks failed shows the
+    failures to whoever watches it, and the final render refuses until they are fixed."""
+    data = read_checks(short_dir) or {}
+    stamp = data.get("stamp")
+    if not isinstance(stamp, dict) or stamp.get("timeline") != tl_hash or not _code_current(stamp.get("code")):
+        return 0
+    if not all(_shot_current(stamp, sid, now) for sid, now in shots.items()):
+        return 0
+    try:
+        return max(0, int(data.get("errors") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def require_checks(short_dir: Path, tl_hash: str, shots: dict, command: str = "the final render",
+                   key: str = "SHORT") -> None:
     """`command` (the final render or edit) needs checks that ran on every shot as it is now (`shots`: {shot id:
-    shot_check_inputs}) and on this timing and checks code, and found no errors. A refusal says which input
-    changed."""
-    again = f"run BLENDER check SHORT again before {command}"
+    shot_check_inputs}) and on this timing and checks code, sampled every FINAL_MAX_EVERY frames or finer
+    (`--every`), and found no errors. A refusal says which input changed, and names the command to run with `key`,
+    what the user types for this short (workspace.short_key)."""
+    check = f"BLENDER check {key}"
+    again = f"run {check} again before {command}"
     data = read_checks(short_dir)
     if data is None:
-        raise StaleError(f"the scene checks have not run on this build: run BLENDER check SHORT before {command}")
+        raise StaleError(f"the scene checks have not run on this build: run {check} before {command}")
     stamp = data.get("stamp")
     if not isinstance(stamp, dict):
         raise StaleError(f"review/checks.json is from an older plugin version and can't say what it checked, so "
                          f"anything may have changed since the checks ran: {again}")  # fmt: skip
     if stamp.get("timeline") != tl_hash:
         raise StaleError(f"the timing changed since the checks ran (source/timeline.json is not the one they checked): "
-                         f"{again}")  # fmt: skip
+                         f"{again} (it re-checks all {len(shots)} shots)")  # fmt: skip
     if not _code_current(stamp.get("code")):
         raise StaleError(f"the checks code changed since the checks ran (the plugin was updated): {again} (it checks "
                          "every shot once)")  # fmt: skip
+    every = stamp.get("every")
+    if not isinstance(every, int) or isinstance(every, bool):
+        raise StaleError(f"the checks can't say how finely they checked (review/checks.json records no --every): "
+                         f"{command} needs --every {FINAL_MAX_EVERY} or finer: run {check} --every "
+                         f"{FINAL_MAX_EVERY} again")  # fmt: skip
+    if every > FINAL_MAX_EVERY:
+        raise StaleError(f"the checks ran on every {_nth(every)} frame (--every {every}): {command} needs --every "
+                         f"{FINAL_MAX_EVERY} or finer: run {check} --every {FINAL_MAX_EVERY} again")  # fmt: skip
     changed = {sid: _changes(stamp, sid, now) for sid, now in shots.items() if not _shot_current(stamp, sid, now)}
     if changed:
         raise StaleError(f"{_summarise(changed, len(shots))} since the checks ran: {again} (it re-checks only those)")
     n = int(data.get("errors") or 0)
     if n:
-        raise StaleError(f"review/checks.json has {n} error(s): fix them and run BLENDER check SHORT again before "
+        raise StaleError(f"review/checks.json has {n} error(s): fix them and run {check} again before "
                          f"{command}")  # fmt: skip

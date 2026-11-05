@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        This form is usually filled in for you by `CLI feedback report SHORT --open`. Paths, keys and your settings
-        are already left out. Read it, change anything you like, then click Submit.
+        This form is usually filled in for you from the feedback panel on the short's review page. Paths, keys and
+        your settings are already left out. Read it, change anything you like, then click Submit.
   - type: textarea
     id: entries
     attributes:

@@ -91,6 +91,16 @@ def test_hero_boxes_of_the_shots_heroes():
     assert abs(y0 - (1 - max(c.y for c in corners)) * H) < 0.5 and abs(y1 - (1 - min(c.y for c in corners)) * H) < 0.5
 
 
+def test_hero_boxes_at_given_frames():
+    sc, _, ball = _scene()
+    bake.keyframe_series(ball, "location", 0, [0.2 * i for i in range(10)])
+    sc.frame_set(2)
+    out = anchors.hero_boxes_at(sc, ["Ball"], [7, 3])
+    assert sorted(out) == [3, 7] and len(out[3]) == 1 and sc.frame_current == 2
+    assert out[3][0] == anchors.hero_boxes(sc, ["Ball"], 3, 3)["boxes"]["Ball"][0]
+    assert out[7][0][0] > out[3][0][0]  # it moved right
+
+
 def test_scenery_boxes_are_the_other_meshes_on_screen():
     """Every rendered mesh that is no hero, on screen and smaller than a backdrop: what the end card keeps off after
     the heroes (a cradle's top rails)."""
@@ -113,3 +123,40 @@ def test_scenery_boxes_are_the_other_meshes_on_screen():
     x0, y0, x1, y1 = boxes[0]
     top = world_to_camera_view(sc, cam, Vector((0, -0.05, 2.05)))
     assert x0 < W / 2 < x1 and abs(y0 - (1 - top.y) * H) < 2 and y1 - y0 < 100, boxes
+
+
+def test_at_point_is_projected_each_frame():
+    """A label's `at` point (in its object's local space) is projected each frame, not the box top."""
+    sc, cam, ball = _scene()
+    bake.keyframe_series(ball, "location", 0, [0.3 * i for i in range(5)])
+    sc.frame_set(1)
+    pts = anchors.project(sc, ["Ball"], 1, 5, at=(0.5, 0, 0.5))["Ball"]["points"]
+    box = anchors.project(sc, ["Ball"], 1, 5)["Ball"]["points"]
+    for frame in (1, 5):
+        sc.frame_set(frame)
+        p = world_to_camera_view(sc, cam, ball.matrix_world @ Vector((0.5, 0, 0.5)))
+        x, y = pts[frame - 1]
+        assert abs(x - p.x * W) < 0.5 and abs(y - (1 - p.y) * H) < 0.5, (frame, pts)
+        assert abs(x - box[frame - 1][0]) > 5  # the corner, not the box top's centre
+    assert pts[0] != pts[4]
+    assert sc.frame_current == 5
+
+
+def test_an_empty_anchors_at_its_origin():
+    sc, cam, _ = _scene()
+    empty = bpy.data.objects.new("Mark", None)
+    sc.collection.objects.link(empty)
+    empty.location = (1, 0, 0.7)
+    empty.empty_display_size = 3  # its display size is no box: the origin is the anchor
+    x, y = anchors.project(sc, ["Mark"], 1, 1)["Mark"]["points"][0]
+    p = world_to_camera_view(sc, cam, Vector((1, 0, 0.7)))
+    assert abs(x - p.x * W) < 0.5 and abs(y - (1 - p.y) * H) < 0.5, (x, y)
+    x, y = anchors.project(sc, ["Mark"], 1, 1, at=(0, 0, 1))["Mark"]["points"][0]
+    p = world_to_camera_view(sc, cam, Vector((1, 0, 1.7)))
+    assert abs(x - p.x * W) < 0.5 and abs(y - (1 - p.y) * H) < 0.5, (x, y)
+
+
+def test_at_point_behind_the_camera_is_none():
+    sc, _, _ = _scene()
+    assert anchors.project(sc, ["Ball"], 1, 1, at=(0, -20, 0))["Ball"]["points"] == [None]  # behind the camera
+    assert anchors.project(sc, ["Ball"], 1, 1)["Ball"]["points"][0] is not None  # the box itself is in front

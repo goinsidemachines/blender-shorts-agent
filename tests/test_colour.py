@@ -1,8 +1,12 @@
+import colorsys
+import re
+
 import numpy as np
 import pytest
 
-from bsa import colour
+from bsa import colour, kit
 from bsa.short import Short
+from tests.kitfix import DARK, KIT
 
 
 def test_hex_and_lab():
@@ -42,6 +46,26 @@ def test_background_warning():
     assert "s01" in msg and "#C5C5C3" in msg and "#F3F2EE" in msg and "paper_world" in msg
 
 
+def test_background_measured_only_where_the_world_shows():
+    px = np.full((100, 100, 3), (0x20, 0x20, 0x20), np.uint8)  # a dark part filling 70% of the still
+    px[:, 70:] = (0xAF, 0xC6, 0xD3)  # the brand background showing round it
+    m = np.zeros((100, 100), bool)
+    m[:, 70:] = True
+    assert colour.dominant_colour(px, m) == pytest.approx((0xAF / 255, 0xC6 / 255, 0xD3 / 255), abs=1 / 255)
+    assert colour.background_warning(px, "#AFC6D3", "s01", mask=m) is None
+    assert colour.background_warning(px, "#AFC6D3", "s01") is not None  # the whole frame's colour is the part's
+
+
+def test_too_little_world_skips_the_warning():
+    px = np.full((100, 100, 3), (0x20, 0x20, 0x20), np.uint8)
+    m = np.zeros((100, 100), bool)
+    m[:, 90:] = True  # the world is 10% of the still
+    assert colour.WORLD_MIN_SHARE == 0.15
+    assert colour.background_warning(px, "#F3F2EE", "s01", mask=m) is None
+    m[:, 80:] = True  # 20%: measured, and far
+    assert colour.background_warning(px, "#F3F2EE", "s01", mask=m) is not None
+
+
 def _world(*node_types, stamp=None, use_nodes=True):
     from types import SimpleNamespace
 
@@ -61,3 +85,71 @@ def test_only_a_flat_backdrop_gets_the_background_check():
     assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexEnvironment", "ShaderNodeMapping")) is False
     assert colour.flat_backdrop(_world(*flat, "ShaderNodeTexGradient", "ShaderNodeValToRGB")) is False
     assert colour.flat_backdrop(_world(*flat), transparent=True) is False
+
+
+def test_a_set_world_is_not_a_flat_backdrop():
+    """Pegboard, graph paper and sky are environments: a set's world (stamped "set") gets no background check, even
+    when it is a plain colour; the studio set's paper_world still does."""
+    flat = ("ShaderNodeOutputWorld", "ShaderNodeBackground", "ShaderNodeLightPath", "ShaderNodeMixShader")
+    assert colour.flat_backdrop(_world(*flat, stamp="set")) is False
+    assert colour.flat_backdrop(_world(*flat, stamp="paper")) is True
+
+
+def test_set_colours_has_every_key_as_hex():
+    c = colour.set_colours(kit.kit_from(KIT))
+    assert set(c) == {"wall", "floor", "pattern", "wood", "wood_dark", "ground", "hills_near", "hills_far",
+                      "sky_top", "sky_horizon"}  # fmt: skip
+    assert all(re.fullmatch(r"#[0-9A-F]{6}", v) for v in c.values())
+
+
+@pytest.mark.parametrize("brand", [KIT, DARK])
+def test_pattern_reads_on_its_wall_in_light_and_dark_kits(brand):
+    c = colour.set_colours(kit.kit_from(brand))
+    assert 6 <= colour.delta_e(c["pattern"], c["wall"]) <= 25
+    assert colour.delta_e(c["floor"], c["wall"]) < colour.delta_e(c["pattern"], c["wall"])
+
+
+def test_wood_stays_warm_with_a_blue_accent():
+    k = kit.kit_from({**KIT, "palette": {**KIT["palette"], "accent": "#2255FF"}})
+    h, s, _ = colorsys.rgb_to_hsv(*colour.hex_to_srgb(colour.set_colours(k)["wood"]))
+    assert 20 / 360 <= h <= 45 / 360 and s >= 0.35
+
+
+def test_ground_and_sky_follow_motion_and_heat_or_the_default_code():
+    c = colour.set_colours(kit.kit_from(KIT))  # KIT has no motion/heat -> DEFAULT_CODE based
+    assert c["sky_top"] == kit.DEFAULT_CODE["heat"]
+    assert c["ground"] == colour.mix(kit.DEFAULT_CODE["motion"], "#EAF2F8", 0.55)
+    own = kit.kit_from({**KIT, "categories": {"motion": "#AA3300", "heat": "#0099CC"}})
+    c = colour.set_colours(own)
+    assert c["sky_top"] == "#0099CC" and c["ground"] == colour.mix("#AA3300", "#EAF2F8", 0.55)
+    assert c["sky_horizon"] == colour.mix("#0099CC", "#EAF2F8", 0.65)
+    dark = colour.set_colours(kit.kit_from({**DARK, "categories": {"heat": "#0099CC"}}))
+    assert dark["sky_horizon"] == colour.mix("#0099CC", "#FFFFFF", 0.65)
+
+
+def test_mix_ends():
+    assert colour.mix("#000000", "#FFFFFF", 0) == "#000000" and colour.mix("#000000", "#FFFFFF", 1) == "#FFFFFF"
+    assert colour.mix("#000000", "#FFFFFF", 0.5) == "#808080"
+
+
+def test_simulate_keeps_grey():
+    for kind in colour.CVD:
+        assert colour.delta_e("#808080", colour.simulate("#808080", kind)) < 1
+
+
+def test_cvd_check_skips_categories_with_an_invalid_hex():
+    from bsa import kit
+
+    for bad in ("#zzzzzz", "nope", "#12", 3, None):
+        with pytest.raises(ValueError):
+            colour.look_alike({"a": bad, "b": "#4A9A3B"})
+        assert kit.cvd_problems({"a": bad, "b": "#4A9A3B"}) == []  # the kit check names the bad colour itself
+
+
+def test_look_alike_finds_a_red_green_pair():
+    found = colour.look_alike({"stop": "#D9483B", "go": "#4A9A3B"})
+    assert len(found) == 1
+    a, b, kind, d = found[0]
+    assert (a, b, kind) == ("stop", "go", "deuteranopia") and d == pytest.approx(6.5, abs=0.3)
+    assert colour.delta_e("#D9483B", "#4A9A3B") > 50
+    assert colour.look_alike({"stop": "#D9483B", "go": "#4A9A3B"}, limit=1) == []

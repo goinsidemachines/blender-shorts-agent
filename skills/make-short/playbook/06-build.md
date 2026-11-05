@@ -19,10 +19,12 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - bake motion from a simulation or model with `bsa.blender.bake.keyframe_series` (never eyeballed keyframes for a
   mechanism; see `fields/*.md`), and move anything that travels along a multi-leg path with
   `bsa.blender.bake.keyframe_path(obj, points, f0, f1, ease="smooth")` (by arc length, see "Parts that move against
-  each other");
+  each other"). `keyframe_series`, `keyframe_path` and `keyframe_matrices` put the property back to the value it had
+  before keying, so code that reads it next (a hook's inverse) sees the rest pose (rebuilding an older short whose
+  build.py parents or hooks a part right after keying it, reading the last key's pose: check its first preview);
 - tag objects for the checks with `bsa.blender.bake.tag(obj, ...)`: `"hero"` for the subject(s) each shot is about
   (must stay inside the frame; `"hero:s03,s04"` makes it a hero only in those shots, for a subject the camera leaves
-  on purpose elsewhere), `"grounded"` for things that rest on something (must not float or sink),
+  on purpose elsewhere; `"hero:s07@0.6"` a hero of s07 from 60% of the shot on, for a subject the camera reaches later), `"grounded"` for things that rest on something (must not float or sink),
   `"contact:<other object name>"` for parts that really touch (a foot on a floor, a ball in its cradle, a cable at
   its anchor; `"contact:<other>:<max_depth_m>"` for the rare part that sits deeper by design;
   `"contact:<other>:moves"` for parts that touch and move against each other by design), with a comment next to
@@ -32,6 +34,21 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   the frame on purpose (water falling out of shot down a pipe): an overlay that `frame_edge` does not warn about;
   `"surface"` for an open water surface that
   things float in or dip into (the overlap checks leave it out; a closed mesh is still checked);
+  `"category:<name>"` (a category of the brand kit, `brand.categories`; e.g. `bake.tag(obj, "category:spark")`)
+  on a part a label points at: with a brand kit the label's dot takes that category's colour;
+  `"lines:off"` on a part that should have no ink lines round it (a glow, a thin wire); `"fast"` on a part whose
+  real motion is quicker than the pop limit in one frame (a flick, a snap: no `pops` error, every other check still
+  runs); `"swap:<other>"` on a part that takes over from `<other>` in place (a straight blade swapped for a bent
+  one: switch the new one on and the old one off on the same frame, at exactly the same place; `swap` checks it,
+  not `pop_in`); `"rigid"` on a forged part built from several meshes (a crank and its pin): it and everything
+  under it that doesn't move on its own is one solid (a keyed or constrained child, and what is under it, is not),
+  its meshes are not tested against each other, and each is still checked against everything outside (joining the
+  meshes into one is simpler); `"assembly:<name>"` on each member of a group whose parts touch
+  or mesh with each other only (a gear train, a balance and its arbor; `"assembly:<name>:<max depth m>"` caps how
+  deep members may go): a member against anything outside the assembly is checked as usual;
+  `"volume"` on gas, flame or smoke round solids (no overlap, z-fighting or floating; `pops` and `pop_in` still
+  checked; it is scene, not an overlay); `"set:floor"`,
+  `"set:wall"`, `"set:backdrop"` and `"set:prop"` mark the scenery a brand kit's set makes (never a hero);
 - read the look option from the `BSA_STYLE` environment variable when it is set (story-page thumbnails);
 - start by removing its old scenes with `bsa.blender.scene.remove_scenes(names)` (it also purges their objects,
   so a rebuild in the same Blender keeps exact object names; see `mcp-mode.md`). It and `setup_scene` also remove
@@ -41,11 +58,14 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   `bsa.timeline`). Every `BLENDER` command recomputes the timing from `short.json` and the takes, compares it with
   `source/timeline.json` and with each scene's stamp, and refuses a mismatch with "timing changed: run CLI timeline
   SHORT, then rebuild" (or "built for another timing"): run `CLI timeline SHORT`, rebuild, then carry on;
-- give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`);
-- save to `blend/short.blend`. Rebuild after every edit to build.py: when `source/build.py` is newer than
-  `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (in its
-  result's `warnings`, or `build_warnings` for `check` and `frame-check`, and on one stderr line), and the final
-  render and edit refuse to run;
+- give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`); to
+  point at a spot on it use the label's `"at": [x, y, z]` (local space) or an Empty there, never a helper sphere
+  (it would show in the video);
+- save to `blend/short.blend`. Rebuild after every edit to build.py or a script it imports: when `source/build.py`,
+  or a local script under `source/` that it imports (followed through their imports), is newer than
+  `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (or
+  "source/parts.py (imported by build.py) changed ...") in its result's `warnings` (`build_warnings` for `check` and
+  `frame-check`) and on one stderr line, `BLENDER preview` rebuilds, and the final render and edit refuse to run;
 - import only `bpy`, the standard library, numpy and the plugin's own `bsa` modules. Blender runs with
   `--factory-startup`, which leaves the user's own site-packages folder off its path: a third-party package such as
   Pillow is not importable inside Blender, even when it is installed for the very Python that Blender ships (it
@@ -64,9 +84,12 @@ if "--" in sys.argv:  # script mode: blender -b --python build.py -- PLUGIN_ROOT
     sys.path.insert(0, PLUGIN_ROOT)
 
 import bpy
-from bsa.blender import bake, look, scene as bsa_scene
+from bsa import setplace
+from bsa.blender import bake, look, scene as bsa_scene, sets, styles
+from bsa.kit import kit_for
+from bsa.settings import load_settings
 from bsa.short import load_short
-from bsa.timeline import timeline_hash
+from bsa.timeline import timeline_hash, timeline_from_json
 
 STYLE = int(os.environ.get("BSA_STYLE", "0") or 0)
 ENGINE = "cycles"  # the engine approved at the engine stage (or the saved preference); "eevee" if that was chosen
@@ -77,12 +100,22 @@ def build(short_dir):
     short = load_short(short_dir / "source" / "short.json")
     tl = json.loads((short_dir / "source" / "timeline.json").read_text(encoding="utf-8"))
     span = {s["id"]: (s["f0"], s["f1"]) for s in tl["shots"]}
+    kit = kit_for(load_settings(), short)  # None without a brand kit: sets and styles then do nothing at all
+    tl_obj = timeline_from_json(tl)  # sets.dress reads shot spans from this
+    size_m = 1.0  # the subject's largest real dimension in metres (from your sourced dimensions)
     names = sorted({s.scene for s in short.shots})
     bsa_scene.remove_scenes(names)  # old scenes and their objects, so a rebuild keeps exact object names
     for name in names:
         sc = bpy.data.scenes.new(name)
         bsa_scene.setup_scene(sc, short, ENGINE, "preview")
-        # ... models, materials, lights, world, camera moves, baked motion, tags ...
+        measuring = any(isinstance(lb, dict) and lb.get("kind") == "measure"
+                        for s in short.shots if s.scene == name for lb in s.labels)  # a measure label in the scene
+        set_name = setplace.resolve(kit.set, size_m, measuring) if kit else None  # "auto" picks; "none" is None
+        sets.base(sc, kit, set_name, size_m)  # the floor and walls first, before the subject (no kit: nothing)
+        # ... models (parts from look.kit_material(name, kind, colour) with category: tags; `hero` is the
+        # subject's main object), lights, camera moves, baked motion, tags ...
+        sets.dress(sc, kit, short, tl_obj, short_dir)  # after the motion is baked: sizes the set, places the props
+        styles.apply(sc, kit, target=hero, size=size_m, key=[hero.name])  # last: restyles the finished scene
         sc.frame_start, sc.frame_end = 1, tl["n_frames"]
         sc["bsa_timeline"] = timeline_hash(tl)  # the Blender commands refuse a scene built for another timing
     bpy.ops.wm.save_as_mainfile(filepath=str(short_dir / "blend" / "short.blend"))
@@ -91,6 +124,12 @@ def build(short_dir):
 if __name__ == "__main__" and "--" in sys.argv:
     build(SHORT_DIR)
 ```
+
+Relative paths in a `blender -b` script do not mean "beside the .blend". Python's own file calls (`open("x")`) use
+the working folder; a plain relative path that Blender itself writes (`scene.render.filepath`, `Image.save` or
+`filepath_raw`, compositor file outputs) resolves to the drive root (`C:\out.png`, which fails without write rights).
+Use absolute paths (from `SHORT_DIR`), or write `//` explicitly to mean beside the .blend (`"//renders/f####"`,
+`bpy.path.abspath("//textures/wood.png")`) once the file is saved.
 
 Run it (script mode):
 
@@ -101,6 +140,77 @@ Run it (script mode):
 For a style thumbnail, set `BSA_STYLE=<n>` in that command's environment. In MCP mode run the same file through the
 MCP instead, always with `import runpy; runpy.run_path(r"<root>/bsa_mcp_build.py")["build_short"](r"<short>")` so the
 open Blender uses the plugin's current code (`mcp-mode.md`).
+
+### One-take shorts: the camera from the windows
+
+A short with `"camera": {"style": "one-take", "seconds": ...}` is one continuous camera move, and each shot is a
+fixed window on it (its `at`, `03-storyboard.md`). The picture sets the clock, so build.py drives the camera from
+the windows, never from the narration:
+
+- read the frames with `bsa.timeline.window_frames(short)` (shot id -> `(f0, f1)`, 1-based, inclusive). It rounds
+  exactly as the timeline does, so the camera path and the shot spans in `timeline.json` always agree. Never
+  recompute frames from `at` or `camera.seconds` yourself, and never from line times: redoing the narration must not
+  move the camera;
+- key the camera per window, one stretch each, with `camera.move` (a push-in, an orbit) or `camera.follow` (track
+  or ride a moving part), from that window's `f0` to its `f1`: each call keys the window's start, so every window
+  starts on a key;
+- start each stretch where the last one ended: before `camera.follow` (or `camera.move`) set the scene to the
+  window's first frame (`sc.frame_set(f0)`), so the call starts from the pose the camera holds there. No jump, no
+  cut;
+- one scene and one camera for the whole short (every shot's `scene` is the same); stamp it with the timeline as
+  for cuts.
+
+```python
+from bsa.blender import camera
+from bsa.timeline import window_frames
+
+windows = window_frames(short)
+(a0, a1), (b0, b1), (c0, c1) = windows["s01"], windows["s02"], windows["s03"]
+camera.frame_objects(cam, [rod, bob], frames=list(range(a0, a1 + 1, 6)), key=a0, shot="s01")  # the whole swing
+camera.move(cam, [rod, bob], a0, a1, orbit=-15, to=[bob], shot="s01")  # push in to the bob
+for shot, (f0, f1) in (("s02", (b0, b1)), ("s03", (c0, c1))):
+    sc.frame_set(f0)  # the pose the last stretch ended on
+    camera.follow(cam, bob, f0, f1, mode="track", shot=shot)  # turn to keep the swinging bob in the band
+```
+
+The windows are contiguous frame ranges, so the stills, render, checks, edit, captions, labels and cards work per
+shot exactly as for cuts; the joins are invisible because the camera never cuts. When `CLI timeline SHORT` refuses
+with "s02's lines need ... but its window is ...", shorten that shot's lines or move the next shot's `at` later (the
+last window: make `camera.seconds` longer), then rebuild: the camera follows the new windows.
+
+### Sets, styles and kit materials (brand kit only)
+
+With a brand kit (`brand.style`, `look-and-brand.md`) build.py also makes the short's set and puts the style on it.
+Without a kit all three calls do nothing, so one build.py serves both. The order in the skeleton is fixed:
+
+1. `kit = kit_for(load_settings(), short)` once, then for each scene `set_name = setplace.resolve(kit.set, size_m,
+   measuring) if kit else None`. `size_m` is the subject's real size. `measuring` is true when a shot of that scene has
+   a label with `"kind": "measure"` (the scene explains by measuring): `auto` then gives `graph` for a subject under
+   5 m. `"none"` gives `None`. `BLENDER look` never chooses a set itself: it shows the set build.py made (or the
+   `--set` the user asked for), so the preview and the build always agree.
+2. `sets.base(sc, kit, set_name, size_m)` **before** the subject: the floor (its top at z = 0), walls and backdrop,
+   tagged `set:floor`, `set:wall`, `set:backdrop`, in the kit's colours. Build the subject on that floor.
+3. Parts with `look.kit_material(name, kind, colour)` and a `category:<name>` tag when a label points at them. The
+   `colour` is a `#RRGGBB` from the kit (`kit.categories`, `kit.palette`), never a hand-picked one. The kinds are
+   `plastic`, `metal`, `glass`, `emissive`, `toy`, `toy_water` and `matte`; the optional `pattern=` is `dots`, `grid`
+   or `wood`. `glass` does not work in EEVEE: use `toy_water` (`look-and-brand.md`). A part made another way is left
+   as made by every style, and `styles.apply` lists it.
+4. After the motion is baked and the cameras are framed: `sets.dress(sc, kit, short, tl_obj, short_dir)` sizes the
+   set to what the cameras see and places the props clear of the subject and of the cards, captions and labels. It
+   saves the arrangement to `source/sets.json` (once the storyboard is approved, later builds reuse it). To place
+   one prop again, after asking the user: `sets.dress(..., replace=["toolbox"])` (names as the `set_clearance`
+   check gives them; `replace=True` places all).
+5. `styles.apply(sc, kit, target=..., size=..., key=[...])` **last**. `target` is the subject (an object, its name
+   or a point), `size` its largest dimension in metres, `key` the names of the parts the shot is about. `blueprint`
+   and `pencil` draw colour only on `key=[...]` parts, so pass them for those styles.
+   It restyles the materials, lights, world and ink lines for the engine the scene renders with, and returns
+   `warnings`: read them.
+
+Tag parts that should have no ink line with `"lines:off"` (a glow, a thin wire). Never tag scenery yourself: the set
+tags its own objects (`set:floor`, `set:wall`, `set:backdrop`, `set:prop`) and a set object is never a hero.
+`BLENDER look SHORT` (`03-storyboard.md`) restyles the open scenes in memory with `--style` / `--set`, so build.py
+needs nothing for the look preview. A different style or set, once chosen, is a setting (`look-and-brand.md`): rebuild.
+The render engine is never set here: `setup_scene` is told the user's engine as before.
 
 ## Quality bar for the build (no half-done work)
 
@@ -169,6 +279,15 @@ The checks pass geometry that is wrong to the eye if you excuse it, so build it 
     single solid and keep other parts as their own objects: a mesh left with holes or open parts has no inside, and
     the overlap check then says it is not closed instead of giving a depth. The checks warn on any live Boolean on a
     rendered mesh.
+    **Cutaway (section) models.** To show the inside, open the cut in the mesh, not with a live Boolean: build the
+    part with the cut already in it (or apply the Boolean in build.py), and close it with a section face, a flat cap
+    on the cut plane in its own flat colour, with the inner detail (hatching, labels) on it, tagged `overlay` when it
+    is only drawn on. Then cut the gas at the same plane: a `volume` (flame, steam) is clipped to the same cut as the
+    solids, or it floats in front of the opened part. See `07-checks.md` for the checks a cutaway meets.
+    **Rigid parts: join, or tag the parent `rigid`.** A forged part built from several meshes (a crank and its pin)
+    is one solid: join the meshes into one (`bpy.ops.object.join()`), or, when they must stay separate objects, tag
+    the parent `rigid` so `overlap` does not test them against each other. The group is a parent and its children
+    that don't move on their own: a keyed child (a piston under the block) is still checked against the rest.
 14. **Parts in contact share the moving parent.** When two parts touch (a rod in its cylinder, a part on a moving
     deck), parent both to the moving part that carries them. When you replace a part's constructor, keep its
     parenting: have part builders return parented parts. A dropped parent leaves one part standing while the other
@@ -213,6 +332,19 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   box it reached; then look at the still. `key=FRAME` keys the framed position: it is safe on an already animated
   camera (it starts from the camera's pose now, measuring other frames does not snap it back, existing keys stay).
   Without `key` the new position is lost at the next frame change on a keyed camera.
+- **Shots with kit cards.** With a brand kit the top cards (logo, category tag, corner stack, title card, value
+  bars) take more rows than a badge. Measure them and frame under them:
+
+  ```python
+  kit = bsa.kit.kit_for(bsa.settings.load_settings(), short)   # None without a kit
+  font = bsa.cards.card_font(kit, bsa.fonts.font_caches(short_dir)) if kit else None  # the edit's font
+  top = bsa.kitlayout.top_band(short, shot, kit, font) if kit else layout.top_cards_band(labels=2)  # None: no top cards
+  camera.frame_objects(cam, [hero], top=top, shot=shot.id)
+  ```
+
+  Pass the same `top=` to `camera.move`. A shot with a `title_card` or `bars` takes rows under the other top
+  cards, so the subject starts lower: the band includes them. Without a kit, keep using
+  `top=layout.top_cards_band(labels=2)` as above.
 - **Camera moves: `camera.move`, never two keyed ends.** Framing only the two ends of an orbit or a swing and
   letting Blender interpolate goes wrong: location and rotation interpolate apart, and the framing also slides the
   camera sideways, so the in-between poses look past the subject (a shot can lose its subject halfway and still
@@ -239,6 +371,26 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
   refused. It measures the objects
   in the scene they are in, also while build.py builds a scene that is not the window's; objects the given (or the
   camera's) scene does not have are refused instead of measured at the origin.
+  Judge framing on `--guides` frames (`BLENDER test-frames SHORT --at s01:0.5 --guides`, also on `stills` and
+  `grab`): they show the caption zone, the top cards and the framing band the edit and the checks use, outlined on a
+  `<name>-guides.png` copy beside each frame.
+- **A camera that follows a moving part: `camera.follow`, never keyed by hand.** Hand keys on a camera riding a
+  part jitter with every bump of the part, or lag it and lose it. Frame the start (`frame_objects(cam, [part],
+  key=f0)`), then one call keys the whole follow every 2 frames (`every=`), aim and position smoothed with the same
+  Gaussian as `camera.move` (`smooth=` frames, its sigma; 0 for none), the part kept in the band (`band=True`,
+  the same `top=`, `margin=`, `avoid=` as `frame_objects`; where it would not fit, the camera backs off along its
+  view axis just enough), the keys between `f0` and `f1` replaced. `target` is an object or a list (their joint
+  box). Two modes:
+
+  ```python
+  # track a gear's tooth: the camera stays where it is and turns to keep the tooth in the band
+  camera.follow(cam, tooth, f0, f1, mode="track", shot=shot.id)
+  # ride a piston: the camera keeps its offset in the piston's own space (default: where it is now at f0)
+  camera.follow(cam, piston, f0, f1, mode="ride", shot=shot.id)
+  ```
+
+  `offset=(x, y, z)` gives the riding offset in the part's own coordinates instead. Perspective cameras only. It
+  returns `keys`, `distances` and `warnings` (read them as for `frame_objects`; they are kept for the checks).
 - **Wide subjects in a tall frame** (a row of balls, a train, a bridge, a long machine): side-on, a wide subject
   fills the 1080 px width and only a third of the height, and looks small. Instead:
   - Shoot it at a 3/4 angle **along the row** (camera 30-45 degrees off its long axis, a little above): the row
@@ -270,6 +422,18 @@ targets are set: `voice_dbfs` is the mix while the voice is speaking (pauses don
 `bed_dbfs` is the mix where the effects sound clear of speech (silence between sparse effects doesn't count), about
 -23 (-21 to -27: it reads lower when the loudest effects land under speech, where they duck); `peak_dbfs` at or
 under -1. `null` means there is no voice or no effects. Far outside those ranges: look at `level_db` and `sound.py`.
+
+## Test the camera first
+
+For a camera-led short (the camera's move is the story: a fly-through, a one-take, a camera riding a part), and
+before any long render of a complex move, look at the move itself before the look and the checks:
+`BLENDER camtest SHORT [--scale 0.33] [--shots s01,s02]`. It renders the camera path in Workbench grey (solid
+grey, no textures, cards or captions) into `review/camtest/camtest.mp4`, with a contact sheet
+(`camtest-sheet.png`) and `camtest.json`, in minutes. It is a draft view of the camera, never a picture: the user's
+engine and every setting it touches are restored, and the .blend is never saved. It refuses, before anything
+renders, a short that is not built for this timing (build first) and a shot whose scene has no camera. The clip is
+out of date once the .blend or the timing changes: run it again after a rebuild. Show the user the clip and the
+sheet; fix the move in build.py, never by hand in the .blend.
 
 ## Finish
 

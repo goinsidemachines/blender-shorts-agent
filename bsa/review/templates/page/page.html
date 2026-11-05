@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>@@TITLE@@</title>
+<style>
+@@CSS@@
+</style>
+</head>
+<body data-mode="@@MODE@@">
+<header class="top">
+  <div class="logo" aria-hidden="true">B</div>
+  <div class="title">
+    <h1 id="bsa-title">@@TITLE@@</h1>
+    <p id="bsa-sub"></p>
+  </div>
+  <div class="tools">
+    <span class="live" id="bsa-live"><i aria-hidden="true"></i><span>Live</span></span>
+    <button type="button" class="btn ghost small" id="bsa-theme" aria-pressed="false">Dark theme</button>
+  </div>
+</header>
+<nav aria-label="Stages" id="bsa-stages"><ol></ol></nav>
+<div id="bsa-banners"></div>
+<main id="bsa-main">
+  <section class="card stage" id="bsa-stage" aria-labelledby="bsa-stage-h"></section>
+  <aside class="side" id="bsa-side" aria-label="Notes and answers"></aside>
+</main>
+<div id="bsa-phone"></div>
+<footer class="foot">
+  <p>Made with <a href="@@REPO@@" target="_blank" rel="noopener noreferrer">blender-shorts-agent</a> by
+  <a href="https://goinsidemachines.com" target="_blank" rel="noopener noreferrer">Inside Machines</a> ·
+  <a href="https://goinsidemachines.com/made-with/" target="_blank" rel="noopener noreferrer">See what others made</a> ·
+  <a href="@@REPO@@/issues/new?template=bug_report.yml" target="_blank" rel="noopener noreferrer">Report a problem</a></p>
+</footer>
+<div class="sr-only" id="bsa-announce" aria-live="polite"></div>
+<script>window.BSA_MODE = "@@MODE@@";</script>
+@@SNAPSHOT@@
+<script>
+@@QR@@
+</script>
+<script>
+@@REVIEW@@
+</script>
+<script>
+@@POST@@
+</script>
+<script>
+@@STAGES@@
+</script>
+<script>
+@@PAGE@@
+</script>
+</body>
+</html>

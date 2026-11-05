@@ -290,6 +290,111 @@ def font_info_or_none(path, index: int = 0) -> dict | None:
         return None
 
 
+# How Blender's sequencer sizes a text strip's box (measured in Blender 5.2 for several fonts and sizes): the first
+# line is the font's bounding box tall ((head yMax - yMin) / unitsPerEm, times the size), each further line adds the
+# font's line height (FreeType's: (ascender - descender + lineGap) / unitsPerEm from hhea, or from OS/2's typo metrics
+# when the font sets USE_TYPO_METRICS or hhea has none). Blender's built-in font, measured: 1.16 and 1.41.
+BLENDER_LINE_H = 1.16
+BLENDER_BOX_H = 1.41
+
+
+def _s16(b: bytes, o: int) -> int:
+    return int.from_bytes(b[o : o + 2], "big", signed=True) if o + 2 <= len(b) else 0
+
+
+def line_metrics(path, index: int = 0) -> tuple[float, float] | None:
+    """(line height, first line's box height), in em, of a .ttf, .otf or .ttc font as the sequencer draws its text
+    (see BLENDER_LINE_H); None when the file can't be read as a font."""
+    try:
+        tables = _tables(Path(path).read_bytes(), index)
+        head, hhea, os2 = tables["head"], tables.get("hhea", b""), tables.get("OS/2", b"")
+        upm = _u16(head, 18)
+        if not upm:
+            return None
+        asc, desc, gap = _s16(hhea, 4), _s16(hhea, 6), _s16(hhea, 8)
+        if len(os2) >= 74 and ((_u16(os2, 62) & 0x80) or (asc == 0 and desc == 0)):
+            asc, desc, gap = _s16(os2, 68), _s16(os2, 70), _s16(os2, 72)
+        line, box = (asc - desc + gap) / upm, (_s16(head, 42) - _s16(head, 38)) / upm
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+    return (line, box) if line > 0 and box > 0 else None
+
+
+_ADVANCE_CACHE: dict = {}
+
+
+def _cmap_glyphs(t: bytes, cps) -> dict[int, int]:
+    """{codepoint: glyph id} for the codepoints `cps` from the best Unicode subtable (format 12, else 4); 0 (the
+    .notdef glyph) for one the font has no glyph for."""
+    subs = {}
+    for i in range(_u16(t, 2)):
+        rec = 4 + 8 * i
+        subs[(_u16(t, rec), _u16(t, rec + 2))] = _u32(t, rec + 4)
+    for keys, fmt in ((((3, 10), (0, 4), (0, 6)), 12), (((3, 1), (0, 3), (0, 1), (0, 0)), 4)):
+        o = next((subs[k] for k in keys if k in subs and _u16(t, subs[k]) == fmt), None)
+        if o is None:
+            continue
+        if fmt == 12:
+            at = [o + 16 + 12 * i for i in range(_u32(t, o + 12))]
+            groups = [(_u32(t, g), _u32(t, g + 4), _u32(t, g + 8)) for g in at]
+            starts = [g[0] for g in groups]
+            out = {}
+            for cp in cps:
+                i = bisect.bisect_right(starts, cp) - 1
+                out[cp] = groups[i][2] + cp - groups[i][0] if i >= 0 and cp <= groups[i][1] else 0
+            return out
+        n = _u16(t, o + 6) // 2
+        ends_at, starts_at = o + 14, o + 16 + 2 * n
+        deltas, ranges = starts_at + 2 * n, starts_at + 4 * n
+        ends = [_u16(t, ends_at + 2 * i) for i in range(n)]
+        out = {}
+        for cp in cps:
+            i = bisect.bisect_left(ends, cp)
+            gid = 0
+            if cp <= 0xFFFF and i < n and _u16(t, starts_at + 2 * i) <= cp:
+                start, delta, ro = _u16(t, starts_at + 2 * i), _u16(t, deltas + 2 * i), _u16(t, ranges + 2 * i)
+                if ro == 0:
+                    gid = (cp + delta) & 0xFFFF
+                else:
+                    at = ranges + 2 * i + ro + 2 * (cp - start)
+                    gid = _u16(t, at) if at + 2 <= len(t) else 0
+                    gid = (gid + delta) & 0xFFFF if gid else 0
+            out[cp] = gid
+        return out
+    raise ValueError("the font has no Unicode cmap")
+
+
+def _advances(path, index: int):
+    """(unitsPerEm, advance widths, cmap table, {codepoint: glyph id} seen so far) of a font file, cached by its
+    size and mtime."""
+    path = Path(path)
+    st = path.stat()
+    key = (str(path.resolve()), index, st.st_size, st.st_mtime_ns)
+    if key not in _ADVANCE_CACHE:
+        tables = _tables(path.read_bytes(), index)
+        upm, n = _u16(tables["head"], 18), _u16(tables["hhea"], 34)
+        hmtx = tables["hmtx"]
+        if not upm or not n:
+            raise ValueError("the font has no advance widths")
+        _ADVANCE_CACHE[key] = (upm, [_u16(hmtx, 4 * g) for g in range(n)], tables["cmap"], {})
+    return _ADVANCE_CACHE[key]
+
+
+def advance_em(path, text: str, index: int = 0) -> float | None:
+    """The width of `text` set in the font, in em: the sum of its glyphs' advance widths (hmtx) over unitsPerEm. A
+    glyph past hhea.numberOfHMetrics takes the last advance; a character without a glyph counts glyph 0 (.notdef).
+    Kerning is ignored: kerning mostly tightens pairs, so this errs wide, the safe side for sizing a card. None when
+    the file can't be read as a font with advance widths."""
+    try:
+        upm, widths, cmap, gids = _advances(path, index)
+        new = {ord(c) for c in text} - gids.keys()
+        if new:
+            gids.update(_cmap_glyphs(cmap, new))
+        return sum(widths[min(gids[ord(c)], len(widths) - 1)] for c in text) / upm
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+
+
 def covers(info: dict, ch: str) -> bool:
     """Whether the font has a glyph for character `ch`."""
     cp = ord(ch)
@@ -429,11 +534,21 @@ def cover_font(text: str, main, dirs: list[Path] | None = None, system: str | No
 def text_items(short, settings: dict) -> list[tuple[str, str]]:
     """(where, text) for everything the edit draws: captions (each line), labels, badges (upper case, as drawn) and
     the end card (its line and the @handle) when there is a handle."""
-    from bsa.short import label_text
+    from bsa import kit
+    from bsa.short import bar_items, bar_text, bar_verdict, category_text, label_text, step_text, title_lines
 
     items = [(f"line {ln.id}", ln.text) for ln in short.lines]
     for s in short.shots:
         items += [(f"shot {s.id} label", label_text(lb)) for lb in s.labels]
+        items += [(f"shot {s.id} title card", line) for line in title_lines(s)[0]]
+        if isinstance(s.category, str) and s.category.strip():
+            items.append((f"shot {s.id} category", category_text(s.category)))
+        if step_text(s):
+            items.append((f"shot {s.id} step", step_text(s)))
+        for item in bar_items(s):
+            items += [(f"shot {s.id} value bar", t) for t in (str(item.get("label") or ""), bar_text(item)) if t]
+        if bar_verdict(s):
+            items.append((f"shot {s.id} verdict", bar_verdict(s)))
         if s.badge:
             items.append((f"shot {s.id} badge", s.badge.upper()))
     handle = str(settings.get("handle") or "").strip().lstrip("@")
@@ -442,6 +557,10 @@ def text_items(short, settings: dict) -> list[tuple[str, str]]:
         if line:
             items.append(("end card", line))
         items.append(("end card", "@" + handle))
+    own = kit.kit_for(settings, short)
+    name = str((own.logo or {}).get("name") or "").strip() if own is not None else ""
+    if name:
+        items.append(("logo badge", name))
     return items
 
 
@@ -466,12 +585,27 @@ def family_of(path) -> str:
     return info["family"] if info else Path(path).stem
 
 
+def caption_font_name(short, settings: dict) -> str:
+    """The font a short's text is drawn in: its own style.font, else the kit's font when a kit is on (brand.style),
+    else brand.font when the short follows the brand (a fresh look gets none), else "" (the default font)."""
+    name = str((getattr(short, "style", None) or {}).get("font") or "").strip()
+    if name:
+        return name
+    from bsa import kit
+    from bsa import settings as bsa_settings
+
+    own = kit.kit_for(settings or {}, short)
+    if own is not None:
+        return str(own.font or "").strip()
+    return str(bsa_settings.brand_for(settings or {}, short).get("font") or "").strip()
+
+
 def glyph_warnings(short, settings: dict, dirs: list[Path] | None = None, system: str | None = None,
                    cache_dirs: list[Path] | None = None) -> list[str]:  # fmt: skip
     """Warnings about the short's style font: a weight ("Family@600") that is neither installed nor cached, a
     variable font (the wrong weight in Blender), and every character of the captions, labels, badges and end card it
     has no glyph for, with the font the edit draws that text in instead."""
-    name = str((short.style or {}).get("font") or "").strip()
+    name = caption_font_name(short, settings)
     if not name:
         return []
     dirs = font_dirs() if dirs is None else dirs

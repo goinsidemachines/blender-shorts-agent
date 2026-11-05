@@ -1,15 +1,22 @@
 import copy
+import itertools
+import string
+import struct
 import wave
+import zlib
 
 import numpy as np
 import pytest
+from fontbuild import build_font
 
-from bsa import closing, settings
+from bsa import closing, kit, settings
 from bsa.audio.mix import mix
 from bsa.layout import H, W
 from bsa.short import Line, Short, Shot, validate
 from bsa.timeline import build_timeline
+from tests.kitfix import KIT
 
+K = kit.kit_from(KIT)
 CARD = {"image": "C:/me/card.png", "seconds": 2.5, "voice_line": "Play with it at example dot com."}
 
 
@@ -89,16 +96,6 @@ def test_a_card_held_longer_for_its_line_says_so():
     assert plain == {"seconds": 2.5, "set_seconds": 2.5}
 
 
-def test_the_review_page_says_how_long_the_card_holds(tmp_path):
-    from bsa.review.pages import _closing_html
-
-    card = {**CARD, "png": str(tmp_path / "closing.png"), "warnings": []}
-    assert "at least 2.5 s" in _closing_html(card, tmp_path / "final.html")
-    note = "closing card held 4.5 s so the voice line fits (its take is 3.8 s; closing.seconds is 2.5)"
-    html = _closing_html({**card, "held_s": 4.5, "hold_note": note}, tmp_path / "final.html")
-    assert "held 4.5 s" in html and note in html and "at least" not in html
-
-
 def _take(path, seconds):
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
@@ -171,7 +168,8 @@ def test_closing_card_in_blender(blender_run):
     result = blender_run(Path(__file__).resolve().parent / "blender" / "test_closing_card.py", timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
     for name in ("test_brand_card_from_the_website_alone", "test_user_image_fills_the_frame",
-                 "test_edit_ends_on_the_closing_card"):  # fmt: skip
+                 "test_edit_ends_on_the_closing_card",
+                 "test_kit_closing_card_without_a_card_dir_uses_a_temp_folder_removed_after_the_render"):  # fmt: skip
         assert f"PASS {name}" in result.stdout
 
 
@@ -196,3 +194,83 @@ def test_the_edit_reports_and_records_a_longer_hold(tmp_path, monkeypatch):
     assert not warnings and end["hold"]["seconds"] == 4.5 and "so the voice line fits" in end["hold"]["note"]
     info = json.loads((png.parent / closing.INFO_FILE).read_text(encoding="utf-8"))
     assert info["held_s"] == 4.5 and info["hold_note"] == end["hold"]["note"]
+
+
+@pytest.fixture
+def font(tmp_path):
+    p = tmp_path / "card.ttf"
+    p.write_bytes(build_font(string.ascii_letters + string.digits + string.punctuation + " ", advance=500))
+    return p
+
+
+def _logo(path, w=200, h=100):
+    raw = b"".join(bytes([0]) + bytes([255]) * (4 * w) for _ in range(h))
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    path.write_bytes(bytes.fromhex("89504e470d0a1a0a") + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                     + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))  # fmt: skip
+    return path
+
+
+def test_kit_closing_rows_stay_clear_of_the_covered_zones(font):
+    rows = closing.kit_layout({"website": "example.com", "handle": "maker"}, K, font)
+    assert [s.kind for s, _ in rows] == ["text", "category", "label"]
+    assert all(r.right <= W * (1 - closing.COVERED_RIGHT) and r.bottom <= H * (1 - closing.COVERED_BOTTOM)
+               for _, r in rows)  # fmt: skip
+    assert all(abs(r.x + r.w / 2 - W / 2) < 1 for _, r in rows)
+    assert rows[0][1].y == closing.TOP_PX
+    gaps = [b[1].y - a[1].bottom for a, b in itertools.pairwise(rows)]
+    assert gaps == [closing.GAP_PX] * 2
+    lead, site, handle = rows
+    assert lead[0].fill is None and lead[0].outline is None and lead[0].runs[0].colour == KIT["palette"]["text"]
+    assert lead[0].runs[0].size == 56 and lead[0].runs[0].text == "More at"
+    assert site[0].fill == KIT["palette"]["accent"] and site[0].runs[0].colour == "#FFFFFF"
+    assert handle[0].runs[0].text == "@maker" and handle[0].runs[0].size == 52
+
+
+def test_kit_closing_shrinks_a_long_website_to_fit(font):
+    rows = closing.kit_layout({"website": "a-very-long-website-name-for-a-small-shop.example.com"}, K, font)
+    assert len(rows) == 2 and rows[1][0].runs[0].size < 84 and len(rows[1][0].runs) == 1
+    assert rows[1][1].right <= W * (1 - closing.COVERED_RIGHT)
+
+
+def test_kit_closing_with_a_logo_starts_with_the_badge(tmp_path, font):
+    k = kit.kit_from({**KIT, "logo": {"file": str(_logo(tmp_path / "logo.png")), "name": "Acme"}})
+    rows = closing.kit_layout({"website": "example.com", "handle": "maker"}, k, font)
+    assert rows[0][0].kind == "logo" and len(rows) == 4
+    assert rows[0][1].y == closing.TOP_PX and rows[1][1].y == rows[0][1].bottom + closing.GAP_PX
+    assert closing.kit_layout({"website": "example.com"}, K, font)[0][0].kind == "text"  # no logo: no badge
+
+
+def test_a_kit_closing_card_with_a_missing_logo_says_so_in_closing_json(tmp_path, monkeypatch):
+    """The logo file moved after setup: the closing card is made without its badge and stills/closing.json (and the
+    returned warnings) say so once."""
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    import bsa_blender
+
+    gone = tmp_path / "gone" / "logo.png"
+    s = {"website": "a.com", "brand": {**KIT, "logo": {"file": str(gone), "place": "top-left"}}}
+    monkeypatch.setattr(bsa_blender.settings, "load_settings", lambda: s)
+    made = []
+    monkeypatch.setitem(sys.modules, "bsa.blender.closing_card",
+                        SimpleNamespace(make_card=lambda *a, **k: made.append(k.get("kit"))))  # fmt: skip
+    monkeypatch.setitem(sys.modules, "bsa.blender.pixels", SimpleNamespace(read_png=lambda p: np.zeros((4, 4, 4))))
+    monkeypatch.setattr(closing, "zone_warnings", lambda rgba: [])
+    (tmp_path / "stills").mkdir()
+    cfg, _, warnings = bsa_blender._closing_card(tmp_path, _short())
+    assert made and made[0] is not None and cfg is not None
+    want = kit.logo_missing(made[0].logo)
+    assert want and warnings == [want]
+    assert json.loads((tmp_path / "stills" / closing.INFO_FILE).read_text(encoding="utf-8"))["warnings"] == [want]
+
+
+def test_card_seconds_and_the_stretch_warning():
+    cfg = {**CARD, "seconds": 2.5}
+    assert closing.card_seconds(cfg, 3.4, 30) == 4.1
+    assert closing.stretch_warning(cfg, 3.4, 30) == ("the closing card will hold 4.1 s, not 2.5 s: shorten the line "
+                                                    "or raise closing.seconds")  # fmt: skip
+    assert closing.card_seconds(cfg, 1.0, 30) == 2.5 and closing.stretch_warning(cfg, 1.0, 30) is None
+    assert closing.card_seconds(cfg, None, 30) == 2.5 and closing.stretch_warning(cfg, None, 30) is None
+    assert closing.card_seconds(None, 3.4, 30) is None and closing.stretch_warning(None, 3.4, 30) is None

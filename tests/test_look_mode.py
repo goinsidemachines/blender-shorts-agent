@@ -1,13 +1,11 @@
 """A short's own look (`short.json` "look": "fresh") turns the brand off for that short, without touching settings."""
 
 import json
-import shutil
 from pathlib import Path
 
 import numpy as np
 
 from bsa import colour
-from bsa.review.pages import render_story
 from bsa.settings import brand_for, look_mode
 from bsa.short import Short, load_short, validate
 
@@ -53,34 +51,24 @@ def test_background_warning_names_whose_background():
     assert "the brand background #F3F2EE" in colour.background_warning(grey, "#F3F2EE", "s01")
 
 
-def test_story_page_says_which_look_the_short_follows(tmp_path):
-    short = load_short(SAMPLE)
-    out = tmp_path / "review" / "story.html"
-    out.parent.mkdir()
-    assert "the brand is off for this short" in render_story(short, out, look="fresh").read_text(encoding="utf-8")
-    html = render_story(short, out, look="brand").read_text(encoding="utf-8")
-    assert "the brand look from your settings" in html
-    html = render_story(short, out).read_text(encoding="utf-8")
-    assert "brand is off" not in html and "brand look from" not in html
+def test_story_stage_says_which_look_the_short_follows(tmp_path):
+    from bsa.review import snapshot
 
-
-def test_review_story_with_a_fresh_short_under_brand_settings(tmp_path):
-    from tests.test_cli import ok, run
-
-    home = tmp_path / "home"
-    home.mkdir()
-    ok(run(home, "settings", "set", "workspace", tmp_path / "ws"))
-    ok(run(home, "settings", "set", "brand.mode", "brand"))
-    sdir = Path(ok(run(home, "new-short", "Pendulum"))["short"])
+    sdir = tmp_path / "01-pendulum"
+    (sdir / "source").mkdir(parents=True)
     data = json.loads(SAMPLE.read_text(encoding="utf-8"))
-    shutil.copyfile(SAMPLE, sdir / "source" / "short.json")
     (sdir / "source" / "styles.json").write_text(json.dumps([{"name": "Dusk", "description": "warm"}]), "utf-8")
-    html = Path(ok(run(home, "review", "story", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "Dusk" not in html and "the brand look from your settings" in html  # the brand: no look options
-    data["look"] = "fresh"
-    (sdir / "source" / "short.json").write_text(json.dumps(data), encoding="utf-8")
-    html = Path(ok(run(home, "review", "story", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "Dusk" in html and "the brand is off for this short" in html
+
+    def look(settings, **extra):
+        (sdir / "source" / "short.json").write_text(json.dumps({**data, **extra}), encoding="utf-8")
+        return snapshot._story(snapshot.load_ctx(sdir, settings))["look"]
+
+    brand = look(BRAND)
+    assert "the brand look from your settings" in brand["note"] and brand["options"] == []  # the brand: no options
+    fresh = look(BRAND, look="fresh")
+    assert "the brand is off for this short" in fresh["note"] and [o["name"] for o in fresh["options"]] == ["Dusk"]
+    plain = look({"brand": {"mode": None}})
+    assert plain["note"] is None and [o["name"] for o in plain["options"]] == ["Dusk"]
 
 
 def test_brand_mode_fresh_turns_the_brand_off_too():
@@ -97,4 +85,4 @@ def test_stills_skip_the_background_check_on_a_sky_or_landscape(tmp_path, monkey
     monkeypatch.setenv("BSA_HOME", str(tmp_path))
     s = _short(look="fresh", style={"palette": {"background": "#AFC6D3"}})
     missing = tmp_path / "never-read.png"  # reading it would fail: it is skipped before that
-    assert bsa_blender._background_warnings(s, [("s01", missing, False)]) == []
+    assert bsa_blender._background_warnings(s, [("s01", missing, False, None)]) == []

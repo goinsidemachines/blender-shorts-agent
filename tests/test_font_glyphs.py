@@ -2,7 +2,6 @@
 
 import json
 import platform
-import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 from fontbuild import build_font, build_variable
 
 from bsa import fonts
+from bsa import proc as _proc
 from bsa.short import Line, Short, Shot
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -166,14 +166,14 @@ def test_real_windows_fonts():
 
 def test_brand_playbook_covers_variable_fonts_and_glyphs():
     text = (ROOT / "skills/make-short/playbook/look-and-brand.md").read_text(encoding="utf-8")
-    assert "variable font" in text and "font:Fredoka@600" in text and "--short SHORT" in text and "glyph" in text
+    assert "variable font" in text and "font:Inter@600" in text and "--short SHORT" in text and "glyph" in text
 
 
 def _cli(*args, env_home):
     import os
 
     env = {**os.environ, "BSA_HOME": str(env_home)}
-    return subprocess.run([sys.executable, str(ROOT / "bsa_cli.py"), *args], capture_output=True, text=True, env=env,
+    return _proc.run([sys.executable, str(ROOT / "bsa_cli.py"), *args], capture_output=True, text=True, env=env,
                           check=False)  # fmt: skip
 
 
@@ -186,3 +186,32 @@ def test_cli_fonts_reports_a_variable_font(tmp_path, bsa_home):
     assert "Light" in data["warning"] and "font:" in data["warning"]  # how to plan a static weight
     out = _cli("fonts", str(vf), "--text", "ab≈", env_home=bsa_home)
     assert json.loads(out.stdout)["missing_glyphs"] == ["≈"]
+
+
+def test_line_metrics_as_the_sequencer_draws_them(tmp_path):
+    """(line height, first line's box) in em: hhea's ascender - descender + lineGap, the head bounding box; OS/2's
+    typo metrics when the font asks for them (USE_TYPO_METRICS) or hhea has none."""
+    m = {"upm": 2000, "box": (-600, 2200), "hhea": (1800, -500, 100), "typo": (1500, -500, 0), "use_typo": False}
+    path = tmp_path / "m.ttf"
+    path.write_bytes(build_font("Hg", metrics=m))
+    assert fonts.line_metrics(path) == pytest.approx((1.2, 1.4))
+    path.write_bytes(build_font("Hg", metrics={**m, "use_typo": True}))
+    assert fonts.line_metrics(path) == pytest.approx((1.0, 1.4))
+    path.write_bytes(build_font("Hg", metrics={**m, "hhea": (0, 0, 0)}))
+    assert fonts.line_metrics(path) == pytest.approx((1.0, 1.4))
+    path.write_bytes(build_font("Hg"))  # no head table
+    assert fonts.line_metrics(path) is None
+    assert fonts.line_metrics(tmp_path / "missing.ttf") is None
+    assert (fonts.BLENDER_LINE_H, fonts.BLENDER_BOX_H) == (1.16, 1.41)
+
+
+def test_glyph_warnings_cover_card_text_in_the_kit_font(tmp_path):
+    from tests.kitfix import KIT
+
+    main = _write(tmp_path, "Brand.ttf", build_font("Push lift"))
+    short = Short(slug="t", title="T", length_s=10, lines=[Line("l1", "Push", "s1")],
+                  shots=[Shot("s1", "a", "p", "S", title_card="Push → lift")])  # fmt: skip
+    settings = {"handle": "", "end_card": "", "brand": {**KIT, "font": str(main)}}
+    text = " | ".join(fonts.glyph_warnings(short, settings, [tmp_path / "fonts"], system="Windows"))
+    assert "shot s1 title card" in text and "'→'" in text
+    assert fonts.glyph_warnings(short, {"handle": "", "end_card": ""}, [tmp_path / "fonts"], system="Windows") == []

@@ -1,0 +1,20 @@
+{
+  "custom": {
+    "audio/vo/heard.json": "ba8b75bb417f494211935e54de4e2360b2c22c3a8c899aeb03bda46a1b445517",
+    "audio/vo/l01.wav": "18e3bab83e19c7cc8ad0cfc5c278828a4a802023d77fb33791683865cc44a632",
+    "audio/vo/l02.wav": "3497ea928ecbd15ca92c8198a8b6e2aecf4b94b7ee29bdce4ef612455ba8e9cd",
+    "audio/vo/l03.wav": "54d9a9b67720d0719ca6723d0ba68db0da8bea2e2a97cb14244aca936a5790e2",
+    "audio/vo/l04.wav": "e863794e986b2a753792c1f16292aaafa41e7b7e4b94179459a9144110d7a475",
+    "audio/vo/lines.json": "f32b3480817ebc517c4c892bc24596ae5807231e1e3e7f17ef994dcae26dce73",
+    "source/timeline.json": "92495e681ce6b9c5a12a1421c2c3f8ba220440d8b02776b660a9af336cc42714"
+  },
+  "local": {
+    "audio/vo/durations.json": "ba490969f91d468d62d42e98de590f9fd1838a91b6f4c5a9611e9b7e9b5b9aac",
+    "audio/vo/heard.json": "ba8b75bb417f494211935e54de4e2360b2c22c3a8c899aeb03bda46a1b445517",
+    "audio/vo/l01.wav": "18e3bab83e19c7cc8ad0cfc5c278828a4a802023d77fb33791683865cc44a632",
+    "audio/vo/l02.wav": "3497ea928ecbd15ca92c8198a8b6e2aecf4b94b7ee29bdce4ef612455ba8e9cd",
+    "audio/vo/l03.wav": "54d9a9b67720d0719ca6723d0ba68db0da8bea2e2a97cb14244aca936a5790e2",
+    "audio/vo/l04.wav": "e863794e986b2a753792c1f16292aaafa41e7b7e4b94179459a9144110d7a475",
+    "source/timeline.json": "92495e681ce6b9c5a12a1421c2c3f8ba220440d8b02776b660a9af336cc42714"
+  }
+}

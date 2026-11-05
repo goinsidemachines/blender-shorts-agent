@@ -7,12 +7,13 @@ the user reviews it and clicks Submit on GitHub themselves, only if they choose 
 from __future__ import annotations
 
 import json
-import os
 import platform
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode
+
+from bsa.review import store
 
 SEVERITIES = ("blocking", "wrong-output", "rough-edge")
 FIELDS = ("happened", "expected", "command", "error", "workaround", "stage")
@@ -51,12 +52,19 @@ def _load(short_dir: Path) -> dict:
     return data
 
 
-def _save(short_dir: Path, data: dict) -> None:
+def _update(short_dir: Path, fn) -> dict:
+    """Change the file under the store's lock (bsa.review.store.update_json): `fn` edits the data in place. A damaged
+    file (empty, not JSON, not an object, entries not a list) raises StoreDamaged and is never written over."""
     path = feedback_path(short_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+
+    def apply(data: dict) -> dict:
+        if not isinstance(data.setdefault("entries", []), list):
+            raise store.StoreDamaged(f"{path} is damaged (entries is not a list): move it aside to start it over")
+        fn(data)
+        return data
+
+    return store.update_json(path, {}, apply, dict)
 
 
 def _now() -> str:
@@ -111,10 +119,7 @@ def add(short_dir: Path, severity: str, summary: str, *, happened=None, expected
     if not summary:
         raise ValueError("a feedback note needs a one-line summary")
     paths = {"short_dir": short_dir, **(short_paths or {})}
-    data = _load(short_dir)
-    ids = [int(e["id"][1:]) for e in data["entries"] if isinstance(e, dict) and re.fullmatch(r"f\d+", str(e.get("id")))]
-    entry = {"id": f"f{max(ids, default=0) + 1}", "time": _now(), "severity": severity,
-             "summary": redact(summary, **paths)}  # fmt: skip
+    entry = {"id": None, "time": _now(), "severity": severity, "summary": redact(summary, **paths)}
     values = {"happened": happened, "expected": expected, "command": command, "error": error,
               "workaround": workaround, "stage": stage}  # fmt: skip
     for key in FIELDS:
@@ -122,27 +127,69 @@ def add(short_dir: Path, severity: str, summary: str, *, happened=None, expected
         entry[key] = redact(text, **paths) if text else None
     entry["context"] = environment(blender, mode)
     entry["status"] = "new"
-    data["entries"].append(entry)
-    _save(short_dir, data)
+
+    def fn(data):
+        ids = [int(e["id"][1:]) for e in data["entries"]
+               if isinstance(e, dict) and re.fullmatch(r"f\d+", str(e.get("id")))]  # fmt: skip
+        entry["id"] = f"f{max(ids, default=0) + 1}"
+        data["entries"].append(entry)
+
+    _update(short_dir, fn)
     return entry
 
 
 def _mark(short_dir: Path, status: str) -> int:
-    data = _load(short_dir)
-    n = 0
-    for e in data["entries"]:
-        if isinstance(e, dict) and e.get("status", "new") == "new":
-            e["status"] = status
-            e[f"{status}_at"] = _now()
-            n += 1
-    data["asked"] = data.get("asked") or _now()
-    _save(short_dir, data)
-    return n
+    n = [0]
+
+    def fn(data):
+        for e in data["entries"]:
+            if isinstance(e, dict) and e.get("status", "new") == "new":
+                e["status"] = status
+                e[f"{status}_at"] = _now()
+                n[0] += 1
+        data["asked"] = data.get("asked") or _now()
+
+    _update(short_dir, fn)
+    return n[0]
 
 
 def decline(short_dir: Path) -> int:
     """The user said no: mark every pending entry declined (they stay on disk; this short is not asked again)."""
     return _mark(short_dir, "declined")
+
+
+def allow_panel(short_dir: Path) -> None:
+    """The user said yes to seeing the notes: the review page's Post stage shows the feedback panel from now on
+    (this short is not asked again). Nothing is marked reported here."""
+
+    def fn(data):
+        data["panel"] = _now()
+        data["asked"] = data.get("asked") or data["panel"]
+
+    _update(short_dir, fn)
+
+
+def panel_allowed(short_dir: Path, setting: str | None) -> bool:
+    """The Post stage shows the feedback panel: the user said yes (allow_panel), the setting is not `off`, and there
+    is something to show."""
+    return (setting or "ask") != "off" and bool(_load(short_dir).get("panel")) and bool(entries(short_dir))
+
+
+def mark_reported(short_dir: Path, ids: list[str]) -> int:
+    """The user copied the report or opened it on GitHub: mark these pending entries reported. Returns how many."""
+    wanted = {str(i) for i in ids}
+    n = [0]
+
+    def fn(data):
+        for e in data["entries"]:
+            if isinstance(e, dict) and e.get("id") in wanted and e.get("status", "new") == "new":
+                e["status"], e["reported_at"] = "reported", _now()
+                n[0] += 1
+        if n[0]:
+            data["asked"] = data.get("asked") or _now()
+
+    _update(short_dir, fn)
+    return n[0]
 
 
 # --------------------------------------------------------------------------- redaction
@@ -272,7 +319,7 @@ def report(short_dir: Path, *, workspace=None, home=None, scrub=(), mark: bool =
     if mark and items:
         _mark(short_dir, "reported")
     return {"title": title, "body": body, "url": url, "shortened": shortened, "entries": len(clean),
-            "by_severity": counts(clean)}  # fmt: skip
+            "by_severity": counts(clean), "ids": [str(e.get("id")) for e in clean]}  # fmt: skip
 
 
 def _link(title: str, entries_text: str, env: str) -> str:
@@ -285,7 +332,7 @@ def _url(title: str, blocks: str, env: str, items: list[dict]) -> tuple[str, boo
     url = _link(title, blocks, env)
     if len(url) <= URL_LIMIT:
         return url, False
-    note = "The full text was too long for a link: paste it here from the plugin-feedback page.\n\n"
+    note = "The full text was too long for a link: paste it here from the review page's feedback panel.\n\n"
     lines = [f"- {e['id']} ({e.get('severity')}): {e.get('summary')}" for e in items]
     while True:
         text = note + "\n".join(lines)
@@ -296,23 +343,3 @@ def _url(title: str, blocks: str, env: str, items: list[dict]) -> tuple[str, boo
     if len(url) > URL_LIMIT:
         url = _link(title[:80], note.strip(), env[:200])
     return url, True
-
-
-def render_page(rep: dict, out: Path) -> Path:
-    """review/plugin-feedback.html: the redacted report with a Copy button and an "Open on GitHub" button."""
-    from string import Template
-
-    from bsa.review import pages
-
-    esc = pages._esc
-    shortened = ("<p class=\"note\">The full text is too long for a link, so GitHub opens with a shortened version. "
-                 "Copy the full text below and paste it into the issue.</p>") if rep.get("shortened") else ""  # fmt: skip
-    sev = ", ".join(f"{n} {s}" for s, n in (rep.get("by_severity") or {}).items())
-    text = Template((Path(pages.__file__).parent / "templates" / "feedback.html").read_text(encoding="utf-8"))
-    html = text.substitute(css=pages._css(), title=esc(rep["title"]), count=esc(rep.get("entries", 0)),
-                           severity=esc(sev), url=esc(rep["url"]), body=esc(rep["body"]),
-                           shortened=shortened)  # fmt: skip
-    out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html, encoding="utf-8")
-    return out

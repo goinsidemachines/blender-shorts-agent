@@ -21,5 +21,18 @@ def test_fingerprints_in_blender(blender_run):
         "test_animated_material_values_are_sampled_per_frame",
         "test_fingerprints_are_quick",
         "test_a_mesh_stored_in_another_order_is_the_same_mesh",
+        "test_object_keys_change_only_for_the_object_that_changed",
+        "test_a_parent_change_changes_the_childs_key",
+        "test_object_keys_do_not_change_the_fingerprints",
+        "test_a_boolean_cutters_change_changes_the_cut_objects_key",
+        "test_a_geometry_nodes_object_input_and_a_hook_are_dependencies",
+        "test_a_dependency_cycle_ends_and_its_keys_are_stable",
+        "test_fingerprints_are_byte_identical_to_before",
+        "test_geometry_nodes_inputs_change_the_fingerprint",
+        "test_an_animated_geometry_nodes_input_is_sampled_per_frame",
+        "test_geometry_nodes_inputs_now_count_and_only_where_they_are",
+        "test_a_geometry_nodes_modifier_with_no_group_or_no_inputs_adds_nothing",
+        "test_an_unreadable_geometry_nodes_input_is_a_stable_marker",
+        "test_a_modifier_name_with_a_quote_still_matches_its_animated_input",
     ):
         assert f"PASS {name}" in result.stdout

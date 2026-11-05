@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from bsa import jobstate
+from bsa import proc as _proc
 
 ROOT = Path(__file__).resolve().parent.parent
 CLI = ROOT / "bsa_cli.py"
@@ -22,7 +23,7 @@ SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source" / "short.json"
 def run(home: Path, *args, cwd: Path | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
     env = {**os.environ, "BSA_HOME": str(home)}
     env.pop("ELEVENLABS_API_KEY", None)
-    return subprocess.run(
+    return _proc.run(
         [sys.executable, str(CLI), *map(str, args)],
         check=False, capture_output=True, text=True, env=env, cwd=str(cwd or home), timeout=timeout,
     )  # fmt: skip
@@ -117,6 +118,75 @@ def test_brand_exposure_and_look_settings(home):
     assert proc.returncode != 0 and "exposure" in proc.stderr
 
 
+def test_setting_the_whole_brand_keeps_mode_exposure_and_prose_keys(home):
+    """The setup flow sets brand.mode first, then the sampled kit as one object: the kit merges in, it never drops
+    the keys it does not name."""
+    from tests.kitfix import KIT
+
+    ok(run(home, "settings", "set", "brand.mode", "brand"))
+    ok(run(home, "settings", "set", "brand.exposure", "0.3"))
+    ok(run(home, "settings", "set", "brand.material", "matte clay"))
+    kit_only = {k: v for k, v in KIT.items() if k != "mode"}
+    b = ok(run(home, "settings", "set", "brand", json.dumps(kit_only)))["settings"]["brand"]
+    assert b["mode"] == "brand" and b["exposure"] == 0.3 and b["material"] == "matte clay"
+    assert b["style"] == "toon" and b["palette"]["accent"] == "#7A4CE0"
+    assert run(home, "settings", "set", "brand", '{"mode": "loud"}').returncode != 0
+    assert ok(run(home, "settings", "set", "brand.caption.box", "#14161A99"))["settings"]["brand"]["caption"][
+        "box"] == "#14161A99"  # fmt: skip
+
+
+def test_the_kit_is_turned_off_from_the_command_line_keeping_the_rest_of_the_brand(home, tmp_path):
+    """brand.style null, "" or none removes the style (no kit: today's look), keeping mode, palette and caption; a null
+    in a whole-brand object deletes that key, and brand.logo null removes the logo (never a file named "null")."""
+    from bsa import kit
+    from tests.kitfix import KIT
+
+    def brand():
+        return ok(run(home, "settings", "show"))["settings"]["brand"]
+
+    for off in ("null", "", "none", "None"):
+        ok(run(home, "settings", "set", "brand", json.dumps(KIT)))
+        assert kit.kit_for({"brand": brand()}) is not None
+        ok(run(home, "settings", "set", "brand.style", off))
+        b = brand()
+        assert "style" not in b and b["mode"] == "brand" and b["palette"] == KIT["palette"], (off, b)
+        assert b["caption"]["box"] == "#1B2A3A"
+        assert kit.kit_for({"brand": b}) is None  # no kit: the edit, thumbnails and closing card are today's
+    ok(run(home, "settings", "set", "brand", json.dumps(KIT)))
+    ok(run(home, "settings", "set", "brand", '{"style": null}'))
+    assert "style" not in brand() and brand()["palette"] == KIT["palette"]
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"))
+    ok(run(home, "settings", "set", "brand.logo", json.dumps({"file": str(logo)})))
+    assert brand()["logo"]["file"] == str(logo.resolve())
+    ok(run(home, "settings", "set", "brand.logo", "null"))
+    assert "logo" not in brand()
+    ok(run(home, "settings", "set", "brand.logo", json.dumps({"file": str(logo)})))
+    ok(run(home, "settings", "set", "brand", '{"logo": null, "style": "toon"}'))
+    assert "logo" not in brand() and brand()["style"] == "toon" and brand()["mode"] == "brand"
+    assert ok(run(home, "settings", "check"))["problems"] == []
+
+
+def test_narrator_params_are_checked_against_the_engine(home):
+    settings_file = home / "settings.json"
+    proc = run(home, "settings", "set", "narrator.params.temperature", "0.7")  # no narrator yet
+    assert proc.returncode != 0 and "takes no engine parameters" in proc.stderr and not settings_file.exists()
+    ok(run(home, "settings", "set", "narrator.provider", "chatterbox"))
+    ok(run(home, "settings", "set", "narrator.params.temperature", "0.7"))
+    ok(run(home, "settings", "set", "narrator.params", '{"temperature": 0.6, "cfg_weight": 0.4}'))
+    assert json.loads(settings_file.read_text("utf-8"))["narrator"]["params"] == {"temperature": 0.6, "cfg_weight": 0.4}
+    before = settings_file.read_bytes()
+    for key, value, words in (("narrator.params.pitch", "1", "exaggeration, cfg_weight, temperature"),
+                              ("narrator.params.temperature", "5", "0.05 to 2"),
+                              ("narrator.params", '{"temperature": "hot"}', "must be a number")):  # fmt: skip
+        proc = run(home, "settings", "set", key, value)
+        assert proc.returncode != 0 and words in proc.stderr, proc.stderr
+    assert settings_file.read_bytes() == before  # a refused value is never saved
+    assert ok(run(home, "settings", "check"))["problems"] == []
+    ok(run(home, "settings", "set", "narrator.provider", "kokoro"))  # params left for another engine: reported
+    assert any("kokoro takes no engine parameters" in p for p in ok(run(home, "settings", "check"))["problems"])
+
+
 def test_new_short_needs_workspace(home):
     proc = run(home, "new-short", "Pendulum")
     assert proc.returncode != 0
@@ -126,10 +196,10 @@ def test_new_short_needs_workspace(home):
 
 def test_state_done_and_reset(home, pendulum):
     ok(run(home, "state", "pendulum", "done", "interview"))
-    ok(run(home, "state", "pendulum", "done", "story", "--info", '{"note": "approved"}'))
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
     state = ok(run(home, "state", "pendulum"))
     assert state["next"] == "storyboard"
-    assert state["stages"]["story"]["note"] == "approved"
+    assert state["stages"]["story"]["by"] == "chat"
     state = ok(run(home, "state", "pendulum", "reset", "story"))
     assert state["next"] == "story"
     proc = run(home, "state", "pendulum", "done", "nonsense")
@@ -229,6 +299,41 @@ def test_timeline_written(home, pendulum):
     assert data["takes"] is False
 
 
+def test_timeline_refuses_a_window_too_short_in_one_line(home, pendulum):
+    path = pendulum / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["camera"] = {"style": "one-take", "seconds": 13}
+    for shot, at in zip(data["shots"], (0, 3.5, 4), strict=True):  # s02's two lines in half a second
+        shot["at"] = at
+    path.write_text(json.dumps(data), encoding="utf-8")
+    proc = run(home, "timeline", "pendulum")
+    assert proc.returncode == 1
+    (line,) = proc.stderr.strip().splitlines()
+    assert line.startswith("s02's lines need ") and "its window is 0.5 s" in line and "move s03's start" in line
+    assert "Traceback" not in proc.stderr
+    assert not (pendulum / "source" / "timeline.json").exists()
+    # validate says the same, at reading pace, as an error
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and "Traceback" not in proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["ok"] is False and any(e.startswith("s02's lines need ") for e in out["errors"]), out["errors"]
+    # with time to spare, the timeline is the windows
+    data["shots"][2]["at"] = 9
+    path.write_text(json.dumps(data), encoding="utf-8")
+    tl = ok(run(home, "timeline", "pendulum"))
+    assert [(s["id"], s["f0"], s["f1"]) for s in tl["shots"]] == [("s01", 1, 105), ("s02", 106, 270),
+                                                                    ("s03", 271, 390)]  # fmt: skip
+    assert ok(run(home, "validate", "pendulum"))["ok"] is True
+    # takes too long for s02's window: validate says so (the timeline would refuse them too)
+    for lid, secs in (("l01", 1.0), ("l02", 3.0), ("l03", 3.0), ("l04", 1.0)):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", secs)
+    jobstate.mark_done(pendulum, "narration", status="ok", provider="kokoro")
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and "Traceback" not in proc.stderr
+    assert any(e.startswith("with the narration's takes, s02's lines need ") for e in json.loads(proc.stdout)["errors"])
+    assert run(home, "timeline", "pendulum").stderr.strip().startswith("s02's lines need ")
+
+
 def test_timeline_holds_the_end_card_only_with_a_handle(home, pendulum):
     ok(run(home, "settings", "set", "handle", ""))
     plain = ok(run(home, "timeline", "pendulum"))["n_frames"]
@@ -284,19 +389,20 @@ def test_story_needs_a_valid_spec(home, pendulum):
     spec = json.loads(SAMPLE.read_text(encoding="utf-8"))
     spec["lines"][0]["shot"] = "nope"
     (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
-    proc = run(home, "state", "pendulum", "done", "story")
+    proc = run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat")
     assert proc.returncode == 1 and "unknown shot" in proc.stderr and "validate" in proc.stderr
     assert "story" not in ok(run(home, "state", "pendulum"))["stages"]
 
 
 def _approve_storyboard(home, short="pendulum"):
-    for stage in ("interview", "story", "storyboard"):
-        ok(run(home, "state", short, "done", stage))
+    ok(run(home, "state", short, "done", "interview"))
+    for stage in ("story", "storyboard"):
+        ok(run(home, "page", "decide", short, stage, "approve", "--by", "chat"))
 
 
 def test_narrate_refuses_before_the_storyboard_is_approved(home, pendulum):
     ok(run(home, "settings", "set", "narrator.provider", "elevenlabs"))
-    ok(run(home, "state", "pendulum", "done", "story"))
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
     proc = run(home, "narrate", "pendulum")
     assert proc.returncode == 1 and "storyboard" in proc.stderr and "Traceback" not in proc.stderr
     assert "narration" not in ok(run(home, "state", "pendulum"))["stages"]
@@ -316,6 +422,29 @@ def test_narrate_failure_falls_back(home, pendulum):
     ok(run(home, "settings", "set", "narrator.provider", "elevenlabs"))  # no voice, no key
     data = ok(run(home, "narrate", "pendulum"))
     assert data["status"] == "captions-only" and "captions only" in data["message"]
+
+
+def test_narrate_says_plainly_when_the_takes_overrun_a_one_take_window(home, pendulum, monkeypatch, capsys):
+    import bsa_cli
+    from bsa.timeline import WindowOverrun
+
+    _approve_storyboard(home)
+    ok(run(home, "settings", "set", "narrator.provider", "none"))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    calls = []
+
+    def timeline(args):
+        calls.append(args)
+        if len(calls) == 1:  # with the takes: they overrun s02's window
+            raise bsa_cli.CliError("s02's lines need 4.1 s but its window is 3.0 s") from WindowOverrun("x")
+        return {"ok": True}
+
+    monkeypatch.setattr(bsa_cli, "cmd_timeline", timeline)
+    assert bsa_cli.main(["narrate", "pendulum"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "captions-only" and len(calls) == 2
+    assert "don't fit the one-take windows" in data["message"] and "s02's lines need 4.1 s" in data["message"]
+    assert "run narrate again" in data["message"]
 
 
 def test_narrate_clears_takes_of_another_voice(home, pendulum):
@@ -345,23 +474,18 @@ def test_mix_writes_wav_and_runs_sound_py(home, pendulum):
         assert w.getnframes() == round(data["n_frames"] / 30 * 48000)
 
 
-def test_review_story_and_storyboard(home, pendulum):
+def test_story_stage_has_style_options_and_pending_downloads(home, pendulum):
+    from bsa.review import snapshot
+
     (pendulum / "source" / "styles.json").write_text(
         json.dumps([{"name": "Dusk", "description": "warm"}, {"name": "Lab", "description": "cool"}]), encoding="utf-8"
     )
-    story = Path(ok(run(home, "review", "story", "pendulum"))["page"])
-    html = story.read_text(encoding="utf-8")
-    assert "stills/style-2.jpg" in html
-    board = Path(ok(run(home, "review", "storyboard", "pendulum"))["page"])
-    assert board == pendulum / "review" / "storyboard.html" and board.is_file()
-
-
-def test_review_story_shows_pending_downloads(home, pendulum):
     plan = [{"id": "brushed_steel", "name": "Brushed Steel", "kind": "textures", "source": "Poly Haven",
              "license": "CC0", "files": [], "bytes": 5_200_000}]  # fmt: skip
     (pendulum / "source" / "assets-plan.json").write_text(json.dumps(plan), encoding="utf-8")
-    html = Path(ok(run(home, "review", "story", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "Brushed Steel" in html and "5.2 MB" in html and "after your yes" in html
+    story = snapshot._story(snapshot.load_ctx(pendulum, {}))
+    assert [o["name"] for o in story["look"]["options"]] == ["Dusk", "Lab"]
+    assert [a["name"] for a in story["assets"]["pending"]] == ["Brushed Steel"]
 
 
 def test_settings_rules_add_list_remove(home):
@@ -404,24 +528,29 @@ def test_validate_and_story_need_every_rule_answered(home, pendulum):
     ok(run(home, "state", "pendulum", "done", "interview"))
     proc = run(home, "validate", "pendulum")
     assert proc.returncode == 1 and "r1" in proc.stderr and "rules_check" in proc.stderr
-    proc = run(home, "state", "pendulum", "done", "story")
+    proc = run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat")
     assert proc.returncode == 1 and "rules_check" in proc.stderr
     _with_rules_check(pendulum, {"r1": "Only the pendulum and the clock"})
     out = ok(run(home, "validate", "pendulum"))
     assert not any("hard rule" in w for w in out["warnings"])
-    ok(run(home, "state", "pendulum", "done", "story"))
+    ok(run(home, "page", "decide", "pendulum", "story", "approve", "--by", "chat"))
 
 
-def test_review_pages_show_the_rules_and_how_they_were_kept(home, pendulum):
+def test_page_stages_show_the_rules_and_how_they_were_kept(home, pendulum, monkeypatch):
+    from bsa.review import snapshot
+
     ok(run(home, "settings", "rule", "add", "No people", "--kind", "no_humans"))
     ok(run(home, "settings", "rule", "add", "Keep it <modest>"))
     _with_rules_check(pendulum, {"r1": {"kept": "Clock parts only", "cleared": {"hand": "the clock's hand"}}})
-    for page in ("story", "storyboard", "final"):
-        html = Path(ok(run(home, "review", page, "pendulum"))["page"]).read_text(encoding="utf-8")
-        assert "Your hard rules" in html, page
-        assert "No people" in html and "Keep it &lt;modest&gt;" in html and "Clock parts only" in html, page
-        assert "Not answered yet" in html, page  # r2 has no note
-        assert "the clock&#x27;s hand" in html, page
+    ok(run(home, "timeline", "pendulum"))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    ctx = snapshot.load_ctx(pendulum)
+    for stage in ("story", "storyboard", "final"):
+        rows = {r["text"]: r for r in snapshot.BUILDERS[stage](ctx)["rules"]}
+        assert set(rows) == {"No people", "Keep it <modest>"}, stage  # the page escapes what it shows
+        assert rows["No people"]["kept"] == "Clock parts only" and rows["No people"]["checked"], stage
+        assert rows["Keep it <modest>"]["kept"] is None, stage  # r2 has no note: "Not answered yet"
+        assert "the clock's hand" in str(rows["No people"]["cleared"]), stage
 
 
 def test_mix_follows_a_natural_sounds_rule(home, pendulum):
@@ -429,14 +558,6 @@ def test_mix_follows_a_natural_sounds_rule(home, pendulum):
     ok(run(home, "timeline", "pendulum"))
     data = ok(run(home, "mix", "pendulum"))
     assert data["sound_policy"] == "natural-only"
-
-
-def test_review_final_reads_findings(home, pendulum):
-    (pendulum / "review" / "checks.json").write_text(json.dumps({"findings": [
-        {"check": "faceted", "severity": "warning", "obj": "Bob", "frame": 3, "message": "looks faceted"}]}),
-        encoding="utf-8")  # fmt: skip
-    page = Path(ok(run(home, "review", "final", "pendulum"))["page"])
-    assert "looks faceted" in page.read_text(encoding="utf-8")
 
 
 def test_voice_list_and_plan(home):
@@ -480,8 +601,8 @@ def test_settings_set_rejects_unknown_choices(home):
     assert ok(run(home, "settings", "set", "narrator.provider", "Kokoro"))["settings"]["narrator"]["provider"] == "kokoro"
 
 
-def test_review_final_reads_what_check_and_frame_check_write_now(home, pendulum, monkeypatch):
-    """Issue #13: review final reads review/checks.json and the frame-check JSON as the current check and
+def test_final_stage_reads_what_check_and_frame_check_write_now(home, pendulum, monkeypatch):
+    """Issue #13: the page's Final stage reads review/checks.json and the frame-check JSON as the current check and
     frame-check write them (shot, scene, shots, redo, redo_frames, a flicker's box...) and keys added later, and
     shows the shot and the redo command."""
     import types
@@ -514,15 +635,23 @@ def test_review_final_reads_what_check_and_frame_check_write_now(home, pendulum,
     data = json.loads((pendulum / "review" / "frame-checks-final.json").read_text(encoding="utf-8"))
     assert {"shot", "box", "redo", "redo_frames"} <= set(data["findings"][0])
     assert tl["n_frames"]
-    html = Path(ok(run(home, "review", "final", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "looks faceted" in html and "the frame flickers" in html
-    assert f"shot {s1.id}" in html and f"shots {s1.id}, {s2.id}" in html and "scene Lever" in html
-    assert "BLENDER render" in html and "--redo-flagged" in html  # each redo command, and the one for all
+    from bsa.review import snapshot
+
+    final = snapshot._final(snapshot.load_ctx(pendulum, {}))
+    rows = {f["message"]: f for f in final["findings"]}
+    assert "looks faceted" in rows and "the frame flickers" in rows and final["checks_run"] is True
+    wheres = [f["where"] for f in final["findings"]]
+    assert any(f"shot {s1.id}" in w for w in wheres) and any(f"shots {s1.id}, {s2.id}" in w for w in wheres)
+    assert any("scene Lever" in w for w in wheres)
+    assert rows["the frame flickers"]["redo"].startswith("BLENDER render")  # each redo command, and the one for all
+    assert any("--redo-flagged" in r for r in final["redo_all"])
 
 
-def test_review_final_without_checks_says_not_run(home, pendulum):
-    html = Path(ok(run(home, "review", "final", "pendulum"))["page"]).read_text(encoding="utf-8")
-    assert "All checks passed" not in html and "checks not run" in html.lower()
+def test_final_stage_without_checks_says_not_run(home, pendulum):
+    from bsa.review import snapshot
+
+    final = snapshot._final(snapshot.load_ctx(pendulum, {}))
+    assert final["checks_run"] is False and final["findings"] == []
 
 
 @pytest.mark.parametrize(("argv", "preset", "kind"), [
@@ -773,6 +902,29 @@ def test_state_done_build_resets_later_stages(home, pendulum):
     assert not {"checks", "preview", "final"} & stages.keys()
 
 
+@pytest.mark.parametrize("one_take", [False, True])
+def test_preview_needs_the_camera_only_when_the_short_wants_it(home, pendulum, monkeypatch, capsys, one_take):
+    import bsa_blender
+
+    if one_take:
+        path = pendulum / "source" / "short.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["camera"] = {"style": "one-take", "seconds": 20}
+        for shot, at in zip(data["shots"], (0, 6, 13), strict=True):
+            shot["at"] = at
+        path.write_text(json.dumps(data), encoding="utf-8")
+    for stage in ("interview", "story", "storyboard", "engine", "narration"):
+        jobstate.mark_done(pendulum, stage)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    monkeypatch.setattr(bsa_blender, "_preview_chain", lambda *a: {"chain": "ran"})
+    code = bsa_blender.main(["preview", "pendulum"])
+    err = capsys.readouterr().err
+    if one_take:
+        assert code == 1 and "still needs: camera" in err, err
+    else:
+        assert code == 0 and "still needs" not in err, err
+
+
 # --------------------------------------------------------------------------- bsa_blender.py
 
 
@@ -830,7 +982,7 @@ def test_a_standalone_edit_records_itself_as_a_one_step_run(home, pendulum, monk
     (step,) = s["run"]["steps"]
     assert step["name"] == "edit" and step["state"] == "done" and step["summary"]["mp4"]
     assert step["progress"]["done"] == step["progress"]["total"] == 3
-    assert "Done" in rs.page_path(pendulum, "preview").read_text(encoding="utf-8")
+    assert not list((pendulum / "review").glob("*.html"))  # the page's Render stage shows the status
 
 
 def test_a_failed_check_is_recorded_on_the_status_page(home, pendulum, monkeypatch):
@@ -884,10 +1036,11 @@ def test_edit_final_needs_current_checks(home, pendulum, monkeypatch, capsys):
     _fake_edit(monkeypatch, seen)
     monkeypatch.setenv("BSA_HOME", str(home))
     assert bsa_blender.main(["edit", "pendulum", "--preset", "final"]) == 1
-    assert "checks have not run" in capsys.readouterr().err and "built" not in seen
+    err = capsys.readouterr().err
+    assert "checks have not run" in err and "run BLENDER check 01 before the final edit" in err and "built" not in seen
     short = bsa_blender._load(pendulum)
     timeline, tl_hash = bsa_blender._timeline(pendulum, short)
-    stamp = freshness.checks_stamp(tl_hash, bsa_blender._check_keys(short, timeline, None))
+    stamp = freshness.checks_stamp(tl_hash, bsa_blender._check_keys(short, timeline, None), 5)
     report = {"stamp": stamp, "errors": 1, "warnings": 0, "findings": []}
     (pendulum / "review" / "checks.json").write_text(json.dumps(report), encoding="utf-8")
     assert bsa_blender.main(["edit", "pendulum", "--preset", "final"]) == 1
@@ -1036,7 +1189,7 @@ def test_render_checks_near_label_objects_before_rendering(home, pendulum, monke
     fake.render_range = lambda *a, **k: rendered.append(a) or []
     monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
     monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
-    monkeypatch.setattr(freshness, "require_checks", lambda *a: None)
+    monkeypatch.setattr(freshness, "require_checks", lambda *a, **k: None)
     monkeypatch.setenv("BSA_HOME", str(home))
     assert saved["n_frames"] > 0
     assert bsa_blender.main(["render", "pendulum", "--preset", preset]) == 1
@@ -1044,6 +1197,94 @@ def test_render_checks_near_label_objects_before_rendering(home, pendulum, monke
     assert err.strip() == ("shot s01 label 'Bob' is near 'Pendulum Z bob', which scene 'Workshop' does not have (use "
                            "the object's exact name)")  # fmt: skip
     assert rendered == []  # nothing rendered
+
+
+def _failed_rows() -> list[dict]:
+    """Error rows as review/checks.json keeps them: two parts of one family through a wall, and a missing material."""
+    def clip(n, shot):
+        return {"check": "overlap", "severity": "error", "obj": "Wall", "frame": 12, "shot": shot, "kind": "penetrate",
+                "depth": 0.09, "pair": ["Wall", f"Link {n}"], "message": f"'Wall' and 'Link {n}' interpenetrate"}
+
+    grey = {"check": "materials", "severity": "error", "obj": "Bracket", "frame": 1, "shot": "s01",
+            "message": "geometry in view has no material (renders grey)"}
+    return [clip(1, "s01"), clip(2, "s02"), grey]
+
+
+def test_preview_render_warns_of_checks_that_failed_on_this_build(home, pendulum, monkeypatch, capsys):
+    """A preview rendered while the checks found errors on this very build goes ahead (the checks may still be
+    running, or the fixes are on their way), but says how many and which, overlaps grouped by family, and that the
+    final render refuses until they are fixed and checked again. Checks from another timing say nothing."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+
+    ok(run(home, "timeline", "pendulum"))
+    short = bsa_blender._load(pendulum)
+    _, tl_hash = bsa_blender._timeline(pendulum, short)
+
+    class Scene(dict):
+        def __init__(self, name):
+            super().__init__({freshness.TIMELINE_PROP: tl_hash})
+            self.name, self.objects = name, {}
+
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots}, filepath="")
+    fake = types.ModuleType("bsa.blender.render")
+    fake.render_range = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _checked(pendulum, errors=3)
+    path = pendulum / "review" / "checks.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
+    bsa_blender.main(["render", "pendulum", "--preset", "preview"])
+    err = capsys.readouterr().err  # the warning comes before anything renders; this fake scene stops it after
+    assert "review/checks.json has 3 error(s) on this build (Link 1-2 vs Wall: 2 pairs, up to 9 cm, s01-s02" in err
+    assert "materials: geometry in view has no material" in err
+    assert "the final render will refuse until these are fixed and checked again" in err
+    assert "which scene 'Workshop' does not have" in err  # it went on past the checks: not refused by them
+    import argparse
+
+    beside = argparse.Namespace(short="pendulum", preset="preview", shot=None, frames=None, redo_flagged=False,
+                                no_wait=False, engine=None, tag=None, checks_beside=True)  # fmt: skip
+    with pytest.raises(bsa_blender.CliError, match="does not have"):  # the preview chain says it after its checks
+        bsa_blender.cmd_render(beside)
+    assert "on this build" not in capsys.readouterr().err
+    report["stamp"]["timeline"] = "another timing"  # the checks ran on another timing: they say nothing now
+    path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
+    bsa_blender.main(["render", "pendulum", "--preset", "preview"])
+    assert "on this build" not in capsys.readouterr().err
+
+
+def test_failed_checks_warning_shows_the_first_few_and_counts_the_rest(home, pendulum, monkeypatch):
+    import bsa_blender
+
+    monkeypatch.setenv("BSA_HOME", str(home))  # the workspace setting: the warning names the short by its number
+
+    ok(run(home, "timeline", "pendulum"))
+    short = bsa_blender._load(pendulum)
+    timeline, tl_hash = bsa_blender._timeline(pendulum, short)
+    keys = bsa_blender._check_keys(short, timeline, None, bsa_blender._parts(pendulum, None))
+    assert bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys) is None  # no checks yet
+    _checked(pendulum, errors=3)
+    path = pendulum / "review" / "checks.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**report, "findings": _failed_rows()}), encoding="utf-8")
+    line = bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys, most=1)
+    assert line.startswith("review/checks.json has 3 error(s) on this build (Link 1-2 vs Wall: 2 pairs")
+    assert "; and 1 more)" in line and "materials" not in line
+    assert line.endswith("checked again (BLENDER check 01)") and "SHORT" not in line
+    path.write_text(json.dumps({**report, "errors": 0, "findings": _failed_rows()}), encoding="utf-8")
+    assert bsa_blender._failed_checks_warning(pendulum, short, tl_hash, keys) is None  # passed: nothing to say
+
+
+def test_render_summary_carries_the_render_warnings():
+    import bsa_blender
+
+    out = {"shots": [{"shot": "s01", "rendered": 0}], "warnings": ["review/checks.json has 1 error(s) on this build"]}
+    assert bsa_blender._render_summary(out)["warnings"] == out["warnings"]  # render-status shows it
+    assert "warnings" not in bsa_blender._render_summary({"shots": []})
 
 
 def test_end_card_uses_hero_boxes_and_only_warns_without_anchors(home, pendulum, monkeypatch, capsys):
@@ -1155,7 +1396,7 @@ def _rendered(home, short: Path, preset: str, engine=None, blend=None, shift=0) 
     tl_hash = timeline_hash(json.loads((short / "source" / "timeline.json").read_text(encoding="utf-8")))
     fps = {s["id"]: f"fp-{s['id']}" for s in tl["shots"]} if blend else None
     if fps:
-        freshness.save_fingerprints(short, tl_hash, fps)
+        freshness.save_fingerprints(short, tl_hash, fps, objects={})  # with object keys, as Blender saves it
     for s in tl["shots"]:
         span = Span(s["id"], s["f0"] + shift, s["f1"] + shift)
         folder = short / "frames" / preset / s["id"]
@@ -1209,6 +1450,7 @@ def _fake_edit(monkeypatch, seen, probe=None, fail_encode=False):
     fake.font_used = lambda scene: seen.get("font_used", "Segoe UI")
     fake.end_card_note = lambda scene: seen.get("end_card_note")
     fake.glyph_fallbacks = lambda scene: seen.get("glyph_fallbacks", [])
+    fake.kit_cards = lambda scene: seen.get("kit_cards", 0)
     monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake)
 
 
@@ -1263,14 +1505,14 @@ def test_blender_stills_and_check_smoke(home, pendulum):
     base = [str(blender), "-b", "--factory-startup", "--python-exit-code", "1"]
 
     def make(stamp):
-        made = subprocess.run(base + ["--python-expr", _TINY_SCENES, "--", str(blend), stamp],
+        made = _proc.run(base + ["--python-expr", _TINY_SCENES, "--", str(blend), stamp],
                               check=False, capture_output=True, text=True, timeout=300)  # fmt: skip
         assert made.returncode == 0 and blend.is_file(), made.stdout + made.stderr
 
     def blender_cmd(*args):
         cmd = [str(blender), "-b", str(blend), "--factory-startup", "--python-exit-code", "1",
                "--python", str(ROOT / "bsa_blender.py"), "--", *map(str, args)]  # fmt: skip
-        return subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=900, env=env, cwd=str(home))
+        return _proc.run(cmd, check=False, capture_output=True, text=True, timeout=900, env=env, cwd=str(home))
 
     ok(run(home, "timeline", "pendulum"))
     make("-")  # a .blend whose scenes carry no timeline stamp
@@ -1289,6 +1531,11 @@ def test_blender_stills_and_check_smoke(home, pendulum):
         assert (pendulum / "stills" / f"{sid}.jpg").stat().st_size > 0
     one = blender_cmd("stills", "pendulum", "--shot", "s01", "--out", pendulum / "stills" / "style-1.jpg")
     assert one.returncode == 0 and (pendulum / "stills" / "style-1.jpg").is_file(), one.stdout + one.stderr
+    drawn = blender_cmd("stills", "pendulum", "--shot", "s01", "--guides")  # a JPEG still read by Blender's loader
+    assert drawn.returncode == 0, drawn.stdout + drawn.stderr
+    result = json.loads(drawn.stdout.split("BSA_RESULT ", 1)[1].splitlines()[0])
+    assert result["guides"] == [str(pendulum / "stills" / "s01-guides.png")]
+    assert (pendulum / "stills" / "s01-guides.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
     still = blender_cmd("extremes", "pendulum", "--shot", "s01")  # nothing is tagged hero in the tiny scenes
     assert still.returncode == 0, still.stdout + still.stderr
@@ -1353,7 +1600,7 @@ def test_voice_test_custom_failure_is_one_plain_line(home):
 
 
 def _past_narration(home, short: Path) -> None:
-    for stage in jobstate.STAGES[: jobstate.STAGES.index("build")]:
+    for stage in jobstate.wanted_stages(short)[: jobstate.wanted_stages(short).index("build")]:
         jobstate.mark_done(short, stage)
     ok(run(home, "timeline", short.name))
 
@@ -1361,18 +1608,50 @@ def _past_narration(home, short: Path) -> None:
 FRAMING_NOTE = "scene Tower: camera Cam: frame_objects: the fit for 'Tower' did not settle in 60 steps"
 
 
-def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = None):
-    """Stub the Blender-side steps of BLENDER preview; the CLI steps (timeline, state, mix) run for real."""
+class _FakeSideCheck:
+    """Stands in for the check process beside the preview render (bsa_blender._SideCheck): `join` runs the stubbed
+    cmd_check and returns or raises what it does."""
+
+    def __init__(self, args, calls: list):
+        self.args, self.calls, self.stopped = args, calls, 0
+
+    def join(self) -> dict:
+        import argparse
+
+        import bsa_blender
+
+        self.calls.append("check-join")
+        return bsa_blender.cmd_check(argparse.Namespace(short=self.args.short, every=self.args.every, full=False,
+                                                        preset="preview", in_chain=True))  # fmt: skip
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
+def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = None) -> list:
+    """Stub the Blender-side steps of BLENDER preview; the CLI steps (timeline, state, mix) run for real. The checks
+    run beside the render through a fake side check (`check-start`, `check-join` in `calls`); a failing check leaves
+    review/checks.json with its 2 errors. Returns the side checks started."""
     import bsa_blender
 
     def step(name, out=None):
         def fn(*a, **k):
-            calls.append(name)
+            if name != "check":  # the side check records its start and join instead
+                calls.append(name)
             if name == fail:
+                if name == "check":
+                    _checked(short, errors=2)
                 raise bsa_blender.CliError("2 check error(s); see review/checks.json", {"errors": 2})
             return out or {}
 
         return fn
+
+    sides: list = []
+
+    def start(args, sdir, chain):
+        calls.append("check-start")
+        sides.append(_FakeSideCheck(args, calls))
+        return sides[-1]
 
     def build(sdir):
         calls.append("build")
@@ -1392,7 +1671,9 @@ def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = 
         {"shot": "s02", "frames": 4, "rendered": 4, "kept": 0, "why": "fingerprint changed"}]}))
     monkeypatch.setattr(bsa_blender, "cmd_frame_check", step("frame-check", {"errors": 0, "warnings": 0}))
     monkeypatch.setattr(bsa_blender, "cmd_edit", step("edit", {"mp4": str(short / "out" / "x-preview.mp4")}))
+    monkeypatch.setattr(bsa_blender, "_start_side_check", start)
     monkeypatch.setenv("BSA_HOME", str(home))
+    return sides
 
 
 def _result(capsys) -> dict:
@@ -1409,9 +1690,11 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     _fake_chain(monkeypatch, home, pendulum, calls)
     assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
     out = _result(capsys)
-    assert calls == ["build", "reopen", "check", "render", "frame-check", "edit"]
-    assert [s["step"] for s in out["steps"]] == ["build", "build done", "mix", "check", "render", "frame-check", "edit"]
-    assert out["steps"][0]["why"] == "no blend/short.blend yet" and out["steps"][4]["frames"] == 7
+    assert calls == ["build", "reopen", "check-start", "render", "frame-check", "check-join", "edit"]
+    assert [s["step"] for s in out["steps"]] == ["build", "build done", "mix", "render", "frame-check", "check", "edit"]
+    assert out["steps"][0]["why"] == "no blend/short.blend yet" and out["steps"][3]["frames"] == 7
+    assert out["steps"][5] == {"step": "check", "warnings": 1, "checked": None, "kept": None}
+    assert "checks" in jobstate.load_state(pendulum)["stages"]  # the chain marks them: they passed
     assert (pendulum / "audio" / "mix.wav").is_file()  # the real CLI mix ran
     assert out["mp4"].endswith("x-preview.mp4")
     assert "build" in jobstate.load_state(pendulum)["stages"]
@@ -1425,8 +1708,7 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     assert by["render"]["summary"]["frames"] == 7
     assert out["steps"][0]["framing"] == [FRAMING_NOTE]  # the build step names the framing warnings
     assert all(by[n]["started"] <= by[n]["finished"] for n in list(by)[1:])
-    page = (pendulum / "review" / "render-preview.html").read_text(encoding="utf-8")
-    assert "Steps" in page and "Done" in page
+    assert not (pendulum / "review" / "render-preview.html").exists()  # the page's Render stage shows it
     status_out = ok(run(home, "render-status", "pendulum"))
     assert status_out["idle"] is True and "preview chain done" in status_out["summary"]
 
@@ -1444,26 +1726,138 @@ def test_preview_chain_says_when_the_closing_card_is_held_longer(home, pendulum,
     assert out["steps"][-1] == {"step": "edit", "mp4": "x-preview.mp4", "closing_note": hold["note"]}
 
 
+def _preview_status(short: Path) -> tuple[dict, dict]:
+    """(the preview's live status, its steps by name)."""
+    status = json.loads((short / "review" / "render-status-preview.json").read_text(encoding="utf-8"))
+    return status, {s["name"]: s for s in status["run"]["steps"]}
+
+
 def test_preview_chain_stops_at_the_first_failure(home, pendulum, monkeypatch, capsys):
     import bsa_blender
 
     _past_narration(home, pendulum)
     calls = []
-    _fake_chain(monkeypatch, home, pendulum, calls, fail="check")
+    sides = _fake_chain(monkeypatch, home, pendulum, calls, fail="render")
     assert bsa_blender.main(["preview", "pendulum"]) == 1
     io = capsys.readouterr()
-    assert io.err.strip() == "stopped at check: 2 check error(s); see review/checks.json"
+    assert io.err.strip() == "stopped at render: 2 check error(s); see review/checks.json"
     payload = json.loads(io.out.split("BSA_RESULT ", 1)[1])
-    assert payload["stopped_at"] == "check" and payload["errors"] == 2
+    assert payload["stopped_at"] == "render" and payload["errors"] == 2
     assert [s["step"] for s in payload["steps"]] == ["build", "build done", "mix"]
-    assert calls == ["build", "reopen", "check"]  # nothing rendered
-    status = json.loads((pendulum / "review" / "render-status-preview.json").read_text(encoding="utf-8"))
-    states = {s["name"]: s["state"] for s in status["run"]["steps"]}
+    assert calls == ["build", "reopen", "check-start", "render"]  # nothing edited, the checks never joined
+    assert sides[0].stopped == 1  # the check process ends with the chain
+    status, by = _preview_status(pendulum)
     assert status["state"] == "failed" and "check error" in status["error"]
-    assert states["check"] == "failed" and states["mix"] == "done" and states["render"] == "pending"
+    assert by["render"]["state"] == "failed" and by["mix"]["state"] == "done" and by["edit"]["state"] == "pending"
+    assert by["check"]["state"] == "failed" and "the run failed at render" in by["check"]["error"]
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
     out = ok(run(home, "render-status", "pendulum"))
-    assert out["step"]["name"] == "check" and out["last_run"]["state"] == "failed"
-    assert "failed at check" in out["summary"] and "BLENDER preview SHORT" in out["summary"]
+    assert out["step"]["name"] == "render" and out["last_run"]["state"] == "failed"
+    assert "failed at render" in out["summary"] and "BLENDER preview SHORT" in out["summary"]
+
+
+def test_preview_chain_with_check_errors_still_makes_the_preview_and_warns(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    calls, seen = [], {}
+    _fake_chain(monkeypatch, home, pendulum, calls, fail="check")
+
+    def render(ns):
+        calls.append("render")
+        seen["beside"] = getattr(ns, "checks_beside", None)
+        return {"shots": []}
+
+    monkeypatch.setattr(bsa_blender, "cmd_render", render)
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    io = capsys.readouterr()
+    out = json.loads(io.out.split("BSA_RESULT ", 1)[1])
+    assert calls[-2:] == ["check-join", "edit"]  # the preview is made
+    (warning,) = out["warnings"]
+    assert "review/checks.json has 2 error(s) on this build" in warning and "the final render will refuse" in warning
+    assert io.err.count(warning) == 1 and f"warning: {warning}" in io.err
+    assert {"step": "check", "errors": 2} in out["steps"]
+    assert seen["beside"] is True  # the render said nothing of checks.json: the chain says it after the join
+    status, by = _preview_status(pendulum)
+    assert status["state"] == "done" and by["check"]["state"] == "failed" and by["edit"]["state"] == "done"
+    assert "check error" in by["check"]["error"]
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
+
+
+def test_final_render_still_refuses_after_failed_side_checks(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+
+    real_render = bsa_blender.cmd_render
+    _past_narration(home, pendulum)
+    _fake_chain(monkeypatch, home, pendulum, [], fail="check")
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    capsys.readouterr()
+    short = bsa_blender._load(pendulum)
+    _, tl_hash = bsa_blender._timeline(pendulum, short)
+
+    class Scene(dict):
+        def __init__(self, name):
+            super().__init__({freshness.TIMELINE_PROP: tl_hash})
+            self.name, self.objects = name, {}
+
+    rendered = []
+    fake = types.ModuleType("bsa.blender.render")
+    fake.render_range = lambda *a, **k: rendered.append(a) or []
+    monkeypatch.setitem(sys.modules, "bsa.blender.render", fake)
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots}, filepath="")
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: data)
+    monkeypatch.setattr(bsa_blender, "cmd_render", real_render)
+    assert bsa_blender.main(["render", "pendulum", "--preset", "final"]) == 1
+    err = capsys.readouterr().err
+    assert "review/checks.json has 2 error(s): fix them and run BLENDER check" in err
+    assert "before the final render" in err and rendered == []
+
+
+def test_preview_chain_stops_at_check_when_the_check_process_crashes(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    calls = []
+    sides = _fake_chain(monkeypatch, home, pendulum, calls)
+
+    def crashed(ns):
+        raise bsa_blender.CliError("the checks stopped: Segmentation fault")
+
+    monkeypatch.setattr(bsa_blender, "cmd_check", crashed)
+    assert bsa_blender.main(["preview", "pendulum"]) == 1
+    io = capsys.readouterr()
+    assert io.err.strip() == "stopped at check: the checks stopped: Segmentation fault"
+    payload = json.loads(io.out.split("BSA_RESULT ", 1)[1])
+    assert payload["stopped_at"] == "check"
+    assert calls[-1] == "check-join" and "edit" not in calls
+    assert sides[0].stopped == 1  # safe after the join
+    status, by = _preview_status(pendulum)
+    assert status["state"] == "failed" and by["check"]["state"] == "failed" and by["edit"]["state"] == "pending"
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
+
+
+def test_preview_chain_stops_the_side_check_when_interrupted(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    calls = []
+    sides = _fake_chain(monkeypatch, home, pendulum, calls)
+
+    def render(ns):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bsa_blender, "cmd_render", render)
+    with pytest.raises(KeyboardInterrupt):
+        bsa_blender.main(["preview", "pendulum"])
+    assert len(sides) == 1 and sides[0].stopped == 1
+    assert "check-join" not in calls and "edit" not in calls
+    status, by = _preview_status(pendulum)
+    assert status["state"] == "stopped" and by["render"]["state"] == "stopped"
+    assert by["check"]["state"] == "stopped" and "the run stopped at render" in by["check"]["error"]
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
 
 
 def test_preview_chain_skips_a_current_build_and_reruns_the_timeline(home, pendulum, monkeypatch, capsys):
@@ -1476,7 +1870,7 @@ def test_preview_chain_skips_a_current_build_and_reruns_the_timeline(home, pendu
     _fake_chain(monkeypatch, home, pendulum, calls)
     assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
     out = _result(capsys)
-    assert calls == ["check", "render", "frame-check", "edit"]
+    assert calls == ["check-start", "render", "frame-check", "check-join", "edit"]
     assert out["steps"][0] == {"step": "build", "skipped": "the .blend is current"}
     assert "build done" not in [s["step"] for s in out["steps"]]
     # the timing changed: the chain writes the timeline and rebuilds
@@ -1504,6 +1898,27 @@ def test_preview_chain_rebuilds_after_build_py_changed(home, pendulum, monkeypat
     assert status["state"] == "failed" and {s["name"]: s["state"] for s in status["run"]["steps"]}["build"] == "failed"
     assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
     assert calls[:2] == ["build", "reopen"]
+
+
+def test_preview_chain_rebuilds_after_a_script_build_py_imports_changed(home, pendulum, monkeypatch, capsys):
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    blend = _stale_build(pendulum, newer=False)  # build.py itself is older than the .blend
+    (pendulum / "source" / "build.py").write_text("import parts\n", encoding="utf-8")
+    os.utime(pendulum / "source" / "build.py", ns=(blend - 10**9,) * 2)
+    parts = pendulum / "source" / "parts.py"
+    parts.write_text("X = 1\n", encoding="utf-8")
+    os.utime(parts, ns=(blend + 10**9,) * 2)
+    calls = []
+    _fake_chain(monkeypatch, home, pendulum, calls)
+    assert bsa_blender.main(["preview", "pendulum", "--no-build"]) == 1
+    err = capsys.readouterr().err
+    assert "source/parts.py (imported by build.py) changed since the scene was built" in err and calls == []
+    assert bsa_blender.main(["preview", "pendulum"]) == 0, capsys.readouterr().err
+    assert calls[:2] == ["build", "reopen"]
+    build = next(s for s in _result(capsys)["steps"] if s["step"] == "build")
+    assert build["why"] == "source/parts.py (imported by build.py) changed since the scene was built"
 
 
 def test_preview_chain_needs_the_stages_before_the_build(home, pendulum, monkeypatch, capsys):
@@ -1560,6 +1975,52 @@ def test_grab_maps_seconds_to_frames(home, pendulum, monkeypatch, capsys):
     assert "outside the video" in capsys.readouterr().err
 
 
+def test_grab_lists_only_this_calls_grabs_and_counts_older_ones(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa.blender
+    import bsa_blender
+
+    mp4 = pendulum / "out" / "pendulum-preview.mp4"
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"mp4")
+    grabs = pendulum / "review" / "grabs"
+    fake_edit = types.ModuleType("bsa.blender.edit")
+    fake_edit.probe = lambda p: {"width": 1080, "height": 1920, "fps": 30.0, "frames": 60, "has_audio": True}
+    fake_grab = types.ModuleType("bsa.blender.grab")
+    fake_grab.frame_at = lambda t, fps, n: int(t * fps) + 1
+
+    def grab_frames(mp4, frames, folder, stem):
+        folder.mkdir(parents=True, exist_ok=True)
+        for f in frames:
+            (folder / f"{stem}-f{f:04d}.png").write_bytes(b"new")
+
+    fake_grab.grab_frames = grab_frames
+    monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake_edit)
+    monkeypatch.setitem(sys.modules, "bsa.blender.grab", fake_grab)
+    monkeypatch.setattr(bsa.blender, "grab", fake_grab, raising=False)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    argv = ["grab", "pendulum", "--preset", "preview"]
+    assert bsa_blender.main([*argv, "--at", "0"]) == 0
+    first = _result(capsys)
+    assert first["older"] == 0 and "older_note" not in first
+    assert bsa_blender.main([*argv, "--at", "1"]) == 0
+    out = _result(capsys)
+    assert [g["frame"] for g in out["grabs"]] == [31]
+    assert out["older"] == 1
+    assert out["older_note"] == "1 older grab of this video is in review/grabs: --clear removes them"
+    assert bsa_blender.main([*argv, "--at", "0.5", "--clear"]) == 0
+    out = _result(capsys)
+    assert out["older"] == 0 and "older_note" not in out and out["cleared"] == 2
+    assert [p.name for p in grabs.glob("*.png")] == ["preview-f0016.png"]
+    for name in ("final-f0001.png", "preview-eevee-f0001.png", "preview-eevee-sheet.png"):  # another preset, a side run
+        (grabs / name).write_bytes(b"theirs")
+    assert bsa_blender.main([*argv, "--at", "1", "--clear"]) == 0
+    assert _result(capsys)["cleared"] == 1  # only this preset's own older grab
+    assert sorted(p.name for p in grabs.glob("*.png")) == ["final-f0001.png", "preview-eevee-f0001.png",
+                                                          "preview-eevee-sheet.png", "preview-f0031.png"]  # fmt: skip
+
+
 def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys):
     """Grabs from an earlier edit of the video are removed before new ones are written (a requested second that
     lands on another frame would leave an old frame beside the new ones); a side run's grabs are its own."""
@@ -1604,6 +2065,160 @@ def test_grab_clears_grabs_of_an_older_video(home, pendulum, monkeypatch, capsys
     assert bsa_blender.main(["grab", "pendulum", "--preset", "preview", "--at", "1"]) == 0
     assert _result(capsys)["cleared"] == 2  # f0001 and f0031 came from the older video
     assert sorted(p.name for p in grabs.glob("preview-f*.png")) == ["preview-f0031.png"]
+
+
+def _frame_png(path: Path, w: int = 108, h: int = 192) -> None:
+    from bsa import guides
+
+    y, x = np.mgrid[0:h, 0:w]
+    guides.write_png(path, np.stack([x * 2 % 256, y % 256, (x + y) % 256], axis=-1).astype(np.uint8))
+
+
+def _fake_pixels(monkeypatch):
+    """bsa.blender.pixels (it needs bpy) read through the pure decoder instead."""
+    import types
+
+    import bsa.blender
+    from bsa.image_checks import read_png
+
+    fake = types.ModuleType("bsa.blender.pixels")
+    fake.read_png = read_png
+    monkeypatch.setitem(sys.modules, "bsa.blender.pixels", fake)
+    monkeypatch.setattr(bsa.blender, "pixels", fake, raising=False)
+
+
+def test_stills_measure_the_world_only_for_an_intended_background_and_never_fail_on_it(home, pendulum, monkeypatch,
+                                                                                        capsys):
+    """The world-mask pass runs only when there is an intended background to compare with; a mask pass that fails
+    leaves the still measured whole instead of stopping the stills."""
+    import types
+
+    import bsa.blender
+    import bsa.colour
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    masks = []
+
+    def world_mask(scene, frame, shape):
+        masks.append(frame)
+        raise RuntimeError("the measuring pass failed")
+
+    fake = types.ModuleType("bsa.blender.stills")
+    fake.render_still = lambda scene, frame, out, **kw: _frame_png(out, 432, 768)
+    fake.world_mask = world_mask
+    monkeypatch.setitem(sys.modules, "bsa.blender.stills", fake)
+    monkeypatch.setattr(bsa.blender, "stills", fake, raising=False)
+    _fake_pixels(monkeypatch)
+    scene = types.SimpleNamespace(world=None, render=types.SimpleNamespace(film_transparent=False))
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_engine", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_still_shape", lambda path: (768, 432))
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, short, sid, h: (
+        next(s for s in short.shots if s.id == sid), scene))  # fmt: skip
+    monkeypatch.setattr(bsa.colour, "flat_backdrop", lambda world, transparent: True)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    monkeypatch.setattr(bsa.colour, "background_source", lambda short, s: None)
+    assert bsa_blender.main(["stills", "pendulum", "--shot", "s01"]) == 0, capsys.readouterr().err
+    _result(capsys)
+    assert masks == []  # nothing to compare with: no mask pass
+    monkeypatch.setattr(bsa.colour, "background_source", lambda short, s: ("#ffffff", "the short's"))
+    assert bsa_blender.main(["stills", "pendulum", "--shot", "s01"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert len(masks) == 1 and out["stills"] == [str(pendulum / "stills" / "s01.jpg")]
+
+
+def test_test_frames_writes_guides_beside_the_plain_frames(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa.blender
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    fake = types.ModuleType("bsa.blender.stills")
+    fake.render_still = lambda scene, frame, out, **kw: _frame_png(out, 432, 768)
+    monkeypatch.setitem(sys.modules, "bsa.blender.stills", fake)
+    monkeypatch.setattr(bsa.blender, "stills", fake, raising=False)
+    _fake_pixels(monkeypatch)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_engine", lambda sdir: None)
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, short, sid, h: (
+        next(s for s in short.shots if s.id == sid), object()))  # fmt: skip
+    monkeypatch.setenv("BSA_HOME", str(home))
+    argv = ["test-frames", "pendulum", "--at", "s01:0.5", "s02:0"]
+    assert bsa_blender.main(argv) == 0, capsys.readouterr().err
+    plain = _result(capsys)
+    assert "guides" not in plain
+    before = {p: Path(p).read_bytes() for p in plain["paths"]}
+    assert bsa_blender.main([*argv, "--guides"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert out["paths"] == plain["paths"]
+    assert out["guides"] == [str(Path(p).with_name(Path(p).stem + "-guides.png")) for p in out["paths"]]
+    assert {p: Path(p).read_bytes() for p in out["paths"]} == before  # the plain frames are unchanged
+    from bsa import guides
+    from bsa.image_checks import read_png
+
+    drawn = read_png(Path(out["guides"][0]))
+    assert drawn.shape[:2] == (768, 432)
+    assert np.all(drawn[..., :3] == guides.COLOURS["caption"], axis=-1).any()
+    assert bsa_blender.main(argv) == 0  # rendered again without --guides: the older guides copies go
+    _result(capsys)
+    assert not any(Path(p).exists() for p in out["guides"])
+
+
+def test_grab_guides_follow_the_timeline_and_go_with_their_frames(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa.blender
+    import bsa_blender
+
+    _past_narration(home, pendulum)
+    tl = json.loads((pendulum / "source" / "timeline.json").read_text(encoding="utf-8"))
+    n = int(tl["n_frames"])
+    mp4 = pendulum / "out" / "pendulum-preview.mp4"
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"mp4")
+    grabs = pendulum / "review" / "grabs"
+    fake_edit = types.ModuleType("bsa.blender.edit")
+    fake_edit.probe = lambda p: {"width": 1080, "height": 1920, "fps": 30.0, "frames": n + 75, "has_audio": True}
+    fake_grab = types.ModuleType("bsa.blender.grab")
+    fake_grab.frame_at = lambda t, fps, nf: int(t * fps) + 1
+
+    def grab_frames(mp4, frames, folder, stem):
+        folder.mkdir(parents=True, exist_ok=True)
+        for f in frames:
+            _frame_png(folder / f"{stem}-f{f:04d}.png")
+
+    fake_grab.grab_frames = grab_frames
+    monkeypatch.setitem(sys.modules, "bsa.blender.edit", fake_edit)
+    monkeypatch.setitem(sys.modules, "bsa.blender.grab", fake_grab)
+    monkeypatch.setattr(bsa.blender, "grab", fake_grab, raising=False)
+    _fake_pixels(monkeypatch)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    argv = ["grab", "pendulum", "--preset", "preview"]
+    closing = (n + 30) / 30  # a second in the closing card, after the story
+    assert bsa_blender.main([*argv, "--at", "0", str(closing), "--guides"]) == 0, capsys.readouterr().err
+    out = _result(capsys)
+    assert out["guides"] == [str(grabs / "preview-f0001-guides.png")]  # the closing card's frame gets none
+    assert out["older"] == 0 and "warnings" not in out
+    import os
+
+    later = mp4.stat().st_mtime_ns + 10**9
+    os.utime(pendulum / "source" / "timeline.json", ns=(later, later))  # the timing changed after this edit
+    assert bsa_blender.main([*argv, "--at", "0", "--guides"]) == 0
+    warned = _result(capsys)["warnings"]
+    assert len(warned) == 1 and "timeline.json is newer than pendulum-preview.mp4" in warned[0], warned
+    assert bsa_blender.main([*argv, "--at", "1"]) == 0
+    out = _result(capsys)
+    assert "guides" not in out
+    assert out["older"] == 2  # f0001 and its guides copy are one grab; the closing card's frame the other
+    assert bsa_blender.main([*argv, "--at", "1", "--clear"]) == 0
+    assert _result(capsys)["cleared"] == 4
+    assert sorted(p.name for p in grabs.glob("*.png")) == ["preview-f0031.png"]
+    fake_grab.sheet_frames = lambda nf, count: [1, 31]
+    fake_grab.contact_sheet = lambda mp4, frames, path, columns: path
+    assert bsa_blender.main([*argv, "--sheet", "--guides"]) == 0
+    assert _result(capsys)["warnings"] == ["--guides draws on --at grabs only, not on the contact sheet"]
 
 
 def test_frame_check_findings_carry_a_redo_command(tmp_path):
@@ -1696,3 +2311,965 @@ def test_check_lists_a_static_overlap_once_and_caps_over_pairs_in_every_shot():
     assert listed[-1]["capped"] == 2 and "2 more overlapping pairs" in listed[-1]["message"]
     assert listed[-1]["shots"] == ["s02"]
     assert bsa_blender._cap_overlap_rows(merged, 4) == (merged, [])
+
+
+def test_check_writes_the_overlap_summary(tmp_path):
+    """Every overlapping pair, listed or held back by the cap, is in "overlap_summary" grouped by name family; the
+    row standing for the pairs not listed points there. No overlap rows: no summary key."""
+    import json
+
+    import bsa_blender
+
+    def row(a, b, shot):
+        return {"check": "overlap", "severity": "error", "obj": a, "frame": None, "scene": "W", "shot": shot,
+                "message": f"{a!r} is 2 cm inside {b!r}", "pair": [a, b], "kind": "deep", "depth": 0.02}
+
+    rows = [row(f"Tooth {i:02d}", "Tape", "s01" if i < 13 else "s02") for i in range(1, 26)]
+    path = tmp_path / "review" / "checks.json"
+    out = bsa_blender._write_checks(path, rows, None, ["s01", "s02"], 20, checked=["s01", "s02"], kept=[])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["overlap_summary"] == ["Tape vs Tooth 01-25: 25 pairs, up to 2 cm, s01-s02"] == out["overlap_summary"]
+    assert len(data["held_back"]) == 5
+    assert "overlap_summary" in data["findings"][-1]["message"] and data["findings"][-1]["capped"] == 5
+    names = [{"check": "names", "severity": "warning", "obj": "X.001", "frame": None, "message": "m", "scene": "W",
+              "shot": "s01"}]
+    assert "overlap_summary" not in bsa_blender._write_checks(path, names, None, ["s01"], 20)
+
+
+def test_checks_that_could_not_be_written_are_an_error_not_a_stale_file(tmp_path, monkeypatch):
+    """review/checks.json held open by another program: the check fails plainly instead of leaving the old file as
+    if it were this run's."""
+    import pytest
+
+    import bsa_blender
+    from bsa import render_status
+
+    path = tmp_path / "review" / "checks.json"
+    path.parent.mkdir()
+    path.write_text('{"old": true}', encoding="utf-8")
+    monkeypatch.setattr(render_status, "write_atomic", lambda p, text, tries=8: False)
+    with pytest.raises(bsa_blender.CliError, match="another program keeps it open"):
+        bsa_blender._write_checks(path, [], None, ["s01"], 20)
+    assert path.read_text(encoding="utf-8") == '{"old": true}'
+    other = tmp_path / "review" / "frame-checks-final.json"
+    assert bsa_blender._write_findings(other, [])["errors"] == 0  # other review files: the next update writes them
+
+
+def test_settings_post_format_shows_it_and_whether_it_was_asked(home):
+    from bsa import post
+
+    first = ok(run(home, "settings", "post-format"))
+    assert first == {"post_format": {}, "asked": False, "keys": list(post.FORMAT_KEYS)}
+    ok(run(home, "settings", "set", "post_format", '{"title_suffix": " #shorts"}'))
+    out = ok(run(home, "settings", "post-format"))
+    assert out["asked"] is True and out["post_format"] == {"title_suffix": " #shorts"}
+    ok(run(home, "settings", "set", "post_format.link_line", "Watch more: {link}"))
+    assert ok(run(home, "settings", "post-format"))["post_format"]["link_line"] == "Watch more: {link}"
+    assert run(home, "settings", "set", "post_format.title_style", "shout").returncode != 0
+
+
+def test_validate_reports_post_problems(home, pendulum):
+    spec = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    spec["post"]["title"] = "x" * 101
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and "YouTube allows 100" in proc.stderr
+
+
+def test_a_dotted_post_format_key_alone_marks_the_question_asked(home):
+    ok(run(home, "settings", "set", "post_format.title_suffix", " #shorts"))
+    assert ok(run(home, "settings", "post-format"))["asked"] is True
+
+
+def test_cli_post_writes_the_pack(home, pendulum):
+    out = ok(run(home, "post", "pendulum"))
+    assert (pendulum / "out" / "post-pack.md").is_file() and out["changed"] is True
+    assert out["counts"]["title"]["max"] == 100 and out["fields"]["title"].startswith("Why a pendulum")
+    assert ok(run(home, "post", "pendulum"))["changed"] is False
+
+
+def test_cli_post_posted_and_related(home, workspace, pendulum):
+    other = Path(ok(run(home, "new-short", "Lever"))["short"])
+    shutil.copyfile(SAMPLE, other / "source" / "short.json")
+    assert ok(run(home, "post", "related", str(other)))["related"] == []
+    out = ok(run(home, "post", str(pendulum), "--posted", "https://youtu.be/abc"))
+    assert out["posted"][0]["platform"] == "youtube" and out["posted"][0]["url"] == "https://youtu.be/abc"
+    ok(run(home, "post", str(pendulum), "--posted", "https://youtu.be/abc"))
+    again = ok(run(home, "post", str(pendulum), "--posted", "https://tiktok.example/v", "--platform", "tiktok"))
+    assert len(again["posted"]) == 2
+    rel = ok(run(home, "post", "related", str(other)))["related"]
+    assert [r["url"] for r in rel] == ["https://youtu.be/abc"]
+    assert run(home, "post", str(pendulum), "--posted", "ftp://x").returncode != 0
+    assert run(home, "post", str(pendulum), "--platform", "tiktok").returncode != 0
+
+
+def test_cli_post_refuses_cleanly(home, pendulum, monkeypatch, capsys):
+    import bsa_cli
+    from bsa import post
+
+    for extra in (["--posted", "https://youtu.be/abc"], ["--platform", "tiktok"]):
+        proc = run(home, "post", "related", str(pendulum), *extra)
+        assert proc.returncode != 0 and "post related" in proc.stderr, proc.stderr
+    assert not post.fields(bsa_cli.load(pendulum))["posted"]
+
+    def busy(*a, **k):
+        raise TimeoutError("short.json is locked by another run")
+
+    monkeypatch.setattr(post, "add_posted", busy)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_cli.main(["post", str(pendulum), "--posted", "https://youtu.be/abc"]) != 0
+    err = capsys.readouterr().err
+    assert "locked by another run" in err and "Traceback" not in err
+
+
+def test_settings_set_kit_numbers_and_check(home):
+    ok(run(home, "settings", "set", "brand.outline_px", "3"))
+    ok(run(home, "settings", "set", "brand.progress", "false"))
+    s = ok(run(home, "settings", "show"))["settings"]["brand"]
+    assert s["outline_px"] == 3 and s["progress"] is False
+    ok(run(home, "settings", "set", "brand.mode", "brand"))
+    assert "brand.style is not set" in " ".join(ok(run(home, "settings", "check"))["advice"])
+    bad = run(home, "settings", "set", "brand.palette.accent", "orange")
+    assert bad.returncode != 0
+    ok(run(home, "settings", "set", "brand.palette.accent", "#7a4ce0"))
+    assert ok(run(home, "settings", "show"))["settings"]["brand"]["palette"]["accent"] == "#7A4CE0"
+    ok(run(home, "settings", "set", "brand.style", "flat"))
+    assert ok(run(home, "settings", "check"))["problems"] == []
+    (home / "settings.json").write_text(json.dumps({"brand": {"style": "toon", "outline_px": "thick"}}), "utf-8")
+    assert any("brand.outline_px" in p for p in ok(run(home, "settings", "check"))["problems"])
+
+
+def test_validate_shows_kit_problems_only_with_a_style(home, pendulum):
+    path = home / "settings.json"
+    base = json.loads(path.read_text("utf-8"))
+    path.write_text(json.dumps({**base, "brand": {"outline_px": "thick"}}), "utf-8")
+    assert not any("brand.outline_px" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
+    path.write_text(json.dumps({**base, "brand": {"style": "toon", "outline_px": "thick"}}), "utf-8")
+    assert any("brand.outline_px" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
+
+
+def _set_brand(home: Path, brand: dict) -> None:
+    """Put a brand kit in the settings as a hand edit would (a logo file need not exist)."""
+    path = home / "settings.json"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    path.write_text(json.dumps({**data, "brand": brand}), encoding="utf-8")
+
+
+def _many_labels(short: Path, n: int) -> None:
+    from bsa.kitlayout import MAX_LABELS
+
+    spec = json.loads((short / "source" / "short.json").read_text(encoding="utf-8"))
+    for shot in spec["shots"]:
+        shot["labels"] = [lb for lb in shot.get("labels", []) if isinstance(lb, str)][:MAX_LABELS]
+    spec["shots"][0]["labels"] = [f"Part {chr(65 + i)}" for i in range(n)]
+    (short / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+
+
+def test_validate_refuses_a_kit_short_with_more_labels_than_a_kit_draws(home, pendulum):
+    from bsa.kitlayout import MAX_LABELS
+    from tests.kitfix import KIT
+
+    _many_labels(pendulum, MAX_LABELS + 1)
+    out = ok(run(home, "validate", "pendulum"))  # no kit: today's text labels, no limit
+    assert not [e for e in out["errors"] if "labels" in e]
+    _set_brand(home, KIT)
+    proc = run(home, "validate", "pendulum")
+    assert proc.returncode == 1 and f"a brand kit draws at most {MAX_LABELS} per shot" in proc.stderr, proc.stderr
+
+
+def test_kit_edit_reports_its_cards_and_a_missing_logo_once_and_refuses_too_many_labels(home, pendulum, monkeypatch,
+                                                                                         capsys):  # fmt: skip
+    import bsa_blender
+    from bsa.kitlayout import MAX_LABELS
+    from tests.kitfix import KIT
+
+    _many_labels(pendulum, MAX_LABELS)  # the most a kit draws, and no near labels (no anchors needed)
+    gone = home / "logo.png"
+    _set_brand(home, {**KIT, "logo": {"file": str(gone)}})
+    tl = _rendered(home, pendulum, "preview")
+    probe = {"width": 1080, "height": 1920, "fps": 30.0, "frames": tl["n_frames"], "has_audio": False}
+    note = f"your logo file {gone.resolve()} is missing, so no logo badge is drawn: set brand.logo.file again"
+    seen = {"kit_cards": 12, "glyph_fallbacks": [note]}  # the edit's layout notes the missing logo too
+    _fake_edit(monkeypatch, seen, probe=lambda mp4: probe)
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["edit", "pendulum", "--preset", "preview"]) == 0, capsys.readouterr().err
+    out = json.loads(capsys.readouterr().out.split("BSA_RESULT ", 1)[1])
+    assert out["cards"] == 12 and out["warnings"].count(note) == 1, out.get("warnings")
+    _set_brand(home, {"mode": "brand"})  # no kit: no cards in the result
+    seen.update(kit_cards=0, glyph_fallbacks=[])
+    assert bsa_blender.main(["edit", "pendulum", "--preset", "preview"]) == 0, capsys.readouterr().err
+    assert "cards" not in json.loads(capsys.readouterr().out.split("BSA_RESULT ", 1)[1])
+    _set_brand(home, KIT)
+    _many_labels(pendulum, MAX_LABELS + 1)
+    tl = _rendered(home, pendulum, "preview")
+    seen.clear()
+    assert bsa_blender.main(["edit", "pendulum", "--preset", "preview"]) == 1
+    err = capsys.readouterr().err
+    assert f"a brand kit draws at most {MAX_LABELS} per shot" in err and "built" not in seen, err
+
+
+def test_anchors_record_each_near_objects_category_fresh_every_run(home, pendulum, monkeypatch):
+    """anchors.json gives every near label's object its "category:" tag (bake.category), read again on every run,
+    for reused entries too: retagging a part never needs a new projection to change its label's dot."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+    from bsa.short import near_labels
+
+    spec = json.loads((pendulum / "source" / "short.json").read_text(encoding="utf-8"))
+    spec["shots"][0]["labels"] = [{"text": "Bob", "near": "Bob"}]
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _rendered(home, pendulum, "preview")  # timeline.json and a current anchors.json (Bob's points reusable)
+    short = bsa_blender._load(pendulum)
+    tl, tl_hash = bsa_blender._timeline(pendulum, short)
+    bob = {"bsa_tags": "hero:s01,category:Flow"}
+
+    class Scene:
+        def __init__(self, name):
+            self.name, self.objects = name, {n: bob if n == "Bob" else {} for _, _, n in near_labels(short)}
+
+        def get(self, key, default=None):
+            return tl_hash if key == freshness.TIMELINE_PROP else default
+
+    projected = []
+    fake = types.ModuleType("bsa.blender.anchors")
+    fake.project = lambda scene, names, f0, f1, at=None: projected.append(names) or {n: {"f0": f0, "points": [[1, 2]]}
+                                                                            for n in names}  # fmt: skip
+    fake.hero_boxes = lambda scene, names, f0, f1: {"f0": f0, "boxes": {}}
+    fake.scenery_boxes = lambda scene, f0, f1, shot_id=None: {"f0": f0, "boxes": []}
+    fake.heroes = lambda scene, shot_id: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.anchors", fake)
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots})
+
+    def bob_entry():
+        bsa_blender._write_anchors(pendulum, short, tl, tl_hash, data, fps={})
+        return json.loads((pendulum / "source" / "anchors.json").read_text(encoding="utf-8"))["shots"]["s01"]["Bob"]
+
+    entry = bob_entry()
+    assert entry["category"] == "flow" and entry["points"] == [[500, 800]] * len(entry["points"]) and not projected
+    bob["bsa_tags"] = "hero:s01,category:grip"  # retagged: the reused entry reads it again
+    assert bob_entry()["category"] == "grip" and not projected
+    bob["bsa_tags"] = "hero:s01"
+    assert bob_entry()["category"] is None
+    (pendulum / "source" / "anchors.json").unlink()  # projected again: the category is there too
+    bob["bsa_tags"] = "category:spark"
+    entry = bob_entry()
+    assert ["Bob"] in projected and entry == {"f0": entry["f0"], "points": [[1, 2]], "category": "spark"}
+
+
+def test_anchors_of_labels_at_points_on_one_object_are_their_own(home, pendulum, monkeypatch):
+    """Two labels near one object at different "at" points get their own anchors.json entries, each projected at
+    its point; a label without "at" keeps the object's name as its key."""
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+    from bsa.short import near_labels
+
+    spec = json.loads((pendulum / "source" / "short.json").read_text(encoding="utf-8"))
+    spec["shots"][0]["labels"] = [{"text": "Top", "near": "Bob", "at": [0, 0, 0.5]},
+                                  {"text": "Side", "near": "Bob", "at": [0.5, 0, 0]}, {"text": "Bob", "near": "Bob"}]
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setenv("BSA_HOME", str(home))
+    _rendered(home, pendulum, "preview")  # timeline.json
+    (pendulum / "source" / "anchors.json").unlink(missing_ok=True)  # every anchor projected here
+    short = bsa_blender._load(pendulum)
+    tl, tl_hash = bsa_blender._timeline(pendulum, short)
+
+    class Scene:
+        def __init__(self, name):
+            self.name, self.objects = name, {n: {} for _, _, n in near_labels(short)}
+
+        def get(self, key, default=None):
+            return tl_hash if key == freshness.TIMELINE_PROP else default
+
+    calls = []
+    fake = types.ModuleType("bsa.blender.anchors")
+    fake.project = lambda scene, names, f0, f1, at=None: calls.append(at) or {n: {"f0": f0, "points": [list(at or
+                                                                              (0, 0))[:2]]} for n in names}  # fmt: skip
+    fake.hero_boxes = lambda scene, names, f0, f1: {"f0": f0, "boxes": {}}
+    fake.scenery_boxes = lambda scene, f0, f1, shot_id=None: {"f0": f0, "boxes": []}
+    fake.heroes = lambda scene, shot_id: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.anchors", fake)
+    data = types.SimpleNamespace(scenes={s.scene: Scene(s.scene) for s in short.shots})
+    bsa_blender._write_anchors(pendulum, short, tl, tl_hash, data, fps={})
+    shots = json.loads((pendulum / "source" / "anchors.json").read_text(encoding="utf-8"))["shots"]["s01"]
+    assert sorted(c for c in calls if c) == [(0.0, 0.0, 0.5), (0.5, 0.0, 0.0)] and None in calls
+    assert shots["Bob@0,0,0.5"]["points"] == [[0, 0]] and shots["Bob@0.5,0,0"]["points"] == [[0.5, 0]]
+    assert shots["Bob"]["points"] == [[0, 0]] and set(shots) == {"Bob@0,0,0.5", "Bob@0.5,0,0", "Bob"}
+
+def test_kit_sample_command_paths(home, tmp_path, monkeypatch):
+    """BLENDER kit-sample: bad JSON, a non-object, an invalid kit and no kit set are plain errors; a good kit renders
+    (the renderer is faked here) and the settings file is never written."""
+    import types
+
+    import bsa_blender
+    from tests.kitfix import KIT
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    calls = []
+    fake = types.SimpleNamespace(render_sample=lambda k, out, cache: calls.append((k.style, out, cache)) or ["w"])
+    monkeypatch.setitem(sys.modules, "bsa.blender.cards", fake)
+    monkeypatch.setattr("bsa.blender.cards", fake, raising=False)
+    settings_file = home / "settings.json"
+    settings_file.write_text('{"brand": {"mode": "fresh"}}', encoding="utf-8")
+    before = settings_file.read_bytes()
+    out = tmp_path / "sheet.png"
+
+    def sample(kit_json):
+        return bsa_blender.cmd_kit_sample(types.SimpleNamespace(kit=kit_json, out=str(out)))
+
+    with pytest.raises(bsa_blender.CliError, match="--kit is not JSON"):
+        sample("{nope")
+    with pytest.raises(bsa_blender.CliError, match="must be a JSON object"):
+        sample("[1, 2]")
+    with pytest.raises(bsa_blender.CliError, match="accent"):
+        sample(json.dumps({**KIT, "palette": {**KIT["palette"], "accent": "orange"}}))
+    with pytest.raises(bsa_blender.CliError, match="no brand kit is set: brand.style is missing"):
+        sample(None)
+    assert calls == []
+    assert sample(json.dumps(KIT)) == {"png": str(out), "warnings": ["w"]}
+    assert calls == [("toon", out, home / "cards")]
+    assert settings_file.read_bytes() == before
+    clash = {**KIT, "categories": {"stop": "#D9483B", "go": "#4A9A3B"}}
+    got = sample(json.dumps(clash))
+    assert got["warnings"][0] == "w" and "stop and go look alike to people with deuteranopia" in got["warnings"][1]
+
+
+def test_style_sample_refuses_without_an_engine(home, tmp_path, monkeypatch):
+    """BLENDER style-sample: with no --engine and no render.engine of cycles or eevee it refuses with one plain line (the
+    engine is always the user's) before opening anything; bad styles, set and scale are plain errors; the settings
+    file is never written."""
+    import re
+    import types
+
+    import bsa_blender
+    from tests.kitfix import KIT
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    settings_file = home / "settings.json"
+    out = tmp_path / "sheet.png"
+
+    def sample(**kw):
+        base = {"kit": json.dumps(KIT), "styles": None, "set": "studio", "engine": None, "out": str(out), "scale": 0.5}
+        return bsa_blender.cmd_style_sample(types.SimpleNamespace(**{**base, **kw}))
+
+    needs = "style-sample needs an engine: pass --engine eevee or --engine cycles, or set render.engine"
+    for body in (None, '{"render": {"engine": "ask-always"}}', '{"render": {"engine": "ask"}}'):
+        if body is not None:
+            settings_file.write_text(body, encoding="utf-8")
+        before = settings_file.read_bytes() if settings_file.exists() else None
+        with pytest.raises(bsa_blender.CliError, match=re.escape(needs)) as exc:
+            sample()
+        assert "(the engine is always yours to pick)" in str(exc.value)
+        assert (settings_file.read_bytes() if settings_file.exists() else None) == before
+    assert not out.exists()
+    settings_file.write_text('{"render": {"engine": "eevee"}}', encoding="utf-8")
+    with pytest.raises(bsa_blender.CliError, match="not a style"):
+        sample(styles="toy,glossy")
+    with pytest.raises(bsa_blender.CliError, match="not a set"):
+        sample(set="moon")
+    with pytest.raises(bsa_blender.CliError, match="--scale"):
+        sample(scale=0)
+    with pytest.raises(bsa_blender.CliError, match="--kit is not JSON"):
+        sample(kit="{nope")
+    with pytest.raises(bsa_blender.CliError, match="no brand kit is set"):
+        sample(kit=None)
+
+
+def test_style_sample_command_is_registered_with_its_flags():
+    import bsa_blender
+
+    args = bsa_blender.build_parser().parse_args(
+        ["style-sample", "--styles", "toy,toon", "--set", "none", "--engine", "cycles", "--out", "x.png",
+         "--scale", "0.25"])
+    assert (args.styles, args.set, args.engine, args.out, args.scale) == ("toy,toon", "none", "cycles", "x.png", 0.25)
+    assert args.fn is bsa_blender.cmd_style_sample
+    with pytest.raises(SystemExit):
+        bsa_blender.build_parser().parse_args(["style-sample", "--engine", "workbench", "--out", "x.png"])
+
+
+CLOSING_TOOL = """import json, os, struct, sys, wave
+a = sys.argv
+items = json.load(open(a[a.index('--lines') + 1], encoding='utf-8'))
+out = a[a.index('--out') + 1]
+for it in items:
+    secs = 3.4 if it['id'] == 'closing' else 1.0
+    w = wave.open(out + '/' + it['id'] + '.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2)
+    w.setframerate(48000)
+    w.writeframes(struct.pack('<h', 3000) * round(secs * 48000))
+    w.close()
+    if it['id'] == 'closing' and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fail')):
+        sys.exit(3)  # the closing take is written, then the tool fails
+"""
+
+
+def _closing_short(home, pendulum, tmp_path):
+    """The pendulum with a 2.5 s closing card and a closing line, narrated by a tool whose closing take is 3.4 s."""
+    path = pendulum / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["closing"] = {"website": "example.com", "voice_line": "Visit example dot com.", "seconds": 2.5}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    tool = tmp_path / "closing_tool.py"
+    tool.write_text(CLOSING_TOOL, encoding="utf-8")
+    _approve_storyboard(home)
+    ok(run(home, "settings", "set", "narrator.provider", "custom"))
+    ok(run(home, "settings", "set", "narrator.command", f'"{sys.executable}" "{tool}" --lines {{lines}} --out {{out}}'))
+    ok(run(home, "settings", "set", "narrator.verify", "false"))
+
+
+STRETCH = "the closing card will hold 4.1 s, not 2.5 s: shorten the line or raise closing.seconds"
+
+
+def test_narrate_warns_when_the_closing_line_stretches_the_card(home, pendulum, tmp_path):
+    _closing_short(home, pendulum, tmp_path)
+    out = ok(run(home, "narrate", "pendulum"))
+    assert out["status"] == "ok", out
+    assert STRETCH in out["warnings"]
+
+
+def test_validate_counts_the_closing_card(home, pendulum, tmp_path):
+    _closing_short(home, pendulum, tmp_path)
+    before = ok(run(home, "validate", "pendulum"))
+    assert before["closing"] == {"seconds": 2.5, "set_seconds": 2.5}  # not narrated yet: the card as set
+    assert STRETCH not in before["warnings"]
+    ok(run(home, "narrate", "pendulum"))
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["closing"]["seconds"] == 4.1 and out["closing"]["set_seconds"] == 2.5
+    assert STRETCH in out["warnings"]
+
+
+def test_a_stale_closing_take_is_not_counted(home, pendulum, tmp_path):
+    """A closing.wav the mix would not use (narration not finished with a voice) leaves the card at its set length."""
+    _closing_short(home, pendulum, tmp_path)
+    _write_take(pendulum / "audio" / "vo" / "closing.wav", 3.4)
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["closing"] == {"seconds": 2.5, "set_seconds": 2.5} and STRETCH not in out["warnings"]
+    for lid in ("l01", "l02", "l03", "l04"):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", 1.0)
+    jobstate.mark_done(pendulum, "narration", status="captions-only", provider="custom")
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["closing"]["seconds"] == 2.5 and STRETCH not in out["warnings"]
+
+
+def test_a_failed_closing_line_gives_no_stretch_warning(home, pendulum, tmp_path):
+    _closing_short(home, pendulum, tmp_path)
+    (tmp_path / "fail").write_text("", encoding="utf-8")
+    out = ok(run(home, "narrate", "pendulum"))
+    assert out["status"] == "ok", out
+    assert any("closing line couldn't be narrated" in w for w in out["warnings"]), out
+    assert STRETCH not in out["warnings"]
+    assert (pendulum / "audio" / "vo" / "closing.wav").is_file()  # the tool left a 3.4 s take behind
+
+
+def test_check_prints_one_progress_line_per_shot_it_checks(home, pendulum, monkeypatch, capsys):
+    import types
+
+    import bsa_blender
+    from bsa import render_status as rs
+    from bsa.image_checks import Finding
+
+    ok(run(home, "timeline", "pendulum"))
+    short = bsa_blender._load(pendulum)
+    calls = []
+
+    def run_checks(scene, tl, **kw):
+        calls.append(tl.shots[0].id)
+        return [Finding("lit", "error", "Bob", 1, "Bob is dark")] if len(calls) == 1 else []
+
+    checks = types.ModuleType("bsa.blender.checks")
+    checks.run_checks, checks.OVERLAP_MAX_FINDINGS = run_checks, 20
+    camera = types.ModuleType("bsa.blender.camera")
+    camera.framing_findings = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.checks", checks)
+    monkeypatch.setitem(sys.modules, "bsa.blender.camera", camera)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, s, sid, h: (None, types.SimpleNamespace(name="Workshop")))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["check", "pendulum"]) == 1  # the one error
+    lines = [x for x in capsys.readouterr().err.splitlines() if x.startswith("checking ")]
+    n = len(short.shots)
+    assert n > 1 and len(lines) == n
+    assert lines[0] == f"checking s01 (1 of {n}), 0 errors so far"
+    assert lines[1] == f"checking s02 (2 of {n}), 1 error so far"
+    assert lines[-1] == f"checking s{n:02d} ({n} of {n}), 1 error so far"
+    s = json.loads(rs.status_path(pendulum, "preview").read_text(encoding="utf-8"))
+    (step,) = [x for x in s["run"]["steps"] if x["name"] == "check"]
+    assert step["progress"]["current"] == lines[-1]  # the last shot checked
+
+
+def test_check_in_chain_reports_progress_on_stdout_and_marks_nothing(home, pendulum, monkeypatch, capsys):
+    """`check --in-chain` is the check process beside the preview render: its progress goes on stdout for the chain
+    to record, it keeps no status of its own and leaves the checks stage to the chain."""
+    import types
+
+    import bsa_blender
+    from bsa import render_status as rs
+
+    ok(run(home, "timeline", "pendulum"))
+    checks = types.ModuleType("bsa.blender.checks")
+    checks.run_checks, checks.OVERLAP_MAX_FINDINGS = lambda scene, tl, **kw: [], 20
+    camera = types.ModuleType("bsa.blender.camera")
+    camera.framing_findings = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.checks", checks)
+    monkeypatch.setitem(sys.modules, "bsa.blender.camera", camera)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, s, sid, h: (None, types.SimpleNamespace(name="Workshop")))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_blender.main(["check", "pendulum", "--in-chain"]) == 0
+    io = capsys.readouterr()
+    progress = [json.loads(x[len(bsa_blender.PROGRESS_PREFIX) :]) for x in io.out.splitlines()
+                if x.startswith(bsa_blender.PROGRESS_PREFIX)]  # fmt: skip
+    n = len(bsa_blender._load(pendulum).shots)
+    assert progress and progress[0]["done"] == 0 and len(progress[0]["items"]) == n
+    assert progress[-1]["done"] == progress[-1]["total"] and progress[-1]["current"].startswith(f"checking s{n:02d}")
+    assert all(i["state"] == "done" for i in progress[-1]["items"])  # every line carries the rows as they are now
+    assert "checking s01 (1 of" in io.err
+    assert json.loads(io.out.split("BSA_RESULT ", 1)[1])["errors"] == 0
+    assert (pendulum / "review" / "checks.json").is_file()
+    assert not rs.status_path(pendulum, "preview").exists()
+    assert "checks" not in jobstate.load_state(pendulum)["stages"]
+
+
+def test_check_reuses_unchanged_objects_in_a_changed_shot(home, pendulum, monkeypatch, capsys):
+    """A shot where only some objects changed is checked again with the others kept: their own findings (and those
+    of pairs of two kept objects) are carried over, everything else is found again."""
+    import types
+    from dataclasses import dataclass
+
+    import bsa_blender
+    from bsa.image_checks import Finding
+
+    @dataclass
+    class OverlapFinding(Finding):  # as bsa.blender.checks has it (not importable here)
+        pair: tuple = ("", "")
+        kind: str | None = None
+        depth: float | None = None
+
+    ok(run(home, "timeline", "pendulum"))
+    ids = [s.id for s in bsa_blender._load(pendulum).shots]
+    calls = []
+
+    def run_checks(scene, tl, **kw):
+        sid = tl.shots[0].id
+        calls.append((sid, kw.get("keep_objects")))
+        if sid != "s01":
+            return []
+        keep = kw.get("keep_objects") or set()
+        found = [Finding("faceted", "warning", n, 1, f"{n} looks faceted") for n in ("Bob", "Rod") if n not in keep]
+        if not {"Bob", "Rod"} <= keep:
+            found.append(OverlapFinding("overlap", "warning", "Bob", 2, "Bob and Rod meet", ("Bob", "Rod"), "deep", 0.0))
+        found.append(Finding("floating", "warning", "Bob", 3, "Bob floats"))  # always found again
+        return found
+
+    checks = types.ModuleType("bsa.blender.checks")
+    checks.run_checks, checks.OVERLAP_MAX_FINDINGS = run_checks, 20
+    camera = types.ModuleType("bsa.blender.camera")
+    camera.framing_findings = lambda *a, **k: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.checks", checks)
+    monkeypatch.setitem(sys.modules, "bsa.blender.camera", camera)
+    monkeypatch.setattr(bsa_blender, "_open_blend", lambda sdir: object())
+    monkeypatch.setattr(bsa_blender, "_scene", lambda data, s, sid, h: (None, types.SimpleNamespace(name="Workshop")))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    keys = {sid: {"objects": {"Bob": "kb", "Rod": "kr", "Pin": "kp"}, "rest": "r"} for sid in ids}
+    fps = dict.fromkeys(ids, "fp1")
+    monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: dict(fps))
+    monkeypatch.setattr(bsa_blender, "_objects", lambda sdir, f: keys)
+    assert bsa_blender.main(["check", "pendulum"]) == 0
+    assert calls == [(sid, None) for sid in ids]
+    first = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
+    assert "partial" not in first
+    calls.clear()
+    capsys.readouterr()
+    fps["s01"] = "fp2"
+    keys["s01"] = {"objects": {"Bob": "kb2", "Rod": "kr", "Pin": "kp"}, "rest": "r"}  # only Bob changed
+    assert bsa_blender.main(["check", "pendulum"]) == 0
+    assert calls == [("s01", {"Rod", "Pin"})]
+    io = capsys.readouterr()
+    out = json.loads(io.out.split("BSA_RESULT ", 1)[1])
+    assert out["partial"] == {"s01": {"kept_objects": 2, "retested_objects": 1}}
+    assert out["checked"] == ["s01"] and out["kept"] == ids[1:]
+    assert "checking s01 (1 of 1), 0 errors so far, 1 of 3 objects changed" in io.err
+    data = json.loads((pendulum / "review" / "checks.json").read_text(encoding="utf-8"))
+    rows = sorted((r["check"], r["obj"]) for r in data["findings"])
+    assert rows == [("faceted", "Bob"), ("faceted", "Rod"), ("floating", "Bob"), ("overlap", "Bob")], rows
+    assert next(r for r in data["findings"] if r["obj"] == "Rod")["shots"] == ["s01"]
+    calls.clear()
+    assert bsa_blender.main(["check", "pendulum", "--full"]) == 0
+    assert calls == [(sid, None) for sid in ids]  # --full: every shot whole
+
+
+def _child(code: str) -> subprocess.Popen:
+    return _proc.popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace")  # fmt: skip
+
+
+class _ChainSpy:
+    def __init__(self):
+        self.calls = []
+
+    def progress(self, *a, **k):
+        self.calls.append((a, k))
+
+
+def test_side_check_records_its_progress_and_returns_its_result(capsys):
+    import bsa_blender
+
+    chain = _ChainSpy()
+    code = ("import json\n"
+            "print('Blender 5.2 (startup noise)')\n"
+            "print('BSA_PROGRESS ' + json.dumps({'done': 1, 'total': 4, 'unit': 'frames', 'current': 'checking s01',"
+            " 'items': [{'id': 's01'}]}), flush=True)\n"
+            "import sys; print('checking s01 (1 of 1), 0 errors so far', file=sys.stderr)\n"
+            "print('BSA_RESULT ' + json.dumps({'errors': 0, 'warnings': 2, 'checked': ['s01'], 'kept': []}))\n")  # fmt: skip
+    side = bsa_blender._SideCheck(_child(code), chain)
+    assert side.join() == {"errors": 0, "warnings": 2, "checked": ["s01"], "kept": []}
+    assert chain.calls == [((), {"done": 1, "total": 4, "unit": "frames", "current": "checking s01",
+                                 "items": [{"id": "s01"}], "step": "check", "force": True})]  # fmt: skip
+    assert "[check] checking s01 (1 of 1), 0 errors so far" in capsys.readouterr().err  # its stderr, labelled
+    assert side.proc.stdout.closed and side.proc.stderr.closed  # the pipes are closed once it ended
+    side.stop()  # after the join: nothing to do
+
+
+def test_side_check_says_why_it_ended_without_checks():
+    import bsa_blender
+
+    crash = bsa_blender._SideCheck(_child("import sys; print('Segmentation fault', file=sys.stderr); sys.exit(139)"),
+                                   _ChainSpy())  # fmt: skip
+    with pytest.raises(bsa_blender.CliError, match="^the checks stopped: Segmentation fault$"):
+        crash.join()
+    silent = bsa_blender._SideCheck(_child("import sys; sys.exit(3)"), _ChainSpy())
+    with pytest.raises(bsa_blender.CliError, match="^the checks stopped: exit code 3$"):
+        silent.join()
+    code = ("import json, sys\n"
+            "print('BSA_RESULT ' + json.dumps({'errors': 2, 'path': 'checks.json', 'ok': False, "
+            "'error': '2 check error(s); see review/checks.json'}))\nsys.exit(1)\n")  # fmt: skip
+    errors = bsa_blender._SideCheck(_child(code), _ChainSpy())
+    with pytest.raises(bsa_blender.CliError, match="2 check error") as exc:
+        errors.join()
+    assert exc.value.payload == {"errors": 2, "path": "checks.json"}
+
+
+def test_side_check_stop_ends_the_process():
+    import time
+
+    import bsa_blender
+
+    side = bsa_blender._SideCheck(_child("import time; print('BSA_PROGRESS {}', flush=True); time.sleep(120)"),
+                                  _ChainSpy())  # fmt: skip
+    t0 = time.monotonic()
+    side.stop()
+    assert side.proc.poll() is not None and time.monotonic() - t0 < 10
+    assert side.proc.stdout.closed and side.proc.stderr.closed
+    side.stop()  # twice: nothing more to do
+    with pytest.raises(bsa_blender.CliError, match="the checks stopped"):
+        side.join()
+
+
+# --------------------------------------------------------------------------- workspace move
+
+
+def _move_setup(tmp_path, bsa_home):
+    """A workspace with one short (a .blend and a finished render-status file) and a closing image inside it."""
+    from bsa import settings as bsa_settings
+
+    old = tmp_path / "Shorts"
+    sdir = old / "01-how-a-gear-train-works"
+    (sdir / "review").mkdir(parents=True)
+    (sdir / "blend").mkdir()
+    (sdir / "blend" / "short.blend").write_bytes(b"BLENDER" + b"x" * 64)
+    (sdir / "review" / "render-status-final.json").write_text(
+        json.dumps({"state": "done", "short": {"dir": str(sdir)}, "preset": "final"}), encoding="utf-8")
+    (old / "brand").mkdir()
+    (old / "brand" / "end.png").write_bytes(b"png")
+    (sdir / "review" / "notes.json").write_text(json.dumps({"seen": str(sdir / "stills" / "a.png")}),
+                                                encoding="utf-8")  # fmt: skip
+    bsa_settings.set_value("workspace", str(old))
+    bsa_settings.set_value("closing.image", str(old / "brand" / "end.png"))
+    exe = tmp_path / "Blender" / "blender.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"not a program")  # found, but can't start: a relink the test doesn't stub fails, never runs
+    bsa_settings.set_value("blender_exe", str(exe))
+    return old, sdir
+
+
+def _move(capsys, new) -> tuple[int, dict | None, str]:
+    import bsa_cli
+
+    code = bsa_cli.main(["workspace", "move", str(new)])
+    cap = capsys.readouterr()
+    return code, (json.loads(cap.out) if cap.out.strip() else None), cap.err
+
+
+def test_workspace_move_renames_and_fixes_settings_and_statuses(tmp_path, bsa_home, capsys):
+    from bsa import settings as bsa_settings
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    assert out["how"] == "renamed" and out["old_folder"] is None
+    assert out["from"] == str(old) and out["to"] == str(new)
+    assert not old.exists() and (new / sdir.name / "blend" / "short.blend").is_file()
+    s = bsa_settings.load_settings()
+    assert s["workspace"] == str(new)
+    assert s["closing"]["image"] == str(new / "brand" / "end.png")
+    assert s["blender_exe"] == str(tmp_path / "Blender" / "blender.exe")
+    status = json.loads((new / sdir.name / "review" / "render-status-final.json").read_text(encoding="utf-8"))
+    assert status["short"]["dir"] == str(new / sdir.name)
+    assert "settings: workspace" in out["changed"] and "settings: closing.image" in out["changed"]
+    assert f"{sdir.name}/review/render-status-final.json: short.dir" in out["changed"]
+    notes = json.loads((new / sdir.name / "review" / "notes.json").read_text(encoding="utf-8"))
+    assert notes["seen"] == str(new / sdir.name / "stills" / "a.png")  # the plugin's own file: rewritten
+    assert f"{sdir.name}/review/notes.json: seen" in out["changed"]
+    assert not any("notes.json" in n["what"] for n in out["not_fixed"])
+    assert any("relink" in n["fix"] for n in out["not_fixed"])  # Blender couldn't start: the .blend is listed
+    assert "re-render" in out["note"]
+    assert "reopens checks, preview, final and post" in out["note"]
+    assert not (new / ".gpu.lock").exists() and not (old / ".gpu.lock").exists()  # the move's own lock is gone
+
+
+def test_workspace_move_rewrites_the_plugins_own_files_so_the_page_keeps_its_videos(tmp_path, bsa_home, capsys):
+    from bsa import engine_runs
+    from bsa.review import track
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    mp4 = sdir / "out" / "how-a-gear-train-works-final.mp4"
+    mp4.parent.mkdir()
+    mp4.write_bytes(b"mp4")
+    runs = {"final": {"preset": "final", "engine": None, "tag": None, "frames_dir": str(sdir / "frames" / "final"),
+                      "mp4": str(mp4)}}  # fmt: skip
+    (sdir / "review" / "engine-runs.json").write_text(json.dumps(runs, indent=2) + "\n", encoding="utf-8")
+    state = {"stages": {"final": {"done": True, "mp4": str(mp4)}}}
+    (sdir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    (sdir / "state.json.bak").write_text(json.dumps(state), encoding="utf-8")
+    status = {"state": "done", "short": {"dir": str(sdir)}, "preset": "final",
+              "steps": [{"name": "edit", "summary": {"mp4": str(mp4)}}, {"name": "mix",
+                        "summary": {"path": str(sdir / "audio" / "mix.wav")}}]}  # fmt: skip
+    (sdir / "review" / "render-status-final.json").write_text(json.dumps(status), encoding="utf-8")
+    (sdir / "review" / "camtest").mkdir()
+    (sdir / "review" / "camtest" / "camtest.json").write_text(json.dumps({"mp4": str(sdir / "review" / "camtest" /
+                                                                         "camtest.mp4")}), encoding="utf-8")  # fmt: skip
+    (sdir / "source").mkdir()
+    (sdir / "source" / "short.json").write_text(json.dumps({"closing": {"image": str(old / "brand" / "end.png")}}),
+                                                encoding="utf-8")  # fmt: skip
+    assert track._video(sdir, "final") is not None
+
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    nsdir = new / sdir.name
+    nmp4 = nsdir / "out" / mp4.name
+    assert track._video(nsdir, "final") == {"file": f"out/{mp4.name}", "tag": track._video(nsdir, "final")["tag"]}
+    assert [r["mp4"] for r in engine_runs.compare(nsdir, "final")] == [str(nmp4)]
+    assert json.loads((nsdir / "review" / "engine-runs.json").read_text(encoding="utf-8"))["final"]["frames_dir"] ==         str(nsdir / "frames" / "final")  # fmt: skip
+    assert (nsdir / "review" / "engine-runs.json").read_text(encoding="utf-8").endswith("}\n")
+    for name in ("state.json", "state.json.bak"):
+        assert json.loads((nsdir / name).read_text(encoding="utf-8"))["stages"]["final"]["mp4"] == str(nmp4)
+    status = json.loads((nsdir / "review" / "render-status-final.json").read_text(encoding="utf-8"))
+    assert status["short"]["dir"] == str(nsdir)
+    assert status["steps"][0]["summary"]["mp4"] == str(nmp4)
+    assert status["steps"][1]["summary"]["path"] == str(nsdir / "audio" / "mix.wav")
+    camtest = json.loads((nsdir / "review" / "camtest" / "camtest.json").read_text(encoding="utf-8"))
+    assert camtest["mp4"] == str(nsdir / "review" / "camtest" / "camtest.mp4")
+    assert f"{sdir.name}/state.json: stages.final.mp4" in out["changed"]
+    assert f"{sdir.name}/review/render-status-final.json: steps[0].summary.mp4" in out["changed"]
+    left = [n for n in out["not_fixed"] if "short.json" in n["what"]]  # the user's own file: only reported
+    assert len(left) == 1 and "closing.image" in left[0]["what"]
+    assert json.loads((nsdir / "source" / "short.json").read_text(encoding="utf-8"))["closing"]["image"] ==         str(old / "brand" / "end.png")  # fmt: skip
+    assert not any("engine-runs" in n["what"] or "state.json" in n["what"] for n in out["not_fixed"])
+
+
+def test_workspace_move_relinks_every_short_with_a_blend(tmp_path, bsa_home, capsys, monkeypatch):
+    import subprocess
+
+    from bsa import proc
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    other = old / "02-how-a-lever-works"
+    (other / "blend").mkdir(parents=True)
+    (other / "blend" / "short.blend").write_bytes(b"BLENDER")
+    (old / "03-no-blend-yet" / "source").mkdir(parents=True)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        short = Path(cmd[cmd.index("relink") + 1])
+        if short.name == other.name:
+            return subprocess.CompletedProcess(cmd, 1, 'BSA_RESULT {"ok": false, "error": "the file is damaged"}\n',
+                                               "the file is damaged\n")  # fmt: skip
+        res = {"relinked": [{"type": "image", "name": "tex", "from": "a", "to": "b"}], "missing": ["B:/gone.png"],
+               "saved": True, "warnings": ["the linked file B:/kit.blend didn't reload: no such file"]}  # fmt: skip
+        return subprocess.CompletedProcess(cmd, 0, "Blender 4.5\nBSA_RESULT " + json.dumps(res) + "\n", "")
+
+    monkeypatch.setattr(proc, "run", fake_run)
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    assert len(calls) == 2  # once per short with a .blend
+    for cmd in calls:
+        assert cmd[0] == str(tmp_path / "Blender" / "blender.exe")
+        assert cmd[1:7] == ["-b", "--factory-startup", "--python-exit-code", "1", "--python",
+                            str(Path(__file__).resolve().parent.parent / "bsa_blender.py")]  # fmt: skip
+        assert cmd[7:9] == ["--", "relink"] and cmd[10:] == ["--from", str(old)]
+    assert sorted(Path(c[9]).name for c in calls) == [sdir.name, other.name]
+    assert all(Path(c[9]).parent == new for c in calls)
+    warning = "the linked file B:/kit.blend didn't reload: no such file"
+    assert out["relinked"] == [{"short": sdir.name, "relinked": [{"type": "image", "name": "tex", "from": "a",
+                                                                  "to": "b"}], "missing": ["B:/gone.png"],
+                                "saved": True, "warnings": [warning]}]  # fmt: skip
+    gone = [n for n in out["not_fixed"] if "B:/gone.png" in n["what"]]  # a missing file and a failed reload: a row each
+    assert len(gone) == 1 and gone[0]["what"].startswith(sdir.name) and "put the file back" in gone[0]["fix"]
+    kit = [n for n in out["not_fixed"] if "kit.blend" in n["what"]]
+    assert len(kit) == 1 and "reload" in kit[0]["fix"]
+    bad = [n for n in out["not_fixed"] if other.name in n["what"]]
+    assert len(bad) == 1 and "the file is damaged" in bad[0]["what"]
+    assert bad[0]["fix"] == f'BLENDER relink 02 --from "{old}"'
+    assert not any(sdir.name in n["what"] for n in out["not_fixed"] if n["fix"].startswith("BLENDER relink"))
+    assert "checks" in out["note"]
+
+
+def test_workspace_move_copies_across_drives_and_keeps_the_old_folder(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import settings as bsa_settings
+    from bsa import wsmove
+
+    monkeypatch.setattr(wsmove, "same_drive", lambda a, b: False)
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    new = tmp_path / "Other drive" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    assert out["how"] == "copied"
+    assert (old / sdir.name / "blend" / "short.blend").is_file()  # the old folder is kept
+    assert "delete it yourself" in out["old_folder"]
+    assert (new / sdir.name / "blend" / "short.blend").read_bytes() == (old / sdir.name / "blend" /
+                                                                       "short.blend").read_bytes()  # fmt: skip
+    assert bsa_settings.load_settings()["workspace"] == str(new)
+    old_status = json.loads((sdir / "review" / "render-status-final.json").read_text(encoding="utf-8"))
+    assert old_status["short"]["dir"] == str(sdir)  # nothing in the old folder is rewritten
+
+
+def test_workspace_move_stops_when_a_copied_file_differs(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import settings as bsa_settings
+    from bsa import wsmove
+
+    monkeypatch.setattr(wsmove, "same_drive", lambda a, b: False)
+    monkeypatch.setattr(wsmove, "size_mismatches", lambda a, b: ["01-how-a-gear-train-works/blend/short.blend"])
+    old, _ = _move_setup(tmp_path, bsa_home)
+    new = tmp_path / "Other drive" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 1 and "short.blend" in err
+    assert out["mismatched"] == ["01-how-a-gear-train-works/blend/short.blend"]
+    assert bsa_settings.load_settings()["workspace"] == str(old)  # settings untouched
+    assert old.is_dir() and new.is_dir()  # the copy is left for the user to check and delete
+
+
+def test_workspace_move_refuses_while_a_render_runs(tmp_path, bsa_home, capsys):
+    from bsa import render_status
+    from bsa import settings as bsa_settings
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    running = {"state": "running", "pid": os.getpid(), "pid_token": render_status.process_token(os.getpid()),
+               "short": {"dir": str(sdir)}, "preset": "preview"}  # fmt: skip
+    (sdir / "review" / "render-status-preview.json").write_text(json.dumps(running), encoding="utf-8")
+    before = bsa_settings.settings_path().read_text(encoding="utf-8")
+    new = tmp_path / "Moved"
+    code, _out, err = _move(capsys, new)
+    assert code == 1 and "a render or another job is running" in err
+    assert old.is_dir() and not new.exists()
+    assert bsa_settings.settings_path().read_text(encoding="utf-8") == before
+
+
+def test_workspace_move_refuses_a_folder_inside_the_workspace(tmp_path, bsa_home, capsys):
+    old, _ = _move_setup(tmp_path, bsa_home)
+    inner = (str(old).upper() if os.name == "nt" else str(old)) + os.sep + "inner"  # another case on Windows
+    code, _out, err = _move(capsys, inner)
+    assert code == 1 and "inside the workspace" in err
+    assert old.is_dir() and not (old / "inner").exists()
+
+
+def test_workspace_move_refuses_a_live_server_that_is_slow_to_answer(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import render_status
+    from bsa.review import launch
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+    info = {"pid": os.getpid(), "port": 1, "token": "t", "process_token": render_status.process_token(os.getpid())}
+    (old / launch.SERVER_FILE).write_text(json.dumps(info), encoding="utf-8")
+    monkeypatch.setattr(launch, "server_info", lambda *a, **k: None)  # /api/health didn't answer in time
+    code, _out, err = _move(capsys, tmp_path / "Moved")
+    assert code == 1 and "page server" in err
+    assert old.is_dir() and not (tmp_path / "Moved").exists()
+
+
+def test_workspace_move_holds_the_gpu_lock_and_stops_when_a_job_starts_during_the_copy(tmp_path, bsa_home, capsys,
+                                                                                         monkeypatch):  # fmt: skip
+    import shutil
+
+    from bsa import gpulock, render_status, wsmove
+    from bsa import settings as bsa_settings
+
+    monkeypatch.setattr(wsmove, "same_drive", lambda a, b: False)
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    real_copy = shutil.copytree
+    seen = {}
+
+    def copy_and_start_a_job(src, dst, *a, **kw):
+        if "lock" in seen:  # copytree calls itself for each sub-folder
+            return real_copy(src, dst, *a, **kw)
+        seen["lock"] = gpulock.read(gpulock.lock_path(old))
+        running = {"state": "running", "pid": os.getpid(), "pid_token": render_status.process_token(os.getpid()),
+                   "short": {"dir": str(sdir)}, "preset": "preview"}  # fmt: skip
+        (sdir / "review" / "render-status-preview.json").write_text(json.dumps(running), encoding="utf-8")
+        return real_copy(src, dst, *a, **kw)
+
+    monkeypatch.setattr(shutil, "copytree", copy_and_start_a_job)
+    new = tmp_path / "Other drive" / "Shorts"
+    code, _out, err = _move(capsys, new)
+    assert seen["lock"]["pid"] == os.getpid() and seen["lock"]["command"] == "move"  # held while the files moved
+    assert code == 1 and "started during the copy" in err and "still" in err
+    assert bsa_settings.load_settings()["workspace"] == str(old)
+    assert not gpulock.lock_path(old).exists() and not gpulock.lock_path(new).exists()
+
+
+def test_workspace_move_refuses_while_another_command_holds_the_gpu(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import gpulock
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+    monkeypatch.setattr(gpulock, "acquire", lambda *a, **k: (_ for _ in ()).throw(gpulock.GpuBusy("the GPU is busy")))
+    code, _out, err = _move(capsys, tmp_path / "Moved")
+    assert code == 1 and "the GPU is busy" in err and "Nothing was changed" in err
+    assert old.is_dir() and not (tmp_path / "Moved").exists()
+
+
+def test_workspace_move_names_where_the_folder_is_when_a_later_step_fails(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import wsmove
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+
+    def broken(*a, **k):
+        raise RuntimeError("disk said no")
+
+    monkeypatch.setattr(wsmove, "plugin_files", broken)
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 1 and f"was renamed to {new}" in err and "disk said no" in err
+    assert "BLENDER relink" in err and out["to"] == str(new)
+    assert new.is_dir() and not old.exists()
+
+
+def test_workspace_move_says_plainly_when_a_drive_is_not_there(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import wsmove
+
+    old, _ = _move_setup(tmp_path, bsa_home)
+    monkeypatch.setattr(wsmove, "missing_drive", lambda p: "Q:" if "Moved" in str(p) else None)
+    code, _out, err = _move(capsys, tmp_path / "Moved")
+    assert code == 1 and "The drive Q: of" in err and "Nothing was changed" in err
+    assert old.is_dir()
+
+
+def test_workspace_move_needs_a_workspace(bsa_home, capsys, tmp_path):
+    code, _out, err = _move(capsys, tmp_path / "x")
+    assert code == 1 and "No workspace is set yet" in err

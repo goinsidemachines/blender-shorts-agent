@@ -126,6 +126,9 @@ def run_whisper(job, torch, out, result):
     asr = pipeline("automatic-speech-recognition", model=job["weights"], device=job["device"])
     result["load_seconds"] = round(time.perf_counter() - t0, 2)
     result["texts"] = {}
+    want_words = bool(job.get("words"))
+    if want_words:
+        result["words"] = {}
     for item in job["files"]:
         path = Path(item["path"])
         if not path.is_file():
@@ -138,7 +141,14 @@ def run_whisper(job, torch, out, result):
 
             g = gcd(16000, sr)
             audio = resample_poly(audio, 16000 // g, sr // g).astype("float32")
-        result["texts"][item["id"]] = asr({"raw": audio, "sampling_rate": 16000})["text"].strip()
+        heard = asr({"raw": audio, "sampling_rate": 16000}, **({"return_timestamps": "word"} if want_words else {}))
+        result["texts"][item["id"]] = heard["text"].strip()
+        if want_words:
+            result["words"][item["id"]] = [
+                [str(c["text"]).strip(), float(c["timestamp"][0]), float(c["timestamp"][1])]
+                for c in heard.get("chunks", [])
+                if c.get("timestamp") and None not in c["timestamp"]
+            ]
         log(f"{item['id']}: {result['texts'][item['id']]}")
 
 

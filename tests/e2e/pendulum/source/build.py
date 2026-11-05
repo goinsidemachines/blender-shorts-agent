@@ -261,12 +261,14 @@ def build_workshop(sc, short, spans, fps):
     cam = camera(sc, "Workshop camera")
     s01, s02 = spans["s01"], spans["s02"]
     close = (-0.24, 0.0, 1.08)  # pendulums A and B, the two of the same length
-    wide = (0.0, 0.0, 0.70)  # the whole stand, with the long pendulum C
+    # The whole stand, with the long pendulum C: aimed low so the stand sits in the framing band above the captions
+    # (bsa.layout.target_area), with C's bob clear of the caption band at the bottom of its swing.
+    wide = (0.0, 0.0, 0.40)
     camera_key(cam, s01[0], (-0.24, -1.5, 1.14), close)
     camera_key(cam, s01[1], (-0.24, -1.35, 1.12), close)  # a slow push-in on the hook
     camera_key(cam, s02[0] + 6, (-0.24, -1.35, 1.12), close)  # hold, then pull back to show all three
-    camera_key(cam, min(s02[0] + 45, s02[1] - 1), (0.0, -3.1, 0.95), wide)
-    camera_key(cam, s02[1], (0.0, -3.0, 0.95), wide)
+    camera_key(cam, min(s02[0] + 45, s02[1] - 1), (0.0, -3.6, 0.95), wide)
+    camera_key(cam, s02[1], (0.0, -3.5, 0.95), wide)
     lights_and_world(sc, style, key_at=(-1.6, -1.8, 2.4), rim_at=(1.4, 1.2, 2.0), target=(0.0, 0.0, 0.9))
 
 

@@ -1,5 +1,5 @@
-"""Live render status: while `BLENDER render` runs it keeps `review/render-status-<preset>.json` (and the page
-`review/render-<preset>.html`) up to date, so anyone can see where a render is, how fast it goes and what the frame
+"""Live render status: while `BLENDER render` runs it keeps `review/render-status-<preset>.json` up to date (the
+review page's Render stage shows it), so anyone can see where a render is, how fast it goes and what the frame
 checks found, without counting PNGs. A reader tells a dead render from a running one by its process (pid plus the
 process's start time, so a reused pid is not mistaken for the render). Pure: stdlib + numpy-free; no bpy."""
 
@@ -9,6 +9,7 @@ import json
 import os
 import struct
 import sys
+import threading
 import time
 import zlib
 from collections.abc import Callable
@@ -36,10 +37,6 @@ STALL_MIN_S = 120.0  # the page says "no update for a while" after max(this, 10 
 
 def status_path(short_dir: Path, preset: str) -> Path:
     return Path(short_dir) / "review" / f"render-status-{preset}.json"
-
-
-def page_path(short_dir: Path, preset: str) -> Path:
-    return Path(short_dir) / "review" / f"render-{preset}.html"
 
 
 def thumb_rel(preset: str, shot: str) -> str:
@@ -251,7 +248,7 @@ def stuck_from_digests(history: list[tuple[int, int]]) -> list[Finding]:
 class Tracker:
     """The render's running status. The render calls start, begin_shot, frame_started / frame_written for each fresh
     frame, end_shot, and finish; writes are throttled to one per THROTTLE_S except at shot changes, new findings
-    and the end. `render_page(status)` writes the HTML page after each JSON write."""
+    and the end. `render_page(status)`, when given, is called after each JSON write."""
 
     def __init__(self, path: Path, *, short: dict, preset: str, engine: str | None, shots: list[dict],
                  stamp: dict, seed_s_per_frame: float | None = None, clock: Callable[[], float] = time.time,
@@ -512,7 +509,9 @@ class Run:
     `frame-check`, `edit`, `render` on its own). Starting a run supersedes what the file held (it keeps that run's
     outcome under "previous"), unless that is still running in another process: then this run records nothing.
     Use it as a context manager; `step(name)` is one too. A render inside the run hands its tracker's status to
-    `set_render`, so the same file and page show the chain and the render."""
+    `set_render`, so the same file and page show the chain and the render. A step can also run beside the current
+    one (`begin_side`: the checks while the preview renders), with its own progress (`progress(..., step=name)`);
+    a lock keeps the writes of the threads that report them whole."""
 
     def __init__(self, path: Path, *, short: dict, preset: str, kind: str, steps: list[str] | tuple[str, ...],
                  clock: Callable[[], float] = time.time,
@@ -534,8 +533,11 @@ class Run:
         self.inert = False
         self.current: str | None = None
         self._last_write = float("-inf")
-        self._t0: float | None = None  # when the current step's progress started counting
+        self._t0s: dict[str, float] = {}  # when each running step's progress started counting
+        self._moved: dict[str, float] = {}  # when each running step began or its count last moved (stall)
+        self._side: set[str] = set()  # steps begun beside the current one (begin_side)
         self._prev_active: Run | None = None
+        self._lock = threading.RLock()  # a step reported from another thread writes while the render writes
 
     # ---- lifecycle
 
@@ -561,17 +563,33 @@ class Run:
     def finish(self, state: str, error: str | None = None) -> None:
         if state not in FINISHED:
             raise ValueError(f"unknown run state {state!r}; choose from {FINISHED}")
-        self.state, self.error = state, (error or None) and str(error)[:MAX_ERROR]
-        self.finished = self.clock()
+        with self._lock:
+            self.state, self.error = state, (error or None) and str(error)[:MAX_ERROR]
+            self.finished = self.clock()
+            if state == "done":
+                self.current = None
+            elif self.current and self._by_name[self.current]["state"] == "running":  # it ended inside that step
+                self._stop(self._by_name[self.current], state)
+                self._by_name[self.current].setdefault("error", self.error)
+            for st in self.steps:  # a side step still running ends with the run (done: it never said it finished)
+                if st["name"] in self._side and st["state"] == "running" and st["name"] != self.current:
+                    self._stop(st, "stopped" if state == "done" else state)
+                    st.setdefault("error", self._side_end_reason(state))
+            self.write(force=True)
+
+    def _side_end_reason(self, state: str) -> str:
+        """Why a side step still running ended with the run, for its row on the page."""
         if state == "done":
-            self.current = None
-        elif self.current and self._by_name[self.current]["state"] == "running":  # it ended inside that step
-            st = self._by_name[self.current]
-            if st["progress"] is not None:
-                st["progress"] = {**self._progress_out(st["progress"], self.finished), "eta_s": None, "eta_at": None}
-            st["state"], st["finished"] = state, self.finished
-            st.setdefault("error", self.error)
-        self.write(force=True)
+            return "the run ended before this step said it finished"
+        at = f" at {self.current}" if self.current else ""
+        why = f": {self.error}" if self.error else ""
+        return f"the run {state}{at}{why}"[:MAX_ERROR]
+
+    def _stop(self, st: dict, state: str) -> None:
+        if st["progress"] is not None:
+            st["progress"] = {**self._progress_out(st["progress"], self.finished, st["name"]), "eta_s": None,
+                              "eta_at": None}  # fmt: skip
+        st["state"], st["finished"] = state, self.finished
 
     def __enter__(self) -> Self:
         self.start()
@@ -601,58 +619,85 @@ class Run:
     def step(self, name: str):
         return _StepCtx(self, name)
 
-    def begin(self, name: str) -> dict:
+    def _start_step(self, name: str) -> dict:
         st = self._step(name)
         st.update(state="running", started=self.clock(), finished=None, progress=None)
-        self.current, self._t0 = name, None
-        self.write(force=True)
+        self._t0s.pop(name, None)
+        self._moved[name] = st["started"]
         return st
 
+    def begin(self, name: str) -> dict:
+        with self._lock:
+            st = self._start_step(name)
+            self.current = name
+            self._side.discard(name)
+            self.write(force=True)
+            return st
+
+    def begin_side(self, name: str) -> dict:
+        """Start step `name` beside the current one (the checks while the preview renders): it runs and reports its
+        own progress (`progress(..., step=name)`) without becoming the current step; `end(name, ...)` ends it."""
+        with self._lock:
+            st = self._start_step(name)
+            self._side.add(name)
+            self._moved.pop(name, None)  # its stall time counts from its first progress: Blender has to start first
+            self.write(force=True)
+            return st
+
     def end(self, name: str, state: str = "done", error: str | None = None) -> None:
-        st = self._step(name)
-        now = self.clock()
-        if st["progress"] is not None and st["state"] == "running":  # frozen at its last count
-            st["progress"] = {**self._progress_out(st["progress"], now), "eta_s": None, "eta_at": None}
-        st["state"], st["finished"] = state, now
-        if error:
-            st["error"] = str(error)[:MAX_ERROR]
-        if state == "done" and self.current == name:
-            self.current = None
-        self.write(force=True)
-
-    def skip(self, name: str, why: str) -> None:
-        st = self._step(name)
-        st.update(state="skipped", summary={"skipped": why})
-        self.write(force=True)
-
-    def summarize(self, name: str, summary: dict) -> None:
-        self._step(name)["summary"] = summary
-        self.write(force=True)
-
-    def progress(self, done: int, total: int, *, unit: str = "frames", current: str | None = None,
-                 items: list[dict] | None = None, force: bool = False) -> None:  # fmt: skip
-        """Progress of the current step: `done` of `total` units, what it is on now (`current`, e.g. "shot s02") and
-        optionally a row per item (shot). Cheap to call per frame: it writes at most every THROTTLE_S, and at once
-        when `current` changes or `force`."""
-        if self.current is None or self.inert:
-            return
-        now = self.clock()
-        if self._t0 is None:
-            self._t0 = now
-        st = self._by_name[self.current]
-        p = st["progress"]
-        if p is None:
-            p = st["progress"] = {}
-        changed = current != p.get("current")
-        p.update(done=done, total=total, unit=unit, current=current)
-        if items is not None:
-            p["_items"] = items
-        if force or changed or now - self._last_write >= THROTTLE_S:
+        with self._lock:
+            st = self._step(name)
+            now = self.clock()
+            if st["progress"] is not None and st["state"] == "running":  # frozen at its last count
+                st["progress"] = {**self._progress_out(st["progress"], now, name), "eta_s": None, "eta_at": None}
+            st["state"], st["finished"] = state, now
+            if error:
+                st["error"] = str(error)[:MAX_ERROR]
+            if state == "done" and self.current == name:
+                self.current = None
             self.write(force=True)
 
-    def _progress_out(self, p: dict, now: float) -> dict:
+    def skip(self, name: str, why: str) -> None:
+        with self._lock:
+            st = self._step(name)
+            st.update(state="skipped", summary={"skipped": why})
+            self.write(force=True)
+
+    def summarize(self, name: str, summary: dict) -> None:
+        with self._lock:
+            self._step(name)["summary"] = summary
+            self.write(force=True)
+
+    def progress(self, done: int, total: int, *, unit: str = "frames", current: str | None = None,
+                 items: list[dict] | None = None, force: bool = False, step: str | None = None) -> None:  # fmt: skip
+        """Progress of a running step (`step`, by default the current one): `done` of `total` units, what it is on
+        now (`current`, e.g. "shot s02") and optionally a row per item (shot). Cheap to call per frame: it writes at
+        most every THROTTLE_S, and at once for its first count, when `current` changes or `force`. Safe from another
+        thread."""
+        with self._lock:
+            name = self.current if step is None else step
+            st = self._by_name.get(name) if name is not None else None
+            if self.inert or st is None or st["state"] != "running":
+                return
+            now = self.clock()
+            self._t0s.setdefault(name, now)
+            p = st["progress"]
+            first = p is None  # a step's first count shows at once
+            if first:
+                p = st["progress"] = {}
+            changed = first or current != p.get("current")
+            if changed or done != p.get("done"):
+                self._moved[name] = now
+            p.update(done=done, total=total, unit=unit, current=current)
+            if items is not None:
+                p["_items"] = items
+            if force or changed or now - self._last_write >= THROTTLE_S:
+                self.write(force=True)
+
+    def _progress_out(self, p: dict, now: float, name: str) -> dict:
         done, total = p.get("done") or 0, p.get("total") or 0
-        elapsed = max(now - self._t0, 0.0) if self._t0 is not None else 0.0
+        t0 = self._t0s.get(name)
+        elapsed = max(now - t0, 0.0) if t0 is not None else 0.0
         per = elapsed / done if done >= MIN_MEASURED and elapsed > 0 else None
         eta = (total - done) * per if per is not None else None
         out = {k: v for k, v in p.items() if not k.startswith("_")}
@@ -666,8 +711,9 @@ class Run:
     # ---- the render inside the run
 
     def set_render(self, status: dict) -> None:
-        self.render = status
-        self.write(force=True)
+        with self._lock:
+            self.render = status
+            self.write(force=True)
 
     # ---- output
 
@@ -677,7 +723,10 @@ class Run:
         for st in self.steps:
             row = dict(st)
             if st["progress"] is not None and st["state"] == "running":
-                row["progress"] = self._progress_out(st["progress"], now)
+                row["progress"] = self._progress_out(st["progress"], now, st["name"])
+            quiet = self._side_quiet(st, row.get("progress"), now)
+            if quiet is not None:
+                row["stalled_s"] = round(quiet, 1)
             steps.append(row)
         end = self.finished if self.finished is not None else now
         cur = self._by_name.get(self.current) if self.current else None
@@ -685,7 +734,7 @@ class Run:
         if cur is not None and cur["name"] == "render" and self.render and self.render.get("state") == "running":
             stall = self.render.get("stall_after_s")
         elif cur is not None and cur.get("progress"):
-            per = self._progress_out(cur["progress"], now).get("s_per_unit")
+            per = self._progress_out(cur["progress"], now, cur["name"]).get("s_per_unit")
             stall = max(STALL_MIN_S, 10 * (per or 0.0))
         return {
             "version": RUN_VERSION,
@@ -709,20 +758,32 @@ class Run:
             "throttle_s": THROTTLE_S,
         }
 
+    def _side_quiet(self, st: dict, progress: dict | None, now: float) -> float | None:
+        """How long a running side step (begun beside the current one) has not moved, once that is longer than its
+        stall time (as the current step's: max(STALL_MIN_S, 10 x its time per unit)); else None. The run's own
+        stall_after_s follows the current step, whose writes keep the file fresh while a side step may be stuck."""
+        name = st["name"]
+        if name not in self._side or name == self.current or st["state"] != "running" or name not in self._moved:
+            return None  # (not moved yet: the side process is still starting)
+        quiet = now - self._moved[name]
+        per = (progress or {}).get("s_per_unit")
+        return quiet if quiet > max(STALL_MIN_S, 10 * (per or 0.0)) else None
+
     def write(self, force: bool = False) -> None:
-        if self.inert or self.state == "pending":
-            return
-        now = self.clock()
-        if not force and now - self._last_write < THROTTLE_S:
-            return
-        self._last_write = now
-        status = self.snapshot()
-        write_atomic(self.path, json.dumps(status, indent=1, default=str))
-        if self.render_page is not None:
-            try:
-                self.render_page(status)
-            except Exception as exc:  # noqa: BLE001 - the page must never stop the work
-                print(f"status page: {exc}", file=sys.stderr)
+        with self._lock:  # one writer at a time: the temporary file is per process, and a snapshot is taken whole
+            if self.inert or self.state == "pending":
+                return
+            now = self.clock()
+            if not force and now - self._last_write < THROTTLE_S:
+                return
+            self._last_write = now
+            status = self.snapshot()
+            write_atomic(self.path, json.dumps(status, indent=1, default=str))
+            if self.render_page is not None:
+                try:
+                    self.render_page(status)
+                except Exception as exc:  # noqa: BLE001 - the page must never stop the work
+                    print(f"status page: {exc}", file=sys.stderr)
 
 
 class _StepCtx:
@@ -952,6 +1013,9 @@ def describe(status: dict, now: float | None = None, ago: bool = True) -> dict:
             summary = f"{label} running: step {step['index']} of {step['of']}, {_step_text(step, render, now)}"
         else:
             summary = f"{label} running: {_step_text(step, render, now, named=False)}"
+        for s in steps:  # a side step beside the current one that stopped counting (Run._side_quiet)
+            if s.get("state") == "running" and isinstance(s.get("stalled_s"), (int, float)):
+                summary += f"; {s['name']} has not moved for {fmt_duration(s['stalled_s'])}"
     elif state == "done":
         took = fmt_duration((status.get("finished") or now) - (status.get("started") or now))
         if kind == "render" and render:
@@ -964,6 +1028,9 @@ def describe(status: dict, now: float | None = None, ago: bool = True) -> dict:
             if fr and len(steps) > 1:
                 parts.append(f"render: {fr.get('rendered', 0)} frames rendered, {fr.get('reused', 0)} reused")
             summary = f"{label} done in {took}{ago}" + (f": {', '.join(parts)}" if len(steps) > 1 else "")
+            for s in steps:  # a side step that failed while the run went on (the checks beside a preview)
+                if s.get("state") == "failed":
+                    summary += f"; {s['name']} failed" + (f": {s['error']}" if s.get("error") else "")
     elif state in ("failed", "stopped"):
         at = f" at {step['name']}" if step and len(steps) > 1 else ""
         why = f": {status['error']}" if status.get("error") else ""

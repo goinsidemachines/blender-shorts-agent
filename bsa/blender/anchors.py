@@ -1,7 +1,8 @@
-"""Where objects are on screen: each `near` label's object projected through the shot's camera, per frame, so the
-edit can put the label just above it, the screen boxes of the heroes of the shots with near labels (labels keep off
-them) and of the last shot (the end card stays off them), and the last shot's other meshes during the end card
-(`scenery_boxes`: the end card keeps off them too, after the heroes).
+"""Where objects are on screen: each `near` label's object (its top, an Empty's origin, or the label's `at` point)
+projected through the shot's camera, per frame, so the edit can put the label just above it, the screen boxes of
+the heroes of the shots with near labels (labels keep off them) and of the last shot (the end card stays off them),
+and the last shot's other meshes during the end card (`scenery_boxes`: the end card keeps off them too, after the
+heroes).
 The result goes to source/anchors.json, stamped with the timeline and build."""
 
 from __future__ import annotations
@@ -21,11 +22,22 @@ def _depsgraph(scene):
         return bpy.context.evaluated_depsgraph_get()
 
 
-def screen_top(scene, cam, obj, depsgraph) -> list[float] | None:
-    """[x, y] in pixels (origin top-left) of the top of the object's evaluated bounding box on screen: x at the box
-    centre, y at its highest projected corner. None when the object is wholly behind the camera."""
+def _point(scene, cam, world) -> list[float] | None:
+    p = world_to_camera_view(scene, cam, world)
+    return [round(p.x * W, 2), round((1.0 - p.y) * H, 2)] if p.z > 0 else None
+
+
+def screen_top(scene, cam, obj, depsgraph, at=None) -> list[float] | None:
+    """[x, y] in pixels (origin top-left) where a near label points on the object: with `at` (a point in the
+    object's local space, a label's "at") that point; an Empty's origin; else the top of the object's evaluated
+    bounding box on screen: x at the box centre, y at its highest projected corner. None when the point (or the whole
+    object) is behind the camera."""
     ev = obj.evaluated_get(depsgraph)
     m = ev.matrix_world
+    if at is not None:
+        return _point(scene, cam, m @ Vector(at))
+    if ev.type == "EMPTY":
+        return _point(scene, cam, m.translation)
     corners = [m @ Vector(c) for c in ev.bound_box]
     pts = [world_to_camera_view(scene, cam, c) for c in corners]
     front = [p for p in pts if p.z > 0]
@@ -91,28 +103,46 @@ def hero_boxes(scene, names: list[str], f0: int, f1: int) -> dict:
     return out
 
 
+def hero_boxes_at(scene, names: list[str], frames: list[int]) -> dict[int, list[list[float] | None]]:
+    """{frame: [[x0, y0, x1, y1] or None per name]} through the scene's camera at each of `frames` (the thumbnail's
+    hero box at its frame, and the picker's samples). scene.frame_current is restored."""
+    out: dict[int, list] = {}
+
+    def one(frame, cam, dg):
+        out[frame] = [screen_box(scene, cam, scene.objects[n], dg) for n in names]
+
+    _at_frames(scene, frames, one)
+    return out
+
+
 def _each_frame(scene, f0: int, f1: int, fn) -> None:
+    _at_frames(scene, range(f0, f1 + 1), lambda _frame, cam, dg: fn(cam, dg))
+
+
+def _at_frames(scene, frames, fn) -> None:
+    """fn(frame, evaluated camera, depsgraph) at each frame, in order."""
     depsgraph = _depsgraph(scene)
     original = scene.frame_current
     try:
-        for frame in range(f0, f1 + 1):
+        for frame in frames:
             scene.frame_set(frame)
             depsgraph.update()  # a scene that is not the context scene is not evaluated by frame_set alone
             cam = scene.camera  # markers may switch the camera during a shot
             if cam is None:
                 raise ValueError(f"scene {scene.name!r} has no camera at frame {frame}")
-            fn(cam.evaluated_get(depsgraph), depsgraph)
+            fn(frame, cam.evaluated_get(depsgraph), depsgraph)
     finally:
         scene.frame_set(original)
 
 
-def project(scene, names: list[str], f0: int, f1: int) -> dict:
+def project(scene, names: list[str], f0: int, f1: int, at: tuple | None = None) -> dict:
     """{object name: {"f0": f0, "points": [[x, y] or None per frame f0..f1]}} through the scene's camera at each frame
-    (camera markers may switch it). Missing objects raise KeyError naming them. scene.frame_current is restored."""
+    (camera markers may switch it), each point screen_top's (`at`: the point in each object's local space a label
+    points at). Missing objects raise KeyError naming them. scene.frame_current is restored."""
     missing = [n for n in names if scene.objects.get(n) is None]
     if missing:
         raise KeyError(", ".join(missing))
     out = {n: {"f0": f0, "points": []} for n in names}
-    _each_frame(scene, f0, f1, lambda cam, dg: [out[n]["points"].append(screen_top(scene, cam, scene.objects[n], dg))
-                                                for n in names])  # fmt: skip
+    _each_frame(scene, f0, f1, lambda cam, dg: [out[n]["points"].append(screen_top(scene, cam, scene.objects[n], dg,
+                                                                                   at)) for n in names])  # fmt: skip
     return out

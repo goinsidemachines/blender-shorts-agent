@@ -15,6 +15,7 @@ import glob
 import json
 import re
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -26,6 +27,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 from bsa import freshness, jobstate, messages, rules, settings, workspace  # needs the plugin root on sys.path (above)
 
 RESULT_PREFIX = "BSA_RESULT "
+PROGRESS_PREFIX = "BSA_PROGRESS "  # a progress line of `check --in-chain` on stdout, for the preview chain to record
 ERROR_LIMIT = 600  # the one plain error line is trimmed at a sentence or clause boundary past this
 
 
@@ -40,6 +42,11 @@ class CliError(Exception):
 
 def _short_dir(key: str) -> Path:
     return workspace.resolve_short(key, settings.load_settings().get("workspace"))
+
+
+def _short_key(sdir: Path) -> str:
+    """What the user types for this short in a command a message suggests (workspace.short_key)."""
+    return workspace.short_key(sdir, settings.load_settings().get("workspace"))
 
 
 def _load(sdir: Path):
@@ -58,7 +65,7 @@ def _timeline(sdir: Path, short):
     durations = takes_durations(sdir, short)
     tl = build_timeline(short, durations, settings.has_end_card(settings.load_settings(), short),
                         onsets=takes_onsets(sdir, short) if durations is not None else None)  # fmt: skip
-    return tl, freshness.check_timeline(sdir, tl)  # (timeline, hash): it must match source/timeline.json
+    return tl, freshness.check_timeline(sdir, tl, _short_key(sdir))  # (timeline, hash): must match timeline.json
 
 
 def _engine(sdir: Path) -> str | None:
@@ -147,8 +154,9 @@ def _mp4(sdir: Path, short, preset: str, run=None) -> Path:
     return engine_runs.mp4_path(sdir, short.slug, preset, run or engine_runs.EngineRun(None))
 
 
-def _write_findings(path: Path, findings, stamp: dict | None = None, **extra) -> dict:
-    """Findings (Finding objects or dicts) into a review JSON with their counts; `extra` keys go in too."""
+def _write_findings(path: Path, findings, stamp: dict | None = None, *, required: bool = False, **extra) -> dict:
+    """Findings (Finding objects or dicts) into a review JSON with their counts; `extra` keys go in too. `required`:
+    a file that could not be replaced (another program holds it) is a CliError, not a stale file left behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [f if isinstance(f, dict) else asdict(f) for f in findings]
     data = {
@@ -158,7 +166,12 @@ def _write_findings(path: Path, findings, stamp: dict | None = None, **extra) ->
         **extra,
         "findings": rows,
     }
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    from bsa import render_status as rs
+
+    wrote = rs.write_atomic(path, json.dumps(data, indent=2) + "\n")  # the page server may read it as it is written
+    if not wrote and required:
+        raise CliError(f"Couldn't write {path}: another program keeps it open. Close it (an editor, a viewer) and run "
+                       "it again; the checks found here were not saved.", {"errors": data["errors"]})  # fmt: skip
     return {"path": str(path), **data}
 
 
@@ -171,8 +184,8 @@ def _fingerprints(sdir: Path, short, tl, tl_hash: str, data=None, reset_after=Fa
         return None
     ids = [s.id for s in short.shots]
     cached = freshness.load_fingerprints(sdir, tl_hash, _fingerprint_code())
-    if cached is not None and all(i in cached for i in ids):
-        return {i: cached[i] for i in ids}
+    if cached is not None and all(i in cached for i in ids) and freshness.has_object_keys(sdir):
+        return {i: cached[i] for i in ids}  # (a cache without object keys is made again once: the same fingerprints)
     import bpy
 
     from bsa.blender.fingerprint import fingerprints
@@ -184,8 +197,9 @@ def _fingerprints(sdir: Path, short, tl, tl_hash: str, data=None, reset_after=Fa
         _, scene = _scene(data, short, items[0][0].id, tl_hash)
         groups.append((scene, [span for _, span in items]))
     parts: dict = {}
-    shots, files = fingerprints(groups, parts)
-    freshness.save_fingerprints(sdir, tl_hash, shots, files, code=_fingerprint_code(), parts=parts)
+    objects: dict = {}  # a key per object and one for the rest of each shot, beside its fingerprint
+    shots, files = fingerprints(groups, parts, objects=objects)
+    freshness.save_fingerprints(sdir, tl_hash, shots, files, code=_fingerprint_code(), parts=parts, objects=objects)
     if reset_after and opened:
         bpy.ops.wm.read_factory_settings(use_empty=True)
     return {i: shots[i] for i in ids}
@@ -205,8 +219,15 @@ def _parts(sdir: Path, fps: dict | None) -> dict:
     return freshness.load_fingerprint_parts(sdir, fps)
 
 
-def _check_keys(short, tl, fps: dict | None, parts: dict | None = None) -> dict:
-    """{shot id: what its scene checks depend on} (freshness.shot_check_inputs)."""
+def _objects(sdir: Path, fps: dict | None) -> dict:
+    """{shot id: {"objects": {name: key}, "rest": key}} (each object's key and the rest's), from the fingerprint
+    cache."""
+    return freshness.load_fingerprint_objects(sdir, fps)
+
+
+def _check_keys(short, tl, fps: dict | None, parts: dict | None = None, objects: dict | None = None) -> dict:
+    """{shot id: what its scene checks depend on} (freshness.shot_check_inputs). `objects` (from the fingerprint
+    cache, freshness.load_fingerprint_objects) adds each shot's object keys, as information."""
     spans = {s.id: s for s in tl.shots}
     ids = [s.id for s in short.shots]
     from bsa.overlays import caption_size
@@ -214,7 +235,8 @@ def _check_keys(short, tl, fps: dict | None, parts: dict | None = None) -> dict:
     rule_key = rules.scene_key(_hard_rules(short), short)
     size = caption_size(short)
     return {s.id: freshness.shot_check_inputs((fps or {}).get(s.id), spans[s.id], asdict(s), ids,
-                                              (parts or {}).get(s.id), rule_key, size) for s in short.shots}  # fmt: skip
+                                              (parts or {}).get(s.id), rule_key, size, (objects or {}).get(s.id))
+            for s in short.shots}  # fmt: skip
 
 
 def _hard_rules(short) -> list[dict]:
@@ -250,18 +272,52 @@ def _closing_card(sdir: Path, short) -> tuple[dict | None, Path | None, list[str
         aspect = closing.aspect_warning(*closing_card.image_size(Path(cfg["image"])))
         if aspect:
             warnings.append(aspect)
+    from bsa import kit as kit_mod
+
     brand = settings.brand_for(s, short)
-    closing_card.make_card(cfg, brand, png, short.style.get("font") or brand.get("font"))
+    k = kit_mod.kit_for(s, short) if not cfg["image"] else None  # the user's own image is never restyled
+    closing_card.make_card(cfg, brand, png, short.style.get("font") or brand.get("font"), kit=k,
+                           card_dir=sdir / "cards")  # fmt: skip
+    logo_note = kit_mod.logo_missing(k.logo) if k is not None else None  # drawn without its badge
+    if logo_note:
+        warnings.append(logo_note)
     warnings += closing.zone_warnings(read_png(png))
-    info.write_text(json.dumps({**cfg, "warnings": warnings}, indent=2, ensure_ascii=False), encoding="utf-8")
+    made = {"kit": True} if k is not None else {}
+    info.write_text(json.dumps({**cfg, **made, "warnings": warnings}, indent=2, ensure_ascii=False), encoding="utf-8")
     return cfg, png, warnings
+
+
+def _guide_kit(sdir: Path, short) -> tuple:
+    """(the kit the short's edit draws, its card font) or (None, None) without one, as the checks get them."""
+    from bsa import cards, kit
+    from bsa.fonts import font_caches
+
+    k = kit.kit_for(settings.load_settings(), short)
+    return (k, cards.card_font(k, font_caches(sdir))) if k is not None else (None, None)
+
+
+def _guides(frame: Path, short, shot, kf: tuple) -> Path:
+    """`<stem>-guides.png` beside `frame`: a copy with the caption zone, the top cards (with a kit) and the framing
+    band outlined (bsa.guides). The frame itself is left as it is."""
+    from bsa import guides
+    from bsa.blender import pixels
+
+    boxes = guides.rects(short, shot, *kf)
+    return guides.write_png(guides.guides_path(frame), guides.draw(pixels.read_png(frame), boxes))
+
+
+def _no_guides(frame: Path) -> None:
+    """Remove an older run's guides copy of `frame` (the frame was just rendered again, without --guides)."""
+    from bsa import guides
+
+    guides.guides_path(frame).unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- commands
 
 
 def cmd_stills(args) -> dict:
-    from bsa.blender.stills import render_still
+    from bsa.blender.stills import render_still, world_mask
 
     sdir = _short_dir(args.short)
     short = _load(sdir)
@@ -271,15 +327,31 @@ def cmd_stills(args) -> dict:
     spans = {s.id: s for s in tl.shots}
     data = _open_blend(sdir)
     engine = _engine(sdir)
-    written = []
-    from bsa.colour import flat_backdrop
+    written, drawn = [], []
+    kf = _guide_kit(sdir, short) if args.guides else None
+    from bsa.colour import background_source, flat_backdrop
 
+    wanted = background_source(short, settings.load_settings())  # no intended background: no mask pass to measure
     for shot in _shots(short, args.shot):
         shot, scene = _scene(data, short, shot.id, tl_hash)
         out = Path(args.out) if args.out else sdir / "stills" / f"{shot.id}.jpg"
-        render_still(scene, _still_frame(shot, spans[shot.id]), out, engine=engine)
-        written.append((shot.id, out, flat_backdrop(scene.world, scene.render.film_transparent)))
-    result = {"stills": [str(p) for _, p, _ in written]}
+        frame = _still_frame(shot, spans[shot.id])
+        render_still(scene, frame, out, engine=engine)
+        flat = flat_backdrop(scene.world, scene.render.film_transparent)
+        mask = None
+        if flat and wanted:
+            try:
+                mask = world_mask(scene, frame, _still_shape(out))
+            except Exception:  # noqa: BLE001 - a failed measuring pass never stops the stills: measure the whole still
+                mask = None
+        written.append((shot.id, out, flat, mask))
+        if args.guides:
+            drawn.append(_guides(out, short, shot, kf))
+        else:
+            _no_guides(out)
+    result = {"stills": [str(p) for _, p, _, _ in written]}
+    if args.guides:
+        result["guides"] = [str(p) for p in drawn]
     warnings = _background_warnings(short, written)
     if not args.shot:  # the storyboard shows the closing card too
         _, card, card_warnings = _closing_card(sdir, short)
@@ -289,23 +361,37 @@ def cmd_stills(args) -> dict:
     return {**result, "warnings": warnings} if warnings else result
 
 
+def _still_shape(path: Path) -> tuple[int, int]:
+    """A rendered still's (height, width), from its image header."""
+    import bpy
+
+    img = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        w, h = img.size
+    finally:
+        bpy.data.images.remove(img)
+    return h, w
+
+
 def _background_warnings(short, stills) -> list[str]:
     """Each still whose background (its most common colour) is far from the intended one, when one is set: the
     short's style.palette.background, else the brand's (unless the short has its own look, "look": "fresh").
-    `stills` are (shot id, path, flat): only a still whose scene has a flat backdrop (paper_world or a plain colour,
-    bsa.colour.flat_backdrop) is checked. A sky, an HDRI or a landscape is not a paper backdrop."""
+    `stills` are (shot id, path, flat, mask): only a still whose scene has a flat backdrop (paper_world or a plain
+    colour, bsa.colour.flat_backdrop) is checked. A sky, an HDRI or a landscape is not a paper backdrop. `mask`
+    (bsa.blender.stills.world_mask, or None) is where the world shows: only there is measured, and a still that is
+    mostly its subject (world under bsa.colour.WORLD_MIN_SHARE) is not judged."""
     from bsa.colour import background_source, background_warning
 
     found = background_source(short, settings.load_settings())
-    flat = [(shot_id, path) for shot_id, path, is_flat in stills if is_flat]
+    flat = [(shot_id, path, mask) for shot_id, path, is_flat, mask in stills if is_flat]
     if not found or not flat:
         return []
     want, whose = found
     from bsa.blender.pixels import read_png
 
     out = []
-    for shot_id, path in flat:
-        msg = background_warning(read_png(path), want, f"shot {shot_id}", whose=whose)
+    for shot_id, path, mask in flat:
+        msg = background_warning(read_png(path), want, f"shot {shot_id}", whose=whose, mask=mask)
         if msg:
             out.append(msg)
     return out
@@ -323,14 +409,17 @@ def _check_near_objects(data, short, tl_hash: str) -> None:
 
 
 def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None = None) -> dict:
-    """Project every near label's object for its shot and write source/anchors.json, stamped with each shot's
-    fingerprint and the timing; shots unchanged since the last anchors keep theirs. Also the screen boxes of the
-    heroes of every shot with a near label (labels keep off them) and of the last shot, with the last shot's other
-    meshes during the end card ("scenery": the end card keeps off them after the heroes). Returns its path, how many
-    labels it places and which shots it projected again."""
+    """Project every near label's object (its "at" point, if it has one) for its shot and write source/anchors.json,
+    each under the label's anchor key (bsa.short.label_anchor), stamped with each shot's fingerprint and the timing;
+    shots unchanged since the last anchors keep theirs. Also the screen boxes of the heroes of every shot with a
+    near label (labels keep off them) and of the last shot, with the last shot's other meshes during the end card
+    ("scenery": the end card keeps off them after the heroes). Each near label's object records its "category" tag
+    (bsa.blender.bake.category, or None), read again on every run. Returns its path, how many labels it places and
+    which shots it projected again."""
     from bsa.blender.anchors import hero_boxes, project, scenery_boxes
     from bsa.blender.anchors import heroes as hero_names
-    from bsa.short import near_labels
+    from bsa.blender.bake import category
+    from bsa.short import near_anchors
     from bsa.timeline import end_card_start
 
     _check_near_objects(data, short, tl_hash)
@@ -340,19 +429,21 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
     spans = {s.id: s for s in tl.shots}
     shots: dict[str, dict] = {}
     projected: set[str] = set()
-    for shot_id, _text, name in near_labels(short):
-        if name in shots.get(shot_id, {}):
-            continue
-        prior = reuse["shots"].get(shot_id) or {}
-        if name in prior:
-            shots.setdefault(shot_id, {})[name] = prior[name]
+    for shot_id, _text, name, key, at in near_anchors(short):
+        if key in shots.get(shot_id, {}):
             continue
         _, scene = _scene(data, short, shot_id, tl_hash)
-        projected.add(shot_id)
-        try:
-            shots.setdefault(shot_id, {}).update(project(scene, [name], spans[shot_id].f0, spans[shot_id].f1))
-        except ValueError as exc:
-            raise CliError(str(exc)) from exc
+        prior = reuse["shots"].get(shot_id) or {}
+        if isinstance(prior.get(key), dict):
+            entry = dict(prior[key])
+        else:
+            projected.add(shot_id)
+            try:
+                entry = project(scene, [name], spans[shot_id].f0, spans[shot_id].f1, at)[name]
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+        entry["category"] = category(scene.objects.get(name))  # read fresh every run: a retag needs no projection
+        shots.setdefault(shot_id, {})[key] = entry
     last = short.shots[-1]  # the end card shows over the last shot: it must stay off that shot's heroes
     heroes: dict[str, dict] = {}
     for shot_id in [*sorted(shots), last.id]:  # near labels keep off the other heroes of their shot
@@ -446,17 +537,14 @@ def _redo_targets(sdir: Path, args, short, spans, run=None) -> dict[str, list[in
 
 
 def _recording(sdir: Path, short, preset: str, step: str, key: str | None = None):
-    """The live status this step records itself in (review/render-status-<key>.json and its page; `key` defaults to
+    """The live status this step records itself in (review/render-status-<key>.json; `key` defaults to
     the preset, a side run's is _status_key's): inside the preview chain the chain's own step, on its own a one-step
     run that supersedes the last run shown there."""
     from bsa import render_status as rs
-    from bsa.review import pages
 
     key = key or preset
-    page = rs.page_path(sdir, key)
     return rs.recording(rs.status_path(sdir, key), short={"slug": short.slug, "title": short.title, "dir": str(sdir)},
-                        preset=preset, step=step,
-                        render_page=lambda status: pages.render_status_page(rs.describe(status), page))  # fmt: skip
+                        preset=preset, step=step)  # fmt: skip
 
 
 def _progress_cb(fn):
@@ -499,17 +587,25 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     data = _open_blend(sdir)
     engine = side.engine
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
-    if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final render")
-    _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
     parts = _parts(sdir, fps)
+    check_keys = _check_keys(short, tl, fps, parts, _objects(sdir, fps))
+    if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
+        freshness.require_checks(sdir, tl_hash, check_keys, "the final render", key=_short_key(sdir))
+        failed = None
+    elif getattr(args, "checks_beside", False):  # the preview chain's checks run beside it: it says after they end
+        failed = None
+    else:  # the preview renders anyway; it says what the checks found on this build (the final refuses on it)
+        failed = _failed_checks_warning(sdir, short, tl_hash, check_keys)
+        if failed:
+            print(f"warning: {failed}", file=sys.stderr, flush=True)
+    _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))
               for s in shots}  # fmt: skip
     damaged = _drop_damaged(root, shots, spans, stamps, redo)  # before the plan counts what is kept
     key = engine_runs.status_key(args.preset, side)  # a side run's status, page and thumbnails are its own
     tracker, watch, plan = _render_watch(sdir, short, args.preset, engine, shots, spans, stamps, fps, tl_hash, redo,
                                          run=run, root=root, key=key)  # fmt: skip
-    done, warnings = [], _damaged_warnings(damaged)
+    done, warnings = [], [*([failed] if failed else []), *_damaged_warnings(damaged)]
     with watch:
         tracker.start()
         try:
@@ -549,7 +645,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     measured = tracker.snapshot()  # the seconds per frame this run measured, for the engine comparison
     engine_runs.record_render(sdir, args.preset, side, frames=len(tracker.durations), seconds=tracker.render_s)
     out = {"preset": args.preset, "engine": engine, "shots": done, "anchors": anchors,
-           "status": str(rs.status_path(sdir, key)), "page": str(rs.page_path(sdir, key)),
+           "status": str(rs.status_path(sdir, key)),
            "s_per_frame": measured.get("avg_s_per_frame"), "engines": engine_runs.compare(sdir, args.preset)}  # fmt: skip
     if side.tag:
         out.update(tag=side.tag, frames_dir=str(root))
@@ -558,6 +654,29 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     if warnings:
         out["warnings"] = warnings
     return out
+
+
+def _failed_checks_warning(sdir: Path, short, tl_hash: str, keys: dict, most: int = 3) -> str | None:
+    """One line when review/checks.json found errors on this very build and timing (freshness.failed_checks): how
+    many, the first `most` of them (overlaps grouped by name family, as overlap_summary does, then the others), and
+    that the final render refuses until they are fixed. None when there are none, or the checks are not current."""
+    from bsa import findings
+
+    n = freshness.failed_checks(sdir, tl_hash, keys)
+    if not n:
+        return None
+    data = freshness.read_checks(sdir) or {}
+    rows = [r for r in [*(data.get("findings") or []), *(data.get("held_back") or [])]
+            if isinstance(r, dict) and r.get("severity") == "error" and "capped" not in r]  # fmt: skip
+    items = findings.family_lines([r for r in rows if findings.pair_of(r)], [s.id for s in short.shots])
+    for r in rows:
+        if not findings.pair_of(r):
+            text = _one_line(f"{r.get('check')}: {r.get('message')}")
+            items.append(text if len(text) <= 160 else text[:157] + "...")
+    shown = items[:most] + ([f"and {len(items) - most} more"] if len(items) > most else [])
+    what = f" ({'; '.join(shown)})" if shown else ""
+    return (f"review/checks.json has {n} error(s) on this build{what}: the final render will refuse until these are "
+            f"fixed and checked again (BLENDER check {_short_key(sdir)})")  # fmt: skip
 
 
 def _drop_damaged(root: Path, shots, spans, stamps, redo) -> dict:
@@ -598,14 +717,13 @@ def _damaged_warnings(damaged: dict) -> list[str]:
 
 def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, fps, tl_hash: str, redo=None, run=None,
                   root: Path | None = None, key: str | None = None):  # fmt: skip
-    """The live status of this render (review/render-status-<key>.json, review/render-<key>.html and the
-    thumbnails review/render-status/<key>-<shot>.jpg), the render handlers that keep it current, and the plan per
+    """The live status of this render (review/render-status-<key>.json and the thumbnails
+    review/render-status/<key>-<shot>.jpg, which the page's Render stage shows), the render handlers that keep it current, and the plan per
     shot ({shot id: total, reused, stale, reason}). `root` is the frames folder (default frames/<preset>; a side
     run's own, bsa.engine_runs); `key` the name the status goes under (default the preset; a side run's own,
     bsa.engine_runs.status_key)."""
     from bsa import render_status as rs
     from bsa.blender.render_watch import Watch
-    from bsa.review import pages
 
     root = root or sdir / "frames" / preset
     plan = {}
@@ -621,7 +739,6 @@ def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, 
                  "reason": f"redoing frames {freshness.frames_spec(redo[shot.id])}"}  # fmt: skip
         plan[shot.id] = p
     key = key or preset
-    page = rs.page_path(sdir, key)
     tracker = rs.Tracker(
         rs.status_path(sdir, key),
         short={"slug": short.slug, "title": short.title, "dir": str(sdir)},
@@ -630,7 +747,6 @@ def _render_watch(sdir: Path, short, preset: str, engine, shots, spans, stamps, 
         shots=[{"id": s.id, "f0": spans[s.id].f0, "f1": spans[s.id].f1, **plan[s.id]} for s in shots],
         stamp={"timeline": tl_hash, "fingerprints": {s.id: (fps or {}).get(s.id) for s in shots}},
         seed_s_per_frame=rs.seed_from_estimate(sdir, engine, preset),
-        render_page=lambda status: pages.render_status_page(rs.describe(status), page),
         run=run,
         key=key,
     )
@@ -659,15 +775,48 @@ def _merge_findings(rows: list[dict]) -> list[dict]:
 def cmd_check(args) -> dict:
     """Scene checks per shot into review/checks.json. Shots unchanged since the last checks (same fingerprint,
     frames, short.json scene and labels, shot list, checks code and --every) keep their findings; only the others
-    are checked again (--full checks every shot). Its progress (frames checked of those to check, the shot it is on, time left) shows
-    on the --preset's live status page."""
+    are checked again. In a shot where only some objects changed, the others keep their own findings and those of
+    their pairs (freshness.partial_checks); everything else in it is checked again. --full checks every shot
+    whole. Its progress (frames checked of those to check, the shot it is on, time left) shows on the --preset's
+    live status page."""
     sdir = _short_dir(args.short)
     short = _load(sdir)
+    if getattr(args, "in_chain", False):  # beside the preview render: the chain records it (_start_side_check)
+        return _cmd_check(args, sdir, short, _ChainReport())
     preset = getattr(args, "preset", None) or "preview"
     with _recording(sdir, short, preset, "check", _status_key(sdir, args, preset)) as run:
         out = _cmd_check(args, sdir, short, run)
         run.summarize("check", {"warnings": out.get("warnings"), "checked": out.get("checked"), "kept": out.get("kept")})
     return out
+
+
+class _ChainReport:
+    """The run `check --in-chain` reports to: each progress count is one PROGRESS_PREFIX line of JSON on stdout,
+    which the preview chain's reader thread records as its check step's progress (_SideCheck). The check process
+    never writes the chain's status file (its lock is the chain process's own). Counts are sent at most every
+    THROTTLE_S unless forced or `current` changed; every line carries the shot rows as they are now."""
+
+    def __init__(self, out=None, clock=time.monotonic):
+        self.out, self.clock = out, clock
+        self._items: list[dict] | None = None
+        self._current, self._sent = None, float("-inf")
+
+    def progress(self, done: int, total: int, *, unit: str = "frames", current: str | None = None,
+                 items: list[dict] | None = None, force: bool = False) -> None:  # fmt: skip
+        from bsa import render_status as rs
+
+        if items is not None:
+            self._items = items
+        now = self.clock()
+        if not (force or current != self._current or now - self._sent >= rs.THROTTLE_S):
+            return
+        self._current, self._sent = current, now
+        data = {"done": done, "total": total, "unit": unit, "current": current,
+                **({"items": self._items} if self._items is not None else {})}  # fmt: skip
+        print(PROGRESS_PREFIX + json.dumps(data, default=str), file=self.out or sys.stdout, flush=True)
+
+    def summarize(self, name: str, summary: dict) -> None:
+        pass
 
 
 def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dict]]:
@@ -685,15 +834,31 @@ def _cap_overlap_rows(rows: list[dict], most: int) -> tuple[list[dict], list[dic
     return [*listed, summary], held
 
 
+def _write_checks(path: Path, rows: list[dict], stamp: dict | None, shot_order: list[str], most: int, **extra) -> dict:
+    """The check rows into review/checks.json: the first `most` overlapping pairs listed, the rest held back
+    (_cap_overlap_rows), and every pair, listed or held back, under "overlap_summary" grouped by name family
+    (bsa.findings.family_lines; no key when no pair overlaps)."""
+    from bsa import findings
+
+    summary = findings.family_lines(rows, shot_order)
+    listed, held = _cap_overlap_rows(rows, most)
+    return _write_findings(path, listed, stamp, required=True, **extra, held_back=held,
+                           **({"overlap_summary": summary} if summary else {}))  # fmt: skip
+
+
 def _cmd_check(args, sdir: Path, short, run) -> dict:
+    from bsa import findings
     from bsa.blender.camera import framing_findings
     from bsa.blender.checks import OVERLAP_MAX_FINDINGS, run_checks
 
     tl, tl_hash = _timeline(sdir, short)
     data = _open_blend(sdir)
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
-    stamp = freshness.checks_stamp(tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), args.every)
-    reuse = {} if getattr(args, "full", False) else freshness.reusable_checks(sdir, stamp)
+    keys = _check_keys(short, tl, fps, _parts(sdir, fps), _objects(sdir, fps))  # the object keys: information
+    stamp = freshness.checks_stamp(tl_hash, keys, args.every)
+    full = getattr(args, "full", False)
+    reuse = {} if full else freshness.reusable_checks(sdir, stamp)
+    partial = {} if full else freshness.partial_checks(sdir, stamp)  # changed shots: the objects that did not change
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,
                  "done": span.f1 - span.f0 + 1 if shot.id in reuse else 0,
@@ -703,6 +868,13 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     run.progress(0, total, current=None, items=progress, force=True)
     rows: list[dict] = []
     checked, kept = [], []
+    partly: dict[str, dict] = {}
+    to_check = sum(shot.id not in reuse for shot, _ in plan)
+    if reuse:
+        kept_ids = [shot.id for shot, _ in plan if shot.id in reuse]
+        print(f"keeping {len(kept_ids)} shot(s) unchanged since the last checks: {', '.join(kept_ids)}",
+              file=sys.stderr, flush=True)  # fmt: skip
+    line = None
     hard_rules = _hard_rules(short)  # scene names a rule may forbid are warnings (bsa.rules.name_hits)
     for (shot, span), item in zip(plan, progress, strict=True):
         if shot.id in reuse:
@@ -711,25 +883,38 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
             continue
         _, scene = _scene(data, short, shot.id, tl_hash)
         item["state"] = "checking"
-        where = f"shot {shot.id} (scene {scene.name})"
+        errors = sum(r.get("severity") == "error" for r in rows)
+        line = findings.progress_line(shot.id, len(checked) + 1, to_check, errors)
+        keep, kept_rows = partial.get(shot.id, (None, []))
+        if keep:
+            n_objects = len(stamp["inputs"][shot.id].get("objects") or {})
+            partly[shot.id] = {"kept_objects": len(keep), "retested_objects": n_objects - len(keep)}
+            line += f", {n_objects - len(keep)} of {n_objects} objects changed"
+        print(line, file=sys.stderr, flush=True)
+        where = f"{line} \u00b7 scene {scene.name}"
+        run.progress(counted[0], total, current=line, force=True)
 
         def on_frame(_sid, done, _n, item=item, where=where):
             item["done"] = done
             run.progress(counted[0] + done, total, current=where)
 
         found = run_checks(scene, replace(tl, shots=[span]), sample_every=args.every, short=short,
-                           progress=_progress_cb(on_frame), rules=hard_rules, cap=False)  # fmt: skip
+                           progress=_progress_cb(on_frame), rules=hard_rules, cap=False,
+                           keep_objects=keep)  # fmt: skip
         found += framing_findings(scene, shot.id, span.f0, span.f1)  # the build's framing warnings
         item["state"], item["done"] = "done", item["total"]
         counted[0] += item["total"]
         rows += [_check_row(f, shot.id, scene.name) for f in found]
+        rows += [{**f, "shots": [shot.id]} for f in kept_rows]  # the unchanged objects' and pairs' own findings
         checked.append(shot.id)
-    run.progress(counted[0], total, current=None, force=True)
-    listed, held = _cap_overlap_rows(_merge_findings(rows), OVERLAP_MAX_FINDINGS)
-    out = _write_findings(sdir / "review" / "checks.json", listed, stamp, checked=checked, kept=kept, held_back=held)
+    run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
+    out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
+                        OVERLAP_MAX_FINDINGS, checked=checked, kept=kept,
+                        **({"partial": partly} if partly else {}))  # fmt: skip
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
-    jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
+    if not getattr(args, "in_chain", False):  # beside the preview render the chain marks it (one writer of state)
+        jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
     return out
 
 
@@ -974,28 +1159,61 @@ def cmd_edit(args) -> dict:
     short = _load(sdir)
     with _recording(sdir, short, args.preset, "edit", _status_key(sdir, args, args.preset)) as run:
         out = _cmd_edit(args, sdir, short, run, edit)
-        run.summarize("edit", {"mp4": out.get("mp4")})
+        run.summarize("edit", {"mp4": out.get("mp4"), "timeline_hash": out.get("timeline_hash")})
     return out
 
 
-def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
-    from bsa import engine_runs
+DROP_WAIT_S = 35.0  # how long the edit waits for a page streaming the outgoing MP4 to let go of it (Windows)
 
+
+def _while_the_page_reads(fn, mp4: Path):
+    """fn(), retried while Windows refuses it with PermissionError because the review page is streaming `mp4` this
+    instant (each of its range answers holds the file only a moment). After DROP_WAIT_S, a CliError."""
+    deadline = time.monotonic() + DROP_WAIT_S
+    while True:
+        try:
+            return fn()
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise CliError(f"{mp4.name} is still open in another program, most likely the review page playing it "
+                               f"({exc.strerror or exc}): close the page tab and run the edit again.") from exc  # fmt: skip
+            time.sleep(0.25)
+
+
+def _drop_outgoing(sdir: Path, out_mp4: Path, preset: str, side) -> None:
+    """Clear the way for the new video. The approved final's outgoing MP4 is moved into the page's version history
+    (bsa.review.history.keep_outgoing_final) so before and after can play it; any other run's is deleted. Both wait
+    for a page streaming the file (_while_the_page_reads)."""
+    if preset == "final" and not side.tag:
+        from bsa.review import history
+
+        _while_the_page_reads(lambda: history.keep_outgoing_final(sdir, out_mp4), out_mp4)
+    else:
+        _while_the_page_reads(lambda: out_mp4.unlink(missing_ok=True), out_mp4)
+
+
+def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
+    from bsa import engine_runs, kit
+
+    s = settings.load_settings()  # read once: the whole edit uses the same settings
+    kit_errors = kit.errors(s, short, sdir)  # before anything is touched: the kit can't lay it out
+    if kit_errors:
+        raise CliError("; ".join(kit_errors))
     side = _engine_run(sdir, args)  # a side run (--engine / --tag) edits its own frames into its own MP4
     out_mp4 = _mp4(sdir, short, args.preset, side)
-    out_mp4.unlink(missing_ok=True)  # a stale video must never pass for this one if the encode fails
     tl, tl_hash = _timeline(sdir, short)
     fps = _fingerprints(sdir, short, tl, tl_hash, reset_after=True)
     _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
     if args.preset == "final":
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit")
-    from bsa.short import near_labels
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit",
+                                 key=_short_key(sdir))
+    from bsa.short import near_anchors
 
-    need = near_labels(short)
+    need = [(shot_id, text, key) for shot_id, text, _name, key, _at in near_anchors(short)]
     anchors = freshness.load_anchors(sdir, fps, tl_hash, need) if need else None
     label_heroes = _label_heroes(sdir, fps, tl_hash, need)
     warnings, heroes = [], None
-    if settings.has_end_card(settings.load_settings(), short):  # the end card is polish: without anchors it is only warned
+    if settings.has_end_card(s, short):  # the end card is polish: without anchors it is only warned
         try:
             last = short.shots[-1].id
             heroes = freshness.load_hero_boxes(sdir, fps, tl_hash, last).get(last)
@@ -1010,9 +1228,12 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     end, card_warnings = _closing_plan(sdir, short, tl, mix)
     warnings += card_warnings
     n_frames = tl.n_frames + (end["n_frames"] if end else 0)
+    # every refusal is behind us: only now does the outgoing video go (a refused edit leaves the postable final in
+    # out/), and before the edit is built and encoded, so a stale video never passes for this one if that fails
+    _drop_outgoing(sdir, out_mp4, args.preset, side)
     scene = edit.build_edit(short, tl, engine_runs.frames_root(sdir, args.preset, side), mix if mix.is_file() else None,
                             out_mp4,
-                            settings.load_settings(), preset=args.preset, anchors=anchors, hero_boxes=heroes,
+                            s, preset=args.preset, anchors=anchors, hero_boxes=heroes,
                             label_heroes=label_heroes, closing=end)  # fmt: skip
     run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
@@ -1027,16 +1248,36 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
         raise CliError(f"the encoded video is off: {wrong} (got, wanted)", {"mp4": str(path), **info})
     if not side.tag:  # a side run is a comparison: the preview / final stage stays the approved run's
         jobstate.mark_done(sdir, args.preset, mp4=str(path), **info)
-    engine_runs.record_mp4(sdir, args.preset, side, path)
+    engine_runs.record_mp4(sdir, args.preset, side, path, edit=_edit_record(tl_hash, float(info["fps"]), n_frames, end))
     if edit.end_card_note(scene):
         warnings.append(edit.end_card_note(scene))
     warnings += edit.glyph_fallbacks(scene)  # characters the style font lacks: drawn in another font, or boxes
-    out = {"mp4": str(path), **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    k = kit.kit_for(s, short)
+    logo_note = kit.logo_missing(k.logo) if k is not None else None
+    warnings += [logo_note] if logo_note else []  # the logo file is gone: no badge
+    warnings = list(dict.fromkeys(warnings))  # the edit's layout notes a missing logo too: say it once
+    out = {"mp4": str(path), "timeline_hash": tl_hash, **info, "font": edit.font_used(scene), "font_fallback": edit.font_note(scene)}
+    if edit.kit_cards(scene):
+        out["cards"] = edit.kit_cards(scene)  # the brand kit's card images placed
     if side.tag:
         out.update(engine=side.engine, tag=side.tag)
     if end:
         out["closing"] = end["hold"]  # its "note" says when the voice line held the card past closing.seconds
+    if args.preset == "final" and not side.tag:  # the caption files, cue for cue with this video
+        from bsa import captions
+
+        try:
+            out["captions"] = captions.write_files(sdir, short, s)
+        except Exception as exc:  # noqa: BLE001 - auxiliary output: never lose the recorded MP4 result
+            warnings.append(f"caption files not written: {exc}")
     return {**out, "warnings": warnings} if warnings else out
+
+
+def _edit_record(tl_hash: str, fps: float, n_frames: int, end: dict | None) -> dict:
+    """What an edit was cut from, for the review page's markers: the timeline's hash, the video's fps and frames,
+    and where the closing card sits (1-based, inclusive), or None when there is none."""
+    closing = {"f0": end["f0"], "f1": end["f1"]} if end else None
+    return {"timeline_hash": tl_hash, "fps": fps, "frames": n_frames, "closing": closing}
 
 
 def _closing_plan(sdir: Path, short, tl, mix: Path) -> tuple[dict | None, list[str]]:
@@ -1078,6 +1319,296 @@ def cmd_closing(args) -> dict:
     return {**out, "warnings": warnings} if warnings else out
 
 
+def _sample_kit(args):
+    """The kit a sample command shows: --kit (a brand object as JSON), else the settings' brand."""
+    from bsa import kit as kit_mod
+
+    if args.kit is not None:
+        try:
+            brand = json.loads(args.kit)
+        except ValueError as exc:
+            raise CliError(f"--kit is not JSON: {exc}") from exc
+        if not isinstance(brand, dict):
+            raise CliError("--kit must be a JSON object (the brand)")
+        try:
+            return kit_mod.kit_from(brand)
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+    k = kit_mod.kit_for(settings.load_settings())
+    if k is None:
+        raise CliError("no brand kit is set: brand.style is missing")
+    return k
+
+
+def cmd_kit_sample(args) -> dict:
+    """One sample sheet of a brand kit (every card on the kit's background) to --out, before anything is saved: from
+    --kit (a brand object as JSON) or the settings' brand. Writes nothing to the settings; no short, no engine."""
+    from bsa.blender import cards as blender_cards
+    from bsa.kit import cvd_problems
+
+    k = _sample_kit(args)
+    out = Path(args.out)
+    warnings = list(blender_cards.render_sample(k, out, settings.bsa_home() / "cards"))
+    warnings += cvd_problems(k.categories)
+    return {"png": str(out), "warnings": warnings}
+
+
+def _style_engine(args) -> str:
+    """The engine the user chose for style-sample: --engine, else the render.engine setting when it is cycles or eevee.
+    Never a default: "ask-always", "ask" or nothing means Claude must ask the user."""
+    chosen = getattr(args, "engine", None)
+    if chosen is None:
+        chosen = (settings.load_settings().get("render") or {}).get("engine")
+    if chosen not in ("cycles", "eevee"):
+        raise CliError("style-sample needs an engine: pass --engine eevee or --engine cycles, or set render.engine "
+                       "(the engine is always yours to pick)")  # fmt: skip
+    return chosen
+
+
+def cmd_style_sample(args) -> dict:
+    """The demo machine in each style (--styles a,b; default the kit's own) on a set (--set, default studio, "none" =
+    no set) tiled left to right with each style's name under it, to --out; each tile is --scale x 1080x1920. The
+    engine is the user's (_style_engine). Writes nothing to the settings; no short."""
+    from bsa import setplace
+    from bsa.kit import STYLES
+
+    engine = _style_engine(args)
+    k = _sample_kit(args)
+    names = [n.strip().lower() for n in args.styles.split(",") if n.strip()] if args.styles else [k.style]
+    if not names:
+        raise CliError("--styles needs at least one style name")
+    for n in names:
+        if n not in STYLES:
+            raise CliError(f"{n!r} is not a style: use one of {', '.join(STYLES)}")
+    set_name = (args.set or "studio").strip().lower()
+    if set_name != "none" and set_name not in setplace.SETS:
+        raise CliError(f"{set_name!r} is not a set: use one of {', '.join(setplace.SETS)} or none")
+    scale = args.scale if args.scale is not None else 0.5
+    if not 0.05 <= scale <= 1:
+        raise CliError("--scale must be from 0.05 to 1")
+    from bsa.blender import stylesample
+
+    out = Path(args.out)
+    seconds, warnings = stylesample.render_sheet(k, names, set_name, engine, scale, out)
+    return {"png": str(out), "engine": engine, "styles": names, "set": set_name, "seconds": seconds,
+            "warnings": warnings}  # fmt: skip
+
+
+def _look_engine(args, sdir: Path) -> str:
+    """The engine the user chose for the look preview: --engine, else the short's (the approved engine, short.json's
+    render.engine, the render.engine setting). Never a default: without one Claude must ask the user."""
+    chosen = getattr(args, "engine", None) or _engine(sdir)
+    if chosen not in ("cycles", "eevee"):
+        raise CliError("look needs an engine: pass --engine eevee or --engine cycles, or set render.engine (the "
+                       "engine is always yours to pick: ask the user)")  # fmt: skip
+    return chosen
+
+
+def cmd_look(args) -> dict:
+    """The look preview: the first, middle and last shots in the chosen style (--style) and set (--set), each built
+    one by default, with the kit's cards on top, the kit sheet, and stills/look.json. Another style or set is put on
+    the scenes in memory only: the .blend is never saved, and the file is reverted afterwards. The engine is the
+    user's (_look_engine); the time per frame is a measured estimate."""
+    import contextlib
+
+    import bpy
+
+    if not bpy.app.background:  # it changes the scenes and reverts the file: never the user's open session
+        raise CliError("look runs in a background Blender (BLENDER look ...), never in the open session")
+    from bsa import kit as kit_mod
+    from bsa import setplace
+    from bsa.kit import STYLES
+
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    k = kit_mod.kit_for(settings.load_settings(), short)
+    if k is None:
+        raise CliError("the look preview needs a brand kit: brand.style is not set")
+    style = args.style.strip().lower() if args.style else None
+    if style is not None and style not in STYLES:
+        raise CliError(f"{style!r} is not a style: use one of {', '.join(STYLES)}")
+    set_name = args.set.strip().lower() if args.set else None
+    if set_name is not None and set_name != "none" and set_name not in setplace.SETS:
+        raise CliError(f"{set_name!r} is not a set: use one of {', '.join(setplace.SETS)} or none")
+    engine = _look_engine(args, sdir)
+    tl, tl_hash = _timeline(sdir, short)
+    spans = {s.id: s for s in tl.shots}
+    data = _open_blend(sdir)
+    from bsa.blender import lookframes
+
+    scenes, frames = {}, {}
+    for shot in lookframes.look_shots(short):
+        shot, scene = _scene(data, short, shot.id, tl_hash)
+        scenes[shot.id], frames[shot.id] = scene, _still_frame(shot, spans[shot.id])
+    ours = bool(data.filepath) and Path(data.filepath).resolve() == _blend(sdir).resolve()
+    try:
+        out = lookframes.preview(sdir, short, tl, k, scenes, frames, engine, style, set_name)
+    except BaseException:
+        if ours:  # whatever was changed in memory goes: the file on disk is the short's
+            with contextlib.suppress(Exception):  # a failing revert never hides why the look failed
+                bpy.ops.wm.revert_mainfile()
+        raise
+    if out.pop("changed") and ours:
+        bpy.ops.wm.revert_mainfile()
+    return {**out, "path": str(sdir / "stills" / lookframes.LOOK_JSON)}
+
+
+THUMB_TEXT_FIRST = "Write the thumbnail text first: short.json post.thumbnail title (one or two lines)"
+MAX_HEROES = 3
+
+
+def cmd_thumbs(args) -> dict:
+    """Thumbnail candidates in both sizes, into review/thumbs/ and review/thumbs.json, with the checks on each."""
+    import types
+
+    from bsa.blender import thumbs as blender_thumbs
+    from bsa.blender.pixels import read_png
+
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    api = types.SimpleNamespace(render=blender_thumbs.render, read_png=read_png, boxes=_thumb_boxes)
+    return _cmd_thumbs(args, sdir, short, api)
+
+
+def _thumb_boxes(sdir: Path, short, tl_hash: str, shot_id: str, frames: list[int]) -> dict | None:
+    """{frame: [the screen box of each of the shot's heroes, or None]} from blend/short.blend; None without it."""
+    if not _blend(sdir).is_file():
+        return None
+    from bsa.blender.anchors import hero_boxes_at, heroes
+
+    _, scene = _scene(_open_blend(sdir), short, shot_id, tl_hash)
+    try:
+        return hero_boxes_at(scene, heroes(scene, shot_id), frames)
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+
+
+def _picked_heroes(sdir: Path, short, tl, tl_hash: str, flagged: set[int], api) -> list:
+    """The picker's heroes (bsa.thumbs.pick_heroes), with how full each sampled frame is from the .blend."""
+    from bsa import thumbs
+
+    fills: dict[int, float] = {}
+    for span in tl.shots:
+        got = api.boxes(sdir, short, tl_hash, span.id, thumbs.sample_frames(span.f0, span.f1))
+        if got is None:  # no .blend: the picker goes by the shots alone
+            break
+        for frame, boxes in got.items():
+            box, warnings = thumbs.hero_box(boxes)
+            if not warnings:
+                fills[frame] = thumbs.fill(box)
+    return thumbs.pick_heroes(list(tl.shots), flagged, fills, short.shots[0].id)
+
+
+def _only_hero(sdir: Path, n: int, named: list, p: dict):
+    """The hero `--only N` remakes candidate N from: --hero, else short.json's Nth hero when candidate N was made from
+    short.json's heroes (or there is no candidate N), else candidate N's own (picked by the plugin or named with
+    --hero: short.json's list is not the one it came from)."""
+    from bsa import thumbs
+    from bsa.review.store import StoreDamaged
+
+    if len(named) > 1:
+        raise CliError("--only remakes one candidate: give it one --hero at most")
+    if named:
+        return named[0]
+    listed = thumbs.heroes_from_post(p)
+    try:
+        row = next((c for c in thumbs.load(sdir)["candidates"] if isinstance(c, dict) and c.get("n") == n), None)
+    except StoreDamaged as exc:
+        if len(listed) >= n:
+            return listed[n - 1]
+        raise CliError(str(exc)) from exc
+    own = row.get("hero") if isinstance(row, dict) else None
+    from_post = not isinstance(own, dict) or own.get("why") in (None, thumbs.WHY_POST)
+    if len(listed) >= n and from_post:
+        return listed[n - 1]
+    if row is None:
+        raise CliError(f"There is no candidate {n} yet: run BLENDER thumbs SHORT first")
+    h = row.get("hero")
+    if not (isinstance(h, dict) and isinstance(h.get("shot"), str) and isinstance(h.get("frame"), int)):
+        raise CliError(f"{thumbs.THUMBS_JSON} is damaged (candidate {n} has no hero shot and frame): name its frame "
+                       "with --hero SHOT@FRAME")  # fmt: skip
+    crop = h.get("crop")
+    return thumbs.Hero(h["shot"], h["frame"], tuple(crop) if isinstance(crop, list) else None, h.get("why") or "")
+
+
+def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
+    """`api`: render (bsa.blender.thumbs.render), read_png (pixels, top row first) and boxes (_thumb_boxes), so the
+    command's plumbing runs without Blender in the tests."""
+    from bsa import image_checks, post, thumbs
+    from bsa.fonts import font_caches
+    from bsa.review.store import StoreDamaged
+
+    s = settings.load_settings()
+    errors, _ = post.problems(short, s)
+    if errors:
+        raise CliError("fix short.json post first: " + "; ".join(errors))
+    p = post.fields(short)
+    text = thumbs.text_from_post(p)
+    if text is None:
+        raise CliError(THUMB_TEXT_FIRST)
+    tl, tl_hash = _timeline(sdir, short)
+    try:
+        named = [replace(thumbs.parse_hero(h), why=thumbs.WHY_FLAG) for h in args.hero or []]
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+    if len(named) > MAX_HEROES:
+        raise CliError(f"{len(named)} --hero given: at most {MAX_HEROES} candidates")
+    if args.only is not None and args.only < 1:
+        raise CliError("--only takes a candidate number from 1")
+    flagged = thumbs.flagged_frames(sdir, thumbs.flag_key(sdir))
+    if args.only is not None:
+        heroes, numbers = [_only_hero(sdir, args.only, named, p)], [args.only]
+    else:
+        heroes = named or thumbs.heroes_from_post(p) or _picked_heroes(sdir, short, tl, tl_hash, flagged, api)
+        numbers = list(range(1, len(heroes) + 1))
+    wrong = thumbs.check_heroes(heroes, {span.id: span for span in tl.shots})
+    if wrong:
+        raise CliError("; ".join(wrong))
+    if not heroes:
+        raise CliError("no frame to make a thumbnail from: name one with --hero SHOT@FRAME")
+    sources = []
+    for h in heroes:  # every refusal before anything is made
+        got = thumbs.source_frame(sdir, h.shot, h.frame)
+        if got is None:
+            raise CliError(f"Render the short first: no frame {h.frame} of {h.shot} in frames/final or frames/preview")
+        sources.append(got)
+    caches = font_caches(sdir)
+    style, notes = thumbs.with_font(thumbs.style_for(short, s), text, caches)  # the layout measures the drawn font
+    rows = []
+    for n, h, (png, preset) in zip(numbers, heroes, sources, strict=True):
+        boxes = (api.boxes(sdir, short, tl_hash, h.shot, [h.frame]) or {}).get(h.frame) or []
+        hero, warnings = thumbs.hero_box(boxes)
+        if preset == "preview":
+            warnings.append(thumbs.FROM_PREVIEW)
+        if h.frame in flagged:
+            warnings.append(f"frame-check flagged frame {h.frame} of {h.shot}")
+        files = thumbs.files_for(n)
+        layouts, findings = {}, []
+        for size, lay in (("1080x1920", thumbs.vertical(text, hero, style, h.crop)),
+                          ("1280x720", thumbs.landscape(text, hero, style, h.crop))):  # fmt: skip
+            out = api.render(lay, png, sdir / files[size], style.font, caches, notes=notes, card_dir=sdir / "cards")
+            layouts[size] = thumbs.layout_dict(lay)
+            findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size, busy=preset == "final")
+            warnings += [w for w in lay.warnings if w not in warnings]
+        rows.append({"n": n, "hero": {"shot": h.shot, "frame": h.frame, "crop": list(h.crop) if h.crop else None,
+                                      "why": h.why},
+                     "source": preset, "files": files, "layouts": layouts, "findings": findings,
+                     "warnings": warnings})  # fmt: skip
+    try:
+        thumbs.put_candidates(sdir, rows, only=args.only)
+    except StoreDamaged as exc:
+        raise CliError(str(exc)) from exc
+    if args.only is None:  # all made again: the files of candidates no longer there go
+        keep = {(sdir / rel).name for r in rows for rel in r["files"].values()}
+        for old in (sdir / thumbs.DIR).glob("*.png"):
+            if old.name not in keep:
+                old.unlink(missing_ok=True)
+    said = [f"candidate {r['n']}: {w}" for r in rows for w in r["warnings"]]
+    said += [f"candidate {r['n']}, {f['size']}: {f['message']}" for r in rows for f in r["findings"]
+             if f["severity"] != "info"]  # fmt: skip
+    return {"candidates": rows, "thumbs": thumbs.THUMBS_JSON, "warnings": said + list(dict.fromkeys(notes))}
+
+
 def _label_heroes(sdir: Path, fps: dict, tl_hash: str, need) -> dict:
     """{shot: {"f0", "boxes"}}: the heroes on screen in each shot with a near label, from anchors.json (current, as
     the anchors the labels use). Near labels keep off them; {} (labels placed as before) when none are recorded."""
@@ -1109,29 +1640,94 @@ def cmd_grab(args) -> dict:
     stem = f"{args.preset}{side.suffix}"  # a side run's grabs never replace the approved run's
     if args.sheet:
         frames = grab.sheet_frames(n, args.count)
-        cleared = _fresh_grabs(folder, stem, mp4)
+        cleared = _fresh_grabs(folder, stem, mp4, clear=args.clear)
         sheet = grab.contact_sheet(mp4, frames, folder / f"{stem}-sheet.png", columns=args.columns)
-        return {"mp4": str(mp4), "sheet": str(sheet), "frames": frames, "cleared": cleared,
-                "seconds": [round((f - 1) / fps, 2) for f in frames]}  # fmt: skip
+        out = {"mp4": str(mp4), "sheet": str(sheet), "frames": frames, "cleared": cleared,
+               "seconds": [round((f - 1) / fps, 2) for f in frames],
+               **_older_grabs(folder, stem, {Path(sheet)})}  # fmt: skip
+        if args.guides:
+            out["warnings"] = ["--guides draws on --at grabs only, not on the contact sheet"]
+        return out
     try:
         frames = [grab.frame_at(t, fps, n) for t in args.at]
     except ValueError as exc:
         raise CliError(str(exc)) from exc
-    cleared = _fresh_grabs(folder, stem, mp4)
+    cleared = _fresh_grabs(folder, stem, mp4, clear=args.clear)
     grab.grab_frames(mp4, list(dict.fromkeys(frames)), folder, stem)
-    return {"mp4": str(mp4), "cleared": cleared,
-            "grabs": [{"seconds": t, "frame": f, "path": str(folder / f"{stem}-f{f:04d}.png")}
-                      for t, f in zip(args.at, frames, strict=True)]}  # fmt: skip
+    mine = [folder / f"{stem}-f{f:04d}.png" for f in frames]
+    out = {"mp4": str(mp4), "cleared": cleared,
+           "grabs": [{"seconds": t, "frame": f, "path": str(p)}
+                     for t, f, p in zip(args.at, frames, mine, strict=True)]}  # fmt: skip
+    if args.guides:
+        out.update(_grab_guides(sdir, short, dict(zip(frames, mine, strict=True)), mp4, args.preset))
+    return {**out, **_older_grabs(folder, stem, set(mine))}
 
 
-_GRAB = re.compile(r"-(f\d{4}|sheet)\.png$")
+def _grab_guides(sdir: Path, short, grabs: dict[int, Path], mp4: Path, preset: str) -> dict:
+    """{"guides": [paths]} (plus "warnings"): each grab's guides copy, for the shot its frame is in on the timeline
+    the video was edited to (source/timeline.json). A frame past the story (the closing card) gets none. A timeline
+    newer than the video (the timing changed after this edit) is warned: the grabs' shots may be off."""
+    from bsa.timeline import timeline_from_json
+
+    tl_path = sdir / "source" / "timeline.json"
+    try:
+        tl = timeline_from_json(json.loads(tl_path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError, TypeError):
+        why = ("no guides: source/timeline.json is missing or unreadable, so the grabs' shots are not known (run "
+               f"CLI timeline {_short_key(sdir)})")  # fmt: skip
+        return {"guides": [], "warnings": [why]}
+    warnings = []
+    try:
+        newer = tl_path.stat().st_mtime_ns > mp4.stat().st_mtime_ns
+    except OSError:
+        newer = False
+    if newer:
+        warnings.append(f"source/timeline.json is newer than {mp4.name}: the timing changed after this edit, so a "
+                        "grab's shot, and its guides, may be off. Make the video again (render, then BLENDER edit "
+                        f"{_short_key(sdir)} --preset {preset}) and grab that")  # fmt: skip
+    shots = {s.id: s for s in short.shots}
+    kf = _guide_kit(sdir, short)
+    drawn = []
+    for f, path in grabs.items():
+        span = next((s for s in tl.shots if s.f0 <= f <= s.f1), None)
+        if span is not None and span.id in shots:
+            drawn.append(str(_guides(path, short, shots[span.id], kf)))
+    return {"guides": drawn, "warnings": warnings} if warnings else {"guides": drawn}
 
 
-def _fresh_grabs(folder: Path, stem: str, mp4: Path) -> int:
+_GRAB = re.compile(r"-(f\d{4}(-guides)?|sheet)\.png$")  # a frame, its --guides copy, the contact sheet
+
+
+def _stem_grabs(folder: Path, stem: str) -> list[Path]:
+    """This stem's grab PNGs in the folder (the one place the grab file pattern lives). Other presets' and side runs'
+    grabs, and anything else in the folder, are not matched."""
+    if not folder.is_dir():
+        return []
+    return [p for p in folder.glob(f"{glob.escape(stem)}-*.png")
+            if p.name[len(stem):] and _GRAB.fullmatch(p.name[len(stem):])]  # fmt: skip
+
+
+def _older_grabs(folder: Path, stem: str, mine: set[Path]) -> dict:
+    """{"older": n, "older_note": ...}: this stem's grabs left in the folder that this call did not write. A frame
+    and its --guides copy count as one grab."""
+
+    def grab(p: Path) -> str:
+        return p.name.replace("-guides.png", ".png")
+
+    n = len({grab(p) for p in _stem_grabs(folder, stem)} - {grab(p) for p in mine})
+    out = {"older": n}
+    if n:
+        out["older_note"] = (f"{n} older grab{'s' if n != 1 else ''} of this video {'are' if n != 1 else 'is'} in "
+                             "review/grabs: --clear removes them")
+    return out
+
+
+def _fresh_grabs(folder: Path, stem: str, mp4: Path, clear: bool = False) -> int:
     """Remove this preset's (or side run's) grabs when they came from another video than `mp4` (another edit of it:
     its size or time changed), so frames of an older video never sit beside new ones. The video they came from is
     noted in `<folder>/<stem>.source.json`; grabs with no note are older than the note, so they go too. Returns how
-    many files were removed. Other presets' and side runs' grabs are left alone."""
+    many files were removed. With `clear`, every grab of this stem goes, whatever video it came from. Other presets'
+    and side runs' grabs are left alone."""
     st = mp4.stat()
     source = {"mp4": mp4.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
     note = folder / f"{stem}.source.json"
@@ -1140,11 +1736,10 @@ def _fresh_grabs(folder: Path, stem: str, mp4: Path) -> int:
     except (OSError, ValueError):
         same = False
     removed = 0
-    if not same and folder.is_dir():
-        for path in folder.glob(f"{glob.escape(stem)}-*.png"):
-            if path.name[len(stem):] and _GRAB.fullmatch(path.name[len(stem):]):
-                path.unlink()
-                removed += 1
+    if not same or clear:
+        for path in _stem_grabs(folder, stem):
+            path.unlink()
+            removed += 1
     folder.mkdir(parents=True, exist_ok=True)
     note.write_text(json.dumps(source), encoding="utf-8")
     return removed
@@ -1205,7 +1800,8 @@ def cmd_test_frames(args) -> dict:
     data = _open_blend(sdir)
     engine = _engine(sdir)
     folder = sdir / "review" / "test-frames"
-    frames = []
+    frames, drawn = [], []
+    kf = _guide_kit(sdir, short) if args.guides else None
     for shot_id, frac in args.at:
         shot, scene = _scene(data, short, shot_id, tl_hash)
         span = spans[shot.id]
@@ -1214,8 +1810,84 @@ def cmd_test_frames(args) -> dict:
         render_still(scene, frame, out, preset="preview", percent=round(args.scale * 100), engine=engine,
                      file_format="PNG")  # fmt: skip
         frames.append({"shot": shot.id, "at": frac, "frame": frame, "path": str(out)})
-    return {"folder": str(folder), "engine": engine or "the scene's own", "scale": args.scale,
-            "paths": [f["path"] for f in frames], "frames": frames}  # fmt: skip
+        if args.guides:
+            drawn.append(_guides(out, short, shot, kf))
+        else:
+            _no_guides(out)
+    result = {"folder": str(folder), "engine": engine or "the scene's own", "scale": args.scale,
+              "paths": [f["path"] for f in frames], "frames": frames}  # fmt: skip
+    if args.guides:
+        result["guides"] = [str(p) for p in drawn]
+    return result
+
+
+def cmd_camtest(args) -> dict:
+    """The camera path in Workbench grey (a draft view, never a picture) as review/camtest/camtest.mp4, its contact
+    sheet and camtest.json (what it was made from). Every refusal comes before anything renders; the user's engine
+    and settings are restored and the .blend is never saved (bsa.blender.camtest)."""
+    import os
+    import shutil
+    import tempfile
+
+    from bsa import camtest
+
+    if not 0.05 <= args.scale <= 1.0:
+        raise CliError(f"--scale {args.scale}: give a fraction of the full size from 0.05 to 1")
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    tl, tl_hash = _timeline(sdir, short)
+    if freshness.blend_stat(sdir) is None:
+        raise CliError(f"{_blend(sdir)} does not exist: run the short's source/build.py first")
+    wanted = [s.strip() for s in args.shots.split(",") if s.strip()] if args.shots is not None else None
+    if wanted == []:
+        raise CliError(f"--shots {args.shots!r} names no shot: give shot ids, e.g. s01,s02")
+    for shot_id in wanted or ():
+        _shots(short, shot_id)
+    if not _scenes_current(sdir, short, tl_hash):
+        raise CliError("blend/short.blend was not built for this timing (or misses a scene short.json names): "
+                       "build first (source/build.py)")  # fmt: skip
+    blend, stamp = freshness.blend_stat(sdir), camtest.build_stamp(sdir)  # what it is made from, before it renders
+    data = _open_blend(sdir)
+    spans = {s.id: s for s in tl.shots}
+    todo = []
+    for shot in short.shots:
+        if wanted is not None and shot.id not in wanted:
+            continue
+        shot, scene = _scene(data, short, shot.id, tl_hash)
+        if scene.camera is None:
+            raise CliError(f"shot {shot.id}: scene {scene.name!r} has no camera")
+        todo.append((shot, scene, spans[shot.id]))
+    from bsa.blender import camtest as bc
+    from bsa.blender import grab
+
+    pct = camtest.percent(args.scale)
+    folder = sdir / camtest.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="bsa-camtest-"))
+    part = folder / ("camtest.part" + Path(camtest.MP4).suffix)
+    try:
+        parts = []
+        for shot, scene, span in todo:
+            bc.render_frames(scene, span.f0, span.f1, tmp / shot.id, pct)
+            parts.append((tmp / shot.id, span.f0, span.f1))
+        bc.encode(parts, part, pct, tl.fps)
+        for old in (camtest.RECORD, camtest.SHEET):  # nothing of the old clip stays beside the new one
+            (folder / old).unlink(missing_ok=True)
+        mp4 = folder / camtest.MP4
+        os.replace(part, mp4)
+    finally:
+        part.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+    n = sum(f1 - f0 + 1 for _, f0, f1 in parts)
+    # tiles at the clip's own size up to 35 % (378 px wide at most); above that shrunk by a whole factor (216-324 px)
+    sheet = grab.contact_sheet(mp4, grab.sheet_frames(n, camtest.SHEET_FRAMES), folder / camtest.SHEET,
+                               scale=max(0.25, min(1.0, 25 / pct)))
+    shots = [shot.id for shot, _, _ in todo]
+    rec = camtest.record(blend, tl_hash, shots, args.scale, n, spans=camtest.shot_spans(tl), fps=tl.fps,
+                         build=stamp)  # fmt: skip
+    (folder / camtest.RECORD).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    return {"mp4": str(mp4), "sheet": str(sheet), "shots": shots, "frames": n, "percent": pct,
+            "clip_seconds": round(n / tl.fps, 2)}  # fmt: skip
 
 
 # ----- the preview chain: everything after an edit to build.py or short.json, up to a checked preview
@@ -1223,16 +1895,17 @@ def cmd_test_frames(args) -> dict:
 
 def _build_script_mode(sdir: Path) -> Path:
     """Run source/build.py in a fresh background Blender (script mode, exactly as 06-build.md runs it)."""
-    import subprocess
 
     import bpy
+
+    from bsa import proc as _proc
 
     build = sdir / "source" / "build.py"
     if not build.is_file():
         raise CliError(f"{build} does not exist: write it first (06-build.md)")
     cmd = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1", "--python", str(build), "--",
            str(PLUGIN_ROOT), str(sdir)]  # fmt: skip
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    proc = _proc.run(cmd, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
     blend = _blend(sdir)
     if proc.returncode != 0 or not blend.is_file():
         lines = [ln.strip() for ln in (proc.stderr or proc.stdout or "").splitlines() if ln.strip()]
@@ -1293,7 +1966,7 @@ def _checks_current(sdir: Path, short, tl, tl_hash: str) -> bool:
     """The checks passed on every shot as it is now and this timing (and the checks stage is marked)."""
     try:
         fps = _fingerprints(sdir, short, tl, tl_hash)
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), key=_short_key(sdir))
     except freshness.StaleError:
         return False
     return "checks" in jobstate.load_state(sdir)["stages"]
@@ -1307,19 +1980,17 @@ def cmd_preview(args) -> dict:
     sdir = _short_dir(args.short)
     args.short = str(sdir)  # resolved once: a short made meanwhile can't make a number ambiguous mid-chain
     stages = jobstate.load_state(sdir)["stages"]
-    missing = [s for s in jobstate.STAGES[: jobstate.STAGES.index("build")] if s not in stages]
+    wanted = jobstate.wanted_stages(sdir)  # the camera stage only when the short asks for it
+    missing = [s for s in wanted[: wanted.index("build")] if s not in stages]
     if missing:
         raise CliError("BLENDER preview rebuilds a short that is past narration; this one still needs: "
                        f"{', '.join(missing)} (CLI state SHORT)")  # fmt: skip
     key = _status_key(sdir, args, "preview")  # a bad --engine / --tag is refused before anything runs
     short = _load(sdir)
     from bsa import render_status as rs
-    from bsa.review import pages
 
-    page = rs.page_path(sdir, key)  # a side run's chain has its own status and page
     with rs.Run(rs.status_path(sdir, key), short={"slug": short.slug, "title": short.title, "dir": str(sdir)},
-                preset="preview", kind="preview", steps=rs.CHAIN_STEPS,
-                render_page=lambda status: pages.render_status_page(rs.describe(status), page)) as chain:  # fmt: skip
+                preset="preview", kind="preview", steps=rs.CHAIN_STEPS) as chain:  # a side run's chain: its own status
         return _preview_chain(args, sdir, short, chain, bsa_cli)
 
 
@@ -1362,8 +2033,8 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         why = "asked" if args.rebuild else "the timing changed"
     elif not _blend(sdir).is_file():
         why = "no blend/short.blend yet"
-    elif freshness.build_changed(sdir):
-        why = "build.py changed since the scene was built"
+    elif stale := freshness.stale_build_file(sdir):  # build.py, or a script it imports
+        why = freshness.build_changed_message(sdir, stale).removesuffix(": rebuild")
     elif not _scenes_current(sdir, short, tl_hash):
         why = "the .blend's scenes are missing or from another timing"
     else:
@@ -1382,19 +2053,46 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
     run("mix", bsa_cli.cmd_mix, ns(short=args.short),
         summary=lambda o: {"path": o.get("path"), "sfx_notes": (o.get("sfx") or {}).get("notes")})  # fmt: skip
     which = {"engine": getattr(args, "engine", None), "tag": getattr(args, "tag", None)}  # a side run: its own files
-    if _checks_current(sdir, short, tl, tl_hash):
-        skip("check", "already passed on every shot as it is now")
-    else:
-        run("check", cmd_check, ns(short=args.short, every=args.every, full=False, preset="preview", **which),
-            summary=lambda o: {"warnings": o.get("warnings"), "checked": o.get("checked"), "kept": o.get("kept")})
     from bsa import engine_runs
 
     side = _engine_run(sdir, args)
-    run("render", cmd_render, ns(short=args.short, preset="preview", shot=None, frames=None, redo_flagged=False,
-                                 no_wait=getattr(args, "no_wait", False), **which),
-        summary=_render_summary)  # fmt: skip
-    run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
-        summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
+    checking = None  # the check process beside the render
+    if _checks_current(sdir, short, tl, tl_hash):
+        skip("check", "already passed on every shot as it is now")
+    else:
+        _fingerprints(sdir, short, tl, tl_hash)  # once, before the split: the check process only reads the cache
+        chain.begin_side("check")
+        checking = _start_side_check(args, sdir, chain)
+    warnings: list[str] = []
+    try:
+        run("render", cmd_render, ns(short=args.short, preset="preview", shot=None, frames=None, redo_flagged=False,
+                                     no_wait=getattr(args, "no_wait", False), checks_beside=checking is not None,
+                                     **which), summary=_render_summary)  # fmt: skip
+        run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
+            summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
+        if checking is not None:
+            try:
+                checked = checking.join()
+            except CliError as exc:
+                errors = (exc.payload or {}).get("errors")
+                chain.end("check", "failed", str(exc))  # (a side step: begun when it started, not now)
+                if not isinstance(errors, int) or errors <= 0:  # the check process itself failed: no checks
+                    raise CliError(f"stopped at check: {exc}", {"steps": steps, "stopped_at": "check"}) from exc
+                # check errors: the preview is still made, and says so
+                steps.append({"step": "check", "errors": errors})
+                failed = _failed_checks_after(sdir, short, tl, tl_hash, errors)
+                print(f"warning: {failed}", file=sys.stderr, flush=True)
+                warnings.append(failed)
+            else:
+                summary = {"warnings": checked.get("warnings"), "checked": checked.get("checked"),
+                           "kept": checked.get("kept")}  # fmt: skip
+                chain.end("check")
+                chain.summarize("check", summary)
+                steps.append({"step": "check", **summary})
+                jobstate.mark_done(sdir, "checks", warnings=checked.get("warnings"))
+    finally:
+        if checking is not None:  # an error or interrupt anywhere: the check process ends with the chain
+            checking.stop()
     edit = run("edit", cmd_edit, ns(short=args.short, preset="preview", **which),
                summary=lambda o: {"mp4": o.get("mp4"), **({"closing_note": (o.get("closing") or {}).get("note")}
                                                           if (o.get("closing") or {}).get("note") else {})})  # fmt: skip
@@ -1405,9 +2103,122 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         out["tag"] = side.tag
     if edit.get("closing"):  # its "note" says when the voice line held the card past closing.seconds
         out["closing"] = edit["closing"]
-    if edit.get("warnings"):
-        out["warnings"] = edit["warnings"]
+    warnings += edit.get("warnings") or []
+    if warnings:
+        out["warnings"] = warnings
     return out
+
+
+def _failed_checks_after(sdir: Path, short, tl, tl_hash: str, errors: int) -> str:
+    """The warning the preview carries when the checks beside its render found errors: _failed_checks_warning from
+    the review/checks.json they wrote, or (should that not read as this build's) the count alone."""
+    fps = _fingerprints(sdir, short, tl, tl_hash)
+    line = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+    return line or (f"the checks found {errors} error(s) (review/checks.json): the final render will refuse until "
+                    f"these are fixed and checked again (BLENDER check {_short_key(sdir)})")  # fmt: skip
+
+
+def _start_side_check(args, sdir: Path, chain) -> _SideCheck:
+    """`check --in-chain` in a second background Blender beside the preview render (the checks take no GPU and no
+    lock). It writes review/checks.json only: the chain records its progress (read from its stdout) in its own
+    status, and marks the checks stage."""
+    import subprocess
+
+    import bpy
+
+    from bsa import proc as _proc
+
+    cmd = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1", "--python",
+           str(PLUGIN_ROOT / "bsa_blender.py"), "--", "check", str(sdir), "--every", str(args.every), "--in-chain"]  # fmt: skip
+    proc = _proc.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                           errors="replace")  # fmt: skip
+    return _SideCheck(proc, chain)
+
+
+class _SideCheck:
+    """The check process beside the preview render: one thread records its progress lines in the chain's status
+    (`chain.progress(..., step="check")`) and keeps its BSA_RESULT line; one echoes its stderr here and keeps the
+    last line (what a crash said)."""
+
+    PROGRESS_KEYS = ("done", "total", "unit", "current", "items")
+
+    def __init__(self, proc, chain):
+        import threading
+
+        self.proc, self.chain = proc, chain
+        self.result: dict | None = None
+        self.last_err: str | None = None
+        self._threads = [threading.Thread(target=self._read_out, daemon=True, name="side-check-out"),
+                         threading.Thread(target=self._read_err, daemon=True, name="side-check-err")]  # fmt: skip
+        for t in self._threads:
+            t.start()
+
+    def _read_out(self) -> None:
+        for raw in self.proc.stdout:
+            line = raw.rstrip("\r\n")
+            if line.startswith(PROGRESS_PREFIX):
+                try:
+                    data = json.loads(line[len(PROGRESS_PREFIX) :])
+                    self.chain.progress(**{k: data[k] for k in self.PROGRESS_KEYS if k in data}, step="check",
+                                        force=True)  # fmt: skip
+                except Exception as exc:  # noqa: BLE001 - status only: the checks go on
+                    print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            elif line.startswith(RESULT_PREFIX):
+                try:
+                    self.result = json.loads(line[len(RESULT_PREFIX) :])
+                except ValueError:
+                    pass
+
+    def _read_err(self) -> None:
+        for raw in self.proc.stderr:
+            line = raw.rstrip("\r\n")
+            print(f"[check] {line}" if line.strip() else line, file=sys.stderr, flush=True)  # which process said it
+            if line.strip():
+                self.last_err = line.strip()
+
+    def _close(self) -> None:
+        """Wait for the reader threads (the pipes end with the process), then close the pipes."""
+        for t in self._threads:
+            t.join(timeout=5)
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
+
+    def join(self) -> dict:
+        """The checks' result once the process ends. CliError when it says ok false (check errors carry
+        payload["errors"] > 0), or when it ended without a result (a crash: its last stderr line says why)."""
+        import subprocess
+
+        while True:  # a wait with a timeout, so Ctrl+C reaches this process meanwhile (stop() then ends the checks)
+            try:
+                code = self.proc.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        self._close()
+        res = self.result
+        if not isinstance(res, dict):
+            raise CliError(f"the checks stopped: {self.last_err or f'exit code {code}'}")
+        if res.get("ok") is False:
+            payload = {k: v for k, v in res.items() if k not in ("ok", "error")}
+            raise CliError(str(res.get("error") or "the checks failed"), payload)
+        return res
+
+    def stop(self) -> None:
+        """End the check process if it still runs: terminate, then kill after 5 s. Safe twice and after join."""
+        import subprocess
+
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        self._close()
 
 
 def _render_summary(out: dict) -> dict:
@@ -1416,7 +2227,8 @@ def _render_summary(out: dict) -> dict:
     return {"frames": sum(s.get("rendered", 0) for s in shots),
             "kept": [s["shot"] for s in shots if s.get("rendered") == 0],
             "rendered": [{"shot": s["shot"], "frames": s.get("rendered"), "why": s.get("why")}
-                         for s in shots if s.get("rendered")]}  # fmt: skip
+                         for s in shots if s.get("rendered")],
+            **({"warnings": out["warnings"]} if out.get("warnings") else {})}  # fmt: skip
 
 
 def cmd_probe(args) -> dict:
@@ -1426,6 +2238,160 @@ def cmd_probe(args) -> dict:
     if not mp4.is_file():
         raise CliError(f"{mp4} does not exist")
     return {"mp4": str(mp4.resolve()), **probe(mp4)}
+
+
+# --------------------------------------------------------------------------- relink (after a workspace move)
+
+_RELINK_KINDS = (("image", "images"), ("sound", "sounds"), ("font", "fonts"), ("movieclip", "movieclips"),
+                 ("cache_file", "cache_files"), ("volume", "volumes"), ("text", "texts"),
+                 ("library", "libraries"))  # fmt: skip
+_RELINK_OUTPUTS = {"render_output", "file_output", "point_cache", "fluid_cache", "bake"}  # folders written, not read
+_COMPRESSED = (b"\x28\xb5\x2f\xfd", b"\x1f\x8b")  # zstd, gzip: a .blend saved compressed
+
+
+def _file_there(path: str) -> bool:
+    """A repointed file exists (a UDIM/tile set: its folder)."""
+    p = Path(path)
+    return p.parent.is_dir() if "<" in p.name else p.exists()
+
+
+def _relink_ids(bpy):
+    """(owner, attribute, type, name) of each file path a data-block of this .blend keeps (not packed, not linked from
+    another .blend, not an indirect library: that file names those)."""
+    for kind, attr in _RELINK_KINDS:
+        for idb in getattr(bpy.data, attr, ()):
+            if getattr(idb, "packed_file", None) is not None or idb.library is not None:
+                continue
+            if getattr(idb, "parent", None) is not None or getattr(idb, "is_in_memory", False):
+                continue
+            yield idb, "filepath", kind, idb.name
+
+
+def _relink_settings(bpy):
+    """(owner, attribute, type, name) of the other paths a .blend keeps: sequencer movie and image strips, the render
+    output, File Output nodes, and simulation caches (point caches, fluid, ocean and mesh caches)."""
+    for sc in bpy.data.scenes:
+        if sc.library is not None:
+            continue
+        yield sc.render, "filepath", "render_output", sc.name  # the output path only; no other render setting
+        rbw = sc.rigidbody_world
+        if rbw is not None and rbw.point_cache is not None:
+            yield rbw.point_cache, "filepath", "point_cache", f"{sc.name}: rigid body world"
+        se = sc.sequence_editor
+        strips = (se.strips_all if hasattr(se, "strips_all") else getattr(se, "sequences_all", ())) if se else ()
+        for strip in strips:
+            for attr in ("filepath", "directory"):  # a movie strip's file; an image strip's folder (elements are names)
+                if isinstance(getattr(strip, attr, None), str):
+                    yield strip, attr, "strip", f"{sc.name}: {strip.name}"
+        tree = getattr(sc, "node_tree", None)  # the compositor before Blender 5 (5: a node group, below)
+        if tree is not None:
+            yield from _file_outputs(tree)
+    for tree in bpy.data.node_groups:
+        if tree.library is None:
+            yield from _file_outputs(tree)
+    for ob in bpy.data.objects:
+        if ob.library is not None:
+            continue
+        for m in ob.modifiers:
+            name = f"{ob.name}: {m.name}"
+            if getattr(m, "point_cache", None) is not None:
+                yield m.point_cache, "filepath", "point_cache", name
+            ds = getattr(m, "domain_settings", None)
+            if ds is not None and isinstance(getattr(ds, "cache_directory", None), str):
+                yield ds, "cache_directory", "fluid_cache", name
+            canvas = getattr(m, "canvas_settings", None)
+            for surface in (getattr(canvas, "canvas_surfaces", None) or ()) if canvas else ():
+                yield surface.point_cache, "filepath", "point_cache", f"{name}: {surface.name}"
+                yield surface, "image_output_path", "bake", f"{name}: {surface.name}"
+            if m.type in ("MESH_CACHE", "OCEAN") and isinstance(getattr(m, "filepath", None), str):
+                yield m, "filepath", "bake" if m.type == "OCEAN" else "mesh_cache", name
+        for ps in ob.particle_systems:
+            yield ps.point_cache, "filepath", "point_cache", f"{ob.name}: {ps.name}"
+
+
+def _file_outputs(tree):
+    for node in tree.nodes:
+        if node.bl_idname == "CompositorNodeOutputFile":
+            for attr in ("directory", "base_path"):  # Blender 5 / earlier
+                if isinstance(getattr(node, attr, None), str):
+                    yield node, attr, "file_output", f"{tree.name}: {node.name}"
+            for slot in getattr(node, "file_slots", None) or ():  # earlier: a slot's path may be absolute
+                yield slot, "path", "file_output", f"{tree.name}: {node.name}: {slot.path}"
+
+
+def _repointed(fp: str, old: Path, new: Path, library=None) -> str | None:
+    """FP under NEW when it is an absolute path under OLD (a //relative path is relative to the .blend: kept);
+    a folder keeps its trailing separator."""
+    import bpy
+
+    from bsa import wsmove
+
+    if not fp or fp.startswith("//") or fp == "<builtin>":
+        return None
+    to = wsmove.repoint(bpy.path.abspath(fp, library=library), old, new)
+    if to is not None and fp.endswith(("/", "\\")) and not to.endswith(("/", "\\")):
+        to += "\\" if "\\" in to else "/"
+    return to
+
+
+def _save_as_it_was(bpy, compressed: bool) -> None:
+    """Save the open .blend in place with its own compression and no .blend1 backup (the preference is restored;
+    with --factory-startup it is never saved)."""
+    prefs = bpy.context.preferences.filepaths
+    keep = prefs.save_version
+    prefs.save_version = 0
+    try:
+        bpy.ops.wm.save_mainfile(compress=compressed)
+    finally:
+        prefs.save_version = keep
+
+
+def cmd_relink(args) -> dict:
+    """Re-point every file path of the short's .blend that is under OLD (--from) to the same path under NEW (--to,
+    default the short's workspace), and save it when anything changed. Packed files, //relative paths and data
+    linked from another .blend are left alone; nothing else in the file (the render engine, any other render
+    setting) changes."""
+    import bpy
+
+    from bsa import wsmove
+
+    sdir = _short_dir(args.short)
+    blend = _blend(sdir)
+    if not blend.is_file():
+        raise CliError(f"{blend} does not exist: nothing to relink")
+    with blend.open("rb") as fh:
+        compressed = fh.read(4).startswith(_COMPRESSED)
+    old = Path(args.from_)
+    new = Path(args.to) if args.to else sdir.parent
+    if not bpy.data.filepath or not wsmove.same_folder(Path(bpy.data.filepath), blend):
+        bpy.ops.wm.open_mainfile(filepath=str(blend))
+    relinked, missing, libraries, warnings = [], [], [], []
+    for owner, attr, kind, name in [*_relink_ids(bpy), *_relink_settings(bpy)]:
+        fp = getattr(owner, attr)
+        to = _repointed(fp, old, new, getattr(owner, "library", None) if attr == "filepath" else None)
+        if to is None:
+            continue
+        try:
+            setattr(owner, attr, to)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:  # read-only in this Blender version
+            warnings.append(f"the {kind.replace('_', ' ')} {name} still points at {fp}: {_one_line(exc)}")
+            continue
+        relinked.append({"type": kind, "name": name, "from": fp, "to": to})
+        if kind not in _RELINK_OUTPUTS and not _file_there(to):
+            missing.append(to)
+        elif kind == "library":
+            libraries.append(owner)
+    for lib in libraries:
+        try:
+            lib.reload()
+        except RuntimeError as exc:
+            warnings.append(f"the linked file {lib.filepath} didn't reload: {_one_line(exc)}")
+    if relinked:
+        _save_as_it_was(bpy, compressed)
+    out = {"relinked": relinked, "missing": missing, "saved": bool(relinked)}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 # --------------------------------------------------------------------------- parser
@@ -1446,6 +2412,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("short")
     sp.add_argument("--shot")
     sp.add_argument("--out")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.add_argument("--guides", action="store_true",
+                    help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
+                    "framing band outlined")
     sp.set_defaults(fn=cmd_stills)
 
     sp = sub.add_parser("anchors", help="where each near label's object is on screen, into source/anchors.json")
@@ -1474,7 +2444,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--every", type=int, default=5, help="check every Nth frame (pops use every frame)")
     sp.add_argument("--full", action="store_true", help="check every shot, changed or not")
     sp.add_argument("--preset", choices=("preview", "final"), default="preview",
-                    help="the live status page that shows its progress (review/render-<preset>.html)")
+                    help="the live status it records its progress in (review/render-status-<preset>.json), which "
+                    "the review page's Render stage shows")
+    sp.add_argument("--in-chain", action="store_true", help=argparse.SUPPRESS)  # beside the preview render
     sp.set_defaults(fn=cmd_check)
 
     sp = sub.add_parser("frame-check", help="checks on rendered frames")
@@ -1497,6 +2469,10 @@ def build_parser() -> argparse.ArgumentParser:
     which.add_argument("--sheet", action="store_true", help="evenly spaced frames, a quarter size, in one image")
     sp.add_argument("--count", type=int, default=12, help="frames on the contact sheet")
     sp.add_argument("--columns", type=int, default=4, help="contact sheet columns")
+    sp.add_argument("--clear", action="store_true", help="remove this video's older grabs first")
+    sp.add_argument("--guides", action="store_true",
+                    help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
+                    "framing band outlined")
     _engine_args(sp)
     sp.set_defaults(fn=cmd_grab)
 
@@ -1511,7 +2487,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--at", type=_at_spec, nargs="+", required=True, metavar="SHOT:FRACTION", help="e.g. s01:0.5")
     sp.add_argument("--scale", type=float, default=0.4, help="fraction of the full resolution (default 0.4)")
     sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.add_argument("--guides", action="store_true",
+                    help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
+                    "framing band outlined")
     sp.set_defaults(fn=cmd_test_frames)
+
+    sp = sub.add_parser("camtest", help="the camera path in Workbench grey into review/camtest/ (camtest.mp4, a "
+                                        "contact sheet); the engine and settings are restored")  # fmt: skip
+    sp.add_argument("short")
+    sp.add_argument("--scale", type=float, default=0.33,
+                    help="fraction of the full size (default 0.33), rounded to the nearest 5%%")
+    sp.add_argument("--shots", metavar="S01,S02", help="only these shots, comma separated; else every shot")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.set_defaults(fn=cmd_camtest)
 
     sp = sub.add_parser("preview", help="after an edit: build, mark build done, mix, check, render, frame-check, edit")
     sp.add_argument("short")
@@ -1526,9 +2514,49 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("short")
     sp.set_defaults(fn=cmd_closing)
 
+    sp = sub.add_parser("thumbs", help="thumbnail candidates in both sizes, checked, into review/thumbs.json")
+    sp.add_argument("short")
+    sp.add_argument("--hero", action="append", metavar="SHOT@FRAME",
+                    help="a frame to make a candidate from (up to 3); else short.json's, else picked")
+    sp.add_argument("--only", type=int, metavar="N", help="make candidate N again, the others stay")
+    sp.set_defaults(fn=cmd_thumbs)
+
+    sp = sub.add_parser("kit-sample", help="a sample sheet of a brand kit (before it is saved) to --out")
+    sp.add_argument("--kit", metavar="JSON", help="a brand object; else the settings' brand")
+    sp.add_argument("--out", required=True, metavar="PNG")
+    sp.set_defaults(fn=cmd_kit_sample)
+
+    sp = sub.add_parser("style-sample", help="the demo machine in each style on a set, tiled into one PNG at --out")
+    sp.add_argument("--kit", metavar="JSON", help="a brand object; else the settings' brand")
+    sp.add_argument("--styles", metavar="A,B", help="style names, comma separated; else the kit's own style")
+    sp.add_argument("--set", metavar="NAME", help="a scene set (workbench, graph, outdoor, studio) or none; default "
+                                                  "studio")  # fmt: skip
+    sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
+                    help="the render engine (the user's choice); else the render.engine setting")
+    sp.add_argument("--scale", type=float, default=0.5, help="each tile's size as a fraction of 1080x1920 (default 0.5)")
+    sp.add_argument("--out", required=True, metavar="PNG")
+    sp.set_defaults(fn=cmd_style_sample)
+
+    sp = sub.add_parser("look", help="the look preview: three stills with the kit's cards, the kit sheet, look.json")
+    sp.add_argument("short")
+    sp.add_argument("--style", metavar="NAME", help="show this style instead of the built one (in memory only)")
+    sp.add_argument("--set", metavar="NAME", help="show this set (workbench, graph, outdoor, studio) or none instead "
+                                                  "of the built one (in memory only)")  # fmt: skip
+    sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
+                    help="the render engine (the user's choice); else the short's approved engine or render.engine")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.set_defaults(fn=cmd_look)
+
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
     sp.add_argument("mp4")
     sp.set_defaults(fn=cmd_probe)
+
+    sp = sub.add_parser("relink", help="after a workspace move: re-point the .blend's files from --from OLD to the "
+                                       "short's workspace (or --to NEW) and save")  # fmt: skip
+    sp.add_argument("short")
+    sp.add_argument("--from", dest="from_", required=True, metavar="OLD", help="the workspace's old folder")
+    sp.add_argument("--to", default=None, metavar="NEW", help="the new folder (default: the short's workspace)")
+    sp.set_defaults(fn=cmd_relink)
     return p
 
 
@@ -1537,14 +2565,31 @@ def _one_line(text) -> str:
 
 
 def _warn_stale_build(args, out: dict) -> None:
-    """Every command on a short says so (in its result and on one stderr line) when build.py is newer than the .blend.
-    check and frame-check already count their findings under "warnings", so theirs go under "build_warnings"."""
+    """Every command on a short says so (in its result and on one stderr line) when build.py, or a local script it
+    imports (freshness.build_inputs), is newer than the .blend. check and frame-check already count their findings
+    under "warnings", so theirs go under "build_warnings"."""
     short = getattr(args, "short", None)
-    if short is None or not freshness.build_changed(_short_dir(short)):
+    if short is None:
         return
+    sdir = _short_dir(short)
+    stale = freshness.stale_build_file(sdir)
+    if stale is None:
+        return
+    message = freshness.build_changed_message(sdir, stale)
     key = "build_warnings" if isinstance(out.get("warnings"), int) else "warnings"
-    out.setdefault(key, []).append(freshness.BUILD_CHANGED)
-    print(f"warning: {freshness.BUILD_CHANGED}", file=sys.stderr, flush=True)
+    out.setdefault(key, []).append(message)
+    print(f"warning: {message}", file=sys.stderr, flush=True)
+
+
+def _add_page_notes(args, out: dict) -> None:
+    """A result for a short says what is waiting on its review page (notes, answers Claude hasn't acted on)."""
+    from bsa.review import inbox
+
+    try:
+        sdir = _short_dir(args.short) if getattr(args, "short", None) else None
+    except Exception:  # noqa: BLE001 - a short that doesn't resolve has no page
+        sdir = None
+    inbox.attach(out, sdir)
 
 
 def _emit(obj: dict) -> None:
@@ -1560,13 +2605,14 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code or 0)
     status = _say_starting(args)
     try:
-        if args.command in GPU_COMMANDS - {"render"}:  # render takes it itself, so the preview chain's render does
-            sdir = _short_dir(args.short)
-            with _gpu(args, sdir, sdir.name, args.command):
+        place = _gpu_place(args) if args.command in GPU_COMMANDS - {"render"} else None  # render takes it itself
+        if place is not None:  # (so the preview chain's render does too)
+            with _gpu(args, place, place.name, args.command):
                 out = args.fn(args)
         else:
             out = args.fn(args)
         _warn_stale_build(args, out)
+        _add_page_notes(args, out)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
         plain = isinstance(exc, (freshness.StaleError, CliError, jobstate.StateDamaged))
         message = _one_line(exc if plain else f"{type(exc).__name__}: {exc}")
@@ -1582,7 +2628,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
-GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames"}  # one at a time per workspace (gpulock); preview via render
+GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample", "stills", "camtest"}  # one at a time per workspace (gpulock); preview via render
+
+
+def _gpu_place(args) -> Path | None:
+    """Where a heavy command takes the GPU lock (its parent is the workspace): the short's folder, or for a command
+    with no short (style-sample) the workspace itself as "<workspace>/style-sample" (None, unlocked, with no
+    workspace set)."""
+    if getattr(args, "short", None):
+        return _short_dir(args.short)
+    ws = settings.load_settings().get("workspace")
+    return Path(ws) / args.command if ws else None
 
 
 @contextmanager
@@ -1594,18 +2650,15 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
 
     status = rs.status_path(sdir, preset) if preset else None
     said = []
-
-    def page(doc: dict) -> None:
-        from bsa.review import pages
-
-        pages.render_status_page(rs.describe(doc), rs.page_path(sdir, preset))
+    beat = gpulock.Heartbeat()
 
     def on_wait(text: str) -> None:
-        if not said:
-            print(f"{short} {command} is {text}", file=sys.stderr, flush=True)
+        line = beat.line(text)
+        if line is not None:
+            print(f"{short} {command} is {line}", file=sys.stderr, flush=True)  # every line says which job waits
         said.append(text)
         if status is not None:
-            rs.note_waiting(status, text, render_page=page)
+            rs.note_waiting(status, text)
 
     try:
         ctx = gpulock.held(gpulock.lock_path(sdir.parent), short=short, command=command,
@@ -1614,7 +2667,7 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
     except gpulock.GpuBusy as exc:
         raise CliError(str(exc)) from exc
     if said and status is not None:
-        rs.note_waiting(status, None, render_page=page)
+        rs.note_waiting(status, None)
     try:
         yield
     finally:
@@ -1624,8 +2677,8 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
 def _say_starting(args):
     """For a command that records a live status: write "starting" (this process, the command) to it at once,
     before the command reads anything or opens the .blend, so the last run is never shown as current meanwhile.
-    Returns (status path, page writer), or None. A status problem never stops the command."""
-    if args.command not in RECORDING:
+    Returns the status path, or None. A status problem never stops the command."""
+    if args.command not in RECORDING or getattr(args, "in_chain", False):  # the chain beside it says it started
         return None
     try:
         from bsa import render_status as rs
@@ -1641,16 +2694,9 @@ def _say_starting(args):
             key = _status_key(sdir, args, preset)
         except CliError:
             return None  # a bad --engine / --tag: the command refuses it; never write over the approved run's status
-        page = rs.page_path(sdir, key)
-
-        def render_page(status, page=page):  # imported here: the status file is written before the page code loads
-            from bsa.review import pages
-
-            pages.render_status_page(rs.describe(status), page)
-
         path = rs.status_path(sdir, key)
-        if rs.starting(path, short=short, preset=preset, kind=args.command, render_page=render_page):
-            return path, render_page
+        if rs.starting(path, short=short, preset=preset, kind=args.command):
+            return path
     except Exception as exc:  # noqa: BLE001 - status only
         print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     return None
@@ -1662,7 +2708,7 @@ def _settle_starting(status, error: str | None) -> None:
     try:
         from bsa import render_status as rs
 
-        rs.settle_starting(status[0], error, render_page=status[1])
+        rs.settle_starting(status, error)
     except Exception as exc:  # noqa: BLE001 - status only
         print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 

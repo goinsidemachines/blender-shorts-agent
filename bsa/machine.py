@@ -6,8 +6,9 @@ import json
 import os
 import platform
 import re
-import subprocess
 from dataclasses import dataclass, field
+
+from bsa import proc as _proc
 
 _TIMEOUT = 10
 
@@ -166,7 +167,7 @@ def _ram_gb() -> float | None:
         return None
 
 
-def detect(run=subprocess.run) -> Machine:
+def detect(run=_proc.run) -> Machine:
     system = platform.system()
     gpus = _nvidia(run)
     if system == "Windows":
@@ -190,7 +191,7 @@ def _base(path: str) -> str:
     return re.split(r"[\\/]", path.strip())[-1].lstrip(".")
 
 
-def gpu_holders(run=subprocess.run, me: int | None = None) -> list[tuple[str, float | None]]:
+def gpu_holders(run=_proc.run, me: int | None = None) -> list[tuple[str, float | None]]:
     """(process name, MiB of video memory) for the processes using the GPU, biggest first, never the caller (`me`,
     default this process). When nvidia-smi can't give memory per process (Windows), the compute ("C") processes from
     its table with None for the memory; [] when it can't say at all."""
@@ -215,7 +216,7 @@ def gpu_holders(run=subprocess.run, me: int | None = None) -> list[tuple[str, fl
     return [(name, None) for name in dict.fromkeys(names)]
 
 
-def vram_warning(m: Machine, need_gb: float, run=subprocess.run, me: int | None = None) -> str | None:
+def vram_warning(m: Machine, need_gb: float, run=_proc.run, me: int | None = None) -> str | None:
     """A plain sentence when the best GPU has less free video memory than `need_gb`, else None. Names the programs
     holding the memory when nvidia-smi can say (it never stops them)."""
     known = [g for g in m.gpus if g.free_gb is not None]

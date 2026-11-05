@@ -8,6 +8,7 @@ from pathlib import Path
 
 import bpy
 
+from bsa.blender import look
 from bsa.blender.scene import apply_preset, preserved_render_state, resolve_engine
 
 
@@ -40,6 +41,7 @@ def render_range(
     try:
         with preserved_render_state(scene):
             apply_preset(scene, engine, preset, percent)
+            look.match_engine(scene)  # a brand style's lights and world for the engine these frames render with
             r.filepath = str(out_dir) + "/"
             r.use_overwrite = False
             r.use_placeholder = True
@@ -87,6 +89,7 @@ def estimate_seconds(scene, frame: int, engine: str, n_frames: int, percent: int
     try:
         with preserved_render_state(scene):
             apply_preset(scene, engine, "final", percent)
+            look.match_engine(scene)  # timed with the lights and world of the engine it estimates
             r.filepath = str(tmp)
             first = _timed_render(scene, frame)
             if engine != "eevee":

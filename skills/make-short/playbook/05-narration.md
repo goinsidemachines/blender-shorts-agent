@@ -20,6 +20,8 @@ finished.
      regenerates a take that doesn't match (alone, with seeds 8 then 9; for the user's own tool the command is
      run again with a lines file holding only those lines);
    - marks the `narration` stage itself (`status` `ok` or `captions-only`);
+   - with `narrator.take_mode paragraph`, speaks a few lines per take and cuts each take into its lines (Whisper's
+     word timings place the cuts when it is installed); `narrator.lead_in` pads each take's start;
    - re-times the short from the takes and rewrites `source/timeline.json` (returned as `timeline`). A take that
      opens with silence (some voices leave a lead-in) keeps its place in the mix, but its caption cards start when
      the voice does: the timing measures each take's leading silence, so captions never show before the word;
@@ -36,6 +38,34 @@ finished.
      retry in a loop, do not ask the user to fix it now.
    - `status: captions-only` without a message: the user chose captions only. Say nothing.
 
+## The voice check on the page
+
+Every narrate run records what Whisper heard in each take in `audio/vo/heard.json` (per line: the words asked for,
+what was heard, and the word error rate), or, when the takes weren't checked, `checked: false` with `why_not`.
+Every voice is checked the same way, ElevenLabs takes too, and the user's own tool. The page's Narration stage shows
+it as a table, one row per line: the words heard with the misheard ones marked, and whether the take passed. A
+take that is being made again shows "Waiting for a new take" until the next check.
+
+- **Re-taking one line.** The user asks for it with "Re-take this line" on that row (a note on the line), or in
+  chat. Run `CLI narrate SHORT --line ID` with `run_in_background: true`: only that take is thrown away and spoken
+  again, with the next seed, so it reads differently; the other takes are kept. The result has `retake` (`line`,
+  `seed`). When the voice misread a word, add `--say "..."` with the words spelled the way the voice should say
+  them (`CLI narrate SHORT --line l02 --say "the ess-capement turns"`): it is saved as the line's
+  `say`, and the caption still shows `text`. `--say` needs `--line`, and the closing line's words are the
+  `closing.voice_line` setting, not a respelling. The new take has another length, so the timing changes: once
+  the short has been built, run `BLENDER preview SHORT` in the background (it reruns the timeline, the mix, the
+  render of the frames that changed, the frame-check and the edit as needed) and, when the final was made, the
+  final render, frame-check and edit again (`08-render.md`). The closing line has its own row once it has been
+  narrated, with the same "Re-take this line" (`CLI narrate SHORT --line closing`).
+  Then answer the note (`CLI page note SHORT ID done --reply "..."`).
+- **Whisper missing.** When `why_not` says Whisper isn't installed, the page shows "Whisper isn't installed, so
+  the takes weren't checked. CLI voice plan whisper-small.en shows what it downloads." Offer it once, at a calm
+  moment (never mid-render): run `CLI voice plan whisper-small.en`, show its plan (name, source, licence, size)
+  and, only on a clear yes, `CLI voice install whisper-small.en` with `run_in_background: true`. The next
+  `narrate` checks the takes. Narration never waits for it.
+- Any other `why_not` (the check is turned off, captions only, or the file can't be read) is shown on the page as
+  it is; say it in one line if the user asks.
+
 Captions-only shorts are paced for reading time (about 2.6 words a second), not stretched to imaginary narration.
 
 ## After narration: the timing changed
@@ -44,6 +74,48 @@ The takes set the real line lengths, so shot lengths change. `source/build.py` r
 `timeline.json`, so the build stage rebuilds everything to the new timing. Check `length_drift` in the returned
 timeline: more than about 15% off the agreed length means the script is too long or too short; tighten lines (a
 voice that runs long is better fixed by cutting words than by a faster speed), then `narrate` again.
+
+## Takes: one line or one paragraph
+
+By default each line is spoken on its own (`narrator.take_mode` is `line`). Set `narrator.take_mode` to
+`paragraph` (`CLI settings set narrator.take_mode paragraph`) and the voice speaks a few lines at a time, then the
+plugin cuts each take back into one WAV per line. The lines flow into each other like one read. Every voice works
+this way, the user's own tool too (it needs `{take}` in its command, see below). A line the cut can't find, a
+retry and the closing line are spoken alone, like before.
+
+`narrator.lead_in` is the quiet before the voice in each take, from 0 to 1 second (default 0). The captions start
+with the voice, not with the quiet.
+
+## Engine parameters
+
+`narrator.params` holds the local voice engine's own parameters, over the engine's and the voice's defaults
+(default `{}`: the engine's own). Only an engine that has parameters takes them: Chatterbox and Chatterbox Turbo do
+(`CLI voice list MODEL` shows its `params` and their `param_ranges`); Kokoro, ElevenLabs and a custom voice tool take
+none. Set one with, for example, `CLI settings set narrator.params.temperature 0.7`, or all at once with
+`CLI settings set narrator.params '{"temperature": 0.7}'`; `null` removes one and `{}` clears them. A name the
+engine doesn't have, or a number outside its range, is refused with the names and ranges it takes, and
+`CLI settings check` reports parameters left over for another engine. Changing them re-speaks the takes. Only set
+them when the user asks for a different delivery; never guess values. `CLI voice sample MODEL VOICE [SHORT]` speaks
+with them (and the short's own over them) when MODEL is the narrator they are for.
+
+A short can have its own `narrator` in `short.json` (`voice`, `speed`, `take_mode`, `lead_in`, `params`) that wins
+over the settings for that short only (its `params` merge key by key over the settings'). With neither set,
+narration is exactly as it was. `voice_for` names the narrator its `voice` and `speed` were chosen for
+(`new-short --like` records it): when the settings' narrator is a different one now, the short's own voice, speed
+and params are not used, the settings' are, and `narrate` says so in `notes`. A short
+with its own `voice` but no `voice_for` (made before it was recorded) keeps using its voice.
+
+The result says where each line's audio came from in `sources`: `take`, `line` (spoken alone) or `fallback` (its take
+failed or couldn't be cut there, so it was spoken alone), and `fallbacks` gives the reason for each fallback line.
+Without Whisper the cuts use character timing, and a line it can't cut safely is spoken alone and marked
+`fallback`. The voice check on the
+page shows the same on each row. Say a fallback in one line and check that line. The voice's own notes (for
+example, that `{take}` is missing from the command) show on the Narration stage of the page too.
+
+- `CLI narrate SHORT --line ID` re-takes one line and keeps its neighbours. In a paragraph take, only that line is
+  spoken again.
+- `CLI narrate SHORT --line ID --take` re-speaks the whole paragraph that holds the line, with the next seed, and
+  cuts it again. It needs paragraph mode and does not go with `--say`.
 
 ## Voice choices
 
@@ -62,6 +134,24 @@ as always. Each WAV the tool writes is converted to 48 kHz mono 16-bit in place;
 WAVs, so the tool needs no `durations.json`. Any failure (command not found, non-zero exit with its last error
 line, a line without a WAV, a non-WAV file) gives captions only, said once. Changing `narrator.command` counts as a
 different narrator: the old takes are removed on the next `narrate`.
+
+### Paragraph takes with their own tool
+
+For `narrator.take_mode paragraph` the command must contain `{take}`. Without it the lines are spoken one by one and
+the result says so (take mode needs `{take}` in the voice command). The contract:
+
+- For a paragraph take, `{take}` is the take's id (`t01`, `t02`, ...) and the `{lines}` file holds one item:
+  `{"id": "t01", "text": <the take's lines joined with spaces>, "lines": [line ids], "texts": [each line's text]}`.
+  The tool speaks `text` in one go (it may use `lines` and `texts`, for example to put a pause between lines; that is
+  optional) and writes `<out>/t01.wav`, where `{out}` is the takes folder. The plugin cuts the take back into one WAV
+  per line; the tool never cuts.
+- For a line spoken on its own (line mode, a line the take couldn't be cut at, a retry, the closing line), `{take}`
+  is empty (`""`) and the `{lines}` file holds the lines as usual (`{"id", "text"}`); the tool writes
+  `<out>/<line id>.wav`. The tool must accept an empty `{take}` argument.
+- Take ids are reused: `t01` is always a short's first paragraph, whatever its words are now. A tool must not cache
+  its output by id, and should not skip a take whose file already exists.
+
+A command without `{take}` is always run line by line, also in paragraph mode.
 
 Test a new command with `CLI voice test-custom` (it touches no short) before relying on it.
 

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bsa.image_checks import EDGE_LEVEL, edge_share  # noqa: F401 - EDGE_LEVEL moved there; kept importable here
 from bsa.layout import H, W
 
 LINE_ID = "closing"  # the closing line's take: audio/vo/closing.wav, made with the story's lines
@@ -25,9 +26,19 @@ COVERED_BOTTOM = 0.18  # YouTube's title, channel and description cover the bott
 COVERED_RIGHT = 0.12  # and its like / comment / share buttons the right ~12%
 CARD_FILE = "closing.png"  # the card as the video shows it: <short>/stills/closing.png
 INFO_FILE = "closing.json"  # what made it and its warnings: <short>/stills/closing.json
-EDGE_LEVEL = 48  # a luminance step (0-255) between neighbouring pixels this big is an edge, as text has
 TEXT_EDGE_SHARE = 0.004  # a covered zone with more of its pixels on edges than this probably has text in it
 OWN_KEYS = ("image", "seconds", "voice_line", "website")
+BACKGROUND = "#14161A"  # the made card's background without a brand background
+ACCENT = "#FFC800"  # without a brand accent
+GAP_PX = 36  # between the made card's rows
+TOP_PX = 640  # the rows' top: in the upper half, far from the covered bottom
+KIT_TEXT_PAD = 8  # the kit's plain-text card's padding round its text
+DARK, LIGHT = (0.08, 0.086, 0.1, 1.0), (1.0, 1.0, 1.0, 1.0)
+
+
+def on_colour(rgba) -> tuple:
+    """Dark or white text, whichever reads better on `rgba` (0..1 floats)."""
+    return DARK if 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2] > 0.5 else LIGHT
 
 
 def _text(value) -> str | None:
@@ -149,6 +160,23 @@ def hold(cfg: dict, end: dict, fps: int) -> dict:
     return out
 
 
+def card_seconds(cfg: dict | None, take_s: float | None, fps: int) -> float | None:
+    """How long the card is really held (closing.seconds, or longer when the closing line needs it), in seconds;
+    None without a card."""
+    end = plan(cfg, 1, fps, take_s)
+    return round(end["n_frames"] / fps, 2) if end else None
+
+
+def stretch_warning(cfg: dict | None, take_s: float | None, fps: int) -> str | None:
+    """The warning when the closing line holds the card longer than closing.seconds; None otherwise."""
+    end = plan(cfg, 1, fps, take_s)
+    if not end or end["n_frames"] <= math.ceil(round(cfg["seconds"] * fps, 6)):
+        return None
+    held = end["n_frames"] / fps
+    return (f"the closing card will hold {held:.1f} s, not {cfg['seconds']:g} s: shorten the line or raise "
+            "closing.seconds")  # fmt: skip
+
+
 def take_seconds(takes_dir: Path | None) -> float | None:
     path = take(takes_dir)
     if path is None:
@@ -167,6 +195,58 @@ def card_rows(cfg: dict) -> list[tuple[str, str]]:
     return rows
 
 
+def kit_layout(cfg: dict, kit, font) -> list[tuple]:
+    """The made card's rows as the kit's cards, top to bottom from TOP_PX, GAP_PX apart, each centred on the frame
+    and no wider than the clear part of the frame: [(CardSpec, Rect)]. The logo badge first (when the kit has a
+    readable logo), then as card_rows says: "More at" as plain text (the text colour, no box), the website as a pill
+    on the accent (text that reads on it, shrunk to fit one line) and the @handle as a label pill."""
+    from bsa import cards
+    from bsa.layout import Rect
+    from bsa.overlays import hex_colour
+
+    maxw = 2 * (W * (1 - COVERED_RIGHT) - W / 2) - 40
+    room = maxw - 2 * cards.PILL_PAD[0]
+    specs = []
+    if kit.logo:
+        badge = cards.logo_badge(kit, font, kit.logo.get("name"))
+        if badge is not None and badge.w > maxw:  # too wide with its name: the logo alone
+            badge = cards.logo_badge(kit, font, None)
+        if badge is not None and badge.w <= maxw:
+            specs.append(badge)
+    for text, kind in card_rows(cfg):
+        if kind == "lead":
+            specs.append(_plain_text(kit, text, font, cards.SIZES["lead"], maxw))
+            continue
+        pill_kind, fill, colour = (("category", kit.palette["accent"],
+                                    cards.hex_of(on_colour(hex_colour(kit.palette["accent"]))))
+                                   if kind == "pill" else ("label", None, None))  # fmt: skip
+        used, _ = cards.font_for(text, font)
+        size = cards.fit(text, cards.SIZES["website" if kind == "pill" else "handle"], used, room)
+        while True:
+            spec = cards.pill(kit, pill_kind, text, font, fill=fill, colour=colour, wrap=room, size=size)
+            if spec.w <= maxw or size <= 1:
+                break
+            size -= 1
+        specs.append(spec)
+    rows, y = [], float(TOP_PX)
+    for spec in specs:
+        rows.append((spec, Rect(W / 2 - spec.w / 2, y, spec.w, spec.h)))
+        y += spec.h + GAP_PX
+    return rows
+
+
+def _plain_text(kit, text: str, font, size: int, maxw: float):
+    """A card of plain text in the kit's text colour: no fill, no outline, no shadow; `size` shrunk to fit `maxw`."""
+    from bsa import cards
+
+    used, _ = cards.font_for(text, font)
+    size = cards.fit(text, size, used, maxw - 2 * KIT_TEXT_PAD)
+    w = math.ceil(cards.measure(text, size, used)) + 2 * KIT_TEXT_PAD
+    h = math.ceil(cards.text_height(1, size, used))
+    run = cards.Run(text, size, kit.palette["text"], w / 2, h / 2, "CENTER")
+    return cards.CardSpec("text", w, h, h, None, None, 0, 0, 0.0, (run,), str(used) if used else None)
+
+
 def places(cfg: dict | None) -> list[tuple[str, str]]:
     """(where, text) the hard-rule word checks read: what the card says and the line said over it."""
     if not cfg:
@@ -183,11 +263,7 @@ def _luma(px: np.ndarray) -> np.ndarray:
 
 
 def _edge_share(lum: np.ndarray) -> float:
-    if lum.shape[0] < 2 or lum.shape[1] < 2:
-        return 0.0
-    gx = np.abs(np.diff(lum, axis=1))[:-1, :]
-    gy = np.abs(np.diff(lum, axis=0))[:, :-1]
-    return float(np.mean(np.maximum(gx, gy) > EDGE_LEVEL))
+    return edge_share(lum)
 
 
 def zone_warnings(px: np.ndarray) -> list[str]:
