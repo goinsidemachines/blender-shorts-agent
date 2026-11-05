@@ -307,6 +307,25 @@ def test_new_kind_words_do_not_change_other_packs():
     assert sounds.auto_kinds("loop_machine_01.ogg") == ["rumble"] and sounds.auto_kinds("thunder_01.ogg") == ["rumble"]
 
 
+def test_new_kind_words_never_retag_clips_already_in_the_library(tmp_path):
+    """Kinds are stored per clip when it is indexed; a mix reads only the stored kinds. So a clip indexed before
+    "thunder" / "machine" meant rumble (or with no stored kinds at all) keeps what it had, and a re-mix of an
+    existing short picks the same clips."""
+    lib = recorded.Library(tmp_path)
+    for rel in ("sounds/a/thunder_machine_01.wav", "sounds/a/machine_hit.wav"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"RIFF")
+    lib.add([{"path": "sounds/a/thunder_machine_01.wav", "asset": "sfx-a", "name": "thunder_machine_01"},  # no kinds
+             {"path": "sounds/a/machine_hit.wav", "kinds": ["impact"], "asset": "sfx-a", "name": "machine_hit"}])
+    lib.save()
+    before = recorded.library_path(tmp_path).read_bytes()
+    assert sounds.adopt_legacy(tmp_path) == []  # nothing re-indexes clips already there
+    again = recorded.Library(tmp_path)
+    assert again.clips_for("rumble") == []
+    assert [c["path"] for c in again.clips_for("impact")] == ["sounds/a/machine_hit.wav"]
+    assert recorded.library_path(tmp_path).read_bytes() == before
+
+
 def test_every_pack_lists_only_valid_kinds():
     from bsa.audio.sfx import KINDS
 
