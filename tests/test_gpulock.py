@@ -2,20 +2,20 @@
 
 import json
 import os
-import subprocess
 import sys
 import time
 
 import pytest
 
 from bsa import gpulock
+from bsa import proc as proc_mod
 from bsa import render_status as rs
 
 
 @pytest.fixture
 def other():
     """Another live process (a stand-in for a second session's Blender)."""
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    proc = proc_mod.popen([sys.executable, "-c", "import time; time.sleep(60)"])
     yield proc
     proc.kill()
     proc.wait()
@@ -61,7 +61,7 @@ def test_a_waiter_says_what_it_waits_for_and_takes_over_when_the_holder_ends(tmp
 
 def test_a_dead_holders_lock_is_cleared_at_once(tmp_path):
     path = gpulock.lock_path(tmp_path)
-    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc = proc_mod.popen([sys.executable, "-c", "pass"])
     proc.wait()
     _hold(path, proc)
     with gpulock.held(path, short="clock", command="estimate", wait=False):
