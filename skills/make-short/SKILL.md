@@ -43,7 +43,7 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
   Blender prints its own log lines, so read the line starting `BSA_RESULT ` (JSON). Failure: non-zero exit, a
   `BSA_RESULT` line with `"ok": false` and the `error`, and the same plain line on stderr (relay it). Don't pass the
   .blend: each command opens `blend/short.blend` itself when it needs it, after it has marked its run as starting in
-  the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `test-frames`, `estimate`) run one at a
+  the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `test-frames`, `estimate`, `camtest`) run one at a
   time per workspace, across sessions: a second one waits for the first (`<workspace>/.gpu.lock`, `08-render.md`).
   Never delete that file by hand.
 
@@ -62,6 +62,9 @@ Commands for looking at the work (`playbook/06-build.md` and `playbook/08-render
 - `BLENDER extremes SHORT`: renders each hero at the extremes of its motion, full resolution, before the preview.
 - `BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]`: single frames at fractions of shots, current
   build, engine and look, reduced size, into `review/test-frames/` (takes the GPU lock).
+- `BLENDER camtest SHORT [--scale 0.33] [--shots s01,s02]`: the camera path in Workbench grey into
+  `review/camtest/` (`camtest.mp4`, a contact sheet, `camtest.json`); a draft of the move, never a picture. The
+  engine and settings are restored and the .blend is never saved (takes the GPU lock; `playbook/06-build.md`).
 - `BLENDER grab SHORT --preset preview|final --at <s>...` (or `--sheet`): frames of the edited MP4, true colour.
 - `BLENDER thumbs SHORT [--hero SHOT@FRAME]... [--only N]`: renders the thumbnail candidates (both sizes) into
   `review/thumbs/`, with the checks on each (`playbook/09-post.md`). Run it with `run_in_background: true`.

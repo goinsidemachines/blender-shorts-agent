@@ -423,6 +423,18 @@ targets are set: `voice_dbfs` is the mix while the voice is speaking (pauses don
 -23 (-21 to -27: it reads lower when the loudest effects land under speech, where they duck); `peak_dbfs` at or
 under -1. `null` means there is no voice or no effects. Far outside those ranges: look at `level_db` and `sound.py`.
 
+## Test the camera first
+
+For a camera-led short (the camera's move is the story: a fly-through, a one-take, a camera riding a part), and
+before any long render of a complex move, look at the move itself before the look and the checks:
+`BLENDER camtest SHORT [--scale 0.33] [--shots s01,s02]`. It renders the camera path in Workbench grey (solid
+grey, no textures, cards or captions) into `review/camtest/camtest.mp4`, with a contact sheet
+(`camtest-sheet.png`) and `camtest.json`, in minutes. It is a draft view of the camera, never a picture: the user's
+engine and every setting it touches are restored, and the .blend is never saved. It refuses, before anything
+renders, a short that is not built for this timing (build first) and a shot whose scene has no camera. The clip is
+out of date once the .blend or the timing changes: run it again after a rebuild. Show the user the clip and the
+sheet; fix the move in build.py, never by hand in the .blend.
+
 ## Finish
 
 Re-render the stills (`BLENDER stills SHORT`) and look at them again: the final build must still match what the user

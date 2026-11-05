@@ -1817,6 +1817,73 @@ def cmd_test_frames(args) -> dict:
     return result
 
 
+def cmd_camtest(args) -> dict:
+    """The camera path in Workbench grey (a draft view, never a picture) as review/camtest/camtest.mp4, its contact
+    sheet and camtest.json (what it was made from). Every refusal comes before anything renders; the user's engine
+    and settings are restored and the .blend is never saved (bsa.blender.camtest)."""
+    import os
+    import shutil
+    import tempfile
+
+    from bsa import camtest
+
+    if not 0.05 <= args.scale <= 1.0:
+        raise CliError(f"--scale {args.scale}: give a fraction of the full size from 0.05 to 1")
+    sdir = _short_dir(args.short)
+    short = _load(sdir)
+    tl, tl_hash = _timeline(sdir, short)
+    if freshness.blend_stat(sdir) is None:
+        raise CliError(f"{_blend(sdir)} does not exist: run the short's source/build.py first")
+    wanted = [s.strip() for s in args.shots.split(",") if s.strip()] if args.shots is not None else None
+    if wanted == []:
+        raise CliError(f"--shots {args.shots!r} names no shot: give shot ids, e.g. s01,s02")
+    for shot_id in wanted or ():
+        _shots(short, shot_id)
+    if not _scenes_current(sdir, short, tl_hash):
+        raise CliError("blend/short.blend was not built for this timing (or misses a scene short.json names): "
+                       "build first (source/build.py)")  # fmt: skip
+    blend = freshness.blend_stat(sdir)
+    data = _open_blend(sdir)
+    spans = {s.id: s for s in tl.shots}
+    todo = []
+    for shot in short.shots:
+        if wanted is not None and shot.id not in wanted:
+            continue
+        shot, scene = _scene(data, short, shot.id, tl_hash)
+        if scene.camera is None:
+            raise CliError(f"shot {shot.id}: scene {scene.name!r} has no camera")
+        todo.append((shot, scene, spans[shot.id]))
+    from bsa.blender import camtest as bc
+    from bsa.blender import grab
+
+    pct = camtest.percent(args.scale)
+    folder = sdir / camtest.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="bsa-camtest-"))
+    part = folder / ("camtest.part" + Path(camtest.MP4).suffix)
+    try:
+        parts = []
+        for shot, scene, span in todo:
+            bc.render_frames(scene, span.f0, span.f1, tmp / shot.id, pct)
+            parts.append((tmp / shot.id, span.f0, span.f1))
+        bc.encode(parts, part, pct, tl.fps)
+        for old in (camtest.RECORD, camtest.SHEET):  # nothing of the old clip stays beside the new one
+            (folder / old).unlink(missing_ok=True)
+        mp4 = folder / camtest.MP4
+        os.replace(part, mp4)
+    finally:
+        part.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+    n = sum(f1 - f0 + 1 for _, f0, f1 in parts)
+    sheet = grab.contact_sheet(mp4, grab.sheet_frames(n, camtest.SHEET_FRAMES), folder / camtest.SHEET,
+                               scale=max(0.25, min(1.0, 25 / pct)))  # tiles about a quarter of 1080 wide
+    shots = [shot.id for shot, _, _ in todo]
+    rec = camtest.record(blend, tl_hash, shots, args.scale, n)
+    (folder / camtest.RECORD).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+    return {"mp4": str(mp4), "sheet": str(sheet), "shots": shots, "frames": n, "percent": pct,
+            "seconds": round(n / tl.fps, 2)}  # fmt: skip
+
+
 # ----- the preview chain: everything after an edit to build.py or short.json, up to a checked preview
 
 
@@ -2251,6 +2318,15 @@ def build_parser() -> argparse.ArgumentParser:
                     "framing band outlined")
     sp.set_defaults(fn=cmd_test_frames)
 
+    sp = sub.add_parser("camtest", help="the camera path in Workbench grey into review/camtest/ (camtest.mp4, a "
+                                        "contact sheet); the engine and settings are restored")  # fmt: skip
+    sp.add_argument("short")
+    sp.add_argument("--scale", type=float, default=0.33,
+                    help="fraction of the full size (default 0.33), rounded to the nearest 5%%")
+    sp.add_argument("--shots", metavar="S01,S02", help="only these shots, comma separated; else every shot")
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.set_defaults(fn=cmd_camtest)
+
     sp = sub.add_parser("preview", help="after an edit: build, mark build done, mix, check, render, frame-check, edit")
     sp.add_argument("short")
     sp.add_argument("--rebuild", action="store_true", help="run build.py even when the .blend looks current")
@@ -2371,7 +2447,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
-GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample", "stills"}  # one at a time per workspace (gpulock); preview via render
+GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample", "stills", "camtest"}  # one at a time per workspace (gpulock); preview via render
 
 
 def _gpu_place(args) -> Path | None:
