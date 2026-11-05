@@ -230,10 +230,11 @@ def suggest(m: Machine) -> dict:
     return {"suggested": suggested, "options": options}
 
 
-def sample(model: str, voice: str, run=_proc.run) -> Path:
-    """Render one short test line with an installed voice so the user can listen before choosing."""
+def sample(model: str, voice: str, run=_proc.run, params: dict | None = None) -> Path:
+    """Render one short test line with an installed voice so the user can listen before choosing; `params`
+    (narrator.params) give the engine's delivery as narration would."""
     from bsa.narrate import local
 
     out = voices_dir() / "samples" / f"{model}-{voice}"
-    local.generate(model, [Line("sample", SAMPLE_TEXT, "sample")], voice, 1.0, out, run=run)
+    local.generate(model, [Line("sample", SAMPLE_TEXT, "sample")], voice, 1.0, out, run=run, params=params or None)
     return out / "sample.wav"

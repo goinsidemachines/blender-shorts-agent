@@ -1311,6 +1311,23 @@ def _voice_test_custom() -> dict:
     return {"path": str(out / "test.wav"), "seconds": seconds, "command": command}
 
 
+def _sample_params(model: str, short_name: str | None) -> dict | None:
+    """The narrator.params a voice sample is spoken with: the settings', with the short's own over them as narrate
+    merges them, when MODEL is the narrator they are for; None otherwise (the engine's own delivery)."""
+    from bsa.narrate import params as nparams
+    from bsa.narrate.run import narrator_for
+
+    s = settings.load_settings()
+    short = load(short_dir(short_name)) if short_name else None
+    narrator = narrator_for(s, short)
+    if narrator.get("provider") != model or not narrator.get("params"):
+        return None
+    wrong = nparams.problems(model, narrator["params"])
+    if wrong:
+        raise CliError("; ".join(wrong))
+    return narrator["params"]
+
+
 def cmd_voice(args) -> dict:
     from bsa.narrate import install
 
@@ -1334,9 +1351,14 @@ def cmd_voice(args) -> dict:
         runner = install.install(args.args)
         return {"runner": str(runner), "installed": install.installed()}
     if args.action == "sample":
-        if len(args.args) != 2:
-            raise CliError("usage: voice sample MODEL VOICE")
-        return {"wav": str(install.sample(*args.args))}
+        if len(args.args) not in (2, 3):
+            raise CliError("usage: voice sample MODEL VOICE [SHORT]")
+        model, voice = args.args[:2]
+        params = _sample_params(model, args.args[2] if len(args.args) == 3 else None)
+        out = {"wav": str(install.sample(model, voice, params=params))}
+        if params:
+            out["params"] = params
+        return out
     # list
     if not args.args:
         reg, have = _registry(), install.installed()
@@ -1699,7 +1721,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --line (paragraph take mode): re-speak the whole paragraph holding that line")  # fmt: skip
     sp.set_defaults(fn=cmd_narrate)
 
-    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE | list [MODEL] | test-custom")
+    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE [SHORT] | list [MODEL] | test-custom")
     sp.add_argument("action", choices=["suggest", "plan", "install", "sample", "list", "test-custom"])
     sp.add_argument("args", nargs="*")
     sp.set_defaults(fn=cmd_voice)

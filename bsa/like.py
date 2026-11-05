@@ -113,9 +113,9 @@ def _blank(look=None) -> Short:
 
 
 def _narrator_from(other_dir: Path, other, settings_: dict) -> tuple[dict, list[str]]:
-    """The other short's take_mode, lead_in and (narrated by the provider the user has now) voice and speed, each
-    only where it differs from what the user's settings give a new short now: a value equal to the settings is left
-    out, so later settings changes keep reaching the new short."""
+    """The other short's take_mode, lead_in and (narrated by the provider the user has now) voice, speed and engine
+    params, each only where it differs from what the user's settings give a new short now: a value equal to the
+    settings is left out, so later settings changes keep reaching the new short."""
     record = narrate_run._read_record(other_dir / "audio" / "vo")
     used = record.get("provider")
     narrated = bool(used) and used != "none"
@@ -138,11 +138,13 @@ def _narrator_from(other_dir: Path, other, settings_: dict) -> tuple[dict, list[
             theirs["voice"] = record["voice"]
         if record.get("speed") is not None:
             theirs["speed"] = float(record["speed"])
+        if isinstance(record.get("params"), dict) and record["params"]:  # the engine's delivery, with its voice
+            theirs["params"] = dict(record["params"])
     mine = narrate_run.narrator_for(settings_, _blank())
     mine["speed"] = float(mine.get("speed") or 1.0)
     mine["lead_in"] = float(mine["lead_in"])
     out = {k: v for k, v in theirs.items() if v != mine.get(k)}
-    if "voice" in out or "speed" in out:  # the narrator they belong to: under another one they are not used
+    if {"voice", "speed", "params"} & set(out):  # the narrator they belong to: under another one they are not used
         out["voice_for"] = used
     return out, notes
 

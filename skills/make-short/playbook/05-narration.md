@@ -95,7 +95,8 @@ none. Set one with, for example, `CLI settings set narrator.params.temperature 0
 `CLI settings set narrator.params '{"temperature": 0.7}'`; `null` removes one and `{}` clears them. A name the
 engine doesn't have, or a number outside its range, is refused with the names and ranges it takes, and
 `CLI settings check` reports parameters left over for another engine. Changing them re-speaks the takes. Only set
-them when the user asks for a different delivery; never guess values.
+them when the user asks for a different delivery; never guess values. `CLI voice sample MODEL VOICE [SHORT]` speaks
+with them (and the short's own over them) when MODEL is the narrator they are for.
 
 A short can have its own `narrator` in `short.json` (`voice`, `speed`, `take_mode`, `lead_in`, `params`) that wins
 over the settings for that short only (its `params` merge key by key over the settings'). With neither set,

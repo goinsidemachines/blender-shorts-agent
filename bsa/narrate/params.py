@@ -19,7 +19,10 @@ def _registry_models() -> dict:
 
 
 def _number(value) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    try:
+        return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    except OverflowError:  # an integer too big for a float (10**400)
+        return False
 
 
 def shape_problems(params) -> list[str]:

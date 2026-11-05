@@ -1382,3 +1382,60 @@ def test_an_old_runner_without_params_says_how_to_update(tmp_path, bsa_home):
     with pytest.raises(contract.NarrationError, match="voice install chatterbox"):
         local.generate("chatterbox", lines("l01"), "george", 1.0, tmp_path, run=lambda c, **k: completed(2, "", err),
                        params={"exaggeration": 0.8})  # fmt: skip
+
+
+def test_a_huge_integer_param_is_a_plain_problem():
+    from bsa.narrate import params as nparams
+
+    assert nparams.shape_problems({"temperature": 10**400}) == ["narrator.params.temperature must be a number, got " +
+                                                                 repr(10**400)]  # fmt: skip
+    assert nparams.problems("chatterbox", {"temperature": 10**400})
+
+
+def _sample_cmds(bsa_home, monkeypatch, *argv, settings_=None, short_dir=None):
+    import bsa_cli
+    from bsa import settings as bsettings
+
+    if settings_ is not None:
+        bsettings.save_settings(settings_)
+    cmds = []
+
+    def run(cmd, **kw):
+        cmds.append(cmd)
+        write_wav(Path(cmd[cmd.index("--out") + 1]) / "sample.wav", 1.0)
+        return completed(0, '{"ok": true}\n')
+
+    monkeypatch.setattr(install.sample, "__defaults__", (run, None))  # sample(model, voice, run=..., params=None)
+    if short_dir is not None:
+        monkeypatch.setattr(bsa_cli, "short_dir", lambda name: short_dir)
+    out = bsa_cli.cmd_voice(SimpleNamespace(action="sample", args=list(argv)))
+    return out, cmds
+
+
+def _params_of(cmd):
+    return {cmd[i + 1] for i, p in enumerate(cmd) if p == "--param"}
+
+
+def test_voice_sample_uses_the_narrator_params(bsa_home, monkeypatch, tmp_path):
+    from bsa.short import save_short
+
+    s = {"narrator": {"provider": "chatterbox", "params": {"exaggeration": 0.7, "temperature": 0.6}}}
+    _, cmds = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", settings_=s)
+    assert _params_of(cmds[0]) == {"exaggeration=0.7", "temperature=0.6"}
+    # a short's own params over the settings', as narrate merges them
+    sdir = tmp_path / "short"
+    short = make_short("l01")
+    short.narrator = {"params": {"exaggeration": 0.9}}
+    save_short(short, sdir / "source" / "short.json")
+    _, cmds = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", "short", short_dir=sdir)
+    assert _params_of(cmds[0]) == {"exaggeration=0.9", "temperature=0.6"}
+
+
+def test_voice_sample_without_params_is_unchanged(bsa_home, monkeypatch):
+    _, plain = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", settings_={"narrator": {"provider": None}})
+    s = {"narrator": {"provider": "chatterbox", "params": {}}}
+    _, empty = _sample_cmds(bsa_home, monkeypatch, "chatterbox", "george", settings_=s)
+    # another engine's params are not this model's: the sample is of the engine's own delivery
+    s = {"narrator": {"provider": "chatterbox", "params": {"exaggeration": 0.8}}}
+    _, other = _sample_cmds(bsa_home, monkeypatch, "chatterbox-turbo", "default", settings_=s)
+    assert plain == empty and not any("--param" in c for c in plain + other)

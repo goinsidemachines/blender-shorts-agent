@@ -378,3 +378,34 @@ def test_summary_with_a_malformed_edit_record_uses_the_short_length(tmp_path):
         path.write_text(json.dumps(data), "utf-8")
         row = like.summary(sdir, {})
         assert row["length_s"] == 40 and row["problem"] is None, edit
+
+
+_CHATTER = {"provider": "chatterbox", "voice": "george", "speed": 1.0, "params": {"exaggeration": 0.8}}
+
+
+def test_like_copies_the_engine_params_with_the_voice_for_the_same_provider(tmp_path):
+    other = _rich(tmp_path, record=_CHATTER)
+    values, _, _ = like.copy_from(other, {"narrator": {"provider": "chatterbox"}})
+    assert values["narrator"]["params"] == {"exaggeration": 0.8} and values["narrator"]["voice_for"] == "chatterbox"
+    # equal to the settings' params: not pinned, so later settings changes reach the new short
+    same = {"narrator": {"provider": "chatterbox", "voice": "george", "params": {"exaggeration": 0.8}}}
+    assert "narrator" not in like.copy_from(other, same)[0]  # voice and params both equal the settings'
+    same["narrator"]["voice"] = "emma"
+    assert like.copy_from(other, same)[0]["narrator"] == {"voice": "george", "voice_for": "chatterbox"}
+
+
+def test_like_copies_no_params_when_the_provider_changed(tmp_path):
+    other = _rich(tmp_path, record=_CHATTER)
+    values, _, notes = like.copy_from(other, {"narrator": {"provider": "chatterbox-turbo"}})
+    assert "narrator" not in values  # neither the voice nor its params: they were for Chatterbox
+    assert _voice_notes(notes) == ["the voice wasn't copied: Big Ben used Chatterbox, you now use Chatterbox Turbo"]
+
+
+def test_copied_params_are_dropped_when_the_provider_changes_later():
+    from bsa.narrate import run as nrun
+
+    short = Short(slug="a", title="A", length_s=40, narrator={"params": {"exaggeration": 0.8},
+                                                              "voice_for": "chatterbox"})  # fmt: skip
+    assert nrun.narrator_for({"narrator": {"provider": "chatterbox"}}, short)["params"] == {"exaggeration": 0.8}
+    assert "params" not in nrun.narrator_for({"narrator": {"provider": "kokoro"}}, short)
+    assert nrun.own_voice_dropped({"narrator": {"provider": "kokoro"}}, short) == "chatterbox"
