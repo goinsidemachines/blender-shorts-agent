@@ -424,6 +424,29 @@ def test_narrate_failure_falls_back(home, pendulum):
     assert data["status"] == "captions-only" and "captions only" in data["message"]
 
 
+def test_narrate_says_plainly_when_the_takes_overrun_a_one_take_window(home, pendulum, monkeypatch, capsys):
+    import bsa_cli
+    from bsa.timeline import WindowOverrun
+
+    _approve_storyboard(home)
+    ok(run(home, "settings", "set", "narrator.provider", "none"))
+    monkeypatch.setenv("BSA_HOME", str(home))
+    calls = []
+
+    def timeline(args):
+        calls.append(args)
+        if len(calls) == 1:  # with the takes: they overrun s02's window
+            raise bsa_cli.CliError("s02's lines need 4.1 s but its window is 3.0 s") from WindowOverrun("x")
+        return {"ok": True}
+
+    monkeypatch.setattr(bsa_cli, "cmd_timeline", timeline)
+    assert bsa_cli.main(["narrate", "pendulum"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "captions-only" and len(calls) == 2
+    assert "don't fit the one-take windows" in data["message"] and "s02's lines need 4.1 s" in data["message"]
+    assert "run narrate again" in data["message"]
+
+
 def test_narrate_clears_takes_of_another_voice(home, pendulum):
     vo = pendulum / "audio" / "vo"
     _write_take(vo / "l01.wav", 1.0)

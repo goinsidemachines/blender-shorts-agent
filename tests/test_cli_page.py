@@ -208,6 +208,27 @@ def test_bad_page_words_and_bad_stage_are_plain_errors(home, pendulum):
     assert proc.returncode == 1 and "nothing to approve" in proc.stderr
 
 
+def test_page_opens_the_camera_stage_only_for_a_short_that_has_it(home, pendulum, monkeypatch, capsys):
+    import bsa_cli
+    from bsa.review import launch
+
+    monkeypatch.setenv("BSA_HOME", str(home))
+    opened = []
+    monkeypatch.setattr(launch, "ensure_server", lambda ws, lan=False: None)
+    monkeypatch.setattr(launch, "open_page", lambda ws, sdir, stage=None, force=False, ensure=None:
+                        opened.append(stage) or {"mode": "server", "url": "http://127.0.0.1:1/s/x", "opened": True})
+    monkeypatch.setattr(bsa_cli, "_doctor_checks", lambda *a, **k: [])
+    assert bsa_cli.main(["page", "pendulum", "--stage", "camera"]) == 1
+    err = capsys.readouterr().err
+    assert "The camera is not a stage of this short" in err and "Traceback" not in err
+    assert opened == []  # refused before any server or browser
+    spec = json.loads((pendulum / "source" / "short.json").read_text(encoding="utf-8"))
+    spec["camera"] = {"approve": True}
+    (pendulum / "source" / "short.json").write_text(json.dumps(spec), encoding="utf-8")
+    assert bsa_cli.main(["page", "pendulum", "--stage", "camera"]) == 0, capsys.readouterr().err
+    assert opened == ["camera"]
+
+
 def test_bsa_blender_results_carry_page_notes(home, pendulum, monkeypatch, capsys):
     import bsa_blender
 

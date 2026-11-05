@@ -734,6 +734,8 @@ def _page_open(args, sdir: Path) -> dict:
 
     if args.stage is not None and args.stage not in stages.PAGE_STAGES:
         raise CliError(f"unknown stage {args.stage!r}; expected one of {', '.join(stages.PAGE_STAGES)}")
+    if args.stage is not None and args.stage not in _page_stages(sdir):
+        raise CliError(NOT_A_STAGE)  # the camera stage of a short that doesn't have it: no hidden stage opens
     ws = sdir.parent  # the server serves the shorts of the folder this one is in
     lan = bool(args.lan or (settings.load_settings().get("page") or {}).get("lan") is True)
     try:
@@ -1072,8 +1074,15 @@ def cmd_narrate(args) -> dict:
     try:
         out["timeline"] = cmd_timeline(args)
     except Exception as exc:  # noqa: BLE001 - narration never blocks: fall back to captions-only timing
-        message = (f"The narration couldn't be timed ({_one_line(exc)}), so this short uses captions only; "
-                   "you can add a voice later.")  # fmt: skip
+        from bsa.timeline import WindowOverrun
+
+        if isinstance(exc.__cause__, WindowOverrun):  # a voice was made, but its takes don't fit the camera's windows
+            message = (f"The voice was made, but its takes don't fit the one-take windows ({_one_line(exc)}), so "
+                       "this short uses captions only for now. Shorten those lines, or give their shots more time "
+                       "(a later at, a longer camera.seconds), then run narrate again.")  # fmt: skip
+        else:
+            message = (f"The narration couldn't be timed ({_one_line(exc)}), so this short uses captions only; "
+                       "you can add a voice later.")  # fmt: skip
         jobstate.mark_done(sdir, "narration", status="captions-only", provider=(s.get("narrator") or {}).get(
             "provider"), message=message)  # fmt: skip
         out.update(status="captions-only", durations=None, message=message)

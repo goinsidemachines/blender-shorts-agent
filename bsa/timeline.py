@@ -204,6 +204,11 @@ def _up(seconds: float) -> float:
     return math.ceil(seconds * 10 - 1e-6) / 10
 
 
+def _down(seconds: float) -> float:
+    """Seconds rounded down to a tenth: a window's length beside a need rounded up never reads as the same."""
+    return math.floor(seconds * 10 + 1e-6) / 10
+
+
 def window_frames(short: Short) -> dict[str, tuple[int, int]]:
     """A one-take short's windows: shot id -> (f0, f1), 1-based and inclusive. A window starts on the frame of its
     shot's `at` and runs to the frame before the next one; the last ends at camera.seconds. ValueError when the
@@ -253,7 +258,7 @@ def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_car
         have = f1 - f0 + 1
         if need > have:
             fix = "make camera.seconds {d:.1f} s longer" if last else f"move {ids[i + 1]}'s start {{d:.1f}} s later"
-            overruns.append(f"{shot.id}'s lines need {_up(need / fps):.1f} s but its window is {have / fps:.1f} s: "
+            overruns.append(f"{shot.id}'s lines need {_up(need / fps):.1f} s but its window is {_down(have / fps):.1f} s: "
                             "shorten them or " + fix.format(d=_up((need - have) / fps)))  # fmt: skip
         shots.append(Span(shot.id, f0, f1))
         pos = f0 + lead

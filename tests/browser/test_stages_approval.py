@@ -251,6 +251,9 @@ def test_camera_stage_shows_the_clip_and_the_sheet(view, live_server):
     expect(stage.locator(".problem")).to_have_count(0)  # a current clip: nothing out of date
     expect(p.get_by_role("button", name="Approve")).to_be_visible()
     assert_healthy(p)
+    p.emulate_media(color_scheme="dark")
+    expect(video).to_be_visible()
+    assert_healthy(p)
 
 
 def test_camera_stage_approve_needs_a_current_clip(view, live_server):
@@ -291,9 +294,28 @@ def test_camera_stage_stale_clip_says_why_and_can_still_be_approved(view, live_s
     expect(notice.locator("code")).to_have_text(re.compile(r"^BLENDER camtest .*01-pendulum"))
     expect(p.locator("#bsa-stage video.player")).to_have_count(1)
     assert_healthy(p)
+    p.emulate_media(color_scheme="dark")
+    expect(notice).to_be_visible()
+    assert_healthy(p)
     p.get_by_role("button", name="Approve").click()
     expect(p.get_by_text("Sent · waiting for Claude")).to_be_visible()
     assert decisions.load(srv.sdir)[-1]["stage"] == "camera"
+
+
+def test_camera_stage_shows_the_servers_refusal(view, live_server):
+    """The clip went between the page's last look and the click: the server refuses (409) and the page shows its
+    line, never "Sent"."""
+    srv = live_server("camera", one_take=True)
+    p = open_short(view, srv)
+    expect(p.locator("#bsa-stage video.player")).to_have_count(1)
+    line = "The camera has no test clip yet: run BLENDER camtest 01-pendulum first."
+    p.route("**/api/*/decision", lambda route: route.fulfill(status=409, content_type="application/json",
+                                                             body=json.dumps({"error": line})))  # fmt: skip
+    p.get_by_role("button", name="Approve").click()
+    expect(p.get_by_role("alert")).to_contain_text("no test clip yet")
+    expect(p.get_by_text("Sent · waiting for Claude")).to_have_count(0)
+    assert not [d for d in decisions.load(srv.sdir) if d["stage"] == "camera"]
+    # (no assert_healthy: the console's 409 line is the refusal this test sends)
 
 
 def test_plain_short_has_no_camera_stage(view, live_server):

@@ -381,6 +381,18 @@ def test_a_one_frame_overrun_never_says_zero_seconds():
     assert [(s.id, s.f0, s.f1) for s in err.value.timeline.shots] == [("s01", 1, 60), ("s02", 61, 120)]
 
 
+def test_an_overrun_never_reads_as_a_need_equal_to_its_window():
+    """A window of 62 frames (2.07 s) whose lines need 63 (2.1 s): the need rounds up and the window down, so it
+    never says "need 2.1 s but its window is 2.1 s"."""
+    from bsa.timeline import WindowOverrun
+
+    short = _one_take([0, 2.06], 4)
+    with pytest.raises(WindowOverrun) as err:
+        build_timeline(short, {"l01a": 39 / 30, "l02a": 1.0})
+    assert str(err.value) == ("s01's lines need 2.1 s but its window is 2.0 s: shorten them or move s02's start "
+                              "0.1 s later")  # fmt: skip
+
+
 def test_duplicate_shot_ids_never_collapse_windows():
     from bsa.timeline import window_frames
 
