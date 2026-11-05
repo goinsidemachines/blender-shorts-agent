@@ -640,6 +640,7 @@ class Run:
         with self._lock:
             st = self._start_step(name)
             self._side.add(name)
+            self._moved.pop(name, None)  # its stall time counts from its first progress: Blender has to start first
             self.write(force=True)
             return st
 
@@ -762,9 +763,9 @@ class Run:
         stall time (as the current step's: max(STALL_MIN_S, 10 x its time per unit)); else None. The run's own
         stall_after_s follows the current step, whose writes keep the file fresh while a side step may be stuck."""
         name = st["name"]
-        if name not in self._side or name == self.current or st["state"] != "running":
-            return None
-        quiet = now - self._moved.get(name, st.get("started") or now)
+        if name not in self._side or name == self.current or st["state"] != "running" or name not in self._moved:
+            return None  # (not moved yet: the side process is still starting)
+        quiet = now - self._moved[name]
         per = (progress or {}).get("s_per_unit")
         return quiet if quiet > max(STALL_MIN_S, 10 * (per or 0.0)) else None
 
@@ -1027,6 +1028,9 @@ def describe(status: dict, now: float | None = None, ago: bool = True) -> dict:
             if fr and len(steps) > 1:
                 parts.append(f"render: {fr.get('rendered', 0)} frames rendered, {fr.get('reused', 0)} reused")
             summary = f"{label} done in {took}{ago}" + (f": {', '.join(parts)}" if len(steps) > 1 else "")
+            for s in steps:  # a side step that failed while the run went on (the checks beside a preview)
+                if s.get("state") == "failed":
+                    summary += f"; {s['name']} failed" + (f": {s['error']}" if s.get("error") else "")
     elif state in ("failed", "stopped"):
         at = f" at {step['name']}" if step and len(steps) > 1 else ""
         why = f": {status['error']}" if status.get("error") else ""

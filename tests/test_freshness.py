@@ -611,11 +611,15 @@ def test_object_keys_are_cached_and_never_part_of_the_check_key(sdir):
     objects = {"s01": {"objects": {"Cube": "k1", "Sphere": "k2"}, "rest": "r1"}}
     freshness.save_fingerprints(sdir, "h", {"s01": "a"}, objects=objects)
     assert freshness.load_fingerprints(sdir, "h") == {"s01": "a"}
+    assert freshness.has_object_keys(sdir)
     assert freshness.load_fingerprint_objects(sdir, {"s01": "a"}) == objects
     assert freshness.load_fingerprint_objects(sdir, {"s01": "b"}) == {}
     assert freshness.load_fingerprint_objects(sdir, None) == {}
     freshness.save_fingerprints(sdir, "h", {"s01": "a"})
     assert freshness.load_fingerprint_objects(sdir, {"s01": "a"}) == {}  # a cache from before the keys
+    assert not freshness.has_object_keys(sdir)  # so the next Blender run computes the cache again, keys and all
+    freshness.save_fingerprints(sdir, "h", {"s01": "a"}, objects={})
+    assert freshness.has_object_keys(sdir)  # computed with keys, even none: never computed again for that
     span = Span("s01", 1, 90)
     plain = freshness.shot_check_inputs("a", span, _shot(), ["s01"])
     keyed = freshness.shot_check_inputs("a", span, _shot(), ["s01"], objects=objects["s01"])
@@ -693,6 +697,19 @@ def test_partial_checks_keep_only_rows_of_unchanged_objects_and_pairs(sdir):
     assert freshness.partial_checks(sdir, freshness.checks_stamp("h", base, 5)) == {}  # nothing changed: all kept
     retagged = freshness.checks_stamp("h", {**base, "s01": _keyed(fp="fp2", tags="t2")}, 5)
     assert freshness.partial_checks(sdir, retagged) == {}  # re-check the whole shot
+
+
+def test_an_overlap_row_without_its_pair_checks_the_whole_shot_again(sdir):
+    """An overlap row that doesn't name its two objects can't be kept or dropped by object: its shot is checked again
+    whole, and the other shot's partial reuse is not affected."""
+    no_pair = _row("overlap", "A")  # no "pair"
+    other = _row("normals", "A", sid="s02")
+    base = _old_rows(sdir, [_row("normals", "B"), no_pair, other])
+    changed = freshness.checks_stamp("h", {**base, "s01": _keyed(objects={"A": "ka2", "B": "kb", "C": "kc"},
+                                                                 fp="fp2", tags="t1")}, 5)  # fmt: skip
+    assert "s01" not in freshness.partial_checks(sdir, changed)
+    _old_rows(sdir, [_row("normals", "B"), other])  # the same without that row: s01 is reused by object
+    assert freshness.partial_checks(sdir, changed)["s01"][0] == {"B", "C"}
 
 
 def test_partial_reuse_drops_deleted_and_renamed_objects(sdir):

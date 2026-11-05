@@ -218,7 +218,7 @@ def save_fingerprints(short_dir: Path, tl_hash: str, shots: dict, files: dict | 
     path = Path(short_dir) / "blend" / FINGERPRINTS
     data = {"version": FINGERPRINT_VERSION, "blend": blend, "timeline": tl_hash, "shots": shots,
             "files": files or {}, **({"code": code} if code else {}), **({"parts": parts} if parts else {}),
-            **({"objects": objects} if objects else {})}  # fmt: skip
+            **({"objects": objects} if objects is not None else {})}  # fmt: skip
     path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
 
 
@@ -255,6 +255,12 @@ def load_fingerprint_parts(short_dir: Path, fingerprints: dict | None) -> dict:
         return {}
     return {sid: parts[sid] for sid, fp in (fingerprints or {}).items()
             if fp is not None and shots.get(sid) == fp and isinstance(parts.get(sid), dict)}  # fmt: skip
+
+
+def has_object_keys(short_dir: Path) -> bool:
+    """The fingerprint cache records the per-object keys (a cache from before them still loads, but gives the checks
+    no object to reuse: compute it again once)."""
+    return isinstance((_read_cache(short_dir) or {}).get("objects"), dict)
 
 
 def load_fingerprint_objects(short_dir: Path, fingerprints: dict | None) -> dict:

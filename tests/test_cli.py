@@ -1373,7 +1373,7 @@ def _rendered(home, short: Path, preset: str, engine=None, blend=None, shift=0) 
     tl_hash = timeline_hash(json.loads((short / "source" / "timeline.json").read_text(encoding="utf-8")))
     fps = {s["id"]: f"fp-{s['id']}" for s in tl["shots"]} if blend else None
     if fps:
-        freshness.save_fingerprints(short, tl_hash, fps)
+        freshness.save_fingerprints(short, tl_hash, fps, objects={})  # with object keys, as Blender saves it
     for s in tl["shots"]:
         span = Span(s["id"], s["f0"] + shift, s["f1"] + shift)
         folder = short / "frames" / preset / s["id"]
@@ -2313,6 +2313,25 @@ def test_check_writes_the_overlap_summary(tmp_path):
     assert "overlap_summary" not in bsa_blender._write_checks(path, names, None, ["s01"], 20)
 
 
+def test_checks_that_could_not_be_written_are_an_error_not_a_stale_file(tmp_path, monkeypatch):
+    """review/checks.json held open by another program: the check fails plainly instead of leaving the old file as
+    if it were this run's."""
+    import pytest
+
+    import bsa_blender
+    from bsa import render_status
+
+    path = tmp_path / "review" / "checks.json"
+    path.parent.mkdir()
+    path.write_text('{"old": true}', encoding="utf-8")
+    monkeypatch.setattr(render_status, "write_atomic", lambda p, text, tries=8: False)
+    with pytest.raises(bsa_blender.CliError, match="another program keeps it open"):
+        bsa_blender._write_checks(path, [], None, ["s01"], 20)
+    assert path.read_text(encoding="utf-8") == '{"old": true}'
+    other = tmp_path / "review" / "frame-checks-final.json"
+    assert bsa_blender._write_findings(other, [])["errors"] == 0  # other review files: the next update writes them
+
+
 def test_settings_post_format_shows_it_and_whether_it_was_asked(home):
     from bsa import post
 
@@ -2756,7 +2775,7 @@ def test_check_prints_one_progress_line_per_shot_it_checks(home, pendulum, monke
     assert lines[-1] == f"checking s{n:02d} ({n} of {n}), 1 error so far"
     s = json.loads(rs.status_path(pendulum, "preview").read_text(encoding="utf-8"))
     (step,) = [x for x in s["run"]["steps"] if x["name"] == "check"]
-    assert step["progress"]["current"] in lines
+    assert step["progress"]["current"] == lines[-1]  # the last shot checked
 
 
 def test_check_in_chain_reports_progress_on_stdout_and_marks_nothing(home, pendulum, monkeypatch, capsys):
@@ -2888,7 +2907,8 @@ def test_side_check_records_its_progress_and_returns_its_result(capsys):
     assert side.join() == {"errors": 0, "warnings": 2, "checked": ["s01"], "kept": []}
     assert chain.calls == [((), {"done": 1, "total": 4, "unit": "frames", "current": "checking s01",
                                  "items": [{"id": "s01"}], "step": "check", "force": True})]  # fmt: skip
-    assert "checking s01 (1 of 1), 0 errors so far" in capsys.readouterr().err  # its stderr, echoed here
+    assert "[check] checking s01 (1 of 1), 0 errors so far" in capsys.readouterr().err  # its stderr, labelled
+    assert side.proc.stdout.closed and side.proc.stderr.closed  # the pipes are closed once it ended
     side.stop()  # after the join: nothing to do
 
 
@@ -2921,6 +2941,7 @@ def test_side_check_stop_ends_the_process():
     t0 = time.monotonic()
     side.stop()
     assert side.proc.poll() is not None and time.monotonic() - t0 < 10
+    assert side.proc.stdout.closed and side.proc.stderr.closed
     side.stop()  # twice: nothing more to do
     with pytest.raises(bsa_blender.CliError, match="the checks stopped"):
         side.join()

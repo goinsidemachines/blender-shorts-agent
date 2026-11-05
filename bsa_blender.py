@@ -154,8 +154,9 @@ def _mp4(sdir: Path, short, preset: str, run=None) -> Path:
     return engine_runs.mp4_path(sdir, short.slug, preset, run or engine_runs.EngineRun(None))
 
 
-def _write_findings(path: Path, findings, stamp: dict | None = None, **extra) -> dict:
-    """Findings (Finding objects or dicts) into a review JSON with their counts; `extra` keys go in too."""
+def _write_findings(path: Path, findings, stamp: dict | None = None, *, required: bool = False, **extra) -> dict:
+    """Findings (Finding objects or dicts) into a review JSON with their counts; `extra` keys go in too. `required`:
+    a file that could not be replaced (another program holds it) is a CliError, not a stale file left behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [f if isinstance(f, dict) else asdict(f) for f in findings]
     data = {
@@ -167,7 +168,10 @@ def _write_findings(path: Path, findings, stamp: dict | None = None, **extra) ->
     }
     from bsa import render_status as rs
 
-    rs.write_atomic(path, json.dumps(data, indent=2) + "\n")  # the page server may read it as it is written
+    wrote = rs.write_atomic(path, json.dumps(data, indent=2) + "\n")  # the page server may read it as it is written
+    if not wrote and required:
+        raise CliError(f"Couldn't write {path}: another program keeps it open. Close it (an editor, a viewer) and run "
+                       "it again; the checks found here were not saved.", {"errors": data["errors"]})  # fmt: skip
     return {"path": str(path), **data}
 
 
@@ -180,8 +184,8 @@ def _fingerprints(sdir: Path, short, tl, tl_hash: str, data=None, reset_after=Fa
         return None
     ids = [s.id for s in short.shots]
     cached = freshness.load_fingerprints(sdir, tl_hash, _fingerprint_code())
-    if cached is not None and all(i in cached for i in ids):
-        return {i: cached[i] for i in ids}
+    if cached is not None and all(i in cached for i in ids) and freshness.has_object_keys(sdir):
+        return {i: cached[i] for i in ids}  # (a cache without object keys is made again once: the same fingerprints)
     import bpy
 
     from bsa.blender.fingerprint import fingerprints
@@ -838,7 +842,7 @@ def _write_checks(path: Path, rows: list[dict], stamp: dict | None, shot_order: 
 
     summary = findings.family_lines(rows, shot_order)
     listed, held = _cap_overlap_rows(rows, most)
-    return _write_findings(path, listed, stamp, **extra, held_back=held,
+    return _write_findings(path, listed, stamp, required=True, **extra, held_back=held,
                            **({"overlap_summary": summary} if summary else {}))  # fmt: skip
 
 
@@ -2168,9 +2172,20 @@ class _SideCheck:
     def _read_err(self) -> None:
         for raw in self.proc.stderr:
             line = raw.rstrip("\r\n")
-            print(line, file=sys.stderr, flush=True)
+            print(f"[check] {line}" if line.strip() else line, file=sys.stderr, flush=True)  # which process said it
             if line.strip():
                 self.last_err = line.strip()
+
+    def _close(self) -> None:
+        """Wait for the reader threads (the pipes end with the process), then close the pipes."""
+        for t in self._threads:
+            t.join(timeout=5)
+        for pipe in (self.proc.stdout, self.proc.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
 
     def join(self) -> dict:
         """The checks' result once the process ends. CliError when it says ok false (check errors carry
@@ -2183,8 +2198,7 @@ class _SideCheck:
                 break
             except subprocess.TimeoutExpired:
                 continue
-        for t in self._threads:
-            t.join()
+        self._close()
         res = self.result
         if not isinstance(res, dict):
             raise CliError(f"the checks stopped: {self.last_err or f'exit code {code}'}")
@@ -2197,14 +2211,14 @@ class _SideCheck:
         """End the check process if it still runs: terminate, then kill after 5 s. Safe twice and after join."""
         import subprocess
 
-        if self.proc.poll() is not None:
-            return
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        self._close()
 
 
 def _render_summary(out: dict) -> dict:

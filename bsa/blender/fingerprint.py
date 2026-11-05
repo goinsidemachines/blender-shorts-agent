@@ -164,6 +164,9 @@ class _Hasher:
             return
         animated = _animated_paths(obj)
         for path, name, value in inputs:
+            if value is GN_UNREADABLE:  # a stable marker: the same unreadable input hashes the same every time
+                h.update(b"gn:err:" + path.encode("utf-8", "replace"))
+                continue
             h.update(b"gn:" + path.encode("utf-8", "replace"))
             if path in animated:
                 h.update(b"~")
@@ -257,29 +260,59 @@ class _Hasher:
             h.update(_enc(value))
 
 
+GN_UNREADABLE = object()  # an input whose value could not be read: hashed as a stable "gn:err:<path>"
+
+
+def _escape(name: str) -> str:
+    """A name as Blender writes it inside a data path's ["..."] (so it matches the fcurves' data_path)."""
+    esc = getattr(getattr(bpy, "utils", None), "escape_identifier", None)
+    return esc(name) if esc else name.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _nodes_inputs(obj) -> list[tuple[str, str, object]]:
     """(data path, input, value) of every geometry nodes modifier input on `obj`. Blender 5 keeps them in the
     modifier's `properties.inputs` (whose address is the modifier's own, so the generic walk takes it for visited and
-    never sees them); before, they were the modifier's ID properties, which RNA does not list."""
+    never sees them); before, they were the modifier's ID properties, which RNA does not list. An input that can't
+    be read gives GN_UNREADABLE as its value instead of stopping the fingerprint."""
     out = []
     for mod in getattr(obj, "modifiers", ()):
         if mod.type != "NODES":
             continue
-        inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+        base = f'modifiers["{_escape(mod.name)}"]'
+        try:
+            inputs = getattr(getattr(mod, "properties", None), "inputs", None)
+        except Exception:  # noqa: BLE001 - an odd modifier never stops a fingerprint
+            inputs = None
         if inputs is not None:
-            for prop in inputs.bl_rna.properties:
-                if prop.identifier in ("rna_type", "name"):
+            try:
+                props = [p.identifier for p in inputs.bl_rna.properties]
+            except Exception:  # noqa: BLE001
+                out.append((f"{base}.properties.inputs", "", GN_UNREADABLE))
+                continue
+            for ident in props:
+                if ident in ("rna_type", "name"):
                     continue
-                item = getattr(inputs, prop.identifier, None)
-                if item is not None and hasattr(item, "value"):
-                    path = f'modifiers["{mod.name}"].properties.inputs.{prop.identifier}.value'
-                    out.append((path, prop.identifier, item.value))
+                path = f"{base}.properties.inputs.{ident}.value"
+                try:
+                    item = getattr(inputs, ident, None)
+                    if item is None or not hasattr(item, "value"):
+                        continue
+                    value = item.value
+                except Exception:  # noqa: BLE001
+                    value = GN_UNREADABLE
+                out.append((path, ident, value))
             continue
         try:
             names = list(mod.keys())  # a struct's ID properties (before Blender 5)
         except TypeError:
             continue
-        out += [(f'modifiers["{mod.name}"]["{name}"]', name, mod[name]) for name in names]
+        for name in names:
+            path = f'{base}["{_escape(name)}"]'
+            try:
+                value = mod[name]
+            except Exception:  # noqa: BLE001
+                value = GN_UNREADABLE
+            out.append((path, name, value))
     return out
 
 

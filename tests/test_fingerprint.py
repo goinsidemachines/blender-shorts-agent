@@ -31,5 +31,8 @@ def test_fingerprints_in_blender(blender_run):
         "test_geometry_nodes_inputs_change_the_fingerprint",
         "test_an_animated_geometry_nodes_input_is_sampled_per_frame",
         "test_geometry_nodes_inputs_now_count_and_only_where_they_are",
+        "test_a_geometry_nodes_modifier_with_no_group_or_no_inputs_adds_nothing",
+        "test_an_unreadable_geometry_nodes_input_is_a_stable_marker",
+        "test_a_modifier_name_with_a_quote_still_matches_its_animated_input",
     ):
         assert f"PASS {name}" in result.stdout

@@ -862,6 +862,37 @@ def test_a_run_that_ends_while_a_side_step_runs_ends_that_step_too(tmp_path):
     assert check["state"] == "stopped" and check["error"] == "the run ended before this step said it finished"
 
 
+def test_a_side_step_is_not_stalled_before_its_first_progress(tmp_path):
+    """The check process beside the render first has to start Blender: its stall time counts from its first count."""
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        run.begin("render")
+        clock.tick(rs.STALL_MIN_S * 3)
+        run.progress(3, 30)
+        run.write(force=True)
+        assert "stalled_s" not in _step(_read(tmp_path), "check")
+        run.progress(1, 10, current="checking s01", step="check")
+        clock.tick(rs.STALL_MIN_S + 5)
+        run.write(force=True)
+        assert _step(_read(tmp_path), "check")["stalled_s"] == pytest.approx(rs.STALL_MIN_S + 5)
+
+
+def test_a_run_done_with_a_failed_side_step_says_so(tmp_path):
+    """A preview made although the checks beside it found errors: the summary says the checks failed, not only
+    "done"."""
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render", "edit")) as run:
+        run.begin_side("check")
+        with run.step("render"):
+            pass
+        run.end("check", "failed", "2 check error(s); see review/checks.json")
+        with run.step("edit"):
+            pass
+    summary = rs.describe(_read(tmp_path), clock())["summary"]
+    assert " done in " in summary and "check failed: 2 check error(s)" in summary
+
+
 def test_a_side_step_that_stops_moving_is_flagged_stalled(tmp_path):
     """The run's own stall time follows the current step (the render); a side step that stops counting while the
     render goes on is flagged on its own row, and in the summary."""

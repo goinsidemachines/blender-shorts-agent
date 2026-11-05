@@ -546,7 +546,6 @@ def test_fingerprints_are_byte_identical_to_before():
     assert got == want
 
 
-
 def test_geometry_nodes_inputs_change_the_fingerprint():
     """A float, a bool and an object input of a geometry nodes modifier each change the shot's fingerprint and the
     object's key (Blender 5 keeps them where the generic walk does not look)."""
@@ -585,10 +584,10 @@ def test_an_animated_geometry_nodes_input_is_sampled_per_frame():
     from bsa.blender.bake import _fcurves
 
     fc = next(f for f in _fcurves(bpy.data.objects["A"].animation_data.action) if "Socket" in f.data_path)
-    fc.keyframe_points[-1].co.y = 0.9  # the key at frame 10: shot 1 only (constant after it)
+    fc.keyframe_points[0].co.y = 0.05  # the key at frame 1: shot 1 only (shot 2 holds the last key's value)
     fc.update()
     after = fingerprints([(sc, spans)])[0]
-    assert after["s01"] != before["s01"]
+    assert after["s01"] != before["s01"] and after["s02"] == before["s02"]
 
 
 def test_geometry_nodes_inputs_now_count_and_only_where_they_are():
@@ -602,3 +601,67 @@ def test_geometry_nodes_inputs_now_count_and_only_where_they_are():
         return
     assert got == want["now"]
     assert got["s01"] != want["before"]["s01"] and got["s02"] == want["before"]["s02"]
+
+
+def test_a_geometry_nodes_modifier_with_no_group_or_no_inputs_adds_nothing():
+    """A geometry nodes modifier with no node group, or a group with only its geometry socket, gives no inputs: its
+    object hashes only what the generic walk sees, and the fingerprint is stable."""
+    from bsa.blender.fingerprint import _nodes_inputs
+
+    sc = _keyed_scene()
+    a = bpy.data.objects["A"]
+    a.modifiers.new("Empty", "NODES")
+    assert _nodes_inputs(a) == []
+    tree = bpy.data.node_groups.new("Bare", "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    a.modifiers.new("Bare", "NODES").node_group = tree
+    assert [path for path, _name, _value in _nodes_inputs(a)] == []
+    spans = [Span("s01", 1, 30)]
+    first = fingerprints([(sc, spans)])[0]
+    assert fingerprints([(sc, spans)])[0] == first
+
+
+class _Unreadable:
+    """Inputs whose every value raises when read; RNA lists one."""
+
+    bl_rna = type("R", (), {"properties": (type("P", (), {"identifier": "Socket_1"})(),)})()
+
+    def __getattr__(self, name):
+        raise RuntimeError("can't read it")
+
+
+def _broken_modifier():
+    """A stand-in for a geometry nodes modifier whose inputs raise when read."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(type="NODES", name='Odd "one"', properties=SimpleNamespace(inputs=_Unreadable()))
+
+
+def test_an_unreadable_geometry_nodes_input_is_a_stable_marker():
+    from bsa.blender.fingerprint import GN_UNREADABLE, _nodes_inputs
+
+    obj = type("O", (), {"modifiers": [_broken_modifier()]})()
+    got = _nodes_inputs(obj)
+    assert got == [('modifiers["Odd \\"one\\""].properties.inputs.Socket_1.value', "Socket_1", GN_UNREADABLE)]
+    assert _nodes_inputs(obj) == got
+
+
+def test_a_modifier_name_with_a_quote_still_matches_its_animated_input():
+    from bsa.blender.fingerprint import _animated_paths, _nodes_inputs
+
+    sc = _keyed_scene()
+    gn = _Nodes(bpy.data.objects["A"])
+    gn.mod.name = 'Join "x"'
+    item = gn.item("Amount")
+    if item is None:  # before Blender 5 the inputs are ID properties
+        return
+    item.value = 0.1
+    item.keyframe_insert("value", frame=1)
+    item.value = 0.4
+    item.keyframe_insert("value", frame=20)
+    animated = _animated_paths(bpy.data.objects["A"])
+    paths = [path for path, name, _v in _nodes_inputs(bpy.data.objects["A"]) if name == gn.ids["Amount"]]
+    assert paths and paths[0] in animated, (paths, animated)
+    assert fingerprints([(sc, [Span("s01", 1, 30)])])[0]
+

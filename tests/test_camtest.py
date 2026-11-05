@@ -67,6 +67,8 @@ def test_build_stamp_moves_when_build_py_or_a_module_it_imports_changes(tmp_path
     assert one and camtest.build_stamp(tmp_path) == one
     st = (src / "rig.py").stat()
     os.utime(src / "rig.py", ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert camtest.build_stamp(tmp_path) == one  # only its time moved (a copy to another drive): the same build
+    (src / "rig.py").write_text("X = 2\n", encoding="utf-8")
     assert camtest.build_stamp(tmp_path) != one
     (src / "other.py").write_text("Y = 2\n", encoding="utf-8")  # not imported: not a build input
     two = camtest.build_stamp(tmp_path)

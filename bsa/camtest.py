@@ -21,7 +21,8 @@ def percent(scale: float) -> int:
 
 def build_stamp(short_dir: Path) -> str:
     """A fingerprint of the build inputs (freshness.build_inputs: build.py and the local modules it imports), their
-    paths, sizes and mtime_ns: it changes when any of them is edited, added or dropped. "" without build.py."""
+    paths, sizes and contents: it changes when any of them is edited, added or dropped, and not when a copy (another
+    drive, a file system with coarser times) only moves their times. "" without build.py."""
     import hashlib
     import json
 
@@ -31,10 +32,11 @@ def build_stamp(short_dir: Path) -> str:
     rows = []
     for f in build_inputs(short_dir):
         try:
-            st = f.stat()
+            data = f.read_bytes()  # a few small scripts
         except OSError:
             continue
-        rows.append([f.relative_to(src).as_posix() if f.is_relative_to(src) else f.name, st.st_size, st.st_mtime_ns])
+        rows.append([f.relative_to(src).as_posix() if f.is_relative_to(src) else f.name, len(data),
+                     hashlib.sha256(data).hexdigest()])  # fmt: skip
     return hashlib.sha256(json.dumps(rows).encode("utf-8")).hexdigest()[:16] if rows else ""
 
 
