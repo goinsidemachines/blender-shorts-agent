@@ -58,10 +58,11 @@ Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook
   relay `not_fixed` (each with its `fix`, e.g. `BLENDER relink SHORT --from OLD` for a .blend Blender couldn't open
   or save) and `note` (the fingerprints include the files' paths, so a short in progress re-renders and its checks
   run once more).
-- `BLENDER relink SHORT --from OLD [--to NEW]`: re-points the .blend's images, sounds, fonts, movie clips, caches
-  and linked files under OLD to the same path under NEW (default: the short's workspace) and saves it only when
-  something changed; packed and `//relative` paths are left alone, the render engine and settings untouched.
-  `missing` lists repointed files that aren't there.
+- `BLENDER relink SHORT --from OLD [--to NEW]`: re-points the .blend's images, sounds, fonts, movie clips, texts,
+  caches (point, fluid, mesh), linked files, sequencer strips, File Output nodes and the render output path under
+  OLD to the same path under NEW (default: the short's workspace) and saves it only when something changed (same
+  compression, no .blend1); packed and `//relative` paths are left alone, the render engine and every other setting
+  untouched. `missing` lists repointed files that aren't there (the move lists each under `not_fixed`).
 - `CLI new-short "<title>" --like OTHER`: starts a short from an earlier one (its number, slug or folder): copies only
   what differs from the user's settings and brand, never the story or the render engine. The result has `said`,
   `notes` and `skipped` (the interview questions to leave out).

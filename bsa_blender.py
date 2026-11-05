@@ -2229,7 +2229,10 @@ def cmd_probe(args) -> dict:
 # --------------------------------------------------------------------------- relink (after a workspace move)
 
 _RELINK_KINDS = (("image", "images"), ("sound", "sounds"), ("font", "fonts"), ("movieclip", "movieclips"),
-                 ("cache_file", "cache_files"), ("volume", "volumes"), ("library", "libraries"))  # fmt: skip
+                 ("cache_file", "cache_files"), ("volume", "volumes"), ("text", "texts"),
+                 ("library", "libraries"))  # fmt: skip
+_RELINK_OUTPUTS = {"render_output", "file_output", "point_cache", "fluid_cache", "bake"}  # folders written, not read
+_COMPRESSED = (b"\x28\xb5\x2f\xfd", b"\x1f\x8b")  # zstd, gzip: a .blend saved compressed
 
 
 def _file_there(path: str) -> bool:
@@ -2238,10 +2241,102 @@ def _file_there(path: str) -> bool:
     return p.parent.is_dir() if "<" in p.name else p.exists()
 
 
+def _relink_ids(bpy):
+    """(owner, attribute, type, name) of each file path a data-block of this .blend keeps (not packed, not linked from
+    another .blend, not an indirect library: that file names those)."""
+    for kind, attr in _RELINK_KINDS:
+        for idb in getattr(bpy.data, attr, ()):
+            if getattr(idb, "packed_file", None) is not None or idb.library is not None:
+                continue
+            if getattr(idb, "parent", None) is not None or getattr(idb, "is_in_memory", False):
+                continue
+            yield idb, "filepath", kind, idb.name
+
+
+def _relink_settings(bpy):
+    """(owner, attribute, type, name) of the other paths a .blend keeps: sequencer movie and image strips, the render
+    output, File Output nodes, and simulation caches (point caches, fluid, ocean and mesh caches)."""
+    for sc in bpy.data.scenes:
+        if sc.library is not None:
+            continue
+        yield sc.render, "filepath", "render_output", sc.name  # the output path only; no other render setting
+        rbw = sc.rigidbody_world
+        if rbw is not None and rbw.point_cache is not None:
+            yield rbw.point_cache, "filepath", "point_cache", f"{sc.name}: rigid body world"
+        se = sc.sequence_editor
+        strips = (se.strips_all if hasattr(se, "strips_all") else getattr(se, "sequences_all", ())) if se else ()
+        for strip in strips:
+            for attr in ("filepath", "directory"):  # a movie strip's file; an image strip's folder (elements are names)
+                if isinstance(getattr(strip, attr, None), str):
+                    yield strip, attr, "strip", f"{sc.name}: {strip.name}"
+        tree = getattr(sc, "node_tree", None)  # the compositor before Blender 5 (5: a node group, below)
+        if tree is not None:
+            yield from _file_outputs(tree)
+    for tree in bpy.data.node_groups:
+        if tree.library is None:
+            yield from _file_outputs(tree)
+    for ob in bpy.data.objects:
+        if ob.library is not None:
+            continue
+        for m in ob.modifiers:
+            name = f"{ob.name}: {m.name}"
+            if getattr(m, "point_cache", None) is not None:
+                yield m.point_cache, "filepath", "point_cache", name
+            ds = getattr(m, "domain_settings", None)
+            if ds is not None and isinstance(getattr(ds, "cache_directory", None), str):
+                yield ds, "cache_directory", "fluid_cache", name
+            canvas = getattr(m, "canvas_settings", None)
+            for surface in (getattr(canvas, "canvas_surfaces", None) or ()) if canvas else ():
+                yield surface.point_cache, "filepath", "point_cache", f"{name}: {surface.name}"
+                yield surface, "image_output_path", "bake", f"{name}: {surface.name}"
+            if m.type in ("MESH_CACHE", "OCEAN") and isinstance(getattr(m, "filepath", None), str):
+                yield m, "filepath", "bake" if m.type == "OCEAN" else "mesh_cache", name
+        for ps in ob.particle_systems:
+            yield ps.point_cache, "filepath", "point_cache", f"{ob.name}: {ps.name}"
+
+
+def _file_outputs(tree):
+    for node in tree.nodes:
+        if node.bl_idname == "CompositorNodeOutputFile":
+            for attr in ("directory", "base_path"):  # Blender 5 / earlier
+                if isinstance(getattr(node, attr, None), str):
+                    yield node, attr, "file_output", f"{tree.name}: {node.name}"
+            for slot in getattr(node, "file_slots", None) or ():  # earlier: a slot's path may be absolute
+                yield slot, "path", "file_output", f"{tree.name}: {node.name}: {slot.path}"
+
+
+def _repointed(fp: str, old: Path, new: Path, library=None) -> str | None:
+    """FP under NEW when it is an absolute path under OLD (a //relative path is relative to the .blend: kept);
+    a folder keeps its trailing separator."""
+    import bpy
+
+    from bsa import wsmove
+
+    if not fp or fp.startswith("//") or fp == "<builtin>":
+        return None
+    to = wsmove.repoint(bpy.path.abspath(fp, library=library), old, new)
+    if to is not None and fp.endswith(("/", "\\")) and not to.endswith(("/", "\\")):
+        to += "\\" if "\\" in to else "/"
+    return to
+
+
+def _save_as_it_was(bpy, compressed: bool) -> None:
+    """Save the open .blend in place with its own compression and no .blend1 backup (the preference is restored;
+    with --factory-startup it is never saved)."""
+    prefs = bpy.context.preferences.filepaths
+    keep = prefs.save_version
+    prefs.save_version = 0
+    try:
+        bpy.ops.wm.save_mainfile(compress=compressed)
+    finally:
+        prefs.save_version = keep
+
+
 def cmd_relink(args) -> dict:
     """Re-point every file path of the short's .blend that is under OLD (--from) to the same path under NEW (--to,
     default the short's workspace), and save it when anything changed. Packed files, //relative paths and data
-    linked from another .blend are left alone; nothing else in the file (the render engine, any setting) changes."""
+    linked from another .blend are left alone; nothing else in the file (the render engine, any other render
+    setting) changes."""
     import bpy
 
     from bsa import wsmove
@@ -2250,34 +2345,35 @@ def cmd_relink(args) -> dict:
     blend = _blend(sdir)
     if not blend.is_file():
         raise CliError(f"{blend} does not exist: nothing to relink")
+    with blend.open("rb") as fh:
+        compressed = fh.read(4).startswith(_COMPRESSED)
     old = Path(args.from_)
     new = Path(args.to) if args.to else sdir.parent
     if not bpy.data.filepath or not wsmove.same_folder(Path(bpy.data.filepath), blend):
         bpy.ops.wm.open_mainfile(filepath=str(blend))
     relinked, missing, libraries, warnings = [], [], [], []
-    for kind, attr in _RELINK_KINDS:
-        for idb in getattr(bpy.data, attr, ()):
-            fp = idb.filepath
-            if not fp or fp.startswith("//") or fp == "<builtin>" or getattr(idb, "packed_file", None) is not None:
-                continue
-            if idb.library is not None or getattr(idb, "parent", None) is not None:
-                continue  # linked from (or an indirect library of) another .blend: that file names it
-            to = wsmove.repoint(bpy.path.abspath(fp, library=idb.library), old, new)
-            if to is None:
-                continue
-            idb.filepath = to
-            relinked.append({"type": kind, "name": idb.name, "from": fp, "to": to})
-            if not _file_there(to):
-                missing.append(to)
-            elif kind == "library":
-                libraries.append(idb)
+    for owner, attr, kind, name in [*_relink_ids(bpy), *_relink_settings(bpy)]:
+        fp = getattr(owner, attr)
+        to = _repointed(fp, old, new, getattr(owner, "library", None) if attr == "filepath" else None)
+        if to is None:
+            continue
+        try:
+            setattr(owner, attr, to)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:  # read-only in this Blender version
+            warnings.append(f"the {kind.replace('_', ' ')} {name} still points at {fp}: {_one_line(exc)}")
+            continue
+        relinked.append({"type": kind, "name": name, "from": fp, "to": to})
+        if kind not in _RELINK_OUTPUTS and not _file_there(to):
+            missing.append(to)
+        elif kind == "library":
+            libraries.append(owner)
     for lib in libraries:
         try:
             lib.reload()
         except RuntimeError as exc:
             warnings.append(f"the linked file {lib.filepath} didn't reload: {_one_line(exc)}")
     if relinked:
-        bpy.ops.wm.save_mainfile()
+        _save_as_it_was(bpy, compressed)
     out = {"relinked": relinked, "missing": missing, "saved": bool(relinked)}
     if warnings:
         out["warnings"] = warnings

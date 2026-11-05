@@ -2983,7 +2983,8 @@ def test_workspace_move_relinks_every_short_with_a_blend(tmp_path, bsa_home, cap
         if short.name == other.name:
             return subprocess.CompletedProcess(cmd, 1, 'BSA_RESULT {"ok": false, "error": "the file is damaged"}\n',
                                                "the file is damaged\n")  # fmt: skip
-        res = {"relinked": [{"type": "image", "name": "tex", "from": "a", "to": "b"}], "missing": [], "saved": True}
+        res = {"relinked": [{"type": "image", "name": "tex", "from": "a", "to": "b"}], "missing": ["B:/gone.png"],
+               "saved": True, "warnings": ["the linked file B:/kit.blend didn't reload: no such file"]}  # fmt: skip
         return subprocess.CompletedProcess(cmd, 0, "Blender 4.5\nBSA_RESULT " + json.dumps(res) + "\n", "")
 
     monkeypatch.setattr(proc, "run", fake_run)
@@ -2998,8 +2999,14 @@ def test_workspace_move_relinks_every_short_with_a_blend(tmp_path, bsa_home, cap
         assert cmd[7:9] == ["--", "relink"] and cmd[10:] == ["--from", str(old)]
     assert sorted(Path(c[9]).name for c in calls) == [sdir.name, other.name]
     assert all(Path(c[9]).parent == new for c in calls)
+    warning = "the linked file B:/kit.blend didn't reload: no such file"
     assert out["relinked"] == [{"short": sdir.name, "relinked": [{"type": "image", "name": "tex", "from": "a",
-                                                                  "to": "b"}], "missing": [], "saved": True}]  # fmt: skip
+                                                                  "to": "b"}], "missing": ["B:/gone.png"],
+                                "saved": True, "warnings": [warning]}]  # fmt: skip
+    gone = [n for n in out["not_fixed"] if "B:/gone.png" in n["what"]]  # a missing file and a failed reload: a row each
+    assert len(gone) == 1 and gone[0]["what"].startswith(sdir.name) and "put the file back" in gone[0]["fix"]
+    kit = [n for n in out["not_fixed"] if "kit.blend" in n["what"]]
+    assert len(kit) == 1 and "reload" in kit[0]["fix"]
     bad = [n for n in out["not_fixed"] if other.name in n["what"]]
     assert len(bad) == 1 and "the file is damaged" in bad[0]["what"]
     assert bad[0]["fix"] == f'BLENDER relink 02 --from "{old}"'

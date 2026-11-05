@@ -1535,6 +1535,13 @@ def cmd_workspace(args) -> dict:
         res, why = _relink(exe, sdir, old) if exe is not None else (None, no_blender)
         if res is not None:
             relinked.append({"short": sdir.name, **res})
+            for path in res.get("missing") or []:
+                not_fixed.append({"what": f"{sdir.name}: its .blend now points at {path}, which is not there",
+                                  "fix": f"put the file back at {path}, or pick it again in Blender in {blend}"})  # fmt: skip
+            for warning in res.get("warnings") or []:
+                not_fixed.append({"what": f"{sdir.name}: {warning}",
+                                  "fix": f"open {blend} in Blender and fix it by hand: reload the linked file "
+                                         "(Outliner, Blender File view) or set the path"})  # fmt: skip
             continue
         not_fixed.append({"what": f"{sdir.name}: its .blend still points at {old} for its images, sounds and linked "
                                   f"files ({why})",
