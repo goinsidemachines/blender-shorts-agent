@@ -1426,6 +1426,106 @@ def cmd_assets(args) -> dict:
     return {"files": {k: [str(p) for p in v] for k, v in files.items()}}
 
 
+# --------------------------------------------------------------------------- workspace move
+
+
+def cmd_workspace(args) -> dict:
+    """`workspace move NEW`: move the whole workspace and repoint the paths stored for it. Refuses while its page
+    server, a render or the GPU lock is live, and never deletes the old folder (another drive: it is copied, every
+    file's size checked, and the old folder kept for the user to delete)."""
+    import errno
+    import os
+    import shutil
+    import time
+
+    from bsa import gpulock, render_status, wsmove
+    from bsa.review import launch, server
+
+    s = settings.load_settings()
+    if not s.get("workspace"):
+        raise CliError("No workspace is set yet: run settings set workspace PATH first.")
+    old = Path(s["workspace"])
+    new = Path(args.new).expanduser().resolve()
+    if not old.is_dir():
+        raise CliError(f"the workspace {old} is not there: if it was moved by hand, run settings set workspace "
+                       "PATH with where it is now")  # fmt: skip
+    why = wsmove.refusal(old, new, server=launch.server_info(old), running=server.jobs_running(old),
+                         gpu=gpulock.live_holder(gpulock.lock_path(old)))  # fmt: skip
+    if why:
+        raise CliError(f"Can't move the workspace: {why}. Nothing was changed.")
+
+    new.parent.mkdir(parents=True, exist_ok=True)
+    how = "renamed" if wsmove.same_drive(old, new) else "copied"
+    if how == "renamed":
+        made_empty = new.is_dir()
+        if made_empty:
+            new.rmdir()  # empty (refusal checked): a rename can't land on an existing folder on Windows
+        try:
+            old.rename(new)
+        except OSError as exc:
+            if made_empty:
+                new.mkdir(exist_ok=True)
+            if exc.errno != errno.EXDEV:  # another file system behind one drive (Linux mounts): copy instead
+                raise CliError(f"Couldn't rename {old} to {new}: {exc.strerror or exc}. Close anything that has a "
+                               "file in it open (Blender, a player, a file window) and run it again. Nothing was "
+                               "changed.") from None  # fmt: skip
+            how = "copied"
+    if how == "copied":
+        try:
+            shutil.copytree(old, new, copy_function=shutil.copy2, dirs_exist_ok=True)
+        except (OSError, shutil.Error) as exc:
+            raise CliError(f"Couldn't copy the workspace to {new}: {_one_line(exc)}. Nothing was repointed and the "
+                           f"workspace is still {old}; delete the partial copy, free space or fix the cause, and run "
+                           "it again.") from None  # fmt: skip
+        bad = wsmove.size_mismatches(old, new)
+        if bad:
+            raise CliError(f"The copy in {new} doesn't match the workspace ({len(bad)} file(s) missing or of another "
+                           f"size, e.g. {bad[0]}). Nothing was repointed and the workspace is still {old}; check the "
+                           "disk, delete the copy and run it again.", {"from": str(old), "to": str(new),
+                           "mismatched": bad})  # fmt: skip
+
+    changed: list[str] = []
+    not_fixed: list[dict] = []
+    relinked: list[str] = []
+    for blend in sorted(new.glob("*/blend/short.blend")):  # Task 13 runs BLENDER relink here
+        key = workspace.short_key(blend.parent.parent, new)
+        not_fixed.append({"what": f"{blend.parent.parent.name}: its .blend still points at {old} for its images, "
+                                  "sounds and linked files",
+                          "fix": f"BLENDER relink {key}"})  # fmt: skip
+
+    s, keys = wsmove.rewrite(s, old, new)
+    if keys:
+        settings.save_settings(s)
+        changed += [f"settings: {k}" for k in keys]
+    for path in sorted(new.glob("*/review/render-status-*.json")):
+        status = render_status.read_status(path)
+        short = status.get("short") if status else None
+        moved = wsmove.repoint(short.get("dir"), old, new) if isinstance(short, dict) else None
+        if moved is None:
+            continue
+        short["dir"] = moved
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        changed.append(f"{path.relative_to(new).as_posix()}: short.dir")
+    for rel, key in wsmove.leftovers(new, old):
+        not_fixed.append({"what": f"{rel}: {key} still names a path in {old}",
+                          "fix": f"edit {new / rel}: change {old} to {new} in {key}"})  # fmt: skip
+
+    out = {"from": str(old), "to": str(new), "how": how, "changed": changed, "relinked": relinked,
+           "not_fixed": not_fixed, "old_folder": None,
+           "note": "Stored fingerprints name the old folder, so a short in progress re-renders once on its next run."}  # fmt: skip
+    if how == "copied":
+        out["old_folder"] = f"kept at {old}: delete it yourself once you have checked {new}"
+        try:
+            (old / "MOVED.txt").write_text(
+                f"This workspace was copied to {new} on {time.strftime('%Y-%m-%d %H:%M')}.\n"
+                "Check the copy, then delete this folder yourself. The plugin never deletes it.\n", encoding="utf-8")
+        except OSError:
+            pass
+    return out
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -1573,6 +1673,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mode", choices=["script", "mcp"], help="script or MCP mode, if known")
     sp.add_argument("--open", action="store_true", help="open the one page at its Post stage (report)")
     sp.set_defaults(fn=cmd_feedback)
+
+    sp = sub.add_parser("workspace", help="move NEW: move the whole workspace to NEW (renamed on one drive, copied and "
+                        "checked across drives, the old folder kept) and repoint the paths stored for it")  # fmt: skip
+    sp.add_argument("action", choices=["move"])
+    sp.add_argument("new")
+    sp.set_defaults(fn=cmd_workspace)
     return p
 
 

@@ -2903,3 +2903,122 @@ def test_side_check_stop_ends_the_process():
     side.stop()  # twice: nothing more to do
     with pytest.raises(bsa_blender.CliError, match="the checks stopped"):
         side.join()
+
+
+# --------------------------------------------------------------------------- workspace move
+
+
+def _move_setup(tmp_path, bsa_home):
+    """A workspace with one short (a .blend and a finished render-status file) and a closing image inside it."""
+    from bsa import settings as bsa_settings
+
+    old = tmp_path / "Shorts"
+    sdir = old / "01-how-a-gear-train-works"
+    (sdir / "review").mkdir(parents=True)
+    (sdir / "blend").mkdir()
+    (sdir / "blend" / "short.blend").write_bytes(b"BLENDER" + b"x" * 64)
+    (sdir / "review" / "render-status-final.json").write_text(
+        json.dumps({"state": "done", "short": {"dir": str(sdir)}, "preset": "final"}), encoding="utf-8")
+    (old / "brand").mkdir()
+    (old / "brand" / "end.png").write_bytes(b"png")
+    (sdir / "review" / "notes.json").write_text(json.dumps({"seen": str(sdir / "stills" / "a.png")}),
+                                                encoding="utf-8")  # fmt: skip
+    bsa_settings.set_value("workspace", str(old))
+    bsa_settings.set_value("closing.image", str(old / "brand" / "end.png"))
+    bsa_settings.set_value("blender_exe", str(tmp_path / "Blender" / "blender.exe"))
+    return old, sdir
+
+
+def _move(capsys, new) -> tuple[int, dict | None, str]:
+    import bsa_cli
+
+    code = bsa_cli.main(["workspace", "move", str(new)])
+    cap = capsys.readouterr()
+    return code, (json.loads(cap.out) if cap.out.strip() else None), cap.err
+
+
+def test_workspace_move_renames_and_fixes_settings_and_statuses(tmp_path, bsa_home, capsys):
+    from bsa import settings as bsa_settings
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    new = tmp_path / "Moved" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    assert out["how"] == "renamed" and out["old_folder"] is None
+    assert out["from"] == str(old) and out["to"] == str(new)
+    assert not old.exists() and (new / sdir.name / "blend" / "short.blend").is_file()
+    s = bsa_settings.load_settings()
+    assert s["workspace"] == str(new)
+    assert s["closing"]["image"] == str(new / "brand" / "end.png")
+    assert s["blender_exe"] == str(tmp_path / "Blender" / "blender.exe")
+    status = json.loads((new / sdir.name / "review" / "render-status-final.json").read_text(encoding="utf-8"))
+    assert status["short"]["dir"] == str(new / sdir.name)
+    assert "settings: workspace" in out["changed"] and "settings: closing.image" in out["changed"]
+    assert f"{sdir.name}/review/render-status-final.json: short.dir" in out["changed"]
+    whats = " ".join(n["what"] for n in out["not_fixed"])
+    assert "notes.json" in whats and "seen" in whats  # a leftover old path, with how to fix it
+    assert any("relink" in n["fix"] for n in out["not_fixed"])  # until relink exists, each .blend is listed
+    assert "re-render" in out["note"]
+
+
+def test_workspace_move_copies_across_drives_and_keeps_the_old_folder(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import settings as bsa_settings
+    from bsa import wsmove
+
+    monkeypatch.setattr(wsmove, "same_drive", lambda a, b: False)
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    new = tmp_path / "Other drive" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 0, err
+    assert out["how"] == "copied"
+    assert (old / sdir.name / "blend" / "short.blend").is_file()  # the old folder is kept
+    assert "delete it yourself" in out["old_folder"]
+    assert (new / sdir.name / "blend" / "short.blend").read_bytes() == (old / sdir.name / "blend" /
+                                                                       "short.blend").read_bytes()  # fmt: skip
+    assert bsa_settings.load_settings()["workspace"] == str(new)
+    old_status = json.loads((sdir / "review" / "render-status-final.json").read_text(encoding="utf-8"))
+    assert old_status["short"]["dir"] == str(sdir)  # nothing in the old folder is rewritten
+
+
+def test_workspace_move_stops_when_a_copied_file_differs(tmp_path, bsa_home, capsys, monkeypatch):
+    from bsa import settings as bsa_settings
+    from bsa import wsmove
+
+    monkeypatch.setattr(wsmove, "same_drive", lambda a, b: False)
+    monkeypatch.setattr(wsmove, "size_mismatches", lambda a, b: ["01-how-a-gear-train-works/blend/short.blend"])
+    old, _ = _move_setup(tmp_path, bsa_home)
+    new = tmp_path / "Other drive" / "Shorts"
+    code, out, err = _move(capsys, new)
+    assert code == 1 and "short.blend" in err
+    assert out["mismatched"] == ["01-how-a-gear-train-works/blend/short.blend"]
+    assert bsa_settings.load_settings()["workspace"] == str(old)  # settings untouched
+    assert old.is_dir() and new.is_dir()  # the copy is left for the user to check and delete
+
+
+def test_workspace_move_refuses_while_a_render_runs(tmp_path, bsa_home, capsys):
+    from bsa import render_status
+    from bsa import settings as bsa_settings
+
+    old, sdir = _move_setup(tmp_path, bsa_home)
+    running = {"state": "running", "pid": os.getpid(), "pid_token": render_status.process_token(os.getpid()),
+               "short": {"dir": str(sdir)}, "preset": "preview"}  # fmt: skip
+    (sdir / "review" / "render-status-preview.json").write_text(json.dumps(running), encoding="utf-8")
+    before = bsa_settings.settings_path().read_text(encoding="utf-8")
+    new = tmp_path / "Moved"
+    code, _out, err = _move(capsys, new)
+    assert code == 1 and "a render or another job is running" in err
+    assert old.is_dir() and not new.exists()
+    assert bsa_settings.settings_path().read_text(encoding="utf-8") == before
+
+
+def test_workspace_move_refuses_a_folder_inside_the_workspace(tmp_path, bsa_home, capsys):
+    old, _ = _move_setup(tmp_path, bsa_home)
+    inner = (str(old).upper() if os.name == "nt" else str(old)) + os.sep + "inner"  # another case on Windows
+    code, _out, err = _move(capsys, inner)
+    assert code == 1 and "inside the workspace" in err
+    assert old.is_dir() and not (old / "inner").exists()
+
+
+def test_workspace_move_needs_a_workspace(bsa_home, capsys, tmp_path):
+    code, _out, err = _move(capsys, tmp_path / "x")
+    assert code == 1 and "No workspace is set yet" in err

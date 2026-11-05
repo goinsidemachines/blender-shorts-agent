@@ -75,6 +75,13 @@ def _alive(holder: dict) -> bool:
     return is_alive(holder)
 
 
+def live_holder(path: Path) -> dict | None:
+    """The lock's holder when its process is still running, else None (no lock, an unreadable one, or a stale one
+    whose process is gone). Reading only: nothing is cleared."""
+    holder = read(path)
+    return holder if holder is not None and _alive(holder) else None
+
+
 def _mine(holder: dict | None) -> bool:
     from bsa.render_status import process_token
 

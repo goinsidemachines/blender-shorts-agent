@@ -51,6 +51,11 @@ Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook
 
 - `CLI shorts`: the workspace's shorts (title, look, length, voice) and `last_finished`, the last three finished
   titles, for "Make it like an earlier one?".
+- `CLI workspace move NEW`: to move the workspace, use this; never move it by hand. It refuses while the page
+  server, a render or the GPU lock is live, or when NEW is a folder that isn't empty. One drive: renamed. Another
+  drive: copied, every file's size checked, the old folder kept (`old_folder`: the user deletes it after checking).
+  It repoints the settings and render-status paths; relay `not_fixed` (each with its `fix`) and `note` (a short in
+  progress re-renders once).
 - `CLI new-short "<title>" --like OTHER`: starts a short from an earlier one (its number, slug or folder): copies only
   what differs from the user's settings and brand, never the story or the render engine. The result has `said`,
   `notes` and `skipped` (the interview questions to leave out).

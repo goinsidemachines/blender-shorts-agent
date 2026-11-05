@@ -19,6 +19,12 @@ created). Tell the user where it is and how to change it: "Say 'save my shorts s
 remember the workspace in your memory too ("Want me to note that in my memory as well?"); the plugin itself always
 reads the settings file.
 
+To move the workspace later ("save my shorts somewhere else" with the shorts going too), use `CLI workspace move
+NEW`; never move it by hand (the settings, render statuses and each short's .blend name the old folder). It says what
+it changed, what it couldn't fix with the command for each, and, across drives, that the old folder is kept for the
+user to delete once they've checked the new one. `settings set workspace` only points future shorts at another
+folder; it moves nothing.
+
 ## 2. Narrator
 
 Ask exactly this first: **"Do you already have a voice tool, or would you like me to set one up?"** Then:
