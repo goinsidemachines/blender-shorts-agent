@@ -23,6 +23,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socketserver
 import threading
 import time
 from collections.abc import Callable
@@ -64,6 +65,14 @@ class _Refuse(Exception):
 class PageServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False  # never share the port with another process
+
+    def server_bind(self) -> None:
+        """Bind without HTTPServer's socket.getfqdn(host): that reverse-DNS lookup of the bind address can stall for
+        many seconds on macOS (past the 10 s a new server has to answer), and the name is never used."""
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
     workspace: Path
     token: str

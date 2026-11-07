@@ -296,11 +296,11 @@ def open_page(workspace: Path, sdir: Path, *, stage: str | None = None, force: b
     result = {"url": None, "opened": False, "already_open": False, "mode": "server", "stage": stage}
     try:
         info = ensure(Path(workspace))
-    except ServerUnavailable:
+    except ServerUnavailable as e:
         path = static_page(sdir)
         url = path.as_uri() + (f"#{stage}" if stage else "")
         _call_browser(browser, url)
-        return {**result, "url": url, "mode": "static"}
+        return {**result, "url": url, "mode": "static", "server_error": str(e)}
     key = sdir.name
     result["url"] = page_url(info, key, stage)
     if stage is not None:

@@ -355,7 +355,7 @@ def test_cli_page_starts_a_detached_server_that_outlives_the_call(home, pendulum
     try:
         out = ok(run(home, "page", "pendulum", "--stage", "story"))  # BROWSER is a no-op in run()
         info = launch.server_info(pendulum.parent)
-        assert info and out["url"].startswith(f"http://127.0.0.1:{info['port']}/s/")
+        assert info and out["url"].startswith(f"http://127.0.0.1:{info['port']}/s/"), out.get("server_error")
         assert out["mode"] == "server" and out["opened"] is False and out["stage"] == "story"
         assert out["url"].endswith("#story")
         doctor = json.loads((pendulum / "review" / "doctor.json").read_text("utf-8"))
@@ -382,6 +382,7 @@ def test_cli_page_restarts_the_server_when_page_lan_changes(home, pendulum):
     try:
         out = ok(run(home, "page", "pendulum"))
         first = launch.server_info(pendulum.parent)
+        assert first, out.get("server_error")
         pids.append(first["pid"])
         assert first["lan"] is False and out["phone"] is None
         assert ok(run(home, "settings", "set", "page.lan", "true"))["settings"]["page"]["lan"] is True
