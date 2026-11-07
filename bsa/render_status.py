@@ -121,13 +121,32 @@ def process_token(pid: int | None) -> str | None:
                 return None
             return None if fields[0] in ("Z", "X") else fields[19]
         os.kill(pid, 0)
-        return ""
+        return _ps_token(pid)
     except ProcessLookupError:
         return None
     except PermissionError:
         return ""  # it exists, owned by someone else
     except Exception:  # noqa: BLE001 - never let a status read fail on a platform quirk
         return ""
+
+
+def _ps_token(pid: int) -> str | None:
+    """A process's start time from `ps` (macOS and other systems without /proc), None when it has exited but not been
+    reaped yet (a zombie, which os.kill still reports as running), "" when `ps` can't say."""
+    import subprocess
+
+    from bsa import proc as _proc
+
+    try:
+        out = _proc.run(["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                        timeout=5, check=False)  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    line = out.stdout.strip()
+    if out.returncode != 0 or not line:
+        return ""
+    state, _, started = line.partition(" ")
+    return None if state.startswith("Z") else " ".join(started.split())
 
 
 def is_alive(status: dict) -> bool:

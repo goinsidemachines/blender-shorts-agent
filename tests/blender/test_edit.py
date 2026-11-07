@@ -256,7 +256,11 @@ def test_font_fallback_is_reported():
     if platform.system() == "Windows":  # the first installed OS fallback, not Blender's default
         assert edit.font_used(sc) == "Segoe UI" and "Segoe UI" in note
         assert Path(_captions(sc)[0].font.filepath).name.lower() == "segoeui.ttf"
-    short.style["font"] = "Segoe UI"
+    # Naming the font this machine fell back to (Segoe UI on Windows, e.g. DejaVu Sans on Linux) is then not a fallback.
+    fallback = edit.font_used(sc)
+    if fallback == "Blender's default font":  # no OS font installed at all: nothing more to check
+        return
+    short.style["font"] = fallback
     sc = edit.build_edit(short, tl, frames, wav, out, {}, preset="preview")
     assert edit.font_note(sc) is None
 

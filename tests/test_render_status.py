@@ -946,3 +946,17 @@ def test_progress_from_two_threads_never_corrupts_the_file(tmp_path):
         assert not errors
         s = _read(tmp_path)
         assert _step(s, "check")["progress"]["done"] == 200 and _step(s, "render")["progress"]["done"] == 200
+
+
+def test_ps_token_names_a_running_process_and_not_a_finished_one():
+    """Without /proc (macOS) the start time comes from `ps`: stable for one process, None once it has exited."""
+    import shutil
+    import subprocess
+
+    if shutil.which("ps") is None or sys.platform == "win32":
+        return
+    me = rs._ps_token(os.getpid())
+    assert me and me == rs._ps_token(os.getpid())
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()  # reaped: its pid is free now
+    assert rs._ps_token(child.pid) in (None, "")
