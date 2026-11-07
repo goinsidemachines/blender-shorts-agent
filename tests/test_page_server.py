@@ -616,3 +616,18 @@ def test_checklist_route_ticks(srv):
     r = api(srv, "POST", "/api/01-pendulum/checklist", body={"id": "upload", "done": False}, token="wrong")
     assert r.status == 403
     assert checklist.load(srv.sdir) == {"upload": True}
+
+
+def test_binding_does_no_reverse_dns_lookup(tmp_path, monkeypatch):
+    """HTTPServer's server_bind calls socket.getfqdn on the bind address, which can stall for many seconds on macOS
+    (longer than a new server has to answer): the page server must bind without it."""
+
+    def stall(*_a, **_k):
+        raise AssertionError("socket.getfqdn was called while binding the page server")
+
+    monkeypatch.setattr(socket, "getfqdn", stall)
+    s = server.make_server(tmp_path)
+    try:
+        assert s.server_port == s.port and s.server_name == s.server_address[0]
+    finally:
+        s.server_close()
