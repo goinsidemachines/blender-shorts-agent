@@ -255,9 +255,9 @@ def test_review_returns_the_one_page_url(home, pendulum):
     out = ok(_no_browser_run(home, "review", "story", "pendulum"))  # no server yet: none is started
     assert out["page"] is None and "CLI page SHORT --stage story" in out["page_hint"] and out["stage"] == "story"
     assert out["deprecated"] == "use CLI page SHORT" and not (pendulum.parent / launch.SERVER_FILE).exists()
-    ok(_no_browser_run(home, "page", "pendulum"))  # the server the page runs on
+    started = ok(_no_browser_run(home, "page", "pendulum"))  # the server the page runs on
     out = ok(_no_browser_run(home, "review", "story", "pendulum"))
-    assert "/s/" in out["page"] and out["page"].endswith("#story") and "opened" not in out
+    assert out["page"] and "/s/" in out["page"] and out["page"].endswith("#story") and "opened" not in out, started
     out = ok(_no_browser_run(home, "review", "storyboard", "pendulum", "--open"))
     assert out["page"].endswith("#storyboard") and out["opened"] is False  # the no-op browser never checks in
     assert out["mode"] == "server" and out["already_open"] is False and "health" in out and out["phone"] is None
@@ -271,9 +271,9 @@ def test_render_status_writes_no_html_and_starts_no_server(home, pendulum):
     assert out["page"] is None and "CLI page SHORT --stage render" in out["page_hint"] and out["alive"] is False
     assert out["status_file"].endswith("render-status-preview.json")
     assert not (pendulum.parent / launch.SERVER_FILE).exists()
-    ok(_no_browser_run(home, "page", "pendulum"))
+    started = ok(_no_browser_run(home, "page", "pendulum"))
     out = ok(_no_browser_run(home, "render-status", "pendulum"))
-    assert out["page"].endswith("#render") and "/s/" in out["page"] and "stage" not in out
+    assert out["page"] and out["page"].endswith("#render") and "/s/" in out["page"] and "stage" not in out, started
     assert not list((pendulum / "review").glob("*.html"))
 
 
