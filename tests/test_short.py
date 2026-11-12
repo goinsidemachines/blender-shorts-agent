@@ -2,6 +2,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from bsa.short import (
     Fact,
     Line,
@@ -351,3 +353,58 @@ def test_save_short_writes_no_new_keys_for_a_cuts_short(tmp_path):
     back = load_short(out)
     assert back.camera == short.camera and [s.at for s in back.shots] == [0, 4, 9]
     assert validate(back) == []
+
+
+def _scaled(scale, badge):
+    return _short(shots=[Shot("s01", "Hook", "pic", "Scene", badge=badge, time_scale=scale)])
+
+
+def test_time_scale_is_written_only_when_it_is_not_real_time(tmp_path):
+    out = tmp_path / "short.json"
+    save_short(_scaled(0.25, "Slowed down"), out)
+    assert json.loads(out.read_text(encoding="utf-8"))["shots"][0]["time_scale"] == 0.25
+    assert load_short(out).shots[0].time_scale == 0.25
+    for unset in (None, 1, 1.0):
+        save_short(_scaled(unset, None), out)
+        assert "time_scale" not in json.loads(out.read_text(encoding="utf-8"))["shots"][0]
+    assert load_short(out).shots[0].time_scale is None
+
+
+def test_a_slowed_shot_needs_a_badge_that_says_slowed():
+    for bad in (None, "Simplified", "Motion exaggerated"):
+        errs = validate(_scaled(0.28, bad))
+        assert any("s01" in e and "time_scale" in e and "Slowed down" in e for e in errs), (bad, errs)
+    for ok in ("Slowed down", "slow motion", "Simplified · Slowed down", "SLOWED"):
+        assert validate(_scaled(0.5, ok)) == [], ok
+
+
+def test_a_sped_up_shot_needs_a_badge_that_says_sped_up():
+    for bad in (None, "Simplified", "Slowed down"):
+        errs = validate(_scaled(2, bad))
+        assert any("s01" in e and "time_scale" in e and "Sped up" in e for e in errs), (bad, errs)
+    for ok in ("Sped up", "Time-lapse", "Simplified · Sped up", "Fast forward"):
+        assert validate(_scaled(2, ok)) == [], ok
+
+
+def test_real_time_and_unset_need_no_matching_badge():
+    for scale in (None, 1, 1.0):
+        assert validate(_scaled(scale, None)) == []
+    assert validate(_scaled(None, "Slowed down")) == []
+
+
+def test_time_scale_must_be_a_number_above_zero():
+    for bad in (0, -1, "0.5", True, float("nan")):
+        assert any("s01" in e and "time_scale" in e for e in validate(_scaled(bad, "Slowed down"))), bad
+
+
+def test_a_combined_badge_is_one_line_in_the_corner_stack():
+    from bsa import overlays
+    from bsa.layout import safe_rect
+
+    shot = Shot("s01", "Hook", "pic", "Scene", badge="Simplified · Slowed down")
+    (kind, text, _, x, y), = overlays.corner_stack(shot)
+    assert kind == "badge" and text == "SIMPLIFIED · SLOWED DOWN"
+    rect = overlays.corner_rect(kind, text, x, y)
+    assert overlays.est_lines(text, overlays.BADGE_SIZE, safe_rect().w) == 1
+    assert rect.h == pytest.approx(overlays.BADGE_SIZE * overlays.LINE_H + 2 * overlays.SMALL_MARGIN * 1920)
+    assert rect.right <= 1080

@@ -57,6 +57,9 @@ class Shot:
     # A one-take short's shot: the second its window starts on the camera path (the first is 0). None = a cuts short's
     # shot, whose length comes from its lines. Not written when None.
     at: float | None = None
+    # The screen speed of this shot's motion relative to real time: 1 = real time, 0.25 = shown four times slower, 2 =
+    # twice as fast (the model's time factor). Not written when None or 1. Its badge must say so (validate).
+    time_scale: float | None = None
 
 
 @dataclass
@@ -159,6 +162,8 @@ def save_short(short: Short, path: Path) -> None:
     for shot in data["shots"]:
         if shot["at"] is None:
             del shot["at"]
+        if shot["time_scale"] is None or (_number(shot["time_scale"]) and shot["time_scale"] == 1):
+            del shot["time_scale"]
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -590,6 +595,28 @@ def _card_problems(s: Shot, cited: bool) -> list[str]:
     return out
 
 
+SLOW_WORDS = ("slow",)  # "slow", "slowed", "slow motion", "slow-mo"
+FAST_WORDS = ("sped", "fast", "time-lapse", "timelapse", "time lapse")
+
+
+def _time_scale_problems(shot) -> list[str]:
+    """A shot whose motion runs at another speed than real time must say so in its badge."""
+    scale = shot.time_scale
+    if scale is None:
+        return []
+    if not _number(scale) or not scale > 0:
+        text = "1 = real time, 0.25 = four times slower, 2 = twice as fast"
+        return [f"shot {shot.id} time_scale must be a number above 0 ({text}), got {scale!r}"]
+    badge = (shot.badge or "").lower()
+    if scale < 1 and not any(w in badge for w in SLOW_WORDS):
+        msg = "does not say it is slowed: add 'Slowed down' to the badge (for example 'Simplified · Slowed down')"
+    elif scale > 1 and not any(w in badge for w in FAST_WORDS):
+        msg = "does not say it is sped up: add 'Sped up' to the badge (for example 'Simplified · Sped up')"
+    else:
+        return []
+    return [f"shot {shot.id} runs at time_scale {scale:g} but its badge {msg}"]
+
+
 def validate(short: Short) -> list[str]:
     """Return a list of human-readable problems; empty means the spec is sound."""
     errors: list[str] = []
@@ -641,6 +668,7 @@ def validate(short: Short) -> list[str]:
         errors += _card_problems(s, cited_by_shot.get(s.id, False))
         if not 0 <= s.still_at <= 1:
             errors.append(f"shot {s.id} still_at must be between 0 and 1")
+        errors += _time_scale_problems(s)
         if _hold_problem(s.hold):
             errors.append(f"shot {s.id} hold must be true, false or a list of [from_s, to_s] ranges (seconds from "
                           f"the shot's start, from_s <= to_s), got {s.hold!r}")  # fmt: skip

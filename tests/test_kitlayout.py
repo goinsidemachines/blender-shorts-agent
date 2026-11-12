@@ -526,3 +526,11 @@ def test_kit_errors_name_a_shot_too_tall_for_the_kit():
     errs = kit.errors({"brand": KIT}, Short(slug="x", title="X", length_s=2, shots=[shot]))
     assert len(errs) == 1 and errs[0].startswith("shot a's top cards reach") and "drop" in errs[0], errs
     assert kit.errors({}, Short(slug="x", title="X", length_s=2, shots=[shot])) == []  # no kit: today's labels
+
+
+def test_a_combined_badge_draws_on_one_line_with_a_kit(tmp_path):
+    wide = tmp_path / "wide.ttf"  # Blender-like 0.6 em advances: the worst case for a long badge
+    wide.write_bytes(build_font(string.ascii_letters + string.digits + string.punctuation + "· ", advance=600))
+    ov = kitlayout.build(_short(badge="Simplified · Slowed down"), _tl(), K, wide)
+    badge = one(ov, kitlayout.CH["badge"])
+    assert len(badge.spec.runs) == 1 and inside_safe(badge.at)
