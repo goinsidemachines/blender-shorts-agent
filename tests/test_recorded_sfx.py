@@ -216,6 +216,7 @@ def test_sound_playbook_documents_every_kind_and_the_policy():
     for kind in recorded.SYNTHETIC_KINDS:
         assert f"| `{kind}` |" in text and "synthetic |" in text.split(f"| `{kind}` |")[1].split("\n")[0]
     assert "natural-only" in text and 'clip("' in text and "assets search sounds" in text
+    assert "| `room` |" in text and "room tone" in text and "sound.room_db" in text and "sound.reverb" in text
 
 
 # --------------------------------------------------------------------------- bsa.audio.clip
@@ -266,3 +267,42 @@ def test_flatness_scores_noise_high_and_a_tone_low():
     assert recorded.flatness(rng.standard_normal(SR // 4)) > 0.5
     assert recorded.flatness(_tone(0.25)) < 0.05
     assert recorded.flatness(np.zeros(100)) is None
+
+
+def test_room_clip_policy_and_status(tmp_path):
+    lib = _library(tmp_path, {"sounds/p/roomtone_a.wav": ["room"], "sounds/p/thud.wav": ["thud"]})
+    assert recorded.room_clip(lib)["path"] == "sounds/p/roomtone_a.wav"
+    assert recorded.room_clip(lib, "natural-only") is not None  # recordings only: natural-only allows it
+    assert recorded.room_clip(None) is None and recorded.room_clip(recorded.Library(tmp_path / "x")) is None
+    on = recorded.room_status(lib, "any", -50.0)
+    assert on["used"] and on["clip"] == "sounds/p/roomtone_a.wav" and on["license"] == "CC0" and on["level_db"] == -50.0
+    assert recorded.room_status(lib, "any", None) == {"enabled": False, "used": False, "note": on_off_note()}
+    gone = recorded.room_status(recorded.Library(tmp_path / "x"), "any", -50.0)
+    assert not gone["used"] and "room tone" in gone["note"] and "assets search sounds" in gone["note"]
+    rep = recorded.report([], on)
+    assert rep["room"] == on and rep["clips"][0]["clip"] == "sounds/p/roomtone_a.wav"
+    assert any("room tone" in n for n in recorded.report([], gone)["notes"])
+    assert recorded.report([], recorded.room_status(lib, "any", None))["notes"] == []  # off: nothing to warn about
+
+
+def on_off_note():
+    return "sound.room_db is off: no room tone floor"
+
+
+def test_missing_room_tone_is_a_validate_warning_only_when_the_floor_is_on(tmp_path):
+    lib = recorded.Library(tmp_path / "c")
+    short = _short([])
+    (w,) = recorded.policy_warnings(short, lib, "any", room=True)
+    assert "room tone" in w and 'assets search sounds "room tone"' in w
+    assert recorded.policy_warnings(short, lib, "any", room=False) == []
+    full = _library(tmp_path / "d", {"sounds/p/ambience.wav": ["room"]})
+    assert recorded.policy_warnings(short, full, "any", room=True) == []
+
+
+def test_prepare_shapes_by_kind():
+    x = _tone(sec=1.5, lead_silence=0.1)
+    hit, _ = recorded.prepare(x, dur_s=0.3, seed=1, kind="impact")
+    held, _ = recorded.prepare(x, dur_s=0.3, seed=1, kind="rumble")
+    assert len(hit) > round(0.3 * SR) and len(held) <= round(0.3 * SR) + 1  # the transient rings past dur_s
+    assert np.abs(hit).max() == pytest.approx(1.0) and abs(hit[0]) < 0.05  # peak-normalised, faded in
+    assert np.abs(held[: round(0.002 * SR)]).max() < 0.05  # the sustained one fades in slowly (0.1 s here)

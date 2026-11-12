@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 
 from bsa.assets import polyhaven
 from bsa.audio import decode, recorded
-from bsa.audio.sfx import KINDS
+from bsa.audio.sfx import ROOM_KIND, TAGGABLE_KINDS
 from bsa.short import Asset
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
@@ -122,6 +122,10 @@ KIND_WORDS = {
               "waves", "lapping", "liquid", "flowing", "pour"),
     "whoosh": ("whoosh", "swish", "swoosh", "woosh", "swing"),
 }
+# Room tone, the quiet floor under a whole short (a recording only: no `sfx` event has this kind). Tagged for a name
+# with "room tone" / "roomtone" / "interior quiet", or (names from Commons or Freesound only) one of these words when
+# the name suggests no other kind ("ambience_wind" is wind, not room tone).
+ROOM_WORDS = ("ambience", "ambient", "ambiance")
 
 def _urlopen(url: str, headers: dict | None = None):
     req = urllib.request.Request(url, headers={"User-Agent": polyhaven.USER_AGENT, **(headers or {})})
@@ -152,10 +156,17 @@ def _words(name: str) -> list[str]:
     return [w.lower() for w in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", stem)]
 
 
-def auto_kinds(name: str) -> list[str]:
-    """The sfx kinds a clip's file name suggests (["impact", "thud"] for "impactWood_heavy_003.ogg")."""
-    words = set(_words(name))
-    return [kind for kind, keys in KIND_WORDS.items() if words & set(keys)]
+def auto_kinds(name: str, loose: bool = False) -> list[str]:
+    """The sfx kinds a clip's file name suggests (["impact", "thud"] for "impactWood_heavy_003.ogg"). `loose` (names
+    from Commons or Freesound, not a curated pack) also reads "ambience" / "ambient" as room tone when the name
+    suggests no other kind; a curated pack's clips are tagged by the pack, never by that guess."""
+    words = _words(name)
+    found = set(words)
+    kinds = [kind for kind, keys in KIND_WORDS.items() if found & set(keys)]
+    explicit = "roomtone" in "".join(words) or {"room", "tone"} <= found or {"interior", "quiet"} <= found
+    if explicit or (loose and found & set(ROOM_WORDS) and not kinds):
+        kinds.append(ROOM_KIND)
+    return kinds
 
 
 def pack_clip_kinds(pid: str, name: str) -> list[str]:
@@ -292,7 +303,7 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
             if _is_cc0(it["license"]):
                 results.append({"id": f"commons:{it['title']}", "name": it["title"], "provider": "commons",
                                 "license": "CC0", "source": f"Wikimedia Commons ({it['author'] or 'unknown'})",
-                                "bytes": it["bytes"], "page": it["page"], "kinds": auto_kinds(it["title"])})  # fmt: skip
+                                "bytes": it["bytes"], "page": it["page"], "kinds": auto_kinds(it["title"], loose=True)})  # fmt: skip
     except (OSError, ValueError) as exc:
         skips.append(skipped("Wikimedia Commons", exc))
     if freesound_key:
@@ -303,7 +314,7 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
                     results.append({"id": f"freesound:{s['id']}", "name": s.get("name", ""), "provider": "freesound",
                                     "license": "CC0", "source": f"Freesound ({s.get('username', 'unknown')})",
                                     "duration_s": s.get("duration"), "page": s.get("url", ""),
-                                    "kinds": auto_kinds(s.get("name", ""))})  # fmt: skip
+                                    "kinds": auto_kinds(s.get("name", ""), loose=True)})  # fmt: skip
         except (OSError, ValueError) as exc:
             skips.append(skipped("Freesound", exc))
     else:
@@ -321,11 +332,11 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
 
 def _kinds(spec: str, name: str) -> list[str]:
     if not spec:
-        return auto_kinds(name)
+        return auto_kinds(name, loose=True)
     kinds = [k.strip() for k in spec.split(",") if k.strip()]
-    bad = [k for k in kinds if k not in KINDS]
+    bad = [k for k in kinds if k not in TAGGABLE_KINDS]
     if bad:
-        raise ValueError(f"unknown sfx kind {', '.join(bad)}; valid kinds: {', '.join(sorted(KINDS))}")
+        raise ValueError(f"unknown sfx kind {', '.join(bad)}; valid kinds: {', '.join(sorted(TAGGABLE_KINDS))}")
     return kinds
 
 
@@ -553,7 +564,7 @@ def download(plans: list[Asset], cache_dir: Path, http=_urlopen) -> dict[str, li
                 rels = _extract(polyhaven._target(cache_dir, f["path"]), pid, cache_dir)
                 clips = [(rel, pack_clip_kinds(pid, rel)) for rel in rels]
             else:
-                clips = [(f["path"], list(f.get("kinds") or auto_kinds(f["path"])))]
+                clips = [(f["path"], list(f.get("kinds") or auto_kinds(f["path"], loose=True)))]
             _index(lib, a.id, a.source, a.license, f, clips)
             paths += [polyhaven._target(cache_dir, rel) for rel, _ in clips]
         result[a.id] = paths
