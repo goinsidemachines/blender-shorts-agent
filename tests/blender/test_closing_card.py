@@ -99,3 +99,30 @@ def test_kit_closing_card_without_a_card_dir_uses_a_temp_folder_removed_after_th
         tempfile.tempdir = saved
     assert read_png(png).shape[:2] == (1920, 1080)
     assert not list((tmp / "t").iterdir())
+
+
+def test_card_renders_when_the_open_blend_is_on_another_frame():
+    """Short 25: short.blend was saved at frame 222 and the card came out black (the card only exists at frame 1)."""
+    import bpy
+
+    tmp = Path(tempfile.mkdtemp())
+    here = bpy.context.scene
+    here.frame_end = max(here.frame_end, 300)
+    here.frame_set(222)
+    png = closing_card.make_card(closing.resolve({"website": "example.com"}), BRAND, tmp / "closing.png")
+    px = read_png(png)
+    assert tuple(px[50, 50, :3]) == (0xE7, 0xEE, 0xF6)  # the brand background, not black
+    assert bpy.context.scene == here and here.frame_current == 222  # the open blend is left as it was
+
+
+def test_a_blank_card_is_refused():
+    tmp = Path(tempfile.mkdtemp())
+    flat = np.zeros((1920, 1080, 3), np.uint8)
+    try:
+        closing_card.check_not_blank(flat, tmp / "closing.png")
+    except RuntimeError as exc:
+        assert "one flat colour" in str(exc)
+    else:
+        raise AssertionError("a flat card was accepted")
+    flat[900:1000, 300:800] = 255
+    closing_card.check_not_blank(flat, tmp / "closing.png")  # text on it: fine
