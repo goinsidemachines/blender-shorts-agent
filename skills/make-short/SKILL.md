@@ -46,6 +46,8 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
   the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `test-frames`, `estimate`, `camtest`) run one at a
   time per workspace, across sessions: a second one waits for the first (`<workspace>/.gpu.lock`, `08-render.md`).
   Never delete that file by hand.
+  These commands, the preview chain and `check` also run under a memory guard (`render.memory_limit_gb`, `08-render.md`):
+  a Blender that grows past the limit is killed with a plain message.
 
 Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook/05-narration.md`):
 

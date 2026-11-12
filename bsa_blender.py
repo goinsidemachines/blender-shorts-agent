@@ -2604,6 +2604,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"ok": False, "error": "invalid command line (usage on stderr)"})
         return int(exc.code or 0)
     status = _say_starting(args)
+    guard = _start_memwatch(args, status)
     try:
         place = _gpu_place(args) if args.command in GPU_COMMANDS - {"render"} else None  # render takes it itself
         if place is not None:  # (so the preview chain's render does too)
@@ -2622,6 +2623,8 @@ def main(argv: list[str] | None = None) -> int:
     except BaseException:  # interrupted before its run started: the "starting" status must not stay running
         _settle_starting(status, "stopped")
         raise
+    finally:
+        _stop_memwatch(guard)
     _settle_starting(status, None)
     _emit(out)
     return 0
@@ -2629,6 +2632,32 @@ def main(argv: list[str] | None = None) -> int:
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
 GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample", "stills", "camtest"}  # one at a time per workspace (gpulock); preview via render
+MEMWATCHED = GPU_COMMANDS | {"check", "preview"}  # the commands the memory guard (bsa.memwatch) watches
+
+
+def _start_memwatch(args, status):
+    """Start the memory guard (bsa.memwatch) beside a heavy command: a watchdog process that stops this Blender, with
+    a plain message, if it grows past render.memory_limit_gb. Never stops the command from running."""
+    if args.command not in MEMWATCHED:
+        return None
+    try:
+        from bsa import machine, memwatch
+
+        try:
+            short = _short_dir(args.short).name if getattr(args, "short", None) else args.command
+        except Exception:  # noqa: BLE001 - the command itself reports a bad short
+            short = str(getattr(args, "short", None) or args.command)
+        return memwatch.start(PLUGIN_ROOT, short=short, command=args.command, status=status,
+                              settings=settings.load_settings(), ram_gb=machine._ram_gb())  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - the guard is a safety net, not a requirement
+        print(f"memory guard: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _stop_memwatch(guard) -> None:
+    from bsa import memwatch
+
+    memwatch.stop(guard)
 
 
 def _gpu_place(args) -> Path | None:

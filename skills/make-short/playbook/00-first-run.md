@@ -201,6 +201,12 @@ Don't ask about this. Add one line to the summary at the end of the first run: "
 itself I'll note it and, at the end, ask whether you want to send it to its authors. Change with settings set
 feedback never|off" (`never`: still note, never ask; `off`: don't note). Nothing is sent unless they choose to.
 
+## Memory limit (no question)
+
+Don't ask about this. `render.memory_limit_gb` is how much memory a heavy Blender command may use before the memory
+guard stops it. Unset, it is 60 % of the machine's RAM. `CLI settings set render.memory_limit_gb 20` changes it; `0` or
+`off` turns the guard off. See `08-render.md`.
+
 ## Phone access (no question)
 
 Don't ask about this. Phone access is off by default. When the user wants to review on their phone, `CLI settings set

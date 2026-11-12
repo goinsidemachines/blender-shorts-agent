@@ -906,6 +906,25 @@ def settle_starting(path: Path, error: str | None = None, clock: Callable[[], fl
             print(f"status page: {exc}", file=sys.stderr)
 
 
+def fail_killed(path: Path, pid: int, error: str, clock: Callable[[], float] = time.time) -> bool:
+    """Mark the run of process `pid` as failed with `error`, for a process killed from outside (the memory guard,
+    bsa.memwatch), which can not say so itself. Its running steps end as failed too. Leaves the file alone (False)
+    when it holds no running run of that pid."""
+    old = read_status(path)
+    if not old or old.get("state") != "running" or old.get("pid") != pid:
+        return False
+    now = clock()
+    run = old.get("run")
+    if isinstance(run, dict):
+        steps = [{**st, "state": "failed", "finished": now} if st.get("state") == "running" else st
+                 for st in run.get("steps") or []]  # fmt: skip
+        old = {**old, "run": {**run, "steps": steps}}
+    status = {**old, "state": "failed", "phase": "failed", "error": str(error)[:MAX_ERROR], "finished": now,
+              "updated": now, "elapsed_s": round(now - (old.get("started") or now), 2)}  # fmt: skip
+    write_atomic(path, json.dumps(status, indent=1, default=str))
+    return True
+
+
 @contextmanager
 def recording(path: Path, *, short: dict, preset: str, step: str, render_page=None, clock=time.time):
     """The run a step records itself in: inside the preview chain (a run on the same file is active) the chain's

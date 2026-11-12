@@ -17,6 +17,16 @@ the page say "final render waiting for the GPU: ...". It starts by itself when t
 first's Blender is gone (a crashed or killed run leaves a stale lock, which is cleared). Tell the user what it waits
 for. With `--no-wait` it fails at once instead, naming the holder: use that when the user would rather not queue.
 
+## Memory guard
+
+Every GPU command above, the preview chain and `BLENDER check` run with a memory guard: a small watchdog process polls
+Blender's memory every 2 s and kills Blender if it passes `render.memory_limit_gb` (default: 60 % of the machine's
+RAM; `CLI settings set render.memory_limit_gb 20`, or `0` / `off` for no guard). It says why on stderr, marks the live
+status failed, and the GPU lock clears by itself because its holder is gone. When it fires ("stopped pendulum camtest:
+Blender used 41.2 GB, over the 18.0 GB limit"), look for Freestyle over many frames, live Boolean modifiers and many
+copied meshes (use one shared mesh), fix that in `build.py`, rebuild and run again. Raise the limit only when the scene really
+needs that much and the machine has it, and only on the user's yes.
+
 ## Test frames (a quick look before the preview)
 
 `BLENDER test-frames SHORT --at s01:0.5 s05:0.3 [--scale 0.4]` renders single frames, each at a fraction of its

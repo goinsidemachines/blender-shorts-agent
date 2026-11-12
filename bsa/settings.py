@@ -208,6 +208,10 @@ def check_value(path: str, value):
         if seconds is None or not lead_in_ok(seconds):
             raise ValueError(lead_in_error(value))
         return seconds
+    if path == "render.memory_limit_gb":  # GB of Blender's memory a heavy command may use; 0 or off = no guard
+        from bsa import memwatch
+
+        return memwatch.parse_limit(value)
     if path in BOOLEANS:
         if not isinstance(value, bool):
             raise ValueError(f"{value!r} is not a valid {path}: use true or false")
