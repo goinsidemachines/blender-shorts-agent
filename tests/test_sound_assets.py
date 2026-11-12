@@ -373,3 +373,16 @@ def test_a_single_subject_pack_tags_every_clip_with_its_kind(tmp_path):
     sounds.download([plan], cache, http=http)
     lib = recorded.Library(cache)
     assert sorted(c["name"] for c in lib.clips_for("wind")) == ["Wind", "ambience_02"]
+
+
+def test_room_tone_is_tagged_from_file_names_and_by_hand():
+    for name in ("room_tone_01.wav", "RoomTone.ogg", "quiet-interior-quiet-loop.flac"):
+        assert "room" in sounds.auto_kinds(name), name
+    assert "room" in sounds.auto_kinds("Office Ambience 2.wav", loose=True)  # Commons / Freesound names
+    assert "room" not in sounds.auto_kinds("Office Ambience 2.wav")  # a curated pack's clips are tagged by the pack
+    assert "room" not in sounds.auto_kinds("ambient_wind_loop.wav", loose=True)  # another kind in the name wins
+    assert "wind" in sounds.auto_kinds("ambient_wind_loop.wav")
+    assert "room" not in sounds.auto_kinds("impactWood_heavy_003.ogg") and "room" not in sounds.auto_kinds("room.wav")
+    assert sounds._kinds("room", "x") == ["room"]  # commons:FILE=room, freesound:ID=room
+    with pytest.raises(ValueError, match="room"):
+        sounds._kinds("kazoo", "x")

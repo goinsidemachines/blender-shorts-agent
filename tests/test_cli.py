@@ -258,8 +258,9 @@ def test_validate_reports_errors_exit_code(home, pendulum):
 def test_validate_ok(home, pendulum):
     out = ok(run(home, "validate", "pendulum"))
     assert out["ok"] is True and out["errors"] == []
-    # the only warning: its whoosh has no cached recording, so the mix would synthesise it
-    assert len(out["warnings"]) == 1 and "whoosh" in out["warnings"][0] and "synthesis" in out["warnings"][0]
+    # its whoosh has no cached recording (the mix would synthesise it), and no room tone is cached for the floor
+    assert len(out["warnings"]) == 2 and "whoosh" in out["warnings"][0] and "synthesis" in out["warnings"][0]
+    assert "room tone" in out["warnings"][1]
     assert [r["shot"] for r in out["pacing"]] == ["s01", "s02", "s03"]
     assert out["pacing_from"] == "reading pace"
 
@@ -3318,3 +3319,18 @@ def test_workspace_move_says_plainly_when_a_drive_is_not_there(tmp_path, bsa_hom
 def test_workspace_move_needs_a_workspace(bsa_home, capsys, tmp_path):
     code, _out, err = _move(capsys, tmp_path / "x")
     assert code == 1 and "No workspace is set yet" in err
+
+
+def test_mix_reports_room_tone_and_follows_the_sound_settings(home, pendulum):
+    """No cached room clip: the mix result says so (and validate warned). sound.room_db null switches the floor off:
+    no note either. The settings validate on the way in."""
+    ok(run(home, "timeline", "pendulum"))
+    data = ok(run(home, "mix", "pendulum"))
+    assert data["sfx"]["room"]["enabled"] and not data["sfx"]["room"]["used"]
+    assert any("room tone" in n for n in data["sfx"]["notes"])
+    ok(run(home, "settings", "set", "sound.room_db", "null"))
+    ok(run(home, "settings", "set", "sound.reverb", "false"))
+    data = ok(run(home, "mix", "pendulum"))
+    assert not data["sfx"]["room"]["enabled"] and not any("room tone" in n for n in data["sfx"]["notes"])
+    assert not any("room tone" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
+    assert run(home, "settings", "set", "sound.room_db", "-5").returncode != 0

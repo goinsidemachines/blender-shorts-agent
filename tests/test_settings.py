@@ -303,3 +303,20 @@ def test_set_value_removes_a_narrator_param_set_to_null(bsa_home):
     assert settings.load_settings()["narrator"]["params"] == {"temperature": 0.7}
     settings.set_value("narrator.params.temperature", None)
     assert settings.load_settings()["narrator"]["params"] == {}
+
+
+def test_sound_settings_default_validate_and_off_switch(bsa_home):
+    s = settings.load_settings()
+    assert settings.room_db(s) == -50.0 and settings.reverb_on(s) is True
+    assert settings.check_value("sound.room_db", "-45") == -45.0
+    assert settings.check_value("sound.room_db", None) is None
+    for bad in (-10, -90, "loud", True):
+        with pytest.raises(ValueError, match="sound.room_db"):
+            settings.check_value("sound.room_db", bad)
+    assert settings.check_value("sound.reverb", False) is False
+    with pytest.raises(ValueError, match="true or false"):
+        settings.check_value("sound.reverb", "off")
+    off = settings.set_value("sound.room_db", None)  # null turns the floor off and survives a reload
+    assert settings.room_db(off) is None and settings.room_db(settings.load_settings()) is None
+    assert settings.reverb_on({"sound": {"reverb": "maybe"}}) is True  # unusable values fall back to the defaults
+    assert settings.room_db({"sound": {"room_db": 5}}) == -50.0

@@ -820,7 +820,7 @@ def _font_and_sound_warnings(sdir: Path, short) -> list[str]:
 
     s = settings.load_settings()
     return fonts.glyph_warnings(short, s, cache_dirs=fonts.font_caches(sdir)) + recorded.policy_warnings(
-        short, _sound_library(sdir), recorded.sound_policy(short, s))
+        short, _sound_library(sdir), recorded.sound_policy(short, s), room=settings.room_db(s) is not None)
 
 
 def _pacing(short, tl) -> tuple[list, list]:
@@ -1140,12 +1140,15 @@ def cmd_mix(args) -> dict:
     card = closing.resolve(s, short)
     end = closing.plan(card, tl.n_frames + 1, tl.fps, closing.take_seconds(takes))
     tail = (end["n_frames"], closing.take(takes), end["line_f0"]) if end else None
-    stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail)
+    room_db = settings.room_db(s)
+    stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail,
+                         room_db=room_db, reverb=settings.reverb_on(s))  # fmt: skip
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
     out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
-           "sfx": recorded.report(recorded.resolve(short, library, policy))}  # fmt: skip
+           "sfx": recorded.report(recorded.resolve(short, library, policy),
+                                  recorded.room_status(library, policy, room_db))}  # fmt: skip
     if end:
         out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"]),
                           **closing.hold(card, end, tl.fps)}  # "note" when the line holds it past closing.seconds

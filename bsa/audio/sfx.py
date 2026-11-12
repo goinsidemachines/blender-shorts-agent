@@ -145,3 +145,12 @@ KINDS: dict[str, Callable[..., np.ndarray]] = {
     "wind": wind,
     "water": water,
 }
+
+# Envelope families (bsa.audio.recorded.shape): a transient is struck and rings out; a sustained sound is held for
+# its dur_s and fades in and out.
+TRANSIENT_KINDS = ("impact", "thud", "click", "blip")
+SUSTAINED_KINDS = ("rumble", "wind", "water", "hiss", "hum", "creak", "scrape", "slide", "whoosh")
+# `room` (room tone: the quiet floor under the whole story) is a recording only: it is never synthesised, so it is
+# not in KINDS and no `sfx` event can use it. The mix places it from the `sound.room_db` setting.
+ROOM_KIND = "room"
+TAGGABLE_KINDS = (*KINDS, ROOM_KIND)  # what a downloaded clip can be tagged with

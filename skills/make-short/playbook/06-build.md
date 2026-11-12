@@ -423,7 +423,8 @@ output, exactly as with a ready-made helper.
 ## Sound mix
 
 Write the mix after the build (it needs the final timing): `CLI mix SHORT` writes `audio/mix.wav` (voice at -15
-dBFS while speaking, effects at -23 dBFS where they sound, ducked 8 dB under speech, peak -1 dBFS) and runs
+dBFS while speaking, effects at -23 dBFS where they sound, ducked 10 dB under speech, a room tone floor when one is
+cached, peak -1 dBFS) and runs
 `source/sound.py` if present (`sound.md`). Check the returned `levels`, measured on the finished mix the way the
 targets are set: `voice_dbfs` is the mix while the voice is speaking (pauses don't count), about -15 (-14 to -17);
 `bed_dbfs` is the mix where the effects sound clear of speech (silence between sparse effects doesn't count), about

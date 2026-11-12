@@ -24,6 +24,7 @@ import json
 import re
 import shutil
 import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,9 +32,10 @@ import zipfile
 from html import unescape
 from pathlib import Path, PurePosixPath
 
+from bsa import net
 from bsa.assets import polyhaven
 from bsa.audio import decode, recorded
-from bsa.audio.sfx import KINDS
+from bsa.audio.sfx import ROOM_KIND, TAGGABLE_KINDS
 from bsa.short import Asset
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
@@ -49,6 +51,7 @@ DESIGNED_NOTE = ("designed UI sounds (tonal, partly synthesised): fine for inter
                  "sound_policy natural-only")
 RETRY = ("its server could not be reached (no connection, DNS, or the site is down): run the same {what} again "
          "in a minute, or check the connection")
+CERT_RETRY = "set SSL_CERT_FILE to your system's CA bundle, then run the same {what} again"
 
 PACKS = {
     "oga-metal-wood": {
@@ -122,17 +125,21 @@ KIND_WORDS = {
               "waves", "lapping", "liquid", "flowing", "pour"),
     "whoosh": ("whoosh", "swish", "swoosh", "woosh", "swing"),
 }
+# Room tone, the quiet floor under a whole short (a recording only: no `sfx` event has this kind). Tagged for a name
+# with "room tone" / "roomtone" / "interior quiet", or (names from Commons or Freesound only) one of these words when
+# the name suggests no other kind ("ambience_wind" is wind, not room tone).
+ROOM_WORDS = ("ambience", "ambient", "ambiance")
 
 def _urlopen(url: str, headers: dict | None = None):
     req = urllib.request.Request(url, headers={"User-Agent": polyhaven.USER_AGENT, **(headers or {})})
-    return urllib.request.urlopen(req, timeout=polyhaven.TIMEOUT_S)
+    return net.urlopen(req, timeout=polyhaven.TIMEOUT_S)
 
 
 def content_length(url: str) -> int | None:
     """The file's size from a HEAD request, or None when the server does not say."""
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": polyhaven.USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=polyhaven.TIMEOUT_S) as resp:
+        with net.urlopen(req, timeout=polyhaven.TIMEOUT_S) as resp:
             value = resp.headers.get("Content-Length")
             return int(value) if value and value.isdigit() else None
     except OSError:
@@ -152,10 +159,17 @@ def _words(name: str) -> list[str]:
     return [w.lower() for w in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", stem)]
 
 
-def auto_kinds(name: str) -> list[str]:
-    """The sfx kinds a clip's file name suggests (["impact", "thud"] for "impactWood_heavy_003.ogg")."""
-    words = set(_words(name))
-    return [kind for kind, keys in KIND_WORDS.items() if words & set(keys)]
+def auto_kinds(name: str, loose: bool = False) -> list[str]:
+    """The sfx kinds a clip's file name suggests (["impact", "thud"] for "impactWood_heavy_003.ogg"). `loose` (names
+    from Commons or Freesound, not a curated pack) also reads "ambience" / "ambient" as room tone when the name
+    suggests no other kind; a curated pack's clips are tagged by the pack, never by that guess."""
+    words = _words(name)
+    found = set(words)
+    kinds = [kind for kind, keys in KIND_WORDS.items() if found & set(keys)]
+    explicit = "roomtone" in "".join(words) or {"room", "tone"} <= found or {"interior", "quiet"} <= found
+    if explicit or (loose and found & set(ROOM_WORDS) and not kinds):
+        kinds.append(ROOM_KIND)
+    return kinds
 
 
 def pack_clip_kinds(pid: str, name: str) -> list[str]:
@@ -232,9 +246,17 @@ def _unreachable(exc: Exception) -> bool:
     return isinstance(exc, (urllib.error.URLError, ConnectionError, TimeoutError, socket.gaierror, socket.timeout))
 
 
+def _cert_failure(exc: Exception) -> bool:
+    """The HTTPS certificate could not be verified (no CA certificates, or a bad certificate): not a network fault."""
+    return isinstance(getattr(exc, "reason", exc), ssl.SSLCertVerificationError)
+
+
 def plain_error(source: str, exc: Exception) -> str:
     """The failure in plain words: "can't reach commons.wikimedia.org (network or DNS)" for a connection failure,
     else the error's own text."""
+    if _cert_failure(exc):
+        return (f"can't verify {HOSTS.get(source, source)}'s HTTPS certificate: this Python has no CA certificates to "
+                "check it with. Set SSL_CERT_FILE to your system's CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)")
     if _unreachable(exc):
         return f"can't reach {HOSTS.get(source, source)} (network or DNS)"
     return str(exc) or type(exc).__name__
@@ -243,7 +265,8 @@ def plain_error(source: str, exc: Exception) -> str:
 def skipped(source: str, exc: Exception, what: str = "search", item: str | None = None) -> dict:
     """A source left out because it failed: {"source", "error", "retry"} (and the planned `id`). A connection failure
     reads "can't reach <host> (network or DNS)", never the raw urlopen error."""
-    out = {"source": source, "error": plain_error(source, exc), "retry": RETRY.format(what=what)}
+    retry = CERT_RETRY if _cert_failure(exc) else RETRY
+    out = {"source": source, "error": plain_error(source, exc), "retry": retry.format(what=what)}
     return {"id": item, **out} if item else out
 
 
@@ -292,7 +315,7 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
             if _is_cc0(it["license"]):
                 results.append({"id": f"commons:{it['title']}", "name": it["title"], "provider": "commons",
                                 "license": "CC0", "source": f"Wikimedia Commons ({it['author'] or 'unknown'})",
-                                "bytes": it["bytes"], "page": it["page"], "kinds": auto_kinds(it["title"])})  # fmt: skip
+                                "bytes": it["bytes"], "page": it["page"], "kinds": auto_kinds(it["title"], loose=True)})  # fmt: skip
     except (OSError, ValueError) as exc:
         skips.append(skipped("Wikimedia Commons", exc))
     if freesound_key:
@@ -303,7 +326,7 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
                     results.append({"id": f"freesound:{s['id']}", "name": s.get("name", ""), "provider": "freesound",
                                     "license": "CC0", "source": f"Freesound ({s.get('username', 'unknown')})",
                                     "duration_s": s.get("duration"), "page": s.get("url", ""),
-                                    "kinds": auto_kinds(s.get("name", ""))})  # fmt: skip
+                                    "kinds": auto_kinds(s.get("name", ""), loose=True)})  # fmt: skip
         except (OSError, ValueError) as exc:
             skips.append(skipped("Freesound", exc))
     else:
@@ -321,11 +344,11 @@ def search(query: str, limit: int = 12, http=_urlopen, freesound_key: str | None
 
 def _kinds(spec: str, name: str) -> list[str]:
     if not spec:
-        return auto_kinds(name)
+        return auto_kinds(name, loose=True)
     kinds = [k.strip() for k in spec.split(",") if k.strip()]
-    bad = [k for k in kinds if k not in KINDS]
+    bad = [k for k in kinds if k not in TAGGABLE_KINDS]
     if bad:
-        raise ValueError(f"unknown sfx kind {', '.join(bad)}; valid kinds: {', '.join(sorted(KINDS))}")
+        raise ValueError(f"unknown sfx kind {', '.join(bad)}; valid kinds: {', '.join(sorted(TAGGABLE_KINDS))}")
     return kinds
 
 
@@ -553,7 +576,7 @@ def download(plans: list[Asset], cache_dir: Path, http=_urlopen) -> dict[str, li
                 rels = _extract(polyhaven._target(cache_dir, f["path"]), pid, cache_dir)
                 clips = [(rel, pack_clip_kinds(pid, rel)) for rel in rels]
             else:
-                clips = [(f["path"], list(f.get("kinds") or auto_kinds(f["path"])))]
+                clips = [(f["path"], list(f.get("kinds") or auto_kinds(f["path"], loose=True)))]
             _index(lib, a.id, a.source, a.license, f, clips)
             paths += [polyhaven._target(cache_dir, rel) for rel, _ in clips]
         result[a.id] = paths

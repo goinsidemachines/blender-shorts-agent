@@ -37,9 +37,18 @@ no key.
 
 ## Effects in short.json
 
-Each entry in `sfx`: `{"kind", "shot", "at_s", "dur_s", "level_db"}`. `at_s` is seconds from the start of the shot;
-`dur_s` is how long it may last (a longer recording is cut with a short fade); `level_db` sets the balance between
-effects (about -18 for a feature sound, -24 to -30 for a bed). Kinds:
+Each entry in `sfx`: `{"kind", "shot", "at_s", "dur_s", "level_db"}`, plus optional `clip` and `clip_at_s`. `at_s` is seconds from the start of the shot;
+`dur_s` is how long it may last; `level_db` is how loud it seems, in LUFS-ish (perceived loudness, close to dBFS RMS
+for a steady sound): about -18 for a feature sound, -24 to -30 for a bed. It sets the balance between effects, so a
+sharp knock and a steady rumble at the same `level_db` seem equally loud.
+
+`clip` names the exact cached recording the event plays (a cache path, a file name without extension, or
+`<asset>/<stem>`); `clip_at_s` is how many seconds into that recording to start (to skip to the third take of a
+multi-take file, or to a steady part of a long one). Prefer a specific recording of the actual object or action on
+screen: search Freesound for it ("bicycle coasting", "bike falling over"), plan and download it with the user's yes,
+and name it with `clip`. A named clip plays whatever its kind. `kind` is the fallback and the envelope: without
+`clip`, any cached clip of that kind plays (rotating). A named clip that is not cached falls back to the kind, and
+`validate` warns. Kinds:
 
 | kind | Use it for | natural |
 |---|---|---|
@@ -53,6 +62,7 @@ effects (about -18 for a feature sound, -24 to -30 for a bed). Kinds:
 | `hiss` | hydraulics, air, steam | yes |
 | `wind` | weather, height, open air | yes |
 | `water` | water lapping, flowing or splashing, rain | yes |
+| `room` | room tone: the quiet interior ambience under the whole short (not an event, see below) | yes |
 | `whoosh` | camera moves, something passing fast | synthetic |
 | `blip` | a label or number popping in (a designed tone) | synthetic |
 | `hum` | motors, electrics (a designed tone) | synthetic |
@@ -63,11 +73,45 @@ scrape while the weight drags. Fewer, well-timed sounds beat a busy bed. Labels 
 ## How an effect gets its sound
 
 `CLI mix SHORT` plays, for each event, a cached recording of its kind: variants rotate so two events in a row never
-use the same clip, and each is trimmed of leading silence, peak-normalised and given a small random pitch (about
-half a semitone) and gain (±1.5 dB) change so repeats don't sound copied. A kind with no recording falls back to
-synthesis. The mix result's `sfx` says what happened: `recorded`, `synthesised` and `skipped` counts, the clips used
-with their source and licence, and `notes` naming any kind that was synthesised. Treat a synthesised effect as a gap
-to fill with a recording (search, plan, yes, download), not as finished.
+use the same clip, and each is trimmed of leading silence and given a small random pitch (about half a semitone) and
+gain (±1.5 dB) change so repeats don't sound copied. A kind with no recording falls back to synthesis. Then it is
+shaped by kind:
+
+- **Transients** (`impact`, `thud`, `click`, `blip`): a 3 ms fade-in so there is no click, and the sound is not
+  chopped at `dur_s`. Its own tail rings on for up to 0.6 s more, fading smoothly.
+- **Sustained sounds** (`rumble`, `wind`, `water`, `hiss`, `hum`, `creak`, `scrape`, `slide`, `whoosh`): held for
+  `dur_s`, fading in over 0.6 s (at most a third of `dur_s`) and decaying over 1.0 s *past* `dur_s`: the recording runs
+  on and dies away instead of stopping.
+
+**Beds join across cuts.** When a sustained event starts within 0.25 s after another ends (or in its last 0.6 s),
+the two crossfade over 0.6 s, equal power and centred on the boundary (the earlier one runs 0.3 s on, the later one
+starts 0.3 s early), so the level does not dip at the cut. To keep one sound continuous across shots, place the
+consecutive events back to back (each shot's bed ending where the next shot's begins). Transients are never joined.
+
+Last, each event is levelled by perceived loudness: the loudest 400 ms of the K-weighted signal (ITU-R BS.1770, the
+LUFS meter) is set to `level_db`. Peak level and RMS no longer decide it.
+
+The mix result's `sfx` says what happened: `recorded`, `synthesised` and `skipped` counts, the clips used with their
+source and licence, a `room` entry, and `notes` naming any kind that was synthesised or a missing room tone. Treat a
+synthesised effect as a gap to fill with a recording (search, plan, yes, download), not as finished.
+
+## Room tone: the floor
+
+Real interiors never go silent. Without a floor the mix drops to digital silence between effects and in pauses, then
+jumps back: it sounds abrupt. So `CLI mix SHORT` loops a `room` recording under the whole story (a seamless loop with
+1 s crossfades from a random start, faded in over 0.5 s). It is the floor: the voice never ducks it. It continues
+under the closing card (the card has no effects bed) and fades out over the last second of the whole mix. The effects
+bus itself ends with a 1 s fade-out at the end of the story.
+
+Get one like any recording: `CLI assets search sounds "room tone"` (also try "interior quiet", "ambience"), plan it,
+get the user's yes, download. A file name with room tone, roomtone or interior quiet is tagged `room`, and so is a
+Commons or Freesound name with ambience or ambient that suggests no other kind (clips in curated packs are tagged by
+the pack); tag a clip yourself with `commons:FILE=room` or `freesound:ID=room`. Pick a quiet, steady
+recording with no voices, music or one-off sounds, at least a few seconds long. Room tone is a recording only (never
+synthesised) and natural-only allows it. `CLI validate SHORT` warns when none is cached, and the mix skips it.
+
+Settings: `sound.room_db` (default -50, LUFS-ish; `CLI settings set sound.room_db null` turns the floor off; the range
+is -80 to -20) and `sound.reverb`.
 
 ## sound_policy: natural-only
 
@@ -85,7 +129,7 @@ Designed UI packs (`kenney-ui-sfx`: interface clicks and switches, tonal and par
 `designed` in search results, under the plan table and in the library. Under natural-only the mix never uses their
 clips, even ones tagged `click`: plan a natural pack (`oga-metal-wood`, `kenney-rpg`) or a recording for those kinds.
 For water and wind, plan `pack:oga-water` and `pack:oga-wind`: they need no Commons and no key.
-For machines, plan `pack:oga-sfx-100-v2` (2.4 MB: machine loops and thunder as `rumble`, air as `hiss`, metal hits
+For machines with no specific recording of the object, plan `pack:oga-sfx-100-v2` as a generic fallback (these are game sounds: use them only when no recording of the actual object exists, and never a thunder clip for a mechanical rumble; 2.4 MB: machine loops and thunder as `rumble`, air as `hiss`, metal hits
 as `impact`, doors, locks and water loops) and `pack:oga-steam-hisses` (0.6 MB: five steam hisses, all `hiss`); `CLI assets plan
 SHORT pack:oga-steam-hisses` lists each with its size, and nothing downloads without the user's yes. Neither pack has a
 clip named for a thud, so for a piston or firing use its `impact` clips or a recording. Their pages do not say whether
@@ -152,13 +196,25 @@ than `merge_s` (15 ms) heard as one, gain `(energy / ref_energy) ** 0.5`, quiet 
 `offset_s` moves simulation time to the short's (seconds from frame 1). Give every shot the same `ref_energy` so a
 soft hit sounds soft everywhere. `bsa.audio.sfx`
 (`shaped_noise`, `creak`, ...) is still there for beds no recording fits, never under `natural-only`. `CLI mix
-SHORT` adds the bed to the effects before the bed is normalised, so its level relative to the `sfx` events is what
-you give it.
+SHORT` adds the bed to the effects bus as given (no loudness levelling, so its level relative to the `sfx` events is
+what you give it), before the bus is normalised.
 
 ## The mix
 
-`CLI mix SHORT` writes `audio/mix.wav`: voice normalised to -15 dBFS while speaking, effects to -23 dBFS where they
-sound (a few short effects are not boosted to fill the silence between them) and ducked 8 dB under speech, a soft
-limiter, peak at -1 dBFS. The `levels` it returns are measured the same way on the finished mix (`06-build.md`).
-Captions-only shorts get the effects alone. Re-run the mix whenever the timing, the narration, the effects or the
-cached recordings change (the build stage does it last).
+`CLI mix SHORT` writes `audio/mix.wav`:
+
+1. **Effects bus.** All effects (the `sfx` events, `events.json` and the `sound.py` bed) go through a 75 Hz high-pass,
+   so rumbles don't muddy the voice, and one short room reverb (about 0.35 s, wet about 16 dB under the dry sound), so
+   they sit in the same space. The voice and the room tone stay dry. `sound.reverb` false turns the reverb off. The
+   `sound.py` bed is part of the bus: it gets the high-pass and the reverb too.
+2. **Levels.** The bus is set to -23 dBFS RMS where it sounds (a few short effects are not boosted to fill the
+   silence between them); the voice to -15 dBFS while speaking.
+3. **Ducking.** The bus drops 10 dB under speech. It starts to dip 60 ms before a line begins, so the effects are
+   already down when the voice arrives, and comes back over about 0.4 s.
+4. **Room tone** (above) is added last and is not ducked.
+5. **Limiter.** A transparent lookahead peak limiter (5 ms lookahead, 100 ms release) holds the sample peak at
+   -1 dBFS. Nothing under that is touched.
+
+The `levels` it returns are measured on the finished mix (`06-build.md`). Captions-only shorts get the effects and
+the room tone alone. Re-run the mix whenever the timing, the narration, the effects or the cached recordings change
+(the build stage does it last).

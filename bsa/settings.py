@@ -25,6 +25,9 @@ DEFAULTS = {
     "closing": {"image": None, "seconds": 2.5, "voice_line": None},
     "closing_asked": False,  # the closing-card question was answered (asked once, existing users too)
     "sound_policy": "any",  # "natural-only": no synthetic sfx kinds and no synthesis, recordings only
+    # The mix (bsa.audio.mix): `room_db` is the room tone floor in LUFS-ish (null = none; it plays only when a `room`
+    # recording is cached), `reverb` puts the effects through one shared room.
+    "sound": {"room_db": -50.0, "reverb": True},
     "freesound": {"api_key": None},  # optional: lets `assets search sounds` include Freesound's CC0 sounds
     "rules": [],  # the user's hard rules for every video, in their own words (bsa.rules; CLI settings rule add)
     "rules_asked": False,  # the hard-rules question was answered (asked once, existing users too)
@@ -73,7 +76,36 @@ def narrator_problems(s: dict) -> list[str]:
 
 
 # Settings that are true or false (JSON booleans on the command line).
-BOOLEANS = ("page.lan", "post_format_asked")
+BOOLEANS = ("page.lan", "post_format_asked", "sound.reverb")
+
+# sound.room_db: the room tone floor under the story, in LUFS-ish; null turns it off.
+ROOM_DB_RANGE = (-80.0, -20.0)
+
+
+def room_db_error(value) -> str:
+    return (f"sound.room_db must be a level from {ROOM_DB_RANGE[0]:g} to {ROOM_DB_RANGE[1]:g} (LUFS-ish, about -50 is "
+            f"a quiet room) or null for no room tone, got {value!r}")
+
+
+def room_db(s: dict) -> float | None:
+    """The room tone level to mix at: the `sound.room_db` setting (None = off); the default for a missing or
+    unusable value."""
+    sound = s.get("sound") if isinstance(s.get("sound"), dict) else {}
+    if "room_db" not in sound:
+        return DEFAULTS["sound"]["room_db"]
+    v = sound["room_db"]
+    if v is None:
+        return None
+    ok = isinstance(v, (int, float)) and not isinstance(v, bool) and ROOM_DB_RANGE[0] <= v <= ROOM_DB_RANGE[1]
+    return float(v) if ok else DEFAULTS["sound"]["room_db"]
+
+
+def reverb_on(s: dict) -> bool:
+    """The `sound.reverb` setting (default on)."""
+    sound = s.get("sound") if isinstance(s.get("sound"), dict) else {}
+    v = sound.get("reverb", DEFAULTS["sound"]["reverb"])
+    return v if isinstance(v, bool) else DEFAULTS["sound"]["reverb"]
+
 
 _PROVIDER_NAMES = {
     "elevenlabs": "ElevenLabs",
@@ -235,6 +267,22 @@ def check_value(path: str, value):
         if wrong:
             raise ValueError(wrong[0])
         return str(value).strip()
+    if path == "sound":
+        if not isinstance(value, dict) or set(value) - set(DEFAULTS["sound"]):
+            raise ValueError(f"sound must be an object with {' and '.join(DEFAULTS['sound'])}, got {value!r}")
+        return {k: check_value(f"sound.{k}", v) for k, v in value.items()}
+    if path == "sound.room_db":
+        if value is None:
+            return None
+        level = None
+        if not isinstance(value, bool):
+            try:
+                level = float(value)
+            except (TypeError, ValueError):
+                pass
+        if level is None or not ROOM_DB_RANGE[0] <= level <= ROOM_DB_RANGE[1]:
+            raise ValueError(room_db_error(value))
+        return level
     if path in BOOLEANS:
         if not isinstance(value, bool):
             raise ValueError(f"{value!r} is not a valid {path}: use true or false")
