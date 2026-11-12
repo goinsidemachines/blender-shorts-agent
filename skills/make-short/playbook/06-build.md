@@ -428,7 +428,7 @@ under -1. `null` means there is no voice or no effects. Far outside those ranges
 For a camera-led short (the camera's move is the story: a fly-through, a one-take, a camera riding a part), and
 before any long render of a complex move, look at the move itself before the look and the checks:
 `BLENDER camtest SHORT [--scale 0.33] [--shots s01,s02]`. It renders the camera path in Workbench grey (solid
-grey, no textures, cards or captions) into `review/camtest/camtest.mp4`, with a contact sheet
+grey, no textures, cards, captions or Freestyle lines) into `review/camtest/camtest.mp4`, with a contact sheet
 (`camtest-sheet.png`) and `camtest.json`, in minutes. It is a draft view of the camera, never a picture: the user's
 engine and every setting it touches are restored, and the .blend is never saved. It refuses, before anything
 renders, a short that is not built for this timing (build first) and a shot whose scene has no camera. The clip is
