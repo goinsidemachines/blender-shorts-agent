@@ -24,6 +24,7 @@ import json
 import re
 import shutil
 import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +32,7 @@ import zipfile
 from html import unescape
 from pathlib import Path, PurePosixPath
 
+from bsa import net
 from bsa.assets import polyhaven
 from bsa.audio import decode, recorded
 from bsa.audio.sfx import ROOM_KIND, TAGGABLE_KINDS
@@ -49,6 +51,7 @@ DESIGNED_NOTE = ("designed UI sounds (tonal, partly synthesised): fine for inter
                  "sound_policy natural-only")
 RETRY = ("its server could not be reached (no connection, DNS, or the site is down): run the same {what} again "
          "in a minute, or check the connection")
+CERT_RETRY = "set SSL_CERT_FILE to your system's CA bundle, then run the same {what} again"
 
 PACKS = {
     "oga-metal-wood": {
@@ -129,14 +132,14 @@ ROOM_WORDS = ("ambience", "ambient", "ambiance")
 
 def _urlopen(url: str, headers: dict | None = None):
     req = urllib.request.Request(url, headers={"User-Agent": polyhaven.USER_AGENT, **(headers or {})})
-    return urllib.request.urlopen(req, timeout=polyhaven.TIMEOUT_S)
+    return net.urlopen(req, timeout=polyhaven.TIMEOUT_S)
 
 
 def content_length(url: str) -> int | None:
     """The file's size from a HEAD request, or None when the server does not say."""
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": polyhaven.USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=polyhaven.TIMEOUT_S) as resp:
+        with net.urlopen(req, timeout=polyhaven.TIMEOUT_S) as resp:
             value = resp.headers.get("Content-Length")
             return int(value) if value and value.isdigit() else None
     except OSError:
@@ -243,9 +246,17 @@ def _unreachable(exc: Exception) -> bool:
     return isinstance(exc, (urllib.error.URLError, ConnectionError, TimeoutError, socket.gaierror, socket.timeout))
 
 
+def _cert_failure(exc: Exception) -> bool:
+    """The HTTPS certificate could not be verified (no CA certificates, or a bad certificate): not a network fault."""
+    return isinstance(getattr(exc, "reason", exc), ssl.SSLCertVerificationError)
+
+
 def plain_error(source: str, exc: Exception) -> str:
     """The failure in plain words: "can't reach commons.wikimedia.org (network or DNS)" for a connection failure,
     else the error's own text."""
+    if _cert_failure(exc):
+        return (f"can't verify {HOSTS.get(source, source)}'s HTTPS certificate: this Python has no CA certificates to "
+                "check it with. Set SSL_CERT_FILE to your system's CA bundle (e.g. /etc/ssl/certs/ca-certificates.crt)")
     if _unreachable(exc):
         return f"can't reach {HOSTS.get(source, source)} (network or DNS)"
     return str(exc) or type(exc).__name__
@@ -254,7 +265,8 @@ def plain_error(source: str, exc: Exception) -> str:
 def skipped(source: str, exc: Exception, what: str = "search", item: str | None = None) -> dict:
     """A source left out because it failed: {"source", "error", "retry"} (and the planned `id`). A connection failure
     reads "can't reach <host> (network or DNS)", never the raw urlopen error."""
-    out = {"source": source, "error": plain_error(source, exc), "retry": RETRY.format(what=what)}
+    retry = CERT_RETRY if _cert_failure(exc) else RETRY
+    out = {"source": source, "error": plain_error(source, exc), "retry": retry.format(what=what)}
     return {"id": item, **out} if item else out
 
 
