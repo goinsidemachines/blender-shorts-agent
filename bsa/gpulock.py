@@ -6,12 +6,17 @@ two commands never both think they hold it. A second command waits, saying what 
 pendulum render (pid 1234, since 14:02:31)"), and takes over as soon as the holder ends or its process is gone (a
 crashed or killed Blender leaves a stale lock, which is cleared). With `wait=False` it fails at once instead. The
 same process may take the lock again while it holds it (the preview chain's render inside the chain).
+
+The wait line also says how much memory the holder (and the Blender processes it started) uses and how long it has
+run, so a runaway holder shows. `max_wait_s` makes a waiter give up with a plain error naming the holder; the default
+is to wait for as long as it takes.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -67,6 +72,48 @@ def describe_holder(holder: dict) -> str:
     since = (f", since {time.strftime('%H:%M:%S', time.localtime(started))}"
              if isinstance(started, (int, float)) else "")  # fmt: skip
     return f"{holder.get('short') or '?'} {holder.get('command') or '?'} (pid {holder.get('pid')}{since})"
+
+
+def _children_rss(pid: int) -> int:
+    """Resident bytes of the processes `pid` started (a render in chunks runs each chunk in a child Blender), found
+    through /proc on Linux; 0 elsewhere or when nothing can be read."""
+    if not sys.platform.startswith("linux"):
+        return 0
+    from bsa import memwatch
+
+    parents: dict[int, int] = {}
+    for entry in Path("/proc").glob("[0-9]*"):
+        try:
+            tail = (entry / "stat").read_text().rpartition(")")[2].split()
+            parents[int(entry.name)] = int(tail[1])  # state, then the parent pid
+        except (OSError, ValueError, IndexError):
+            continue
+    mine, todo = set(), [pid]
+    while todo:
+        cur = todo.pop()
+        for child, parent in parents.items():
+            if parent == cur and child not in mine:
+                mine.add(child)
+                todo.append(child)
+    return sum(memwatch.rss_bytes(c) or 0 for c in mine)
+
+
+def holder_usage(holder: dict, now: float | None = None) -> str:
+    """", using 12.3 GB, running 2 h 5 min": the holder's memory (its own and its child processes') and how long it
+    has run. Whatever can't be read is left out; "" when neither can."""
+    from bsa import memwatch
+    from bsa.render_status import fmt_duration
+
+    parts = []
+    pid = holder.get("pid")
+    if isinstance(pid, int):
+        used = memwatch.rss_bytes(pid)
+        if used is not None:
+            parts.append(f"using {(used + _children_rss(pid)) / memwatch.GB:.1f} GB")
+    started = holder.get("started")
+    if isinstance(started, (int, float)):
+        parts.append(f"running {fmt_duration(max(0.0, (time.time() if now is None else now) - started))}")
+    return f", {', '.join(parts)}" if parts else ""
 
 
 def _alive(holder: dict) -> bool:
@@ -125,12 +172,16 @@ def _clear_stale(path: Path, seen: dict | None) -> None:
 
 def acquire(path: Path, *, short: str, command: str, wait: bool = True,
             on_wait: Callable[[str], object] | None = None, poll_s: float = POLL_S,
-            sleep: Callable[[float], object] = time.sleep, clock: Callable[[], float] = time.time) -> bool:  # fmt: skip
+            sleep: Callable[[float], object] = time.sleep, clock: Callable[[], float] = time.time,
+            max_wait_s: float | None = None,
+            monotonic: Callable[[], float] = time.monotonic) -> bool:  # fmt: skip
     """Take the lock. Returns True when this call took it (release it after), False when this process already held
-    it. Waits for a live holder, calling `on_wait("waiting for <holder>")` each time it looks (with `wait=False` it
-    raises GpuBusy instead), and clears a lock whose process is gone."""
+    it. Waits for a live holder, calling `on_wait("waiting for <holder>, using .. GB, running ..")` each time it
+    looks (with `wait=False` it raises GpuBusy instead; so does a wait longer than `max_wait_s` seconds, naming the
+    holder), and clears a lock whose process is gone."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    began = monotonic()
     while True:
         if _create(path, short, command, clock):
             return True
@@ -148,12 +199,18 @@ def acquire(path: Path, *, short: str, command: str, wait: bool = True,
         elif not _alive(holder):
             _clear_stale(path, holder)
             continue
-        text = f"waiting for {describe_holder(holder)}" if holder else "waiting for the GPU lock"
+        text = (f"waiting for {describe_holder(holder)}{holder_usage(holder)}" if holder
+                else "waiting for the GPU lock")  # fmt: skip
         if not wait:
             raise GpuBusy(f"the GPU is busy: {describe_holder(holder) if holder else 'another command'} holds "
                           f"{path}. Run it again when that ends, or without --no-wait to wait")  # fmt: skip
         if on_wait is not None:
             on_wait(text)
+        if max_wait_s is not None and monotonic() - began >= max_wait_s:
+            mins = max_wait_s / 60
+            who = f"{describe_holder(holder)}{holder_usage(holder)}" if holder else "another command"
+            raise GpuBusy(f"gave up waiting {mins:g} min for the GPU: {who} still holds {path}. Check that it is "
+                          "not stuck (kill it if it is), then run this again")  # fmt: skip
         sleep(poll_s)
 
 

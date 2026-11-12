@@ -360,6 +360,25 @@ def test_timeline_uses_takes_after_narration(home, pendulum):
     assert data["takes"] is True and data["n_frames"] > before
 
 
+def test_timeline_after_narration_lists_the_shots_that_moved(home, pendulum):
+    ok(run(home, "timeline", "pendulum"))
+    (pendulum / "source" / "build.py").write_text("# built\n", encoding="utf-8")
+    for lid in ("l01", "l02", "l03", "l04"):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", 4.0)
+    jobstate.mark_done(pendulum, "narration", status="ok", provider="kokoro")
+    data = ok(run(home, "timeline", "pendulum"))
+    assert any(r.startswith("s02 moved: frames ") and "\u2192" in r and "Re-check" in r for r in data["retimed"]), data
+    assert "retimed" not in ok(run(home, "timeline", "pendulum"))  # nothing moved the second time
+
+
+def test_timeline_before_a_build_has_no_retime_report(home, pendulum):
+    ok(run(home, "timeline", "pendulum"))
+    for lid in ("l01", "l02", "l03", "l04"):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", 4.0)
+    jobstate.mark_done(pendulum, "narration", status="ok", provider="kokoro")
+    assert "retimed" not in ok(run(home, "timeline", "pendulum"))
+
+
 def test_runs_from_other_cwd(home, tmp_path):
     elsewhere = tmp_path / "a folder with spaces"
     elsewhere.mkdir()
@@ -1663,6 +1682,7 @@ def _fake_chain(monkeypatch, home, short: Path, calls: list, fail: str | None = 
     monkeypatch.setattr(bsa_blender, "_build_script_mode", build)
     monkeypatch.setattr(bsa_blender, "_reopen", lambda sdir: calls.append("reopen"))
     monkeypatch.setattr(bsa_blender, "_framing_notes", lambda sdir: [FRAMING_NOTE])  # what build.py's framing kept
+    monkeypatch.setattr(bsa_blender, "_heavy_notes", lambda sdir: [])  # the fake .blend has nothing to scan
     monkeypatch.setattr(bsa_blender, "_scenes_current", lambda *a: True)
     monkeypatch.setattr(bsa_blender, "_fingerprints", lambda *a, **k: None)  # the fake .blend has no scenes
     monkeypatch.setattr(bsa_blender, "cmd_check", step("check", {"errors": 0, "warnings": 1}))
@@ -1704,7 +1724,7 @@ def test_preview_chain_runs_every_step_in_order(home, pendulum, monkeypatch, cap
     assert list(by) == ["timeline", "build", "build done", "mix", "check", "render", "frame-check", "edit"]
     assert by["timeline"]["state"] == "skipped" and by["timeline"]["summary"] == {"skipped": "the timing is current"}
     assert all(by[n]["state"] == "done" for n in list(by)[1:])
-    assert by["build"]["summary"] == {"why": "no blend/short.blend yet", "framing": [FRAMING_NOTE]}
+    assert by["build"]["summary"] == {"why": "no blend/short.blend yet", "framing": [FRAMING_NOTE], "heavy": []}
     assert by["render"]["summary"]["frames"] == 7
     assert out["steps"][0]["framing"] == [FRAMING_NOTE]  # the build step names the framing warnings
     assert all(by[n]["started"] <= by[n]["finished"] for n in list(by)[1:])
@@ -2914,6 +2934,31 @@ class _ChainSpy:
 
     def progress(self, *a, **k):
         self.calls.append((a, k))
+
+    def end(self, *a, **k):
+        self.ended = getattr(self, "ended", []) + [(a, k)]
+
+    def summarize(self, *a, **k):
+        self.summed = getattr(self, "summed", []) + [(a, k)]
+
+
+def test_side_check_ends_its_step_when_its_process_ends_not_when_the_chain_joins_it():
+    """Short 20: a check that finished in seconds still read "running 0/0" for the whole render, because its step was
+    only ended when the chain joined it after the render."""
+    import bsa_blender
+
+    chain = _ChainSpy()
+    code = "import json; print('BSA_RESULT ' + json.dumps({'errors': 0, 'warnings': 1, 'checked': [], 'kept': ['s01']}))"
+    side = bsa_blender._SideCheck(_child(code), chain)
+    side.proc.wait(timeout=30)
+    side._threads[0].join(timeout=10)  # the reader saw the process end: the step ended before any join
+    assert chain.ended == [(("check",), {})]
+    assert chain.summed == [(("check", {"warnings": 1, "checked": [], "kept": ["s01"]}), {})]
+    crash = _ChainSpy()
+    died = bsa_blender._SideCheck(_child("import sys; sys.exit(3)"), crash)
+    died.proc.wait(timeout=30)
+    died._threads[0].join(timeout=10)
+    assert crash.ended[0][0][:2] == ("check", "failed") and "without a result" in crash.ended[0][0][2]
 
 
 def test_side_check_records_its_progress_and_returns_its_result(capsys):

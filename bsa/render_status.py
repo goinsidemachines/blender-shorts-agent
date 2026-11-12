@@ -158,6 +158,54 @@ def is_alive(status: dict) -> bool:
     return not (want and token and want != token)
 
 
+def frames_on_disk(status: dict) -> dict | None:
+    """What the frames folder holds for a render whose writer is gone: {"done", "total", "newest"} (frames of the
+    shots' ranges that are non-empty PNGs, the frames the render plans, and the newest one's modification time), or
+    None when the status does not say where the frames are (no short folder, no shots)."""
+    render = status.get("render") if isinstance(status.get("render"), dict) else status
+    shots = render.get("shots") if isinstance(render, dict) else None
+    where = (status.get("short") or {}).get("dir")
+    key = status.get("key") or (render or {}).get("key") or status.get("preset")
+    if not where or not key or not shots:
+        return None
+    done = total = 0
+    newest = None
+    for shot in shots:
+        try:
+            f0, f1, sid = int(shot["f0"]), int(shot["f1"]), shot["id"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        total += f1 - f0 + 1
+        folder = Path(where) / "frames" / str(key) / str(sid)
+        for f in range(f0, f1 + 1):
+            try:
+                st = (folder / f"{f:04d}.png").stat()
+            except OSError:
+                continue
+            if st.st_size > 0:
+                done += 1
+                newest = st.st_mtime if newest is None else max(newest, st.st_mtime)
+    return {"done": done, "total": total, "newest": newest} if total else None
+
+
+def _gone_note(status: dict) -> str:
+    """For a status whose process is gone: when its log stopped and what the frames folder holds ("; its log stopped
+    at 14:02 and 310 of 480 frames are on disk"), and when frames kept appearing after that (another Blender is
+    still writing them: the host that writes the status died, the render did not)."""
+    updated = status.get("updated")
+    stopped = (time.strftime("%H:%M", time.localtime(updated)) if isinstance(updated, (int, float)) else None)
+    disk = frames_on_disk(status)
+    text = f"its log stopped at {stopped}" if stopped else ""
+    if disk is not None:
+        counted = f"{disk['done']} of {disk['total']} frames are on disk"
+        text = f"{text} and {counted}" if text else counted
+        newest = disk["newest"]
+        if isinstance(updated, (int, float)) and newest is not None and newest > updated + 5:
+            text += (f"; frames are still appearing (newest at {time.strftime('%H:%M:%S', time.localtime(newest))}),"
+                     " so a Blender may still be rendering")  # fmt: skip
+    return f"; {text}" if text else ""
+
+
 # --------------------------------------------------------------------------- planning a (resumed) render
 
 
@@ -430,6 +478,7 @@ class Tracker:
             "version": VERSION,
             "short": self.short,
             "preset": self.preset,
+            "key": self.key,
             "engine": self.engine,
             "state": self.state,
             "phase": self.phase,
@@ -666,6 +715,11 @@ class Run:
     def end(self, name: str, state: str = "done", error: str | None = None) -> None:
         with self._lock:
             st = self._step(name)
+            if st["state"] in ("done", "failed", "stopped") and st["finished"] is not None:
+                if error and not st.get("error"):  # already ended (the side check's reader did): keep how it ended
+                    st["error"] = str(error)[:MAX_ERROR]
+                    self.write(force=True)
+                return
             now = self.clock()
             if st["progress"] is not None and st["state"] == "running":  # frozen at its last count
                 st["progress"] = {**self._progress_out(st["progress"], now, name), "eta_s": None, "eta_at": None}
@@ -759,6 +813,7 @@ class Run:
             "version": RUN_VERSION,
             "short": self.short,
             "preset": self.preset,
+            "key": self.path.stem.removeprefix("render-status-"),
             "kind": self.kind,
             "state": self.state,
             "phase": self.current or self.state,
@@ -1036,8 +1091,8 @@ def describe(status: dict, now: float | None = None, ago: bool = True) -> dict:
     if out["stale"]:
         during = f", during step {step['index']} of {step['of']} ({step['name']})" if step and len(steps) > 1 else ""
         resume = "; it resumes from what is on disk" if kind in ("preview", "render") else ""
-        summary = (f"{label} stopped: its Blender process (pid {status.get('pid')}) is gone{during}; run {again} "
-                   f"again{resume}")  # fmt: skip
+        summary = (f"{label} stopped: its Blender process (pid {status.get('pid')}) is gone{during}"
+                   f"{_gone_note(status)}; run {again} again{resume}")  # fmt: skip
     elif state == "running":
         if status.get("waiting"):
             summary = f"{label} waiting for the GPU: {status['waiting']}"
@@ -1051,9 +1106,15 @@ def describe(status: dict, now: float | None = None, ago: bool = True) -> dict:
             summary = f"{label} running: step {step['index']} of {step['of']}, {_step_text(step, render, now)}"
         else:
             summary = f"{label} running: {_step_text(step, render, now, named=False)}"
-        for s in steps:  # a side step beside the current one that stopped counting (Run._side_quiet)
-            if s.get("state") == "running" and isinstance(s.get("stalled_s"), (int, float)):
+        for s in steps:  # a step running beside the current one (the checks beside a preview's render)
+            if s.get("state") != "running" or s["name"] == name:
+                continue
+            if isinstance(s.get("stalled_s"), (int, float)):  # it stopped counting (Run._side_quiet)
                 summary += f"; {s['name']} has not moved for {fmt_duration(s['stalled_s'])}"
+            elif (s.get("progress") or {}).get("total"):
+                summary += f"; {_step_text(s, None, now)}"
+            else:  # no count yet: its process is starting, or has no frames to check
+                summary += f"; {s['name']} is starting (no count yet)"
     elif state == "done":
         took = fmt_duration((status.get("finished") or now) - (status.get("started") or now))
         if kind == "render" and render:
@@ -1119,7 +1180,7 @@ def _describe_render(status: dict, now: float | None = None) -> dict:
     again = f"run BLENDER render SHORT --preset {preset} again to resume from the frames on disk"
     if out["stale"]:
         summary = (f"{preset} render stopped: its Blender process (pid {status.get('pid')}) is gone, at {done} of "
-                   f"{total} frames; {again}{tail}")  # fmt: skip
+                   f"{total} frames{_gone_note(status)}; {again}{tail}")  # fmt: skip
     elif state == "running":
         cur = status.get("current") or {}
         where = f", shot {cur['shot']} frame {cur.get('frame') or '-'}" if cur.get("shot") else ""

@@ -5,6 +5,7 @@ import json
 import os
 import struct
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -960,3 +961,83 @@ def test_ps_token_names_a_running_process_and_not_a_finished_one():
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()  # reaped: its pid is free now
     assert rs._ps_token(child.pid) in (None, "")
+
+
+def test_a_side_step_that_already_ended_keeps_its_first_end(tmp_path):
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        run.begin("render")
+        run.end("check")
+        first = _step(_read(tmp_path), "check")["finished"]
+        clock.tick(60)
+        run.end("check")  # the chain joins the check process after the render: same outcome, no new time
+        assert _step(_read(tmp_path), "check")["finished"] == first
+        run.end("render")
+
+
+def test_the_summary_says_how_a_side_check_is_doing(tmp_path):
+    clock = Clock()
+    with _run_obj(tmp_path, clock, steps=("check", "render")) as run:
+        run.begin_side("check")
+        run.begin("render")
+        assert "check is starting (no count yet)" in rs.describe(_read(tmp_path), clock())["summary"]
+        run.progress(3, 10, current="checking s02", step="check", force=True)
+        assert "check: 3 of 10 frames (30%), checking s02" in rs.describe(_read(tmp_path), clock())["summary"]
+        run.end("render")
+
+
+def _frames(folder, f0, f1):
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in range(f0, f1 + 1):
+        (folder / f"{f:04d}.png").write_bytes(b"png")
+
+
+def test_a_dead_render_says_when_its_log_stopped_and_counts_the_frames_on_disk(tmp_path, monkeypatch):
+    """The host that writes the status crashed, frames stayed on disk: say so instead of a frozen "running"."""
+    clock = Clock(time.time() - 3600)
+    t, _ = _tracker(tmp_path, clock)
+    t.start()
+    t.begin_shot("s01")
+    _render(t, clock, range(1, 4))
+    status = _read(tmp_path)
+    folder = tmp_path / "frames" / "preview"
+    _frames(folder / "s01", 1, 3)
+    (folder / "s01" / "0004.png").write_bytes(b"")  # a placeholder: not a frame
+    for png in (folder / "s01").glob("*.png"):
+        os.utime(png, (status["updated"], status["updated"]))  # written before the log stopped
+    monkeypatch.setattr(rs, "is_alive", lambda s: False)
+    out = rs.describe(status, time.time())
+    stopped = time.strftime("%H:%M", time.localtime(status["updated"]))
+    assert out["stale"] and f"its log stopped at {stopped}" in out["summary"]
+    assert "3 of " in out["summary"] and "frames are on disk" in out["summary"]
+    assert "still appearing" not in out["summary"]
+
+
+def test_frames_still_appearing_after_the_log_stopped_are_noticed(tmp_path, monkeypatch):
+    clock = Clock(time.time() - 3600)
+    t, _ = _tracker(tmp_path, clock)
+    t.start()
+    t.begin_shot("s01")
+    _render(t, clock, range(1, 3))
+    status = _read(tmp_path)
+    _frames(tmp_path / "frames" / "preview" / "s01", 1, 5)  # written now, an hour after the status's last write
+    monkeypatch.setattr(rs, "is_alive", lambda s: False)
+    out = rs.describe(status, time.time())
+    assert "frames are still appearing" in out["summary"] and "may still be rendering" in out["summary"]
+
+
+def test_a_dead_run_counts_frames_from_its_render_section(tmp_path, monkeypatch):
+    clock = Clock(time.time() - 3600)
+    t, _ = _tracker(tmp_path, clock)
+    with _run_obj(tmp_path, clock, steps=("render",)) as run:
+        t.run = run
+        t.start()
+        t.begin_shot("s01")
+        _render(t, clock, range(1, 3))
+        status = _read(tmp_path)
+    _frames(tmp_path / "frames" / "preview" / "s01", 1, 2)
+    status["state"] = "running"
+    monkeypatch.setattr(rs, "is_alive", lambda s: False)
+    out = rs.describe(status, time.time())
+    assert "its log stopped at" in out["summary"] and "2 of " in out["summary"]
