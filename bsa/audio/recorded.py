@@ -1,8 +1,12 @@
 """Recorded sound effects: the library of downloaded clips by sfx kind, and how each `sfx` event gets its sound.
 
 Each event of a kind with cached recordings plays one of them (variants rotate so consecutive events of a kind
-differ), trimmed of leading silence, cut to the event's dur_s with a short fade, peak-normalised, and given a small
-random pitch and gain change so repeats don't sound copied. A kind with no recording falls back to synthesis
+differ), trimmed of leading silence, shaped by kind (`shape`: a transient gets a 3 ms fade-in and rings out past its
+dur_s; a sustained sound fades in and out inside it), and given a small random pitch and gain change so repeats don't
+sound copied. The mix then levels it by perceived loudness (bsa.audio.dsp), not by peak.
+
+The `room` kind (room tone) is the odd one out: no event plays it. The mix loops one under the whole story as the quiet
+floor (`room_clip`, `sound.room_db`). It is a recording only, never synthesised, and allowed under natural-only. A kind with no recording falls back to synthesis
 (bsa.audio.sfx), and the mix result says so. `sound_policy` "natural-only" forbids the synthetic kinds (blip, whoosh,
 hum) and synthesis altogether: such events are left out of the mix, and `validate` warns about them first. It also
 leaves out clips from designed UI packs (interface sounds, tonal and partly synthesised, `designed` in the library),
@@ -26,13 +30,18 @@ from pathlib import Path
 import numpy as np
 
 from bsa.audio import decode
+from bsa.audio.sfx import ROOM_KIND, TRANSIENT_KINDS
 
 SR = decode.SR
 POLICIES = ("any", "natural-only")
 SYNTHETIC_KINDS = ("blip", "whoosh", "hum")  # designed tones with no real-world recording behind them
 PITCH_JITTER_ST = 0.6  # +- semitones
 GAIN_JITTER_DB = 1.5  # +- dB
-FADE_S = 0.03
+TRANSIENT_FADE_IN_S = 0.003  # no click at the start of a struck sound
+TAIL_S = 0.6  # a transient may ring this long past its dur_s (decaying, with a smooth fade)
+END_FADE_S = 0.01  # a clip that ends before its dur_s, or a tail, ends on a short fade
+SUSTAINED_FADE_IN_S = 0.3  # a held sound fades in ...
+SUSTAINED_FADE_OUT_S = 0.5  # ... and out, each at most a third of its dur_s
 TRIM_DB = -40  # leading samples quieter than this below the clip's peak are cut
 PREROLL_S = 0.004
 
@@ -170,9 +179,38 @@ def resolve(short, library: Library | None, policy: str = "any") -> list[dict]:
     return out
 
 
-def prepare(x: np.ndarray, dur_s: float, seed: int = 0) -> tuple[np.ndarray, float]:
-    """(the clip ready to place, gain jitter in dB): leading silence trimmed, pitch shifted by a little, cut to dur_s
-    with a fade-out, peak-normalised."""
+def shape(x: np.ndarray, dur_s: float, kind: str | None = None, tail_s: float = TAIL_S) -> np.ndarray:
+    """The envelope of an effect of `kind`.
+
+    Transient kinds (impact, thud, click, blip): a ~3 ms fade-in, then the sound is left alone. Past `dur_s` its own
+    tail keeps ringing, for up to `tail_s`, under a smooth fade to nothing (the recording is not chopped at dur_s).
+    Sustained kinds (everything else): cut to `dur_s`, an equal-power fade-in (0.3 s) and fade-out (0.5 s), each at
+    most a third of the length so a short effect is still mostly itself."""
+    n = round(dur_s * SR)
+    if kind in TRANSIENT_KINDS:
+        x = np.array(x[: n + round(tail_s * SR)], dtype=np.float64)
+        k = min(round(TRANSIENT_FADE_IN_S * SR), len(x) // 4)
+        if k:
+            x[:k] *= np.sin(np.linspace(0, np.pi / 2, k)) ** 2
+        if len(x) > n:  # ring out past dur_s, fading smoothly
+            x[n:] *= 0.5 * (1 + np.cos(np.linspace(0, np.pi, len(x) - n)))
+        else:
+            e = min(round(END_FADE_S * SR), len(x) // 4)
+            if e:
+                x[-e:] *= 0.5 * (1 + np.cos(np.linspace(0, np.pi, e)))
+        return x
+    x = np.array(x[:n], dtype=np.float64)
+    fi, fo = (min(round(s * SR), len(x) // 3) for s in (SUSTAINED_FADE_IN_S, SUSTAINED_FADE_OUT_S))
+    if fi:
+        x[:fi] *= np.sin(np.linspace(0, np.pi / 2, fi))
+    if fo:
+        x[-fo:] *= np.cos(np.linspace(0, np.pi / 2, fo))
+    return x
+
+
+def prepare(x: np.ndarray, dur_s: float, seed: int = 0, kind: str | None = None) -> tuple[np.ndarray, float]:
+    """(the clip ready to place, gain jitter in dB): leading silence trimmed, pitch shifted by a little, shaped for
+    its kind (`shape`: no kind = sustained), peak-normalised as a safety step (the mix levels by loudness)."""
     rng = np.random.default_rng(seed)
     x = np.asarray(x, dtype=np.float64)
     if len(x) == 0 or not np.abs(x).max():
@@ -181,21 +219,43 @@ def prepare(x: np.ndarray, dur_s: float, seed: int = 0) -> tuple[np.ndarray, flo
     x = x[max(0, loud[0] - round(PREROLL_S * SR)) :]
     ratio = 2 ** (rng.uniform(-1, 1) * PITCH_JITTER_ST / 12)
     x = decode.resample(x, SR, SR / ratio)  # played `ratio` times faster: higher and shorter
-    n = round(dur_s * SR)
-    if len(x) > n:
-        x = x[:n].copy()
-        k = max(1, min(round(FADE_S * SR), n // 4))
-        x[-k:] *= 0.5 * (1 + np.cos(np.linspace(0, np.pi, k)))
+    x = shape(x, dur_s, kind)
     peak = np.abs(x).max() if len(x) else 0.0
     return (x / peak if peak else x), float(rng.uniform(-GAIN_JITTER_DB, GAIN_JITTER_DB))
+
+
+def room_clip(library: Library | None, policy: str = "any") -> dict | None:
+    """The cached `room` recording the mix loops under the story (the first by path; designed UI clips are left out
+    under natural-only), or None."""
+    clips = library.clips_for(ROOM_KIND) if library is not None else []
+    if policy == "natural-only":
+        clips = [c for c in clips if not is_designed(c)]
+    return clips[0] if clips else None
+
+
+def room_status(library: Library | None, policy: str = "any", room_db: float | None = None) -> dict:
+    """What the mix did about room tone, for its JSON result."""
+    if room_db is None:
+        return {"enabled": False, "used": False, "note": "sound.room_db is off: no room tone floor"}
+    clip = room_clip(library, policy)
+    if clip is None:
+        return {"enabled": True, "used": False, "level_db": room_db, "note": _ROOM_MISSING}
+    return {"enabled": True, "used": True, "level_db": room_db, "clip": clip["path"], "source": clip.get("source"),
+            "license": clip.get("license")}  # fmt: skip
+
+
+_ROOM_MISSING = ("no room tone recording is cached, so the mix has no quiet floor: effects and pauses drop to digital "
+                 "silence between sounds. Find one with CLI assets search sounds \"room tone\", plan it and get the "
+                 "user's yes.")
 
 
 def _kinds(res: list[dict], use: str) -> list[str]:
     return sorted({r["kind"] for r in res if r["use"] == use})
 
 
-def report(res: list[dict]) -> dict:
-    """What the mix used, for its JSON result: counts, the recordings with their licences, and plain notes."""
+def report(res: list[dict], room: dict | None = None) -> dict:
+    """What the mix used, for its JSON result: counts, the recordings with their licences, and plain notes. `room`
+    (room_status) adds the room tone: its clip is listed with the others and a missing one is noted."""
     notes = []
     synth, skipped = _kinds(res, "synth"), _kinds(res, "skipped")
     if synth:
@@ -207,13 +267,22 @@ def report(res: list[dict]) -> dict:
                      + "; ".join(dict.fromkeys(r["reason"] for r in res if r["use"] == "skipped")))  # fmt: skip
     recordings = {r["clip"]: {"clip": r["clip"], "source": r["source"], "license": r["license"]}
                   for r in res if r["use"] == "recording"}  # fmt: skip
-    return {"recorded": sum(r["use"] == "recording" for r in res), "synthesised": sum(r["use"] == "synth" for r in res),
-            "skipped": sum(r["use"] == "skipped" for r in res), "clips": list(recordings.values()), "notes": notes,
-            "events": res}  # fmt: skip
+    if room is not None:
+        if room.get("used"):
+            recordings[room["clip"]] = {"clip": room["clip"], "source": room["source"], "license": room["license"]}
+        elif room.get("enabled"):
+            notes.append(room["note"])
+    out = {"recorded": sum(r["use"] == "recording" for r in res), "synthesised": sum(r["use"] == "synth" for r in res),
+           "skipped": sum(r["use"] == "skipped" for r in res), "clips": list(recordings.values()), "notes": notes,
+           "events": res}  # fmt: skip
+    if room is not None:
+        out["room"] = room
+    return out
 
 
-def policy_warnings(short, library: Library | None, policy: str = "any") -> list[str]:
-    """validate warnings: synthetic kinds under natural-only, and kinds with no cached recording."""
+def policy_warnings(short, library: Library | None, policy: str = "any", room: bool = False) -> list[str]:
+    """validate warnings: synthetic kinds under natural-only, kinds with no cached recording and, when `room` (the
+    sound.room_db setting is on), no cached room tone."""
     res = resolve(short, library, policy)
     out = []
     forbidden = sorted({r["kind"] for r in res if r["use"] == "skipped" and r["kind"] in SYNTHETIC_KINDS})
@@ -230,4 +299,6 @@ def policy_warnings(short, library: Library | None, policy: str = "any") -> list
                      "use)")  # fmt: skip
         out.append(f"no recording is cached for sfx kind(s) {', '.join(missing)}: {then}. Find some with CLI assets "
                    f"search sounds \"{missing[0]}\", plan them and get the user's yes.")  # fmt: skip
+    if room and room_clip(library, policy) is None:
+        out.append(_ROOM_MISSING[0].upper() + _ROOM_MISSING[1:])
     return out
