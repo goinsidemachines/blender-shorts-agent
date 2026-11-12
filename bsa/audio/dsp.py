@@ -77,18 +77,24 @@ def integrated_lufs(x: np.ndarray) -> float:
     return _lufs(float(np.mean(k_weight(x) ** 2)))
 
 
-def level_to_lufs(x: np.ndarray, target_lufs: float, max_crest_db: float | None = None) -> np.ndarray:
-    """`x` scaled so its loudest momentary loudness is `target_lufs`. `max_crest_db` is the safety step: the scale is
-    lowered if the peak would end more than that many dB above the target (a lone click can read as quiet over 400
-    ms but must not be boosted into a huge spike)."""
+def level_gain(x: np.ndarray, target_lufs: float, max_crest_db: float | None = None) -> float:
+    """The scale that puts `x`'s loudest momentary loudness at `target_lufs` (1.0 for silence). `max_crest_db` is the
+    safety step: the scale is lowered if the peak would end more than that many dB above the target (a lone click can
+    read as quiet over 400 ms but must not be boosted into a huge spike)."""
     m = momentary_lufs(x)
     if m <= FLOOR_DB:
-        return x
+        return 1.0
     g = db(target_lufs - m)
     if max_crest_db is not None:
         peak = float(np.abs(x).max())
         g = min(g, db(target_lufs + max_crest_db) / peak)
-    return x * g
+    return g
+
+
+def level_to_lufs(x: np.ndarray, target_lufs: float, max_crest_db: float | None = None) -> np.ndarray:
+    """`x` scaled so its loudest momentary loudness is `target_lufs` (see `level_gain`)."""
+    g = level_gain(x, target_lufs, max_crest_db)
+    return x if g == 1.0 and momentary_lufs(x) <= FLOOR_DB else x * g
 
 
 # --------------------------------------------------------------------------- fades and loops

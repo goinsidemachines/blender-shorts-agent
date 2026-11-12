@@ -305,15 +305,97 @@ def test_transient_fades_in_and_rings_past_dur_s():
     assert len(short) == 2000 and abs(short[-1]) < 1e-3
 
 
-def test_sustained_fades_in_and_out_inside_dur_s():
-    x = np.ones(2 * SR)
+def test_sustained_fades_in_over_0_6_s_and_decays_past_dur_s():
+    x = np.ones(5 * SR)
     y = recorded.shape(x, 2.0, "rumble")
-    assert len(y) == 2 * SR and y[0] == 0 and y[-1] == pytest.approx(0, abs=1e-3)
-    assert y[round(0.15 * SR)] == pytest.approx(np.sin(np.pi / 4), abs=0.01)  # equal power: half way in = -3 dB
-    assert y[SR] == 1.0
-    short = recorded.shape(np.ones(SR), 0.3, "wind")  # fades capped at a third of dur_s
-    n = round(0.3 * SR)
-    assert len(short) == n and short[n // 3 : n - n // 3].min() == pytest.approx(1.0)
+    n = 2 * SR
+    assert len(y) == n + round(recorded.SUSTAINED_FADE_OUT_S * SR)  # the decay runs PAST dur_s
+    assert y[0] == 0
+    assert y[round(0.3 * SR)] == pytest.approx(np.sin(np.pi / 4), abs=0.01)  # equal power: half way in = -3 dB
+    assert y[round(0.6 * SR) + 5] == pytest.approx(1.0, abs=1e-3)
+    assert y[n - 1] == 1.0  # dur_s itself is untouched ...
+    assert y[n + round(0.5 * SR)] == pytest.approx(np.cos(np.pi / 4), abs=0.01)  # ... then -3 dB half way down
+    assert y[-1] == pytest.approx(0, abs=1e-3)
+    short = recorded.shape(np.ones(5 * SR), 0.6, "wind")  # the fade-in is capped at a third of dur_s
+    k = round(0.2 * SR)
+    assert short[k + 5] == pytest.approx(1.0, abs=1e-3) and short[k // 2] < 0.95
+    clipped = recorded.shape(np.ones(SR), 0.6, "wind")  # a clip with nothing past dur_s fades inside instead
+    assert len(clipped) == SR and clipped[-1] == pytest.approx(0, abs=1e-3)
+
+
+def test_joined_sides_use_a_0_6_s_crossfade_centred_on_the_boundary():
+    x = np.ones(5 * SR)
+    a = recorded.shape(x, 2.0, "rumble", join_out=True)
+    b = recorded.shape(x, 2.0, "rumble", lead_s=0.3, join_in=True)
+    h = round(0.3 * SR)
+    assert len(a) == 2 * SR + h and len(b) == h + 2 * SR + round(recorded.SUSTAINED_FADE_OUT_S * SR)
+    # complementary equal-power curves: the squares sum to one across the whole overlap
+    fo = a[-2 * h :]
+    fi = b[: 2 * h]
+    assert np.allclose(fo**2 + fi**2, 1.0, atol=1e-3)
+
+
+def test_transient_adjacent_to_a_bed_is_not_joined():
+    from bsa.audio.mix import _joins
+
+    sfx = [Sfx("rumble", "s01", 0.0, 2.0, -20), Sfx("thud", "s01", 2.0, 0.3, -20), Sfx("rumble", "s01", 2.1, 2.0, -20)]
+    uses = [{"use": "recording"}] * 3
+    starts = [round(fx.at_s * SR) for fx in sfx]
+    assert _joins(_short(sfx), uses, starts) == {0: 2}  # the thud between them is left alone
+    only = [sfx[0], sfx[1]]
+    assert _joins(_short(only), uses[:2], starts[:2]) == {}
+    far = [sfx[0], Sfx("rumble", "s01", 2.5, 1.0, -20)]  # a 0.5 s gap is more than JOIN_GAP_S
+    assert _joins(_short(far), uses[:2], [0, round(2.5 * SR)]) == {}
+
+
+def _noise_lib(seconds=12.0, seed=5):
+    return _FakeLib(0.3 * np.random.default_rng(seed).standard_normal(round(seconds * SR)))
+
+
+def _win_db(x, w=2400):  # 50 ms windows
+    f = x[: len(x) // w * w].reshape(-1, w)
+    return 20 * np.log10(np.sqrt((f**2).mean(axis=1)) + 1e-12)
+
+
+def test_adjacent_sustained_events_crossfade_without_a_dip():
+    tl = _timeline(450)  # 15 s
+    sfx = [Sfx("rumble", "s01", 1.0, 4.0, -24), Sfx("rumble", "s01", 5.0, 4.0, -24)]
+    bed = _bed(tl, _short(sfx), 15 * SR, None, _noise_lib(), "any")[:, 0]
+    db = _win_db(bed)
+    around = db[round(4.5 / 0.05) : round(5.5 / 0.05)]  # 0.5 s either side of the cut at 5.0 s
+    steady = db[round(2.5 / 0.05) : round(3.5 / 0.05)].mean()
+    assert abs(around.mean() - steady) < 1.5
+    assert around.min() > steady - 3.0 and around.max() < steady + 3.0  # white noise: windows jitter a little
+    lone = _bed(tl, _short(sfx[:1]), 15 * SR, None, _noise_lib(), "any")[:, 0]
+    assert np.abs(lone[round(5.0 * SR) : round(5.5 * SR)]).max() > 0  # the first event runs 0.3 s past its end
+
+
+def test_isolated_sustained_event_rises_smoothly_and_decays_past_dur_s():
+    tl = _timeline(450)
+    bed = _bed(tl, _short([Sfx("rumble", "s01", 1.0, 4.0, -24)]), 15 * SR, None, _noise_lib(), "any")[:, 0]
+    db = _win_db(bed)
+    i0 = round(1.0 / 0.05)
+    rise = db[i0 + 1 : i0 + 13]  # after the first 50 ms, through the 0.6 s fade-in
+    assert np.diff(rise).max() < 6.0
+    assert db[i0 + 14 : i0 + 60].mean() > rise[0] + 10  # it did rise
+    end = round(5.0 / 0.05)
+    assert db[end : end + 4].mean() > db[end + 25 : end + 30].mean() + 20  # decaying for ~1 s past dur_s ...
+    assert db[end + 24 : end + 40].max() < -60  # ... and gone by about 1.2 s
+    tail = db[end : end + 17]  # (the last windows fall into digital zero)
+    assert np.abs(np.diff(tail)).max() < 8.0  # no step
+
+
+def test_bus_ramps_down_over_the_last_second_and_is_silent_after_the_story(tmp_path):
+    tl = _timeline(300)
+    sfx = [Sfx("rumble", "s01", 0.0, 10.0, -24)]
+    out, _ = mix(tl, _short(sfx), None, library=_noise_lib(), closing=(60, None, None), reverb=False,
+                  room_db=None)  # fmt: skip
+    n_story = 10 * SR
+    assert np.abs(out[n_story:]).max() == 0  # the effects end with the story (room tone is off)
+    db = _win_db(out[:n_story, 0])
+    assert db[-20:-14].mean() > db[-8:].mean() + 6  # ramping down through the last second
+    assert db[-1] < db[-21] - 20
+    assert abs(out[n_story - 1, 0]) < 1e-3
 
 
 def test_loop_is_seamless_seeded_and_exact_length():
@@ -371,13 +453,17 @@ def test_room_tone_level_fades_not_ducked_and_off_switch(tmp_path):
     assert np.abs(quieter).max() < np.abs(room_only).max() / 2
 
 
-def test_room_tone_stops_with_the_story_and_stays_off_the_closing_card(tmp_path):
+def test_room_tone_runs_under_the_closing_card_and_fades_out_at_the_very_end(tmp_path):
     lib = _room_library(tmp_path)
     out, _ = mix(_timeline(300), _short([]), None, library=lib, closing=(60, None, None))
     n_story = 300 / 30 * SR
     assert out.shape == (round(360 / 30 * SR), 2)
-    assert np.abs(out[round(n_story) :]).max() == 0
-    assert np.abs(out[round(n_story) - 4800 : round(n_story) - 2400]).max() > 0
+    card = out[round(n_story) : -SR, 0]
+    assert np.abs(card).max() > 0  # room tone continues under the card
+    mid = np.sqrt(np.mean(out[3 * SR : 8 * SR, 0] ** 2))
+    assert np.sqrt(np.mean(card[SR // 2 : 3 * SR // 2] ** 2)) == pytest.approx(mid, rel=0.4)  # same floor, no gap
+    assert np.abs(out[-100:]).max() < 0.05 * np.abs(out[3 * SR : 8 * SR]).max()  # ~0 at the very end
+    assert np.sqrt(np.mean(out[-SR : -SR + 2400, 0] ** 2)) > 3 * np.sqrt(np.mean(out[-2400:, 0] ** 2))
 
 
 def test_a_designed_room_clip_is_not_used_under_natural_only(tmp_path):

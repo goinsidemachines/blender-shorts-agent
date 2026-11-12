@@ -37,10 +37,18 @@ no key.
 
 ## Effects in short.json
 
-Each entry in `sfx`: `{"kind", "shot", "at_s", "dur_s", "level_db"}`. `at_s` is seconds from the start of the shot;
+Each entry in `sfx`: `{"kind", "shot", "at_s", "dur_s", "level_db"}`, plus optional `clip` and `clip_at_s`. `at_s` is seconds from the start of the shot;
 `dur_s` is how long it may last; `level_db` is how loud it seems, in LUFS-ish (perceived loudness, close to dBFS RMS
 for a steady sound): about -18 for a feature sound, -24 to -30 for a bed. It sets the balance between effects, so a
-sharp knock and a steady rumble at the same `level_db` seem equally loud. Kinds:
+sharp knock and a steady rumble at the same `level_db` seem equally loud.
+
+`clip` names the exact cached recording the event plays (a cache path, a file name without extension, or
+`<asset>/<stem>`); `clip_at_s` is how many seconds into that recording to start (to skip to the third take of a
+multi-take file, or to a steady part of a long one). Prefer a specific recording of the actual object or action on
+screen: search Freesound for it ("bicycle coasting", "bike falling over"), plan and download it with the user's yes,
+and name it with `clip`. A named clip plays whatever its kind. `kind` is the fallback and the envelope: without
+`clip`, any cached clip of that kind plays (rotating). A named clip that is not cached falls back to the kind, and
+`validate` warns. Kinds:
 
 | kind | Use it for | natural |
 |---|---|---|
@@ -71,8 +79,14 @@ shaped by kind:
 
 - **Transients** (`impact`, `thud`, `click`, `blip`): a 3 ms fade-in so there is no click, and the sound is not
   chopped at `dur_s`. Its own tail rings on for up to 0.6 s more, fading smoothly.
-- **Sustained sounds** (`rumble`, `wind`, `water`, `hiss`, `hum`, `creak`, `scrape`, `slide`, `whoosh`): cut to
-  `dur_s`, fading in over 0.3 s and out over 0.5 s (each at most a third of `dur_s`, so short ones still work).
+- **Sustained sounds** (`rumble`, `wind`, `water`, `hiss`, `hum`, `creak`, `scrape`, `slide`, `whoosh`): held for
+  `dur_s`, fading in over 0.6 s (at most a third of `dur_s`) and decaying over 1.0 s *past* `dur_s`: the recording runs
+  on and dies away instead of stopping.
+
+**Beds join across cuts.** When a sustained event starts within 0.25 s after another ends (or in its last 0.6 s),
+the two crossfade over 0.6 s, equal power and centred on the boundary (the earlier one runs 0.3 s on, the later one
+starts 0.3 s early), so the level does not dip at the cut. To keep one sound continuous across shots, place the
+consecutive events back to back (each shot's bed ending where the next shot's begins). Transients are never joined.
 
 Last, each event is levelled by perceived loudness: the loudest 400 ms of the K-weighted signal (ITU-R BS.1770, the
 LUFS meter) is set to `level_db`. Peak level and RMS no longer decide it.
@@ -85,8 +99,9 @@ synthesised effect as a gap to fill with a recording (search, plan, yes, downloa
 
 Real interiors never go silent. Without a floor the mix drops to digital silence between effects and in pauses, then
 jumps back: it sounds abrupt. So `CLI mix SHORT` loops a `room` recording under the whole story (a seamless loop with
-1 s crossfades from a random start, faded in and out over 0.5 s). It is the floor: the voice never ducks it. It
-stops with the story; the closing card stays silent, as it brings no sound of its own.
+1 s crossfades from a random start, faded in over 0.5 s). It is the floor: the voice never ducks it. It continues
+under the closing card (the card has no effects bed) and fades out over the last second of the whole mix. The effects
+bus itself ends with a 1 s fade-out at the end of the story.
 
 Get one like any recording: `CLI assets search sounds "room tone"` (also try "interior quiet", "ambience"), plan it,
 get the user's yes, download. A file name with room tone, roomtone or interior quiet is tagged `room`, and so is a
@@ -114,7 +129,7 @@ Designed UI packs (`kenney-ui-sfx`: interface clicks and switches, tonal and par
 `designed` in search results, under the plan table and in the library. Under natural-only the mix never uses their
 clips, even ones tagged `click`: plan a natural pack (`oga-metal-wood`, `kenney-rpg`) or a recording for those kinds.
 For water and wind, plan `pack:oga-water` and `pack:oga-wind`: they need no Commons and no key.
-For machines, plan `pack:oga-sfx-100-v2` (2.4 MB: machine loops and thunder as `rumble`, air as `hiss`, metal hits
+For machines with no specific recording of the object, plan `pack:oga-sfx-100-v2` as a generic fallback (these are game sounds: use them only when no recording of the actual object exists, and never a thunder clip for a mechanical rumble; 2.4 MB: machine loops and thunder as `rumble`, air as `hiss`, metal hits
 as `impact`, doors, locks and water loops) and `pack:oga-steam-hisses` (0.6 MB: five steam hisses, all `hiss`); `CLI assets plan
 SHORT pack:oga-steam-hisses` lists each with its size, and nothing downloads without the user's yes. Neither pack has a
 clip named for a thud, so for a piston or firing use its `impact` clips or a recording. Their pages do not say whether

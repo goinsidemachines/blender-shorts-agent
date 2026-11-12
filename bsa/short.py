@@ -66,6 +66,11 @@ class Sfx:
     at_s: float
     dur_s: float
     level_db: float
+    # A cached recording this event plays (anything recorded.Library.find accepts: cache path, file stem or
+    # "<asset>/<stem>"), instead of any clip of its kind. clip_at_s: seconds into that recording to start from.
+    # Neither is written when it holds its default.
+    clip: str = ""
+    clip_at_s: float = 0.0
 
 
 @dataclass
@@ -159,6 +164,11 @@ def save_short(short: Short, path: Path) -> None:
     for shot in data["shots"]:
         if shot["at"] is None:
             del shot["at"]
+    for fx in data["sfx"]:
+        if not fx["clip"]:
+            del fx["clip"]
+        if not fx["clip_at_s"]:
+            del fx["clip_at_s"]
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -677,4 +687,7 @@ def validate(short: Short) -> list[str]:
     for fx in short.sfx:
         if fx.shot not in shot_ids:
             errors.append(f"sfx {fx.kind!r} refers to unknown shot {fx.shot!r}")
+        if not isinstance(fx.clip_at_s, int | float) or isinstance(fx.clip_at_s, bool) or fx.clip_at_s < 0:
+            errors.append(f"sfx {fx.kind!r} in shot {fx.shot!r}: clip_at_s must be 0 or more (seconds into the "
+                          f"recording), got {fx.clip_at_s!r}")  # fmt: skip
     return errors

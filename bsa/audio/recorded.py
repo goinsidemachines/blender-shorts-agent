@@ -2,7 +2,8 @@
 
 Each event of a kind with cached recordings plays one of them (variants rotate so consecutive events of a kind
 differ), trimmed of leading silence, shaped by kind (`shape`: a transient gets a 3 ms fade-in and rings out past its
-dur_s; a sustained sound fades in and out inside it), and given a small random pitch and gain change so repeats don't
+dur_s; a sustained sound fades in over 0.6 s and decays for 1 s past it, or crossfades into the next sustained
+event when one starts within 0.25 s), and given a small random pitch and gain change so repeats don't
 sound copied. The mix then levels it by perceived loudness (bsa.audio.dsp), not by peak.
 
 The `room` kind (room tone) is the odd one out: no event plays it. The mix loops one under the whole story as the quiet
@@ -40,8 +41,10 @@ GAIN_JITTER_DB = 1.5  # +- dB
 TRANSIENT_FADE_IN_S = 0.003  # no click at the start of a struck sound
 TAIL_S = 0.6  # a transient may ring this long past its dur_s (decaying, with a smooth fade)
 END_FADE_S = 0.01  # a clip that ends before its dur_s, or a tail, ends on a short fade
-SUSTAINED_FADE_IN_S = 0.3  # a held sound fades in ...
-SUSTAINED_FADE_OUT_S = 0.5  # ... and out, each at most a third of its dur_s
+SUSTAINED_FADE_IN_S = 0.6  # an isolated held sound fades in (equal power), at most a third of its dur_s ...
+SUSTAINED_FADE_OUT_S = 1.0  # ... and decays over this long PAST its dur_s (the recording runs on)
+JOIN_GAP_S = 0.25  # a sustained event starting this soon after another ends (or in its last XFADE_S) joins it
+XFADE_S = 0.6  # a join is an equal-power crossfade this long, centred on the boundary (half inside each event)
 TRIM_DB = -40  # leading samples quieter than this below the clip's peak are cut
 PREROLL_S = 0.004
 
@@ -149,12 +152,26 @@ class Library:
 
 def resolve(short, library: Library | None, policy: str = "any") -> list[dict]:
     """For each sfx event, in order: {"kind", "shot", "at_s", "use": "recording" | "synth" | "skipped", "clip",
-    "source", "license", "reason"}. Deterministic for a given short and library."""
+    "source", "license", "reason", "clip_at_s"}. An event that names a cached `clip` plays exactly it (whatever its
+    kinds) and does not advance its kind's rotation. Deterministic for a given short and library."""
     used: dict[str, int] = {}
     out = []
     for fx in short.sfx:
         r = {"kind": fx.kind, "shot": fx.shot, "at_s": fx.at_s, "use": "synth", "clip": None, "source": None,
-             "license": None, "reason": None}  # fmt: skip
+             "license": None, "reason": None, "clip_at_s": float(getattr(fx, "clip_at_s", 0.0) or 0.0)}  # fmt: skip
+        named = str(getattr(fx, "clip", "") or "")
+        if named and library is not None:
+            hit = library.find(named)
+            if hit is not None and policy == "natural-only" and is_designed(hit):
+                r.update(use="skipped", reason=f"the named clip {named!r} is from a designed UI pack (tonal "
+                                               "interface sounds), which sound_policy natural-only does not use")  # fmt: skip
+                out.append(r)
+                continue
+            if hit is not None:
+                r.update(use="recording", clip=hit["path"], source=hit.get("source"), license=hit.get("license"))
+                out.append(r)
+                continue
+        missing_note = f"clip {named!r} is not cached; " if named else ""
         clips = library.clips_for(fx.kind) if library is not None else []
         designed_only = False
         if policy == "natural-only":
@@ -175,17 +192,29 @@ def resolve(short, library: Library | None, policy: str = "any") -> list[dict]:
                                            "allows no synthesis")  # fmt: skip
         else:
             r["reason"] = f"no recording of {fx.kind!r} is cached"
+        if missing_note:
+            if r["use"] == "recording":
+                r["reason"] = f"{missing_note}used a cached {fx.kind} clip instead"
+            else:
+                r["reason"] = missing_note + (r["reason"] or "")
         out.append(r)
     return out
 
 
-def shape(x: np.ndarray, dur_s: float, kind: str | None = None, tail_s: float = TAIL_S) -> np.ndarray:
+def shape(x: np.ndarray, dur_s: float, kind: str | None = None, tail_s: float = TAIL_S, lead_s: float = 0.0,
+          join_in: bool = False, join_out: bool = False) -> np.ndarray:  # fmt: skip
     """The envelope of an effect of `kind`.
 
     Transient kinds (impact, thud, click, blip): a ~3 ms fade-in, then the sound is left alone. Past `dur_s` its own
     tail keeps ringing, for up to `tail_s`, under a smooth fade to nothing (the recording is not chopped at dur_s).
-    Sustained kinds (everything else): cut to `dur_s`, an equal-power fade-in (0.3 s) and fade-out (0.5 s), each at
-    most a third of the length so a short effect is still mostly itself."""
+    Transients are never joined.
+    Sustained kinds (everything else): the result is `lead_s + dur_s + extension` long, where `x` supplies the extra
+    samples (a shorter `x` just gives a shorter result). An isolated start fades in equal-power over 0.6 s (at most a
+    third of dur_s); an isolated end decays equal-power over SUSTAINED_FADE_OUT_S (1.0 s) PAST dur_s, so the sound
+    runs on and dies away instead of stopping (with no samples past dur_s it fades inside instead, at most a third).
+    A joined side (`join_in`: the event has a partner before it, `join_out`: one after it) is an equal-power
+    crossfade of XFADE_S centred on the boundary: the event starts `lead_s` (XFADE_S / 2) early, or runs XFADE_S / 2
+    past its end, and the partner's complementary curve keeps the summed power constant (no dip at the cut)."""
     n = round(dur_s * SR)
     if kind in TRANSIENT_KINDS:
         x = np.array(x[: n + round(tail_s * SR)], dtype=np.float64)
@@ -199,8 +228,20 @@ def shape(x: np.ndarray, dur_s: float, kind: str | None = None, tail_s: float = 
             if e:
                 x[-e:] *= 0.5 * (1 + np.cos(np.linspace(0, np.pi, e)))
         return x
-    x = np.array(x[:n], dtype=np.float64)
-    fi, fo = (min(round(s * SR), len(x) // 3) for s in (SUSTAINED_FADE_IN_S, SUSTAINED_FADE_OUT_S))
+    lead = round(lead_s * SR) if join_in else 0
+    post = round((XFADE_S / 2 if join_out else SUSTAINED_FADE_OUT_S) * SR)
+    x = np.array(x[: lead + n + post], dtype=np.float64)
+    ext = max(0, len(x) - lead - n)
+    if join_in:
+        fi = min(lead + round(XFADE_S / 2 * SR), len(x))
+    else:
+        fi = min(round(SUSTAINED_FADE_IN_S * SR), n // 3, len(x))
+    if join_out:
+        fo = min(round(XFADE_S * SR), len(x) // 2)
+    elif ext:
+        fo = ext
+    else:
+        fo = min(round(SUSTAINED_FADE_OUT_S * SR), len(x) // 3)
     if fi:
         x[:fi] *= np.sin(np.linspace(0, np.pi / 2, fi))
     if fo:
@@ -208,9 +249,11 @@ def shape(x: np.ndarray, dur_s: float, kind: str | None = None, tail_s: float = 
     return x
 
 
-def prepare(x: np.ndarray, dur_s: float, seed: int = 0, kind: str | None = None) -> tuple[np.ndarray, float]:
+def prepare(x: np.ndarray, dur_s: float, seed: int = 0, kind: str | None = None, lead_s: float = 0.0,
+            join_in: bool = False, join_out: bool = False) -> tuple[np.ndarray, float]:  # fmt: skip
     """(the clip ready to place, gain jitter in dB): leading silence trimmed, pitch shifted by a little, shaped for
-    its kind (`shape`: no kind = sustained), peak-normalised as a safety step (the mix levels by loudness)."""
+    its kind (`shape`: no kind = sustained; a joined sustained clip is longer than dur_s, starting `lead_s` early),
+    peak-normalised as a safety step (the mix levels by loudness)."""
     rng = np.random.default_rng(seed)
     x = np.asarray(x, dtype=np.float64)
     if len(x) == 0 or not np.abs(x).max():
@@ -219,7 +262,7 @@ def prepare(x: np.ndarray, dur_s: float, seed: int = 0, kind: str | None = None)
     x = x[max(0, loud[0] - round(PREROLL_S * SR)) :]
     ratio = 2 ** (rng.uniform(-1, 1) * PITCH_JITTER_ST / 12)
     x = decode.resample(x, SR, SR / ratio)  # played `ratio` times faster: higher and shorter
-    x = shape(x, dur_s, kind)
+    x = shape(x, dur_s, kind, lead_s=lead_s, join_in=join_in, join_out=join_out)
     peak = np.abs(x).max() if len(x) else 0.0
     return (x / peak if peak else x), float(rng.uniform(-GAIN_JITTER_DB, GAIN_JITTER_DB))
 
@@ -299,6 +342,12 @@ def policy_warnings(short, library: Library | None, policy: str = "any", room: b
                      "use)")  # fmt: skip
         out.append(f"no recording is cached for sfx kind(s) {', '.join(missing)}: {then}. Find some with CLI assets "
                    f"search sounds \"{missing[0]}\", plan them and get the user's yes.")  # fmt: skip
+    absent = sorted({str(fx.clip) for fx in short.sfx
+                     if getattr(fx, "clip", "") and (library is None or library.find(fx.clip) is None)})  # fmt: skip
+    if absent:
+        out.append(f"sfx clip(s) {', '.join(repr(a) for a in absent)} are named but not cached, so those events use "
+                   f"a clip of their kind (or synthesis) instead. Find them with CLI assets search sounds "
+                   f"\"<what it is>\", plan them and get the user's yes, then download.")  # fmt: skip
     if room and room_clip(library, policy) is None:
         out.append(_ROOM_MISSING[0].upper() + _ROOM_MISSING[1:])
     return out
