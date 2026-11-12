@@ -43,6 +43,17 @@ def slugify(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text).strip("-") or "short"
 
 
+def folder_slug(folder_name: str) -> str:
+    """The words of a short's folder name after its number ("22-how-a-lock-works" -> "how-a-lock-works")."""
+    return _NUM.sub("", folder_name, count=1)
+
+
+def slug_words_missing(folder_name: str, title: str) -> list[str]:
+    """The words of the folder name's slug that are not in the title (the title changed after the folder was named)."""
+    have = set(slugify(title).split("-"))
+    return [w for w in folder_slug(folder_name).split("-") if w and w not in have]
+
+
 def _numbered(root: Path):
     root = Path(root)
     if not root.is_dir():

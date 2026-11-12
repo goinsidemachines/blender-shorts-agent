@@ -27,7 +27,7 @@ HASHTAGS = (3, 6)
 TAGS_MAX = 500
 PINNED_MAX = 10000
 THUMB_WORDS = 6
-FORMAT_KEYS = ("title_suffix", "title_style", "link_line", "pinned_comment", "always_hashtags")
+FORMAT_KEYS = ("title_suffix", "title_style", "link_line", "pinned_comment", "always_hashtags", "platforms")
 TITLE_STYLES = ("question", "statement")
 
 _HASHTAG = re.compile(r"#[^\s#]+")
@@ -109,6 +109,11 @@ def format_value(value) -> dict:
         if key in _TEXT_FORMAT_KEYS:
             if not isinstance(v, str):
                 raise ValueError(f"post_format.{key} must be text, got {v!r}")
+        elif key == "platforms":
+            if not isinstance(v, list) or not all(isinstance(x, str) and x.strip().lower() in POSTED_PLATFORMS
+                                                  for x in v):
+                raise ValueError(f"post_format.platforms must be a list of {', '.join(POSTED_PLATFORMS)}, got {v!r}")
+            v = [x.strip().lower() for x in v]
         elif key == "title_style":
             if v not in TITLE_STYLES:
                 raise ValueError(f"post_format.title_style must be one of {', '.join(TITLE_STYLES)}, got {v!r}")
@@ -116,6 +121,13 @@ def format_value(value) -> dict:
             raise ValueError(f"post_format.always_hashtags must be a list of #words, got {v!r}")
         out[key] = v
     return out
+
+
+def platforms(s: dict | None) -> list[str]:
+    """The platforms the user posts to (post_format.platforms), lower case; [] when not set."""
+    fmt = (s or {}).get("post_format")
+    raw = fmt.get("platforms") if isinstance(fmt, dict) else None
+    return [x.strip().lower() for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
 
 
 def _title_lines(t) -> list[str] | None:

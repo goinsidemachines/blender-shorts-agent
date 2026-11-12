@@ -53,6 +53,11 @@ Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook
 
 - `CLI shorts`: the workspace's shorts (title, look, length, voice) and `last_finished`, the last three finished
   titles, for "Make it like an earlier one?".
+- `CLI workspace rename SHORT NEW-SLUG`: renames one short's folder (its number stays) and repoints the paths stored
+  inside it. Use it when the title changed and the folder still has an old word (`CLI validate` warns). It refuses
+  while the page server, a render or the GPU lock is live, and when the new folder exists. A short's title always
+  comes from `source/short.json`, never from its folder name.
+- `CLI deliver SHORT`: copies the final video and the chosen thumbnails into `render.deliver_dir` (`08-render.md`).
 - `CLI workspace move NEW`: to move the workspace, use this; never move it by hand. It refuses while the page
   server, a render or the GPU lock is live (and holds the GPU lock while it moves), when a drive is not there, or when
   NEW is a folder that isn't empty. One drive: renamed. Another drive: copied, every file and folder checked, the old

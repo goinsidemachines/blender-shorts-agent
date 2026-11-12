@@ -768,6 +768,41 @@ def source_frame(sdir, shot: str, frame: int) -> tuple[Path, str] | None:
     return None
 
 
+def inputs_key(tl_hash: str, p: dict) -> str:
+    """What the candidates are made from: the timing and the post.thumbnail text and heroes (never `chosen`)."""
+    import hashlib
+
+    th = p.get("thumbnail") if isinstance(p, dict) and isinstance(p.get("thumbnail"), dict) else {}
+    made = {k: v for k, v in th.items() if k != "chosen"}
+    blob = json.dumps([tl_hash, made], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def stamp(sdir, key: str) -> None:
+    """Record in review/thumbs.json what the candidates were made from (`made_from`)."""
+    from bsa.review import store
+
+    def change(data: dict) -> dict:
+        return {**_empty(), **data, "made_from": key}
+
+    store.update_json(Path(sdir) / THUMBS_JSON, _empty(), change, expect=dict)
+
+
+def is_fresh(sdir, key: str) -> bool:
+    """The candidates exist, were made from the final's frames and from `key`, and every file is there."""
+    from bsa.review.store import StoreDamaged
+
+    try:
+        data = load(sdir)
+    except StoreDamaged:
+        return False
+    rows = [r for r in data["candidates"] if isinstance(r, dict)]
+    if not rows or data.get("made_from") != key:
+        return False
+    return all(r.get("source") == "final" and all((Path(sdir) / rel).is_file() for rel in files_for(r["n"]).values())
+               for r in rows)  # fmt: skip
+
+
 def flag_key(sdir) -> str:
     """Which frame checks flag frames for the hero picker: the final's when it has been checked, else the preview's."""
     return "final" if (Path(sdir) / "review" / "frame-checks-final.json").is_file() else "preview"
