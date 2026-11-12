@@ -1339,6 +1339,7 @@ def _sample_params(model: str, short_name: str | None) -> dict | None:
 
 def cmd_voice(args) -> dict:
     from bsa.narrate import install
+    from bsa.narrate.contract import NarrationError
 
     if args.action == "suggest":
         from bsa import machine
@@ -1359,6 +1360,13 @@ def cmd_voice(args) -> dict:
             raise CliError("usage: voice install MODEL... (show voice plan MODEL... to the user first)")
         runner = install.install(args.args)
         return {"runner": str(runner), "installed": install.installed()}
+    if args.action == "use-local":
+        if len(args.args) != 1 or not args.weights:
+            raise CliError("usage: voice use-local MODEL --weights DIR [--python PYTHON]")
+        try:
+            return install.use_local(args.args[0], Path(args.weights), Path(args.python) if args.python else None)
+        except NarrationError as exc:
+            raise CliError(str(exc)) from exc
     if args.action == "sample":
         if len(args.args) not in (2, 3):
             raise CliError("usage: voice sample MODEL VOICE [SHORT]")
@@ -1374,7 +1382,7 @@ def cmd_voice(args) -> dict:
         models = [{"model": "elevenlabs", "label": "ElevenLabs (paid, needs an API key)", "installed": None}]
         models += [{"model": k, "label": m["label"], "licence": m["licence"], "installed": have.get(k, False)}
                    for k, m in reg["models"].items() if m["kind"] == "tts"]  # fmt: skip
-        return {"models": models}
+        return {"models": models, "linked": install.local_links()}  # linked: from the user's own folders
     model = args.args[0]
     if model == "elevenlabs":
         from bsa.narrate import elevenlabs
@@ -1817,9 +1825,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --line (paragraph take mode): re-speak the whole paragraph holding that line")  # fmt: skip
     sp.set_defaults(fn=cmd_narrate)
 
-    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE [SHORT] | list [MODEL] | test-custom")
-    sp.add_argument("action", choices=["suggest", "plan", "install", "sample", "list", "test-custom"])
+    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | use-local MODEL --weights DIR "
+                   "[--python PYTHON] | sample MODEL VOICE [SHORT] | list [MODEL] | test-custom")  # fmt: skip
+    sp.add_argument("action", choices=["suggest", "plan", "install", "use-local", "sample", "list", "test-custom"])
     sp.add_argument("args", nargs="*")
+    sp.add_argument("--weights", default=None, help="with use-local: a folder that already holds the model's files")
+    sp.add_argument("--python", default=None,
+                    help="with use-local: the python of an existing venv that has the engine's packages")  # fmt: skip
     sp.set_defaults(fn=cmd_voice)
 
     sp = sub.add_parser("review", help="story|storyboard|final SHORT [--open]: the one page's link at that stage "

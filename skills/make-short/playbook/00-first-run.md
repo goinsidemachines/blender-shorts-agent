@@ -48,7 +48,8 @@ offered.
 
 For a free voice: show `CLI voice plan MODEL` (each download, its source, licence and size, plus the total) and
 wait for a yes. Only then `CLI voice install MODEL` (it needs `uv`; if it is missing, the error says how to install
-it, and the user decides). Then let them hear it: `CLI voice list MODEL` (voices marked `narrator: true` are the
+it, and the user decides). A user who already has the model files and a matching Python environment can link them
+instead with `CLI voice use-local MODEL --weights FOLDER --python PYTHON` (no download). Then let them hear it: `CLI voice list MODEL` (voices marked `narrator: true` are the
 good ones), `CLI voice sample MODEL VOICE` (gives a WAV path to play). Save `narrator.provider`, `narrator.voice`,
 and optionally `narrator.speed` (1.0 default; 1.1 to 1.2 suits shorts).
 
