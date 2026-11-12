@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from bsa.fonts import BLENDER_BOX_H, BLENDER_LINE_H
 from bsa.layout import Rect, overlap_area
-from bsa.overlays import CHAR_W, est_lines, est_width
+from bsa.overlays import CHAR_W
 
 if TYPE_CHECKING:
     from bsa.cards import CardSpec
@@ -41,6 +41,7 @@ COVERS_SUBJECT = "the title covers the subject"
 NO_HERO = "no subject box at this frame, so the centre 60 % of the frame is used"
 FROM_PREVIEW = "from the preview: remake after the final render"
 TITLE_TOO_LONG = "the title doesn't fit beside the subject: shorten it"
+CARDS_OVERLAP = "the text cards overlap"
 
 _SRC_W, _SRC_H = VERTICAL  # the source frames are the short's 1080x1920 renders
 # Where the hero's centre goes in the zoomed window: away from the cards.
@@ -178,6 +179,7 @@ class Card:
     box: tuple
     pad: float
     spec: CardSpec | None = None  # a brand kit's card (bsa.cards), drawn as an image; `rect` is its size
+    lines: tuple[str, ...] = ()  # the text's lines as the layout wrapped them (measured in the drawn font): drawn as is
 
 
 @dataclass
@@ -235,14 +237,18 @@ def _card(style: ThumbStyle, kind: str, text: str, size: int, pad: float, wrap: 
           y: float = 0.0) -> Card:  # fmt: skip
     """A card at (x, y) in the style's colours for `kind`, its text wrapped at `wrap` (the card is `wrap` + 2 * pad
     wide at most) and as tall as the sequencer draws its box in the style's font: the first line the font's
-    bounding box, each further line its line height (bsa.fonts.line_metrics). With a brand kit, the kit's card
-    (_kit_card)."""
+    bounding box, each further line its line height (bsa.fonts.line_metrics). The text is wrapped here, by the
+    advance widths of the style's font (bsa.cards.wrap; Blender's own font when there is none), and drawn with those
+    line breaks (`lines`), so the lines measured are the lines drawn. With a brand kit, the kit's card (_kit_card)."""
     if style.kit is not None:
         return _kit_card(style, kind, text, size, pad, wrap, x, y)
-    w = est_width(text, size, wrap)
-    h = (style.box_h + (est_lines(text, size, wrap) - 1) * style.line_h) * size
+    from bsa import cards
+
+    lines = tuple(cards._lines(text, size, style.font, wrap))
+    w = min(wrap, max(cards.measure(ln, size, style.font) for ln in lines))
+    h = (style.box_h + (len(lines) - 1) * style.line_h) * size
     return Card(kind, text, size, Rect(x, y, w + 2 * pad, h + 2 * pad), getattr(style, kind),
-                getattr(style, kind + "_box"), pad)  # fmt: skip
+                getattr(style, kind + "_box"), pad, lines=lines)  # fmt: skip
 
 
 def _kit_card(style: ThumbStyle, kind: str, text: str, size: int, pad: float, wrap: float, x: float,
@@ -281,7 +287,7 @@ def _kit_card(style: ThumbStyle, kind: str, text: str, size: int, pad: float, wr
 
 
 def _moved(c: Card, x: float, y: float) -> Card:
-    return Card(c.kind, c.text, c.size, Rect(x, y, c.rect.w, c.rect.h), c.colour, c.box, c.pad, c.spec)
+    return Card(c.kind, c.text, c.size, Rect(x, y, c.rect.w, c.rect.h), c.colour, c.box, c.pad, c.spec, c.lines)
 
 
 def _v_cards(text: ThumbText, style: ThumbStyle, placement: str) -> list[Card]:
@@ -311,6 +317,27 @@ def _v_cards(text: ThumbText, style: ThumbStyle, placement: str) -> list[Card]:
         out.append(_moved(c, x, y))
         y += c.rect.h + GAP
     return out
+
+
+def card_overlaps(cards: list[Card], grow: dict[int, float] | None = None) -> list[str]:
+    """CARDS_OVERLAP and which two cards, for every pair of cards whose boxes overlap (by more than a pixel each way);
+    `grow`: {card index: extra px of height} for a card drawn taller than laid out."""
+    rects = [Rect(c.rect.x, c.rect.y, c.rect.w, c.rect.h + (grow or {}).get(i, 0.0)) for i, c in enumerate(cards)]
+    out = []
+    for i, a in enumerate(rects):
+        for j in range(i + 1, len(rects)):
+            b = rects[j]
+            if min(a.right, b.right) - max(a.x, b.x) > 1 and min(a.bottom, b.bottom) - max(a.y, b.y) > 1:
+                out.append(f"{CARDS_OVERLAP}: the {cards[i].kind} and the {cards[j].kind}: shorten the title")
+    return out
+
+
+def drawn_overlaps(lay: Layout, style: ThumbStyle, drawn: dict[int, int]) -> list[str]:
+    """The overlap warnings for what Blender drew: `drawn` is {index of a text card in lay.cards: the number of lines
+    Blender drew its text in}. A card drawn with more lines than the layout wrapped it in is taller than its box."""
+    grow = {i: (n - len(lay.cards[i].lines)) * style.line_h * lay.cards[i].size
+            for i, n in drawn.items() if lay.cards[i].lines and n != len(lay.cards[i].lines)}  # fmt: skip
+    return card_overlaps(lay.cards, grow)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -366,7 +393,7 @@ def vertical(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None 
                 src = _place(hero.x + hero.w / 2, hero.y + hero.h / 2, _SRC_W / z, _SRC_H / z, ax, ay)
             box = _mapped(hero, src, dst)
             cover = covered(cards, box)
-            lay = Layout(VERTICAL, src, dst, box, cards, placement, None, None, None, [], cover)
+            lay = Layout(VERTICAL, src, dst, box, cards, placement, None, None, None, card_overlaps(cards), cover)
             if cover <= COVER_LIMIT:
                 return lay
             tries.append((cover, len(tries), lay))
@@ -402,6 +429,7 @@ def landscape(text: ThumbText, hero: Rect, style: ThumbStyle, crop: tuple | None
     for c in cards:
         placed.append(_moved(c, _L_X, y))
         y += c.rect.h + GAP
+    warnings += card_overlaps(placed)
     b = _crop_rect(crop) if crop else hero
     aspect = _L_DST.w / _L_DST.h
     w = _clamp(max(b.w, b.h * aspect) * 1.25, 432, _SRC_W)
@@ -790,7 +818,7 @@ def card_strips(lay: Layout) -> list[dict]:
         centred = lay.placement in _CENTRED and c.kind != "handle"
         x = c.rect.x + c.rect.w / 2 if centred else c.rect.x + c.pad
         y = c.rect.y + c.pad
-        out.append({"kind": c.kind, "text": c.text, "size": c.size, "loc": (x / fw, 1.0 - y / fh),
+        out.append({"kind": c.kind, "text": "\n".join(c.lines) or c.text, "size": c.size, "loc": (x / fw, 1.0 - y / fh),
                     "anchor": ("CENTER" if centred else "LEFT", "TOP"), "margin": c.pad / fw,
                     "wrap_px": wrap - 2 * c.pad, "colour": tuple(c.colour), "box": tuple(c.box),
                     "use_box": len(c.box) < 4 or c.box[3] > 0, "bold": c.kind != "fact"})  # fmt: skip

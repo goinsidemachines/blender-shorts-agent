@@ -1466,7 +1466,8 @@ def cmd_thumbs(args) -> dict:
 
     sdir = _short_dir(args.short)
     short = _load(sdir)
-    api = types.SimpleNamespace(render=blender_thumbs.render, read_png=read_png, boxes=_thumb_boxes)
+    api = types.SimpleNamespace(render=blender_thumbs.render, read_png=read_png, boxes=_thumb_boxes,
+                                drawn_lines=blender_thumbs.drawn_lines)
     return _cmd_thumbs(args, sdir, short, api)
 
 
@@ -1590,6 +1591,10 @@ def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
             layouts[size] = thumbs.layout_dict(lay)
             findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size, busy=preset == "final")
             warnings += [w for w in lay.warnings if w not in warnings]
+            drawn_lines = getattr(api, "drawn_lines", None)  # what Blender drew: overlap between the cards
+            if drawn_lines is not None:
+                warnings += [w for w in thumbs.drawn_overlaps(lay, style, drawn_lines(lay, style.font, caches))
+                             if w not in warnings]  # fmt: skip
         rows.append({"n": n, "hero": {"shot": h.shot, "frame": h.frame, "crop": list(h.crop) if h.crop else None,
                                       "why": h.why},
                      "source": preset, "files": files, "layouts": layouts, "findings": findings,

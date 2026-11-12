@@ -35,7 +35,8 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
    **Thumbnails.** Write `post.thumbnail`: `title` (one or two short lines, about 6 words), `kicker` (small text
    above, optional) and `fact` (one line, optional). A number in any of them needs a fact in `facts` that states
    it, or validate refuses it. Then run `BLENDER thumbs SHORT` with `run_in_background: true`; the candidates show
-   on the Post stage in both sizes, with how each looks in the feed and any warnings. The user may leave a note on
+   on the Post stage in both sizes, with how each looks in the feed and any warnings. A warning "the text cards overlap" means a card sits over
+   another one: shorten the title or put a line break in it. The user may leave a note on
    a candidate: change the text, or `heroes[N-1]` (`{"shot", "frame"}`), then `BLENDER thumbs SHORT --only N`.
    `--only N` remakes candidate N from short.json's Nth hero only when the candidates were made from
    `post.thumbnail.heroes`; otherwise from the candidate's own hero. To give a candidate a new frame directly, run
