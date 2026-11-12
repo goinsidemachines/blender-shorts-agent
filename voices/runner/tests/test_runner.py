@@ -107,6 +107,16 @@ def test_wer_normalises_numbers_and_fillers():
     assert cli.wer("one two three four", "one two three") == 0.25
 
 
+def test_wer_normalises_decimals_initials_and_british_spelling():
+    """Short 30's l11 was spoken right but scored 0.25: '1.6' vs 'one point six', 'UK' vs 'U K', -metres/-meters."""
+    ref = "Worn grooves fill up sooner. U K law says keep at least one point six millimetres."
+    assert cli.wer(ref, "Worn grooves fill up sooner. UK law says keep at least 1.6 millimeters.") == 0.0
+    assert cli.wer("The B B C said so.", "The BBC said so.") == 0.0
+    assert cli.wer("about zero point five metres", "about 0.5 meters") == 0.0
+    assert cli.wer("a colour", "a color") == 0.0
+    assert cli.wer("one six millimetres", "one point six millimetres") > 0  # a missing word still counts
+
+
 def test_registry_shape():
     reg = cli.load_registry()
     for name, m in reg["models"].items():

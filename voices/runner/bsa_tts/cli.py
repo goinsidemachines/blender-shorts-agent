@@ -304,7 +304,10 @@ _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
 _TENS = ["_", "_", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
 _SCALES = ((10**9, "billion"), (10**6, "million"), (1000, "thousand"), (100, "hundred"))
 _FILLERS = {"and", "a", "the"}  # words Whisper drops or adds freely
-_SPELLING = {"tonne": "ton", "tonnes": "tons"}
+_SPELLING = {"tonne": "ton", "tonnes": "tons", "colour": "color", "colours": "colors", "centre": "center",
+             "centres": "centers", "tyre": "tire", "tyres": "tires", "grey": "gray", "aluminium": "aluminum",
+             "behaviour": "behavior", "flavour": "flavor", "neighbour": "neighbor", "labour": "labor"}  # fmt: skip
+_RE_SPELLING = re.compile(r"(metre|litre)(s?)$")  # millimetres, kilometre, litres: the US spelling Whisper writes
 
 
 def _number_words(n: int) -> str:
@@ -319,11 +322,38 @@ def _number_words(n: int) -> str:
     return str(n)
 
 
+def _decimal(m: re.Match) -> str:
+    """1.6 -> one point six (digits after the point are read one by one)."""
+    whole, frac = m.group(1), m.group(2)
+    return f" {_number_words(int(whole))} point {' '.join(_ONES[int(d)] for d in frac)} "
+
+
+def _spelled(w: str) -> str:
+    w = _SPELLING.get(w, w)
+    return _RE_SPELLING.sub(lambda m: m.group(1)[:-2] + "er" + m.group(2), w)
+
+
+def _join_initials(ws: list[str]) -> list[str]:
+    """Initials spoken one by one ("U K") and written together ("UK") are the same word: a run of two or more single letters is joined (never "a" or "i")."""
+    out: list[str] = []
+    run: list[str] = []
+    for w in [*ws, ""]:
+        if len(w) == 1 and w not in ("a", "i"):
+            run.append(w)
+            continue
+        out += ["".join(run)] if len(run) > 1 else run
+        run = []
+        if w:
+            out.append(w)
+    return out
+
+
 def words(text: str) -> list[str]:
     s = text.lower().replace("’", "'").replace(",", "")
+    s = re.sub(r"(\d+)\.(\d+)", _decimal, s)
     s = re.sub(r"\d+", lambda m: f" {_number_words(int(m.group()))} ", s)
     s = re.sub(r"[^a-z' ]", " ", s.replace("-", " "))
-    return [_SPELLING.get(w, w) for w in s.split() if w not in _FILLERS]
+    return [_spelled(w) for w in _join_initials(s.split()) if w not in _FILLERS]
 
 
 def wer(reference: str, hypothesis: str) -> float:
