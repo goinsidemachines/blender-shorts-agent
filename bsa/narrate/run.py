@@ -23,6 +23,7 @@ from bsa import jobstate
 from bsa.narrate import custom as _custom
 from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
+from bsa.narrate import pace as _pace
 from bsa.narrate import params as _params
 from bsa.narrate import takes as _takes
 from bsa.narrate.contract import NarrationError, check_take, forget_durations, pad_lead, read_durations, voice_onset
@@ -252,13 +253,15 @@ def retake_take(out_dir: Path, line_id: str) -> int:
     return seed
 
 
-def write_heard(out_dir: Path, lines, heard: dict | None, why_not: str | None) -> None:
+def write_heard(out_dir: Path, lines, heard: dict | None, why_not: str | None, pace: dict | None = None) -> None:
     """heard.json: per line what the voice was asked to say (`text`), what Whisper heard (`said`) and the word error
-    rate; `checked` false, with `why_not`, when the takes weren't checked."""
+    rate; `checked` false, with `why_not`, when the takes weren't checked. `pace` (the speech-rate guard's findings,
+    {id: {"ratio", "verdict", "respoken", "still"}}) is written when there are any."""
     got = heard or {}
     data = {
         "checked": heard is not None,
         "why_not": why_not,
+        **({"pace": pace} if pace else {}),
         "lines": {
             ln.id: {"text": spoken_text(ln), "said": (got.get(ln.id) or {}).get("said"),
                     "wer": (got.get(ln.id) or {}).get("wer")}
@@ -279,6 +282,33 @@ def _unclear_message(ids: list[str]) -> str | None:
     if not ids:
         return None
     return f"Lines {', '.join(ids)} may not be spoken clearly; listen to them or reword before publishing."
+
+
+def _pace_flags(out_dir: Path, lines) -> dict[str, tuple[float, str]]:
+    """The lines whose speaking rate is far from the short's own ({id: (ratio, "slow"|"fast")}): needs no Whisper."""
+    try:
+        return _pace.outliers(_pace.rates(out_dir, {ln.id: spoken_text(ln) for ln in lines}))
+    except (OSError, ValueError):  # the guard is a check on the takes: it never costs the short its voice
+        return {}
+
+
+def _pace_record(first: dict, still: dict, respoken: set[str]) -> dict[str, dict]:
+    return {i: {"ratio": round(r, 2), "verdict": v, "respoken": i in respoken, "still": i in still}
+            for i, (r, v) in first.items()}  # fmt: skip
+
+
+def _pace_message(first: dict, still: dict, respoken: set[str]) -> str | None:
+    """One plain sentence per line the guard flagged, saying what it did about it."""
+    parts = []
+    for lid, (ratio, verdict) in first.items():
+        was = f"{lid} sounds too {verdict} for its words ({ratio:.2f} times this short's pace), likely a wrong cut"
+        if lid not in respoken:
+            parts.append(f"{was}; listen to it or retake it.")
+        elif lid in still:
+            parts.append(f"{was}; spoken again on its own, and it still sounds too {still[lid][1]}: listen to it.")
+        else:
+            parts.append(f"{was}; spoken again on its own.")
+    return " ".join(parts) or None
 
 
 def apply_lead_in(out_dir: Path, ids: list[str], lead_in: float) -> dict[str, float]:
@@ -462,10 +492,37 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check, *, take=None, words
                 break
         else:
             still_bad.append(lid)
-    write_heard(out_dir, short.lines, heard, why_not)
+    # The speech-rate guard runs with or without Whisper, on the final audio: a line far off the short's own pace is
+    # spoken again alone once (a wrong cut gives it the neighbour's words or time), then only reported.
+    first = _pace_flags(out_dir, short.lines)
+    respoken: set[str] = set()
+    for lid in first:
+        if lid not in used or not retry:
+            continue
+        seed = used[lid] + 1
+        durations.update(speak([by_id[lid]], seed))
+        used[lid] = seed
+        respoken.add(lid)
+        notes.append(_record_seeds(out_dir, {lid: seed}))
+        notes.append(record_sources(out_dir, {lid: "line"}))
+        if check:
+            again = (hear([by_id[lid]])[0] or {}).get(lid)
+            if again is not None:
+                heard[lid] = again
+                if again["wer"] > WER_LIMIT and lid not in still_bad:
+                    still_bad.append(lid)
+    if respoken:
+        now = _pace_flags(out_dir, short.lines)
+        still = {i: v for i, v in now.items() if i in first}
+    else:
+        still = first
+    if respoken:  # why a line was spoken on its own again, where the other fallbacks' reasons are
+        why = {i: f"its speaking rate was off ({first[i][1]}), likely a wrong cut" for i in respoken}
+        notes.append(record_sources(out_dir, {i: "fallback" for i in respoken}, why))
+    write_heard(out_dir, short.lines, heard, why_not, _pace_record(first, still, respoken))
     said = list(dict.fromkeys(n for n in notes if n))  # each note once: a save that failed fails for every line
-    message = " ".join(m for m in (_unclear_message(still_bad), *said) if m) or None
-    return NarrationResult("ok", {ln.id: durations[ln.id] for ln in short.lines}, message)
+    message = " ".join(m for m in (_unclear_message(still_bad), _pace_message(first, still, respoken), *said) if m)
+    return NarrationResult("ok", {ln.id: durations[ln.id] for ln in short.lines}, message or None)
 
 
 def _paragraph(narrator: dict) -> bool:
@@ -567,9 +624,11 @@ def _elevenlabs_paragraph(short: Short, narrator: dict, out_dir: Path, gen, loca
 def _elevenlabs_checked(short: Short, narrator: dict, out_dir: Path, durations: dict, local) -> NarrationResult:
     """ElevenLabs takes get the voice check too, once over every line: no retries, since each take costs credit."""
     heard, why_not = _hear(local, short.lines, out_dir) if narrator.get("verify", True) else (None, CHECK_OFF)
-    write_heard(out_dir, short.lines, heard, why_not)
+    flags = _pace_flags(out_dir, short.lines)  # no retries here (credit): the guard only reports
+    write_heard(out_dir, short.lines, heard, why_not, _pace_record(flags, flags, set()))
     note = record_sources(out_dir, {ln.id: "line" for ln in short.lines})
-    message = " ".join(m for m in (_unclear_message(_unclear(heard, [ln.id for ln in short.lines])), note) if m)
+    unclear = _unclear_message(_unclear(heard, [ln.id for ln in short.lines]))
+    message = " ".join(m for m in (unclear, _pace_message(flags, flags, set()), note) if m)
     return NarrationResult("ok", durations, message or None)
 
 

@@ -46,6 +46,12 @@ Every voice is checked the same way, ElevenLabs takes too, and the user's own to
 it as a table, one row per line: the words heard with the misheard ones marked, and whether the take passed. A
 take that is being made again shows "Waiting for a new take" until the next check.
 
+Whisper or not, narration also checks each line's speaking rate against the short's own (letters per second of
+speech, against the median of the lines). A line far slower or faster than the rest was most likely cut at the wrong
+place, so it is spoken again on its own, once. If it still sounds off, the `message` says so ("l09 sounds too slow
+for its words ... likely a wrong cut") and `heard.json` has a `pace` entry for it: listen to that line and its
+neighbours, and re-take the paragraph (`CLI narrate SHORT --line ID --take`) or reword.
+
 - **Re-taking one line.** The user asks for it with "Re-take this line" on that row (a note on the line), or in
   chat. Run `CLI narrate SHORT --line ID` with `run_in_background: true`: only that take is thrown away and spoken
   again, with the next seed, so it reads differently; the other takes are kept. The result has `retake` (`line`,
@@ -60,7 +66,12 @@ take that is being made again shows "Waiting for a new take" until the next chec
   Then answer the note (`CLI page note SHORT ID done --reply "..."`).
 - **Whisper missing.** When `why_not` says Whisper isn't installed, the page shows "Whisper isn't installed, so
   the takes weren't checked. CLI voice plan whisper-small.en shows what it downloads." Offer it once, at a calm
-  moment (never mid-render): run `CLI voice plan whisper-small.en`, show its plan (name, source, licence, size)
+  moment (never mid-render). First ask whether the user already has the Whisper small.en files and a Python
+  environment with torch 2.11.0 and transformers 5.2.0 (for example one made for another voice tool). If so, link
+  them with no download: `CLI voice use-local whisper-small.en --weights FOLDER --python PYTHON` (FOLDER holds
+  `model.safetensors` and the other model files; PYTHON is the `python` of that environment). It checks every file
+  and package, refuses with a plain message naming what differs, never changes their folders, and `CLI voice list`
+  shows where it was linked from. Otherwise run `CLI voice plan whisper-small.en`, show its plan (name, source, licence, size)
   and, only on a clear yes, `CLI voice install whisper-small.en` with `run_in_background: true`. The next
   `narrate` checks the takes. Narration never waits for it.
 - Any other `why_not` (the check is turned off, captions only, or the file can't be read) is shown on the page as
