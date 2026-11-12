@@ -96,13 +96,23 @@ def build_short(short_dir: Path | str, plugin_root: Path | str = PLUGIN_ROOT, fo
     exec(compile(build_py.read_text(encoding="utf-8"), str(build_py), "exec"), ns)  # noqa: S102 - the short's own build file
     if not callable(ns.get("build")):
         raise TypeError(f"{build_py} must define build(short_dir)")
+    from bsa.timeline import use_timeline
+
+    use_timeline(short_dir)  # `from bsa.timeline import at` reads this short's frames
     ns["build"](str(short_dir))
     showing = show_scene(bpy, first) if bpy is not None and first else None
+    heavy = []  # what makes the scene heavy (bsa.blender.scenescan), told now, before any render
     framing = []  # the framing warnings build.py's frame_objects / frame_box kept on the scenes (also check findings)
     if bpy is not None:
         from bsa.findings import framing_notes
 
         framing = [f"scene {sc.name}: camera {n.get('camera')}: {n.get('message')}" for sc in bpy.data.scenes
                    for n in framing_notes(sc)]  # fmt: skip
+        try:
+            from bsa.blender import scenescan
+
+            heavy = [f["message"] for f in scenescan.scan(bpy.data, short_dir / "blend" / "short.blend")]
+        except Exception as exc:  # noqa: BLE001 - a warning aid must not fail the build
+            heavy = [f"the heavy-scene scan did not run: {exc}"]
     return {"short": str(short_dir), "reloaded": len(dropped), "blend": str(short_dir / "blend" / "short.blend"),
-            "showing": showing, "framing": framing}  # fmt: skip
+            "showing": showing, "framing": framing, "heavy": heavy}  # fmt: skip

@@ -85,6 +85,8 @@ The takes set the real line lengths, so shot lengths change. `source/build.py` r
 `timeline.json`, so the build stage rebuilds everything to the new timing. Check `length_drift` in the returned
 timeline: more than about 15% off the agreed length means the script is too long or too short; tighten lines (a
 voice that runs long is better fixed by cutting words than by a faster speed), then `narrate` again.
+When a built short is re-timed, the timeline result lists the shots that moved in `retimed` (old and new frames):
+read it and re-check anything keyed to fixed frames in those shots.
 
 ## Takes: one line or one paragraph
 

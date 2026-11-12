@@ -279,6 +279,11 @@ class _Contact:
     outer_open: int = 0  # the outer object is open and not flat (its open edges): the depth means nothing
 
 
+def live_booleans(obj) -> list:
+    """The Boolean modifiers on `obj` that render live (also what the build-time scene scan looks at)."""
+    return [m for m in obj.modifiers if m.type == "BOOLEAN" and m.show_render]
+
+
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
                rules: list[dict] | None = None, cap: bool = True,
                keep_objects: set[str] | None = None) -> list[Finding]:  # fmt: skip
@@ -849,15 +854,14 @@ class _Run:
             ev.to_mesh_clear()
 
     def booleans(self, obj, frame):
-        for mod in obj.modifiers:
-            if mod.type == "BOOLEAN" and mod.show_render:
-                solver = getattr(mod, "solver", "")
-                how = f" ({solver} solver)" if solver else ""
-                self.add("boolean", "warning", obj.name, frame, f"live Boolean modifier {mod.name!r}{how}: it is "
-                         "evaluated again for every render and can come out differently (an opening that shows in "
-                         "the stills can vanish in the final render). Build the opening into the mesh itself (leave "
-                         "out the faces, close the edges), or apply the modifier in build.py and check the face count",
-                         key=(obj.name, mod.name))  # fmt: skip
+        for mod in live_booleans(obj):
+            solver = getattr(mod, "solver", "")
+            how = f" ({solver} solver)" if solver else ""
+            self.add("boolean", "warning", obj.name, frame, f"live Boolean modifier {mod.name!r}{how}: it is "
+                     "evaluated again for every render and can come out differently (an opening that shows in "
+                     "the stills can vanish in the final render). Build the opening into the mesh itself (leave "
+                     "out the faces, close the edges), or apply the modifier in build.py and check the face count",
+                     key=(obj.name, mod.name))  # fmt: skip
 
     def normals(self, obj, bm, frame):
         open_edges = sum(1 for e in bm.edges if not e.is_manifold)

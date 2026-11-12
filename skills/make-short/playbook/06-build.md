@@ -10,7 +10,9 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - build **every scene named in `short.json` shots' `scene`** (one Blender scene per `scene` name; several shots may
   share one), each with its own camera, lights and world;
 - animate in the **short's own frame numbers**: shot `s03` runs frames `f0..f1` from `source/timeline.json` in its
-  scene. Never hard-code frame numbers: read them from the timeline, so a re-timed short rebuilds correctly;
+  scene. Never hard-code frame numbers: read them from the timeline, so a re-timed short rebuilds correctly.
+  `from bsa.timeline import at` does it: `at("s07", 1.5)` is the frame 1.5 s into `s07`, `at("s07", "end")` its last
+  frame, `at("s07", 0.5, fraction=True)` its middle. It refuses a time past the shot instead of landing in the next;
 - call `bsa.blender.scene.setup_scene(scene, short, engine, "preview")` on each scene (1080×1920, 30 fps, AgX), with
   the engine approved at the engine stage (before that stage, the saved `render.engine`, else the engine that suits the
   look); the render commands apply the approved engine anyway, but stills and the MCP viewport use the scene's own;
@@ -61,6 +63,11 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
 - give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`); to
   point at a spot on it use the label's `"at": [x, y, z]` (local space) or an Empty there, never a helper sphere
   (it would show in the video);
+- avoid what makes a scene heavy: right after a build the result lists `heavy` warnings (also the build step's
+  summary). A live Boolean on an animated object, parent or operand is evaluated every frame: apply it once at build
+  time. A .blend over 300 MB is often many copied meshes: share one mesh between copies
+  (`bpy.data.objects.new(name, shared_mesh)`, not `mesh.copy()`). Freestyle over a long range is slow: see
+  `render.chunk_frames`;
 - save to `blend/short.blend`. Rebuild after every edit to build.py or a script it imports: when `source/build.py`,
   or a local script under `source/` that it imports (followed through their imports), is newer than
   `blend/short.blend`, every `BLENDER` command warns "build.py changed since the scene was built: rebuild" (or
