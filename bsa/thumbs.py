@@ -109,6 +109,10 @@ def check_heroes(heroes: list[Hero], spans: dict) -> list[str]:
     return errors
 
 
+VISIBLE_ALPHA = 0.5  # a caption colour more see-through than this would hide the thumbnail title
+HIDDEN_CAPTION_TITLE = "the captions are see-through (style.caption), so the thumbnail title is drawn opaque instead"
+
+
 @dataclass(frozen=True)
 class ThumbStyle:
     title: tuple
@@ -125,6 +129,7 @@ class ThumbStyle:
     line_h: float = BLENDER_LINE_H  # the font's line height and first line's box, in em (bsa.fonts.line_metrics)
     box_h: float = BLENDER_BOX_H
     kit: Kit | None = None  # the brand kit (bsa.kit.kit_for): its cards instead of the text cards
+    notes: tuple = ()  # what the style changed and why, reported with the thumbs command's warnings
 
 
 def style_for(short, s: dict) -> ThumbStyle:
@@ -145,6 +150,12 @@ def style_for(short, s: dict) -> ThumbStyle:
         if isinstance(src, dict):
             palette.update(src)
     text, box = caption_colours(short, s)
+    notes = ()
+    if text[3] < VISIBLE_ALPHA:  # captions hidden (the short draws its own cards): the title must still show
+        if box[3] < VISIBLE_ALPHA:
+            box = (*BOX_COLOR[:3], 0.85)
+        text = on_colour(box)
+        notes = (HIDDEN_CAPTION_TITLE,)
     accent = hex_colour(palette.get("accent")) or hex_colour(ACCENT)
     fact_box = (*BOX_COLOR[:3], 0.85)
     font = str(own.get("font") or brand.get("font") or "").strip() or None
@@ -153,7 +164,7 @@ def style_for(short, s: dict) -> ThumbStyle:
         title=text, title_box=box, kicker=on_colour(accent), kicker_box=accent, fact=(1.0, 1.0, 1.0, 1.0),
         fact_box=fact_box, handle=BADGE_COLOR, handle_box=fact_box,
         panel=hex_colour(palette.get("background")) or hex_colour(BACKGROUND), font=font,
-        handle_text="@" + handle if handle else None, kit=kit_mod.kit_for(s, short),
+        handle_text="@" + handle if handle else None, kit=kit_mod.kit_for(s, short), notes=notes,
     )  # fmt: skip
 
 
@@ -664,9 +675,10 @@ def with_font(style: ThumbStyle, text: ThumbText, cache_dirs: list[Path] | None 
     from bsa import fonts
 
     if style.kit is not None:
-        return _kit_font(style, text, cache_dirs)
+        style, notes = _kit_font(style, text, cache_dirs)
+        return style, [*style.notes, *notes]
     if not style.font:
-        return style, []
+        return style, list(style.notes)
     path, _, note = fonts.resolve(style.font, dirs, system, cache_dirs)
     notes = [note] if note else []
     words = " ".join([*text.title, text.kicker or "", text.fact or "", style.handle_text or ""])
@@ -681,7 +693,7 @@ def with_font(style: ThumbStyle, text: ThumbText, cache_dirs: list[Path] | None 
         else:
             notes.append(f"no installed font has {chars}; they show as boxes on the thumbnail")
     line_h, box_h = (fonts.line_metrics(path) if path else None) or (BLENDER_LINE_H, BLENDER_BOX_H)
-    return replace(style, font=str(path) if path else None, line_h=line_h, box_h=box_h), notes
+    return replace(style, font=str(path) if path else None, line_h=line_h, box_h=box_h), [*style.notes, *notes]
 
 
 def _kit_font(style: ThumbStyle, text: ThumbText, cache_dirs) -> tuple[ThumbStyle, list[str]]:

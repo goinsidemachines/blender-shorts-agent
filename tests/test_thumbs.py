@@ -1041,3 +1041,17 @@ def test_with_font_and_a_kit_uses_the_card_font(short, font, monkeypatch):
     accented = thumbs.ThumbText(("Éclair",), None, None)  # the test font has no É
     _, notes = thumbs.with_font(st, accented)
     assert any("Éclair" in n for n in notes)
+
+
+def test_hidden_captions_never_hide_the_thumbnail_title():
+    """Shorts 20 and 21: a short that hides the plugin's captions (#FFFFFF00 on #20232600, its own cards draw them)
+    got an invisible thumbnail title. The title falls back to white on the dark box, and says so."""
+    st = thumbs.style_for(_short({"caption": {"color": "#FFFFFF00", "box": "#20232600"}}), {})
+    assert st.title == (1.0, 1.0, 1.0, 1.0) and st.title_box == (*overlays.BOX_COLOR[:3], 0.85)
+    assert st.notes and "caption" in st.notes[0]
+    _, notes = thumbs.with_font(st, TEXT)
+    assert notes[: len(st.notes)] == list(st.notes)  # the thumbs command reports it with its warnings
+    st = thumbs.style_for(_short({"caption": {"color": "#FFFFFF", "box": "#20232600"}}), {})
+    assert st.title == (1.0, 1.0, 1.0, 1.0) and st.title_box[3] == 0.0 and not st.notes  # a see-through box is a choice
+    st = thumbs.style_for(_short({"caption": {"color": "#FFFFFF00", "box": "#202326"}}), {})
+    assert st.title == (1.0, 1.0, 1.0, 1.0) and st.title_box == overlays.hex_colour("#202326", 1.0) and st.notes
