@@ -1305,7 +1305,7 @@ def _fades_in(obj, frame: int) -> bool:
         mat = slot.material
         if mat is None:
             continue
-        curves = []
+        curves = []  # (fcurve, True when its low end is the invisible one)
         tree = mat.node_tree
         if tree is not None:
             for fc in extremes.fcurves(tree):
@@ -1313,10 +1313,11 @@ def _fades_in(obj, frame: int) -> bool:
                     socket = tree.path_resolve(fc.data_path.rsplit(".", 1)[0])
                 except (ValueError, AttributeError):
                     continue
-                if getattr(socket, "name", None) in FADE_SOCKETS:
-                    curves.append(fc)
-        curves += [fc for fc in extremes.fcurves(mat) if fc.data_path == "diffuse_color" and fc.array_index == 3]
-        for fc in curves:
+                name = getattr(socket, "name", None)
+                if name in FADE_SOCKETS:
+                    curves.append((fc, name in FADE_LOW_IS_HIDDEN))
+        curves += [(fc, True) for fc in extremes.fcurves(mat) if fc.data_path == "diffuse_color" and fc.array_index == 3]
+        for fc, low_hidden in curves:
             pts = [(k.co[0], k.co[1]) for k in fc.keyframe_points]
             if len(pts) < 2:
                 continue
@@ -1324,9 +1325,12 @@ def _fades_in(obj, frame: int) -> bool:
             if hi - lo < FADE_MIN_RANGE:
                 continue
             at = fc.evaluate(frame)
-            ends = min(abs(at - lo), abs(hi - at)) <= 0.1 * (hi - lo)
-            later = max(pts)[0] > frame and abs(max(pts)[1] - at) > 0.05 * (hi - lo)
-            if ends and later:
+            near = 0.1 * (hi - lo)
+            # starts at the hidden end (either end for a Mix factor, whose direction is unknown) ...
+            starts = abs(at - lo) <= near if low_hidden else min(abs(at - lo), abs(hi - at)) <= near
+            # ... and really moves soon after the switch: a fade-out keyed seconds later does not excuse a pop
+            moves = abs(fc.evaluate(frame + FADE_WINDOW) - at) > 0.05 * (hi - lo)
+            if starts and moves:
                 return True
     return False
 
@@ -1641,6 +1645,8 @@ def _view_state(scene, cam, geo: _Geo) -> str:
 
 FADE_SOCKETS = frozenset({"Alpha", "Fac", "Factor", "Strength", "Emission Strength", "Opacity"})
 FADE_MIN_RANGE = 0.2  # a fade's keys must move the value at least this far
+FADE_LOW_IS_HIDDEN = frozenset({"Alpha", "Opacity", "Strength", "Emission Strength"})  # 0 = not seen
+FADE_WINDOW = 24  # frames after the switch within which a fade-in must visibly move
 POP_IN_SCALE = 1e-4  # an object scaled to this or less (its largest axis) is not shown: it can pop in
 EDGE_VERTS = 4000  # vertices sampled for the share outside when the box straddles the camera plane
 

@@ -700,6 +700,13 @@ def test_a_row_switched_on_at_the_start_of_a_keyed_material_fade_is_not_a_pop_in
     _fade(plain.data.materials[0], lambda t: t.nodes["Principled BSDF"].inputs["Alpha"], 3, 12, 0.0, 1.0)
     found = [f.obj for f in checks.run_checks(sc, _timeline()) if f.check == "pop_in"]
     assert found == ["NoFade"], found  # a fade that is over by the switch frame is not an entrance
+    out = _cube("FadeOut", (1, 0, 2.0), size=0.5)
+    out.data.materials[0] = bpy.data.materials.new("OutMat")
+    out.data.materials[0].use_nodes = True
+    _fade(out.data.materials[0], lambda t: t.nodes["Principled BSDF"].inputs["Alpha"], 15, 25, 1.0, 0.0)
+    _switch_on(out, 15)  # switched on fully opaque, then fading out: it still pops in
+    found = sorted(f.obj for f in checks.run_checks(sc, _timeline()) if f.check == "pop_in")
+    assert found == ["FadeOut", "NoFade"], found
 
 
 def test_per_shot_hero_only_checked_in_its_shots():
