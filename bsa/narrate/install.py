@@ -314,7 +314,7 @@ def check_python(env: str, python: Path, run=_proc.run) -> tuple[Path, list[str]
     pins = _pins(env)
     modules = {name: _MODULES.get(name, name.replace("-", "_")) for name in pins}
     try:
-        proc = run([str(python), "-c", _PROBE, json.dumps(modules)], check=False, capture_output=True, text=True,
+        proc = run([str(python), "-B", "-c", _PROBE, json.dumps(modules)], check=False, capture_output=True, text=True,
                    timeout=300)  # fmt: skip
         info = json.loads((proc.stdout or "").strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
