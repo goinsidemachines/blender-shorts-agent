@@ -96,7 +96,7 @@ def built_timeline(sdir: Path, short):
 
 
 _STRING_KEYS = {"workspace", "blender_exe", "handle", "end_card", "website", "closing.image", "closing.voice_line", "narrator.provider", "narrator.voice", "narrator.command", "narrator.take_mode",
-                "narrator.label", "render.engine", "post_format.title_suffix", "post_format.link_line",
+                "narrator.label", "render.engine", "render.deliver_dir", "hooks.after_final", "post_format.title_suffix", "post_format.link_line",
                 "post_format.pinned_comment", "post_format.title_style",
                 "brand.mode", "sound_policy", "freesound.api_key", "feedback"}  # fmt: skip
 
@@ -743,8 +743,7 @@ def _page_open(args, sdir: Path) -> dict:
     except launch.ServerUnavailable as exc:
         info, failed = None, exc
     doctor_json = sdir / "review" / "doctor.json"
-    if not doctor_json.is_file():
-        _doctor_checks(sdir, ws, info, save=True)
+    _doctor_checks(sdir, ws, info, save=True, cheap=True)  # the banner shows today's state, not the last doctor's
 
     def ensure(_ws):
         if failed is not None:
@@ -762,7 +761,10 @@ def _page_open(args, sdir: Path) -> dict:
     return {**out, "health": health, "phone": phone}
 
 
-def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool) -> list[dict]:
+def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool,
+                   cheap: bool = False) -> list[dict]:  # fmt: skip
+    """Run doctor. `cheap` runs again only the checks that cost nothing (Blender's result is kept from the last
+    doctor), for the page and for after something that changes them (an assets download)."""
     from bsa import doctor, fonts
 
     short = None
@@ -771,7 +773,11 @@ def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save
             short = load(sdir)
         except CliError:
             short = None  # a bad spec is validate's finding; the font check falls back to the brand font
-    checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
+    if cheap and sdir is not None:
+        checks = doctor.run_cheap(settings.load_settings(), ws, short, server=server,
+                                  cache_dirs=fonts.font_caches(sdir), saved=doctor.saved_checks(sdir))  # fmt: skip
+    else:
+        checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
     if save and sdir is not None:
         doctor.save(sdir, checks)
     return checks
@@ -820,7 +826,7 @@ def _font_and_sound_warnings(sdir: Path, short) -> list[str]:
 
     s = settings.load_settings()
     return fonts.glyph_warnings(short, s, cache_dirs=fonts.font_caches(sdir)) + recorded.policy_warnings(
-        short, _sound_library(sdir), recorded.sound_policy(short, s))
+        short, _sound_library(sdir), recorded.sound_policy(short, s), room=settings.room_db(s) is not None)
 
 
 def _pacing(short, tl) -> tuple[list, list]:
@@ -853,6 +859,11 @@ def cmd_validate(args) -> dict:
     errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
+    gone = workspace.slug_words_missing(sdir.name, short.title)
+    if gone:  # the folder still carries a word the title dropped
+        warnings.append(f"the folder name {sdir.name} has {', '.join(repr(w) for w in gone)}, which the title "
+                        f"{short.title!r} doesn't: CLI workspace rename {workspace.short_key(sdir, settings.load_settings().get('workspace'))} "
+                        "NEW-SLUG")  # fmt: skip
     from bsa import translations
 
     tr_errors, tr_warnings = translations.problems(short, settings.load_settings())
@@ -899,16 +910,24 @@ def cmd_validate(args) -> dict:
 
 
 def cmd_timeline(args) -> dict:
-    from bsa.timeline import length_drift, to_json
+    from bsa.timeline import length_drift, retime_report, to_json
 
     sdir = short_dir(args.short)
     short = load(sdir)
     tl, from_takes = current_timeline(sdir, short)
     data = to_json(tl)
     path = sdir / "source" / "timeline.json"
+    previous = None
+    if path.is_file() and (sdir / "source" / "build.py").is_file():  # nothing is keyed to frames before a build
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            previous = None
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     rows, warnings = _pacing(short, tl)
+    retimed = retime_report(previous, tl)
     return {
+        **({"retimed": retimed} if retimed else {}),
         "path": str(path),
         "n_frames": tl.n_frames,
         "seconds": round(tl.n_frames / tl.fps, 2),
@@ -1127,12 +1146,15 @@ def cmd_mix(args) -> dict:
     card = closing.resolve(s, short)
     end = closing.plan(card, tl.n_frames + 1, tl.fps, closing.take_seconds(takes))
     tail = (end["n_frames"], closing.take(takes), end["line_f0"]) if end else None
-    stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail)
+    room_db = settings.room_db(s)
+    stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail,
+                         room_db=room_db, reverb=settings.reverb_on(s))  # fmt: skip
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
     out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
-           "sfx": recorded.report(recorded.resolve(short, library, policy))}  # fmt: skip
+           "sfx": recorded.report(recorded.resolve(short, library, policy),
+                                  recorded.room_status(library, policy, room_db))}  # fmt: skip
     if end:
         out["closing"] = {"frames": end["n_frames"], "voice_line": bool(end["line_f0"]),
                           **closing.hold(card, end, tl.fps)}  # "note" when the line holds it past closing.seconds
@@ -1198,10 +1220,31 @@ def cmd_post(args) -> dict:
             raise CliError(str(exc)) from exc
     if args.platform is not None:
         raise CliError("--platform goes with --posted URL")
-    path, changed = postpack.write(sdir, short)
-    errors, warnings = post.problems(short, settings.load_settings())
-    return {"pack": str(path), "changed": changed, "fields": post.fields(short), "counts": post.counts(short),
-            "errors": errors, "warnings": warnings}  # fmt: skip
+    s = settings.load_settings()
+    written = postpack.write_all(sdir, short, s)
+    errors, warnings = post.problems(short, s)
+    out = {"pack": str(written["pack"]["path"]), "changed": written["pack"]["changed"], "fields": post.fields(short),
+           "counts": post.counts(short), "errors": errors, "warnings": warnings + written["warnings"]}  # fmt: skip
+    if written["pack"]["edited"]:
+        out["edited"] = [postpack.PACK]  # the user's own file was kept; "pack" is the plugin's new text beside it
+    if written["instagram"]:
+        out["instagram"] = str(written["instagram"]["path"])
+        if written["instagram"]["edited"]:
+            out["edited"] = [*out.get("edited", []), postpack.INSTAGRAM]
+    return out
+
+
+def cmd_deliver(args) -> dict:
+    """Copy the final video and the chosen thumbnails into render.deliver_dir (the final edit does it too; run this
+    after choosing a thumbnail)."""
+    from bsa import deliver
+
+    sdir = short_dir(args.short)
+    short = load(sdir)
+    res = deliver.deliver(sdir, short, settings.load_settings())
+    if res is None:
+        raise CliError("render.deliver_dir is not set: CLI settings set render.deliver_dir final")
+    return res
 
 
 def cmd_review(args) -> dict:
@@ -1339,6 +1382,7 @@ def _sample_params(model: str, short_name: str | None) -> dict | None:
 
 def cmd_voice(args) -> dict:
     from bsa.narrate import install
+    from bsa.narrate.contract import NarrationError
 
     if args.action == "suggest":
         from bsa import machine
@@ -1359,6 +1403,13 @@ def cmd_voice(args) -> dict:
             raise CliError("usage: voice install MODEL... (show voice plan MODEL... to the user first)")
         runner = install.install(args.args)
         return {"runner": str(runner), "installed": install.installed()}
+    if args.action == "use-local":
+        if len(args.args) != 1 or not args.weights:
+            raise CliError("usage: voice use-local MODEL --weights DIR [--python PYTHON]")
+        try:
+            return install.use_local(args.args[0], Path(args.weights), Path(args.python) if args.python else None)
+        except NarrationError as exc:
+            raise CliError(str(exc)) from exc
     if args.action == "sample":
         if len(args.args) not in (2, 3):
             raise CliError("usage: voice sample MODEL VOICE [SHORT]")
@@ -1374,7 +1425,7 @@ def cmd_voice(args) -> dict:
         models = [{"model": "elevenlabs", "label": "ElevenLabs (paid, needs an API key)", "installed": None}]
         models += [{"model": k, "label": m["label"], "licence": m["licence"], "installed": have.get(k, False)}
                    for k, m in reg["models"].items() if m["kind"] == "tts"]  # fmt: skip
-        return {"models": models}
+        return {"models": models, "linked": install.local_links()}  # linked: from the user's own folders
     model = args.args[0]
     if model == "elevenlabs":
         from bsa.narrate import elevenlabs
@@ -1478,6 +1529,10 @@ def cmd_assets(args) -> dict:
     polyhaven.record(short, plans)
     save_short(short, short_json(sdir))
     path.unlink()
+    from bsa.review import launch
+
+    # a new font or sound changes what doctor says (the caption font); refresh the page's health banner now
+    _doctor_checks(sdir, sdir.parent, launch.server_info(sdir.parent), save=True, cheap=True)
     return {"files": {k: [str(p) for p in v] for k, v in files.items()}}
 
 
@@ -1487,14 +1542,17 @@ def cmd_assets(args) -> dict:
 RELINK_TIMEOUT = 900  # seconds for one short's BLENDER relink (opening, reloading linked files, saving)
 
 
-def _relink(exe: Path, sdir: Path, old: Path) -> tuple[dict | None, str]:
-    """Run `BLENDER relink SDIR --from OLD` in a background Blender: (its result, "") or (None, why it failed)."""
+def _relink(exe: Path, sdir: Path, old: Path, to: Path | None = None) -> tuple[dict | None, str]:
+    """Run `BLENDER relink SDIR --from OLD [--to TO]` in a background Blender: (its result, "") or (None, why it
+    failed)."""
     import subprocess
 
     from bsa import proc
 
     cmd = [str(exe), "-b", "--factory-startup", "--python-exit-code", "1", "--python",
            str(PLUGIN_ROOT / "bsa_blender.py"), "--", "relink", str(sdir), "--from", str(old)]  # fmt: skip
+    if to is not None:
+        cmd += ["--to", str(to)]
     try:
         r = proc.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RELINK_TIMEOUT,
                      check=False)  # fmt: skip
@@ -1526,6 +1584,8 @@ def cmd_workspace(args) -> dict:
     from bsa import gpulock, wsmove
     from bsa.review import launch, server
 
+    if args.action == "rename":
+        return _rename_short(args)
     s = settings.load_settings()
     if not s.get("workspace"):
         raise CliError("No workspace is set yet: run settings set workspace PATH first.")
@@ -1580,6 +1640,82 @@ def cmd_workspace(args) -> dict:
         raise CliError(f"The workspace was {how} to {new}, but repointing its paths failed: {_one_line(exc)}. Run "
                        f'settings set workspace "{new}" if settings show still names {old}, then BLENDER relink '
                        f'SHORT --from "{old}" for each short.', {"from": str(old), "to": str(new), "how": how}) from None  # fmt: skip
+
+
+def _rename_short(args) -> dict:
+    """`workspace rename SHORT NEW-SLUG`: rename the short's folder (its number stays) and repoint the absolute paths
+    stored inside it: the plugin's own JSON, its .blend. Refuses while the page server, a render or the GPU lock is
+    live in the workspace, and when the new folder already exists. short.json is the user's own file: only reported."""
+    import os
+    import re
+
+    from bsa import gpulock, wsmove
+    from bsa.review import launch, server
+
+    if not args.slug:
+        raise CliError("usage: workspace rename SHORT NEW-SLUG (for example: workspace rename 22 how-a-lock-works)")
+    s = settings.load_settings()
+    root = Path(s["workspace"]) if s.get("workspace") else None
+    sdir = short_dir(args.new)
+    root = root or sdir.parent
+    slug = workspace.slugify(args.slug)
+    number = re.match(r"^\d+-", sdir.name)
+    new = sdir.with_name((number.group(0) if number else "") + slug)
+    if wsmove.same_folder(new, sdir):
+        raise CliError(f"{sdir.name} already has that name: nothing to rename")
+    if new.exists():
+        raise CliError(f"{new.name} already exists in {sdir.parent}: pick another slug. Nothing was changed.")
+    lock = gpulock.lock_path(root)
+    gpu = gpulock.live_holder(lock)
+    if gpu and gpu.get("pid") == os.getpid():
+        gpu = None
+    why = wsmove.busy(server=launch.server_process(root), running=server.jobs_running(root), gpu=gpu)
+    if why:
+        raise CliError(f"Can't rename {sdir.name}: {why}. Nothing was changed.")
+    try:
+        took = gpulock.acquire(lock, short=sdir.name, command="rename", wait=False)
+    except gpulock.GpuBusy as exc:
+        raise CliError(f"Can't rename {sdir.name}: {exc}. Nothing was changed.") from None
+    try:
+        sdir.rename(new)
+    except OSError as exc:
+        raise CliError(f"Couldn't rename {sdir.name} to {new.name}: {exc.strerror or exc}. Close anything that has a "
+                       "file in it open and run it again. Nothing was changed.") from None  # fmt: skip
+    finally:
+        if took:
+            gpulock.release(lock)
+    changed: list[str] = []
+    not_fixed: list[dict] = []
+    for path in wsmove.plugin_files(new):
+        rel = path.relative_to(new).as_posix()
+        try:
+            changed += [f"{rel}: {k}" for k in _rewrite_plugin_json(path, sdir, new)]
+        except OSError as exc:
+            not_fixed.append({"what": f"{rel}: couldn't be repointed ({exc.strerror or exc})",
+                              "fix": f"edit {path}: change {sdir} to {new}"})  # fmt: skip
+    relinked = None
+    if (new / "blend" / "short.blend").is_file():
+        from bsa import locate
+
+        try:
+            res, no = _relink(locate.find_blender(s), new, sdir, new)
+        except locate.BlenderNotFound as exc:
+            res, no = None, _one_line(exc)
+        if res is not None:
+            relinked = res
+            not_fixed += [{"what": f"its .blend now points at {p}, which is not there", "fix": f"put the file back at {p}"}
+                          for p in res.get("missing") or []]  # fmt: skip
+        else:
+            not_fixed.append({"what": f"its .blend may still point at {sdir} for its files ({no})",
+                              "fix": f'BLENDER relink "{new}" --from "{sdir}" --to "{new}"'})  # fmt: skip
+    for rel, key in wsmove.leftovers(new, sdir):  # the user's own files (source/short.json ...): only reported
+        not_fixed.append({"what": f"{rel}: {key} still names a path in {sdir}",
+                          "fix": f"edit {new / rel}: change {sdir} to {new} in {key}"})  # fmt: skip
+    return {"from": str(sdir), "to": str(new), "short": new.name, "changed": changed, "relinked": relinked,
+            "not_fixed": not_fixed,
+            "note": "The short's title is in source/short.json and is unchanged; the output files keep the short.json "
+                    "slug. A short's stored fingerprints include its paths, so its next run renders again where it "
+                    "must."}  # fmt: skip
 
 
 def _move_folder(old: Path, new: Path, live) -> str:
@@ -1817,9 +1953,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --line (paragraph take mode): re-speak the whole paragraph holding that line")  # fmt: skip
     sp.set_defaults(fn=cmd_narrate)
 
-    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | sample MODEL VOICE [SHORT] | list [MODEL] | test-custom")
-    sp.add_argument("action", choices=["suggest", "plan", "install", "sample", "list", "test-custom"])
+    sp = sub.add_parser("voice", help="suggest | plan MODEL... | install MODEL... | use-local MODEL --weights DIR "
+                   "[--python PYTHON] | sample MODEL VOICE [SHORT] | list [MODEL] | test-custom")  # fmt: skip
+    sp.add_argument("action", choices=["suggest", "plan", "install", "use-local", "sample", "list", "test-custom"])
     sp.add_argument("args", nargs="*")
+    sp.add_argument("--weights", default=None, help="with use-local: a folder that already holds the model's files")
+    sp.add_argument("--python", default=None,
+                    help="with use-local: the python of an existing venv that has the engine's packages")  # fmt: skip
     sp.set_defaults(fn=cmd_voice)
 
     sp = sub.add_parser("review", help="story|storyboard|final SHORT [--open]: the one page's link at that stage "
@@ -1867,10 +2007,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_feedback)
 
     sp = sub.add_parser("workspace", help="move NEW: move the whole workspace to NEW (renamed on one drive, copied and "
-                        "checked across drives, the old folder kept) and repoint the paths stored for it")  # fmt: skip
-    sp.add_argument("action", choices=["move"])
-    sp.add_argument("new")
+                        "checked across drives, the old folder kept) and repoint the paths stored for it | "
+                        "rename SHORT NEW-SLUG: rename a short's folder")  # fmt: skip
+    sp.add_argument("action", choices=["move", "rename"])
+    sp.add_argument("new", help="move: the new workspace folder; rename: the short")
+    sp.add_argument("slug", nargs="?", help="rename SHORT NEW-SLUG: the folder name's words after its number")
     sp.set_defaults(fn=cmd_workspace)
+
+    sp = sub.add_parser("deliver", help="SHORT: copy the final video and chosen thumbnails into render.deliver_dir")
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_deliver)
     return p
 
 

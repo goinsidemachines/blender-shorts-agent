@@ -381,3 +381,23 @@ def test_own_logo_with_no_brand_logos_asks(short, tmp_path):
     s["brand"] = {**KIT, "logo": {"file": str(tmp_path / "logo.png")}}
     assert any("your logo badge shows a logo on every short: ask the user whether their own logo is allowed" in w
                for w in rules.problems(short, s)[1])
+
+
+def test_mechanical_senses_of_body_part_words_are_innocent():
+    for name in ("Washing Drum", "BrakeDrum", "drum_brake", "Leveling Foot", "levelling feet", "SpiderGear",
+                 "spider hub", "Spider Arm"):
+        assert rules.hits("no_humans", name) == [] and rules.hits("no_animals", name) == [], name
+        assert rules.hits("no_music", name) == [], name
+    assert rules.hits("no_animals", "Spider") == ["spider"]  # the word alone is still flagged
+    assert rules.hits("no_humans", "Foot") == ["foot"]
+
+
+def test_name_hit_message_carries_a_line_that_clears_the_word():
+    rule = {"id": "r1", "text": "No humans", "kind": "no_humans"}
+    short = SimpleNamespace(rules=[rule], rules_check={})
+    (hit,) = rules.name_hits([rule], short, [("object", "Foot_Pedal", None)])
+    assert 'rules_check": {"r1": {"cleared": {"Foot": ' in hit["message"] or '"foot"' in hit["message"].lower()
+    line = hit["message"].split("add to short.json: ")[1]
+    cleared = json.loads("{" + line + "}")["rules_check"]["r1"]["cleared"]
+    short.rules_check = {"r1": {"kept": "x", "cleared": {w: "pedal" for w in cleared}}}
+    assert rules.name_hits([rule], short, [("object", "Foot_Pedal", None)]) == []

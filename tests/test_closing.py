@@ -169,7 +169,8 @@ def test_closing_card_in_blender(blender_run):
     assert result.returncode == 0, result.stdout + result.stderr
     for name in ("test_brand_card_from_the_website_alone", "test_user_image_fills_the_frame",
                  "test_edit_ends_on_the_closing_card",
-                 "test_kit_closing_card_without_a_card_dir_uses_a_temp_folder_removed_after_the_render"):  # fmt: skip
+                 "test_kit_closing_card_without_a_card_dir_uses_a_temp_folder_removed_after_the_render",
+                 "test_card_renders_when_the_open_blend_is_on_another_frame", "test_a_blank_card_is_refused"):  # fmt: skip
         assert f"PASS {name}" in result.stdout
 
 

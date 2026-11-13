@@ -187,3 +187,95 @@ def test_style_sample_takes_the_workspace_gpu_lock(tmp_path, monkeypatch):
     assert not gpulock.lock_path(ws).exists()  # released
     (home / "settings.json").write_text("{}", encoding="utf-8")
     assert bsa_blender.main(argv) == 0 and len(seen) == 2
+
+
+def test_the_wait_line_shows_the_holders_memory_and_run_time(tmp_path, other, monkeypatch):
+    from bsa import memwatch
+
+    path = gpulock.lock_path(tmp_path)
+    _hold(path, other)
+    monkeypatch.setattr(memwatch, "rss_bytes", lambda pid: int(12.34 * memwatch.GB))
+    monkeypatch.setattr(gpulock, "_children_rss", lambda pid: 0)
+    monkeypatch.setattr(gpulock.time, "time", lambda: 1_000_000.0 + 2 * 3600 + 5 * 60)
+    said = []
+    with pytest.raises(gpulock.GpuBusy):
+        gpulock.acquire(path, short="clock", command="render", on_wait=said.append, sleep=lambda s: None,
+                        max_wait_s=0.0)  # looks once, says so, gives up
+    assert said == [f"waiting for pendulum render (pid {other.pid}, since {time.strftime('%H:%M:%S', time.localtime(1_000_000.0))}), using 12.3 GB, running 2 h 5 min"]
+
+
+def test_the_holders_usage_leaves_out_what_it_cannot_read(monkeypatch):
+    from bsa import memwatch
+
+    monkeypatch.setattr(memwatch, "rss_bytes", lambda pid: None)
+    assert gpulock.holder_usage({"pid": 1, "started": 100.0}, now=160.0) == ", running 1 min"
+    assert gpulock.holder_usage({"pid": 1}) == ""
+
+
+def test_a_holders_child_processes_count_towards_its_memory():
+    code = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); time.sleep(30)"
+    parent = proc_mod.popen([sys.executable, "-c", code])
+    try:
+        time.sleep(1.0)
+        if sys.platform.startswith("linux"):
+            assert gpulock._children_rss(parent.pid) > 0
+    finally:
+        parent.kill()
+        parent.wait()
+
+
+def test_max_wait_gives_up_naming_the_holder(tmp_path, other):
+    path = gpulock.lock_path(tmp_path)
+    _hold(path, other)
+    now = [0.0]
+
+    def sleep(s):
+        now[0] += s
+
+    with pytest.raises(gpulock.GpuBusy, match=rf"gave up waiting 0\.5 min for the GPU: pendulum render \(pid {other.pid}"):
+        gpulock.acquire(path, short="clock", command="render", sleep=sleep, monotonic=lambda: now[0], max_wait_s=30)
+    assert now[0] >= 30 and gpulock.read(path)["pid"] == other.pid  # waited the 30 s first; the lock is untouched
+
+
+def test_no_max_wait_waits_as_long_as_it_takes(tmp_path, other):
+    path = gpulock.lock_path(tmp_path)
+    _hold(path, other)
+    now = [0.0]
+    polls = []
+
+    def sleep(s):
+        now[0] += 3600
+        polls.append(1)
+        if len(polls) == 5:  # five hours later the holder ends
+            other.kill()
+            other.wait()
+
+    assert gpulock.acquire(path, short="clock", command="render", sleep=sleep, monotonic=lambda: now[0])
+
+
+def test_max_wait_is_a_gpu_command_option():
+    import bsa_blender
+
+    p = bsa_blender.build_parser()
+    for argv in (["render", "x", "--preset", "final"], ["preview", "x"], ["stills", "x"], ["estimate", "x"],
+                 ["extremes", "x"]):
+        assert p.parse_args([*argv, "--max-wait", "90"]).max_wait == 90.0
+        assert p.parse_args(argv).max_wait is None
+    with pytest.raises(SystemExit):
+        p.parse_args(["render", "x", "--preset", "final", "--max-wait", "0"])
+
+
+def test_gpu_gives_up_with_a_plain_error(tmp_path, other, monkeypatch):
+    import types
+
+    import bsa_blender
+
+    sdir = tmp_path / "pendulum"
+    sdir.mkdir()
+    _hold(gpulock.lock_path(tmp_path), other)
+    monkeypatch.setattr(gpulock.time, "sleep", lambda s: None)
+    monkeypatch.setattr(gpulock, "POLL_S", 0)
+    args = types.SimpleNamespace(no_wait=False, max_wait=0.0001)
+    with (pytest.raises(bsa_blender.CliError, match=r"gave up waiting .* pendulum render"),
+          bsa_blender._gpu(args, sdir, "clock", "render")):
+        pytest.fail("took the lock")

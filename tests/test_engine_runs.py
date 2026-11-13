@@ -284,6 +284,7 @@ def test_a_side_render_uses_its_own_folder_and_records_what_it_measured(home, pe
     import bsa_blender
 
     _approve(home, pendulum, "cycles")
+    ok(run(home, "settings", "set", "render.chunk_frames", "off"))  # this render is stubbed in this process
     _rendered(home, pendulum, "preview", engine="cycles")
     approved = {p: p.read_bytes() for p in (pendulum / "frames" / "preview").rglob("*") if p.is_file()}
     calls, trackers, keys = [], [], []

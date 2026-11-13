@@ -11,6 +11,7 @@ import urllib.request
 import wave
 from pathlib import Path
 
+from bsa import net
 from bsa.narrate import contract
 from bsa.narrate.contract import SR, NarrationError
 from bsa.short import spoken_text
@@ -67,7 +68,7 @@ def generate(
     out_dir: Path,
     model: str = "eleven_v3",
     api_key=None,
-    http=urllib.request.urlopen,
+    http=net.urlopen,
 ) -> dict[str, float]:
     """Write <id>.wav for every line and durations.json; return seconds per line. A take already on disk that meets
     the contract is kept (an interrupted run resumes); a bad or empty one is made again. Each take is written to
@@ -104,7 +105,7 @@ def generate(
     return durations
 
 
-def list_voices(api_key=None, http=urllib.request.urlopen) -> list[dict]:
+def list_voices(api_key=None, http=net.urlopen) -> list[dict]:
     req = urllib.request.Request(f"{API}/voices", headers={"xi-api-key": _key(api_key)})
     data = json.loads(_request(http, req, "the voice list"))
     return list(data.get("voices", []))

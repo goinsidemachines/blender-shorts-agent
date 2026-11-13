@@ -63,7 +63,8 @@ def test_render_stage_shows_the_check_note_beside_the_render(view, live_server):
     p = open_short(view, srv, stage="render")
     note = p.locator("#bsa-stage .step-note")
     expect(note).to_have_text("checking s02 (2 of 4), 0 errors so far")
-    expect(p.locator("#bsa-stage").get_by_text("checking s02 (2 of 4)")).to_be_visible()
+    # the step's own note (the run's summary line repeats the side check's progress too, on purpose)
+    expect(p.locator("#bsa-stage").get_by_text("checking s02 (2 of 4), 0 errors so far", exact=True)).to_be_visible()
     assert_healthy(p)
 
 

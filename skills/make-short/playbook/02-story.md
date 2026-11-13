@@ -37,7 +37,10 @@ and (for no-brand users) a choice of look. Read `craft-short-form.md` and `hones
   object, add `"at": [x, y, z]`, that point in the object's local space (`{"text": "Stop", "near": "Tape", "at":
   [0, 0.01, 0.002]}`), or name an Empty placed there (it anchors at its origin): either instead of a helper sphere,
   which would show in the video; `badge` is the honesty
-  badge ("Motion exaggerated", "Simplified") or `null`; `hold` (optional) marks a deliberate freeze, `true` for the
+  badge ("Motion exaggerated", "Simplified") or `null`. Set `time_scale` on any shot whose motion runs at another
+  speed than real time (from the model's factor: 0.25 is four times slower, 2 is twice as fast). Its badge must say so
+  ("Slowed down", "Sped up"), and `validate` refuses it when it does not. Join two notes with a dot: "Simplified ·
+  Slowed down"; `hold` (optional) marks a deliberate freeze, `true` for the
   whole shot or `[[from_s, to_s], ...]` seconds from its start, so frame-check does not call it stuck.
 - **Sound:** plan effects per shot now (`sound.md`); no music.
 

@@ -40,17 +40,28 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
 - **CLI** = `"<blender_python>" "<root>/bsa_cli.py"`. Prints one JSON object on stdout. On failure: non-zero exit,
   one plain line on stderr (relay it in your own words).
 - **BLENDER** = `"<blender>" -b --factory-startup --python-exit-code 1 --python "<root>/bsa_blender.py" --`.
+  When BLENDER steps are chained (build, check, preview, relink in a row), put them in a bash script (`#!/usr/bin/env
+  bash`, one `BLENDER=(...)` array or the full command on each line), not a one-line shell variable: zsh does not
+  split an unquoted `$B` into words, so `$B build SHORT` fails there with "command not found". Bash arrays
+  (`"${BLENDER[@]}" build SHORT`) work in both.
   Blender prints its own log lines, so read the line starting `BSA_RESULT ` (JSON). Failure: non-zero exit, a
   `BSA_RESULT` line with `"ok": false` and the `error`, and the same plain line on stderr (relay it). Don't pass the
   .blend: each command opens `blend/short.blend` itself when it needs it, after it has marked its run as starting in
   the live status. The GPU commands (`render`, the preview chain's render step, `extremes`, `test-frames`, `estimate`, `camtest`) run one at a
   time per workspace, across sessions: a second one waits for the first (`<workspace>/.gpu.lock`, `08-render.md`).
   Never delete that file by hand.
+  These commands, the preview chain and `check` also run under a memory guard (`render.memory_limit_gb`, `08-render.md`):
+  a Blender that grows past the limit is killed with a plain message.
 
 Commands for starting and voicing a short (`playbook/01-interview.md`, `playbook/05-narration.md`):
 
 - `CLI shorts`: the workspace's shorts (title, look, length, voice) and `last_finished`, the last three finished
   titles, for "Make it like an earlier one?".
+- `CLI workspace rename SHORT NEW-SLUG`: renames one short's folder (its number stays) and repoints the paths stored
+  inside it. Use it when the title changed and the folder still has an old word (`CLI validate` warns). It refuses
+  while the page server, a render or the GPU lock is live, and when the new folder exists. A short's title always
+  comes from `source/short.json`, never from its folder name.
+- `CLI deliver SHORT`: copies the final video and the chosen thumbnails into `render.deliver_dir` (`08-render.md`).
 - `CLI workspace move NEW`: to move the workspace, use this; never move it by hand. It refuses while the page
   server, a render or the GPU lock is live (and holds the GPU lock while it moves), when a drive is not there, or when
   NEW is a folder that isn't empty. One drive: renamed. Another drive: copied, every file and folder checked, the old
@@ -133,7 +144,7 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    change. Talk about what is on it; never paste short.json or ask the user to open your working files.
    - **Open it once, at the interview:** `CLI page SHORT` (`playbook/01-interview.md`). Its result has `url` and
      `opened`. When `opened` is false, the page did not open (or never checked in): tell the user it didn't open
-     and give the `url` as a link they can click. Never carry on as if it opened. Relay anything in `health`.
+     and give the `url` as a link they can click. Never carry on as if it opened. Relay anything in `health`. (The cheap doctor checks run again each time the page is opened and after `assets download`, so the page's health banner shows the current state.)
    - **Show a stage:** when the tab is already open, `CLI page SHORT --stage STAGE` switches it there (Python can't
      bring the browser window to the front), so say so: "the page has switched to the storyboard".
    - **Wait for a yes:** after showing a stage that needs one (story, storyboard, engine), run `CLI page wait SHORT

@@ -416,6 +416,8 @@ def test_thumbs_in_blender(blender_run):
     for name in ("test_both_sizes_at_exact_pixels_with_the_title_and_hero_where_the_layout_said",
                  "test_a_preview_frame_at_half_size_fills_the_same_layout",
                  "test_drawn_boxes_match_the_cards_in_the_fonts_used",
+                 "test_a_title_that_wrapped_in_three_lines_is_drawn_in_the_lines_measured",
+                 "test_the_old_unwrapped_title_is_seen_as_three_lines_and_overlaps_the_kicker",
                  "test_kit_thumbnail_draws_card_images_at_their_rects",
                  "test_kit_thumbnail_with_a_logo_draws_the_badge",
                  "test_without_a_kit_no_card_images_are_made",
@@ -457,10 +459,10 @@ def _tl(sdir):
                     [Span(**s) for s in data["lines"]], [Card(**c) for c in data["cards"]])  # fmt: skip
 
 
-def _go(monkeypatch, sdir, *argv, boxes=None, s=None):
+def _go(monkeypatch, sdir, *argv, boxes=None, s=None, drawn_lines=None):
     """bsa_blender._cmd_thumbs with Blender stubbed: render writes a flat PNG of the layout's size, read_png reads
     it back, and the .blend's hero boxes are `boxes` ({shot: {frame: [box, ...]}}; None: no .blend). `s`: the
-    settings ({"handle": "me"} when None)."""
+    settings ({"handle": "me"} when None). `drawn_lines`: bsa.blender.thumbs.drawn_lines, when given."""
     import types
 
     import pagefix
@@ -485,6 +487,8 @@ def _go(monkeypatch, sdir, *argv, boxes=None, s=None):
         return {f: (boxes.get(shot) or {}).get(f, []) for f in frames}
 
     api = types.SimpleNamespace(render=render, read_png=image_checks.read_png, boxes=hero_boxes)
+    if drawn_lines is not None:
+        api.drawn_lines = drawn_lines
     args = bsa_blender.build_parser().parse_args(["thumbs", "pendulum", *argv])
     short = bsa_blender._load(sdir)
     return (lambda: bsa_blender._cmd_thumbs(args, sdir, short, api)), calls
@@ -1041,3 +1045,101 @@ def test_with_font_and_a_kit_uses_the_card_font(short, font, monkeypatch):
     accented = thumbs.ThumbText(("Éclair",), None, None)  # the test font has no É
     _, notes = thumbs.with_font(st, accented)
     assert any("Éclair" in n for n in notes)
+
+
+def test_hidden_captions_never_hide_the_thumbnail_title():
+    """Shorts 20 and 21: a short that hides the plugin's captions (#FFFFFF00 on #20232600, its own cards draw them)
+    got an invisible thumbnail title. The title falls back to white on the dark box, and says so."""
+    st = thumbs.style_for(_short({"caption": {"color": "#FFFFFF00", "box": "#20232600"}}), {})
+    assert st.title == (1.0, 1.0, 1.0, 1.0) and st.title_box == (*overlays.BOX_COLOR[:3], 0.85)
+    assert st.notes and "caption" in st.notes[0]
+    _, notes = thumbs.with_font(st, TEXT)
+    assert notes[: len(st.notes)] == list(st.notes)  # the thumbs command reports it with its warnings
+    st = thumbs.style_for(_short({"caption": {"color": "#FFFFFF", "box": "#20232600"}}), {})
+    assert st.title == (1.0, 1.0, 1.0, 1.0) and st.title_box[3] == 0.0 and not st.notes  # a see-through box is a choice
+    st = thumbs.style_for(_short({"caption": {"color": "#FFFFFF00", "box": "#202326"}}), {})
+    assert st.title == (1.0, 1.0, 1.0, 1.0) and st.title_box == overlays.hex_colour("#202326", 1.0) and st.notes
+
+
+# --------------------------------------------------------------------------- the title is wrapped as it is drawn
+
+SHORT29 = thumbs.ThumbText(("Why doesn't it fall?",), "Gyroscopes", None)
+
+
+def _cards(lay):
+    return {c.kind: c for c in lay.cards}
+
+
+def test_a_title_is_wrapped_by_the_font_it_is_drawn_in_not_by_a_character_estimate():
+    """Short 29: "Why doesn't it fall?" estimated at 2 lines in the 1280x720 panel (20 characters, 10 a line), but
+    Blender's own font draws it in 3, so the kicker was placed over the third line."""
+    lay = thumbs.landscape(SHORT29, LOW_HERO, STYLE)
+    title, kicker = _cards(lay)["title"], _cards(lay)["kicker"]
+    assert title.lines == ("Why", "doesn't", "it fall?")
+    assert title.rect.h == pytest.approx((STYLE.box_h + 2 * STYLE.line_h) * title.size + 2 * title.pad)
+    assert kicker.rect.y >= title.rect.bottom + thumbs.GAP - 1e-6
+    assert thumbs.TITLE_TOO_LONG not in lay.warnings and thumbs.CARDS_OVERLAP not in " ".join(lay.warnings)
+
+
+def test_a_wider_font_wraps_into_more_lines_and_the_cards_still_clear(tmp_path):
+    from fontbuild import build_font
+
+    def font(advance):
+        path = tmp_path / f"f{advance}.ttf"
+        path.write_bytes(build_font(ASCII, advance=advance))
+        return str(path)
+
+    narrow = thumbs.landscape(SHORT29, LOW_HERO, dataclasses.replace(STYLE, font=font(400)))
+    wide = thumbs.landscape(SHORT29, LOW_HERO, dataclasses.replace(STYLE, font=font(700)))
+    assert len(_cards(narrow)["title"].lines) < len(_cards(wide)["title"].lines)
+    for lay in (narrow, wide):
+        assert _apart(_cards(lay)["title"], _cards(lay)["kicker"]) >= thumbs.GAP - 1e-6
+
+
+def test_the_text_strip_is_given_the_layouts_line_breaks():
+    lay = thumbs.landscape(SHORT29, LOW_HERO, STYLE)
+    assert thumbs.card_strips(lay)[0]["text"] == "Why\ndoesn't\nit fall?"
+    assert thumbs.layout_dict(lay)["cards"][0]["text"] == "Why doesn't it fall?"
+
+
+def test_the_vertical_title_is_wrapped_and_measured_the_same_way():
+    lay = thumbs.vertical(SHORT29, LOW_HERO, STYLE)
+    title = _cards(lay)["title"]
+    assert title.lines == ("Why doesn't it", "fall?") and "\n".join(title.lines) != title.text
+    assert thumbs.card_strips(lay)[0]["text"] == "\n".join(title.lines)
+
+
+def test_cards_that_overlap_are_named_in_a_warning():
+    lay = thumbs.landscape(SHORT29, LOW_HERO, STYLE)
+    title, kicker = _cards(lay)["title"], _cards(lay)["kicker"]
+    forced = [title, thumbs._moved(kicker, kicker.rect.x, title.rect.bottom - 40)]
+    assert thumbs.card_overlaps(lay.cards) == []
+    (warning,) = thumbs.card_overlaps(forced)
+    assert warning.startswith(thumbs.CARDS_OVERLAP) and "title" in warning and "kicker" in warning
+
+
+def test_a_card_drawn_with_more_lines_than_laid_out_overlaps_the_next_one():
+    for lay in (thumbs.landscape(SHORT29, LOW_HERO, STYLE), thumbs.vertical(TEXT, LOW_HERO, STYLE)):
+        idx = next(i for i, c in enumerate(lay.cards) if c.kind == "title")
+        same = {idx: len(lay.cards[idx].lines)}
+        assert thumbs.drawn_overlaps(lay, STYLE, same) == []
+        taller = {idx: len(lay.cards[idx].lines) + 1}
+        assert any(w.startswith(thumbs.CARDS_OVERLAP) for w in thumbs.drawn_overlaps(lay, STYLE, taller)), lay.size
+
+
+def test_thumbs_warns_when_blender_drew_a_card_taller_than_its_box(tmp_path, monkeypatch):
+    sdir = _thumb_short(tmp_path, {"title": ["Why doesn't it fall?"], "kicker": "Gyroscopes"})
+    _frame(sdir, "final", "s01", 15)
+    go, _calls = _go(monkeypatch, sdir, "--hero", "s01@15", boxes={"s01": {15: [[300, 900, 700, 1300]]}})
+    out = go()
+    assert not any(thumbs.CARDS_OVERLAP in w for w in out["warnings"])
+    api_calls = []
+
+    def drawn_lines(lay, font, caches):
+        api_calls.append(lay.size)
+        return {i: len(c.lines) + 1 for i, c in enumerate(lay.cards) if c.kind == "title"}
+
+    go2, _ = _go(monkeypatch, sdir, "--hero", "s01@15", boxes={"s01": {15: [[300, 900, 700, 1300]]}},
+                 drawn_lines=drawn_lines)  # fmt: skip
+    out = go2()
+    assert api_calls and any(thumbs.CARDS_OVERLAP in w for w in out["warnings"])

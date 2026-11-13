@@ -7,11 +7,14 @@ here is stdlib so it runs in Blender's Python.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -238,3 +241,222 @@ def sample(model: str, voice: str, run=_proc.run, params: dict | None = None) ->
     out = voices_dir() / "samples" / f"{model}-{voice}"
     local.generate(model, [Line("sample", SAMPLE_TEXT, "sample")], voice, 1.0, out, run=run, params=params or None)
     return out / "sample.wav"
+
+
+# --- use what the user already has: weights and a Python environment, linked in, nothing downloaded -------------------
+
+LOCAL_FILE = ".local.json"  # what a model's weights (or an engine environment) were linked from
+EXACT_PACKAGES = ("torch", "torchaudio", "transformers")  # these must match the engine's pin exactly
+_MODULES = {"chatterbox-tts": "chatterbox", "misaki": "misaki", "soundfile": "soundfile"}  # import name by package
+_HASH_CHUNK = 1 << 24
+_BIG_FILE = 50_000_000  # hashing a file this large prints a progress line
+_PROBE = (
+    "import importlib, importlib.metadata as m, json, sys\n"
+    "out = {'prefix': sys.prefix, 'base': sys.base_prefix, 'version': list(sys.version_info[:3]), 'found': {}}\n"
+    "for dist, mod in json.loads(sys.argv[1]).items():\n"
+    "    try:\n"
+    "        importlib.import_module(mod)\n"
+    "        out['found'][dist] = m.version(dist)\n"
+    "    except Exception:\n"
+    "        out['found'][dist] = None\n"
+    "print(json.dumps(out))\n"
+)
+
+
+def _progress(msg: str) -> None:
+    print(f"[voice use-local] {msg}", file=sys.stderr, flush=True)
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_HASH_CHUNK):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def check_weights(model: str, folder: Path) -> list[str]:
+    """What is wrong with `folder` as the weights of a registry model ([] when every listed file is there with the
+    right size and sha256). Reads the files, writes nothing."""
+    files = _registry()["models"][model]["weights"]["files"]
+    bad = []
+    for name, meta in files.items():
+        path = folder / name
+        if not path.is_file():
+            bad.append(f"{name} is missing")
+        elif path.stat().st_size != meta["bytes"]:
+            bad.append(f"{name} is {path.stat().st_size} bytes, expected {meta['bytes']}")
+        else:
+            if meta["bytes"] >= _BIG_FILE:
+                _progress(f"checking {name} ({meta['bytes'] / 1e6:.0f} MB)")
+            if _sha256(path) != meta["sha256"]:
+                bad.append(f"{name} has the wrong sha256 (not this model's file)")
+    return bad
+
+
+def _pins(env: str) -> dict[str, str]:
+    """{package: pinned version} for the `==` pins in the engine's pyproject (extras and markers stripped)."""
+    import tomllib
+
+    text = (PLUGIN_VOICES / "engines" / env / "pyproject.toml").read_text(encoding="utf-8")
+    pins = {}
+    for dep in tomllib.loads(text)["project"]["dependencies"]:
+        name = re.split(r"[\[=<>!~ ;]", dep, maxsplit=1)[0]
+        pinned = re.search(r"==\s*([^\s;,]+)", dep)
+        pins[name] = pinned.group(1) if pinned else ""
+    return pins
+
+
+def check_python(env: str, python: Path, run=_proc.run) -> tuple[Path, list[str]]:
+    """(the environment's root, what differs from the engine's pinned packages) for an existing Python. Runs the
+    Python once to import each package and read its version; exact for EXACT_PACKAGES (a `+cu128` suffix is
+    ignored), importable for the rest."""
+    pins = _pins(env)
+    modules = {name: _MODULES.get(name, name.replace("-", "_")) for name in pins}
+    try:
+        proc = run([str(python), "-B", "-c", _PROBE, json.dumps(modules)], check=False, capture_output=True, text=True,
+                   timeout=300)  # fmt: skip
+        info = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        raise NarrationError(f"couldn't run {python} to check its packages: {exc}") from exc
+    if proc.returncode != 0:
+        raise NarrationError(f"couldn't run {python} to check its packages (exit {proc.returncode})")
+    if info["prefix"] == info["base"]:
+        raise NarrationError(
+            f"{python} is not inside a virtual environment, so it can't be linked. Pass the python of a venv "
+            "(for example <env folder>/bin/python)."
+        )
+    differs = []
+    for name, want in pins.items():
+        got = info["found"].get(name)
+        if got is None:
+            differs.append(f"{name} is not installed (needs {want or 'any version'})")
+        elif name in EXACT_PACKAGES and want and got.split("+")[0] != want:
+            differs.append(f"{name} is {got}, needs {want}")
+    return Path(info["prefix"]), differs
+
+
+def _link_file(src: Path, dst: Path) -> str:
+    """Link src at dst: a symlink, else a hard link, else a copy (Windows without the symlink right). Returns which."""
+    dst.unlink(missing_ok=True)
+    for how, make in (("symlink", lambda: os.symlink(src, dst)), ("hard link", lambda: os.link(src, dst))):
+        try:
+            make()
+            return how
+        except (OSError, NotImplementedError):
+            dst.unlink(missing_ok=True)
+    shutil.copyfile(src, dst)
+    return "copy"
+
+
+def _link_dir(src: Path, dst: Path) -> str:
+    """Make the directory dst point at the directory src (a symlink; a junction on Windows where symlinks aren't
+    allowed)."""
+    try:
+        os.symlink(src, dst, target_is_directory=True)
+        return "symlink"
+    except (OSError, NotImplementedError) as exc:
+        if os.name == "nt":
+            proc = _proc.run(["cmd", "/c", "mklink", "/J", str(dst), str(src)], check=False, capture_output=True)
+            if proc.returncode == 0:
+                return "junction"
+        raise NarrationError(f"couldn't link {dst} to {src}: {exc}") from exc
+
+
+def _write_local(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+
+
+def use_local(model: str, weights: Path, python: Path | None = None, run=_proc.run) -> dict:
+    """Make an existing model folder (and, with `python`, an existing environment) count as installed. Nothing is
+    downloaded and the user's folders are never changed: each weights file is checked (size and sha256) and linked in,
+    the environment's folder is linked as the engine's `.venv`, and the runner is copied. Refuses, naming the
+    problem, before it links anything."""
+    reg = _registry()
+    if model not in reg["models"]:
+        raise NarrationError(f"unknown voice model {model!r}; have: {', '.join(reg['models'])}")
+    m = reg["models"][model]
+    weights = Path(weights).expanduser().resolve()
+    if not weights.is_dir():
+        raise NarrationError(f"{weights} is not a folder")
+    voices = voices_dir()
+    env_dir = voices / "engines" / m["env"]
+    venv = env_dir / ".venv"
+    prefix = None
+    if python is not None:
+        prefix, differs = check_python(m["env"], Path(python).expanduser(), run=run)
+        if differs:
+            raise NarrationError(f"{python} doesn't match the {m['env']} engine: " + "; ".join(differs))
+        if venv.exists() and not venv.is_symlink():
+            raise NarrationError(
+                f"{venv} is already an environment of its own (installed by CLI voice install); "
+                "use it, or remove that folder first."
+            )
+    elif not _engine_python(env_dir).is_file():
+        raise NarrationError(
+            f"the {m['env']} engine has no environment yet: pass --python PYTHON (an existing environment "
+            "with the engine's packages) or run CLI voice install."
+        )
+    bad = check_weights(model, weights)
+    if bad:
+        raise NarrationError(f"{weights} is not the {model} weights: " + "; ".join(bad))
+    dest = voices / "weights" / model
+    dest.mkdir(parents=True, exist_ok=True)
+    hows = {}
+    for name in m["weights"]["files"]:
+        target = dest / name
+        size = m["weights"]["files"][name]["bytes"]
+        if target.is_file() and not target.is_symlink() and target.stat().st_size == size:
+            hows[name] = "kept"  # already a real file of the right size: never replace it with a link
+            continue
+        hows[name] = _link_file(weights / name, target)
+    _write_local(dest / LOCAL_FILE, {"weights_from": str(weights), "files": hows})
+    (dest / ".complete").write_text(
+        json.dumps({"repo": m["weights"]["repo"], "revision": m["weights"]["revision"]}), encoding="utf-8"
+    )
+    out: dict = {"model": model, "weights_from": str(weights), "linked_how": sorted(set(hows.values()))}
+    if prefix is not None:
+        _copy(PLUGIN_VOICES / "engines" / m["env"], env_dir)
+        if venv.is_symlink():
+            venv.unlink()
+        _link_dir(prefix, venv)
+        _write_local(env_dir / LOCAL_FILE, {"python_from": str(prefix)})
+        out["python_from"] = str(prefix)
+    runner = voices / "runner"
+    _copy(PLUGIN_VOICES / "runner", runner)
+    shutil.copyfile(PLUGIN_VOICES / "README.md", voices / "README.md")
+    out["runner_ready"] = _sync_runner_offline(runner, run)
+    out["installed"] = installed()
+    return out
+
+
+def _sync_runner_offline(runner: Path, run) -> bool:
+    """Set up the runner's own small environment from uv's cache only (never the network). False when that isn't
+    possible (no uv, or the packages aren't cached): the next voice command then lets uv set it up."""
+    uv = uv_path()
+    if uv is None:
+        return False
+    try:
+        proc = run([str(uv), "sync", "--locked", "--offline", "--project", str(runner)], check=False,
+                   capture_output=True, text=True, timeout=300)  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def local_links() -> dict[str, dict]:
+    """{model: {"weights_from", "python_from"}} for the models whose weights (or environment) were linked from the
+    user's own folders by use_local."""
+    out = {}
+    voices = voices_dir()
+    for name, m in _registry()["models"].items():
+        info = {}
+        for path in (voices / "weights" / name / LOCAL_FILE, voices / "engines" / m["env"] / LOCAL_FILE):
+            try:
+                info.update({k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items()
+                             if k in ("weights_from", "python_from")})  # fmt: skip
+            except (OSError, ValueError, AttributeError):
+                continue
+        if info:
+            out[name] = info
+    return out

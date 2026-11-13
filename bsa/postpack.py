@@ -6,14 +6,26 @@ rewrites it. It names no brand but the user's own: everything in it comes from t
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
+import re
 import threading
 from pathlib import Path
 
 from bsa import captions, engine_runs, post, translations
 
 PACK = "out/post-pack.md"
+GENERATED = "out/post-pack.generated.md"
+INSTAGRAM = "out/instagram-post.md"
+INSTAGRAM_GENERATED = "out/instagram-post.generated.md"
+HASHES = "out/.post-hashes.json"  # {file: sha256 of what the plugin last wrote there}: a file that differs was edited
+# The one set of section headings of a post pack, in order. Nothing else writes or reads a pack by other names.
+HEADINGS = ("Title", "Description", "Hashtags", "Tags", "Pinned comment", "Link", "Related video", "Files")
+INSTAGRAM_HEADINGS = ("Caption", "Tags box")
+INSTAGRAM_LIMIT = dict(post.PLATFORMS)["Instagram"]
+INSTAGRAM_AUDIO = "Audio: original audio (voice and sound effects only), no music. Don't add a track."
 OUT_FILES = {"1080x1920": "out/thumbnail-1080x1920.png", "1280x720": "out/thumbnail-1280x720.png"}
 NOT_YET = "(not written yet)"
 STALE_NOTE = " (made for an older timing: run the final edit again)"
@@ -155,8 +167,11 @@ def checklist_items(sdir: Path, short, video: dict | None = None, cap_state: dic
         items.append(("captions", (f"Captions: out/{srt.name}. Upload it in YouTube Studio → Subtitles, so the "
                                    "numbers come out right.")))  # fmt: skip
     skipped = translations.skipped(short, _settings(settings))
-    ready = [f"out/{captions.paths(sdir, short, lang)['srt'].name}" for lang in _languages(short)
-             if captions.paths(sdir, short, lang)["srt"].is_file() and lang not in skipped]
+    ready = [
+        f"out/{captions.paths(sdir, short, lang)['srt'].name}"
+        for lang in _languages(short)
+        if captions.paths(sdir, short, lang)["srt"].is_file() and lang not in skipped
+    ]
     if ready and not (cap_state or captions.state(sdir, short))["stale"]:
         items.append(("languages", f"Upload each language in YouTube Studio → Subtitles: {', '.join(ready)}"))
     if isinstance(p["pinned_comment"], str) and p["pinned_comment"].strip():
@@ -183,19 +198,12 @@ def _joined(value, sep: str) -> str:
 
 def markdown(sdir: Path, short, settings: dict | None = None) -> str:
     p = post.fields(short)
-    sections = [
-        ("Title", _text(p["title"])),
-        ("Description", _text(p["description"])),
-        ("Hashtags", _joined(p["hashtags"], " ")),
-        ("Tags", _joined(p["tags"], ", ")),
-        ("Pinned comment", _text(p["pinned_comment"])),
-        ("Link", _text(p["link"])),
-        ("Related video", _related(p["related"])),
-    ]
+    values = [_text(p["title"]), _text(p["description"]), _joined(p["hashtags"], " "), _joined(p["tags"], ", "),
+              _text(p["pinned_comment"]), _text(p["link"]), _related(p["related"])]  # fmt: skip
     out = [f"# Post pack: {short.title}", ""]
-    for name, value in sections:
+    for name, value in zip(HEADINGS, values, strict=False):  # "Files" has no value: its lines follow
         out += [f"## {name}", value, ""]
-    out += ["## Files"]
+    out += [f"## {HEADINGS[-1]}"]
     video = video_info(sdir, short)
     for row in files(sdir, short, video, settings=settings):
         if not row["exists"] or row["key"] == "pack":
@@ -211,19 +219,175 @@ def markdown(sdir: Path, short, settings: dict | None = None) -> str:
     return "\n".join(out) + "\n"
 
 
-def write(sdir: Path, short) -> tuple[Path, bool]:
-    path = Path(sdir) / PACK
-    data = markdown(sdir, short).encode("utf-8")
+def heading_problems(text: str, allowed: tuple[str, ...] = HEADINGS) -> list[str]:
+    """What is wrong with a post pack's `## ` headings: one that is not in the fixed set (a dashboard reads them by
+    name), or a fixed one that is missing."""
+    found = [ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")]
+    out = [f"heading {h!r} is not one of {', '.join(allowed)}" for h in found if h not in allowed]
+    out += [f"heading {h!r} is missing" for h in allowed if h not in found]
+    return out
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _hashes(sdir: Path) -> dict:
     try:
-        if path.read_bytes() == data:
-            return path, False
-    except OSError:
-        pass
+        data = json.loads((Path(sdir) / HASHES).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _put(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
-    return path, True
+
+
+def _remember(sdir: Path, rel: str, data: bytes) -> None:
+    path = Path(sdir) / HASHES
+    known = _hashes(sdir)
+    known[rel] = _sha(data)
+    _put(path, json.dumps(known, indent=2, sort_keys=True).encode("utf-8"))
+
+
+def write_guarded(sdir: Path, rel: str, generated_rel: str, data: bytes) -> dict:
+    """Write `data` to `rel` unless the file there is not what the plugin last wrote (a hash is kept in HASHES): then
+    the user edited it, so `data` goes to `generated_rel` and the file is left alone. A file with no record counts as
+    edited, unless it already holds exactly `data`. Returns {"path", "changed", "edited", "generated"}: `path` is
+    where `data` is now, `edited` is True when the user's own file was kept."""
+    sdir = Path(sdir)
+    path = sdir / rel
+    try:
+        on_disk = path.read_bytes()
+    except OSError:
+        on_disk = None
+    if on_disk is not None and on_disk != data and _hashes(sdir).get(rel) != _sha(on_disk):
+        target = sdir / generated_rel
+        try:
+            same = target.read_bytes() == data
+        except OSError:
+            same = False
+        if not same:
+            _put(target, data)
+        return {"path": target, "changed": not same, "edited": True, "generated": str(target)}
+    if on_disk == data:
+        if _hashes(sdir).get(rel) != _sha(data):
+            _remember(sdir, rel, data)
+        return {"path": path, "changed": False, "edited": False, "generated": None}
+    _put(path, data)
+    _remember(sdir, rel, data)
+    (sdir / generated_rel).unlink(missing_ok=True)  # the user's edit is gone: the side copy would only confuse
+    return {"path": path, "changed": True, "edited": False, "generated": None}
+
+
+def write_info(sdir: Path, short, settings: dict | None = None) -> dict:
+    data = markdown(sdir, short, settings).encode("utf-8")
+    wrong = heading_problems(data.decode("utf-8"))
+    if wrong:  # the template and HEADINGS drifted apart: a bug here, never written
+        raise ValueError("the post pack template breaks its own headings: " + "; ".join(wrong))
+    return write_guarded(sdir, PACK, GENERATED, data)
+
+
+def write(sdir: Path, short, settings: dict | None = None) -> tuple[Path, bool]:
+    """Write out/post-pack.md, unless the user edited it (then out/post-pack.generated.md). (the path written, whether
+    it changed)."""
+    info = write_info(sdir, short, settings)
+    return info["path"], info["changed"]
+
+
+def wants_instagram(settings: dict | None) -> bool:
+    return "instagram" in post.platforms(_settings(settings))
+
+
+def _caption_body(description: str) -> str:
+    """The description as an Instagram caption body: no source list, no 'made in' note, no link line (the caption
+    says 'Link in bio'), no trailing hashtag line."""
+    paras = [x.strip() for x in re.split(r"\n\s*\n", description.strip()) if x.strip()]
+    keep = []
+    for para in paras:
+        first = para.splitlines()[0]
+        if first.startswith("Sources"):
+            break
+        if first.startswith(("\u25b6", "Made in")) or all(w.startswith("#") for w in para.split()):
+            continue
+        keep.append(para)
+    return "\n\n".join(keep)
+
+
+def instagram_markdown(short, settings: dict | None = None) -> tuple[str, list[str]]:
+    """(out/instagram-post.md, warnings): the caption (title, body, 'Link in bio', hashtags) within Instagram's
+    2,200 characters, and the tags box. A body that would not fit is cut at a sentence and a warning says so."""
+    p = post.fields(short)
+    fmt = _settings(settings).get("post_format")
+    suffix = (fmt.get("title_suffix") if isinstance(fmt, dict) else "") or ""
+    title = _text(p["title"])
+    title = title[: -len(suffix)].rstrip() if suffix and title.endswith(suffix) else title
+    tags = (
+        [h for h in p["hashtags"] if isinstance(h, str) and h.lower() != "#shorts"]
+        if isinstance(p["hashtags"], list)
+        else []
+    )
+    tail = ""
+    if isinstance(p["link"], str) and p["link"].strip():
+        tail = "Link in bio."
+    hashes = " ".join(tags)
+    body = _caption_body(p["description"] if isinstance(p["description"], str) else "")
+    warnings = []
+
+    def build(b: str) -> str:
+        return "\n\n".join(x for x in (title, b, tail, hashes) if x)
+
+    caption = build(body)
+    if len(caption) > INSTAGRAM_LIMIT:
+        room = INSTAGRAM_LIMIT - len(build("")) - 2
+        cut = body[: max(room, 0)]
+        stop = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "), cut.rfind(".\n"))
+        body = cut[: stop + 1] if stop > 0 else cut.rstrip()
+        caption = build(body)
+        warnings.append(f"the Instagram caption was cut to fit {INSTAGRAM_LIMIT:,} characters: shorten the "
+                        "description, or write out/instagram-post.md by hand")  # fmt: skip
+    out = [f"# Instagram post: {short.title}", "", INSTAGRAM_AUDIO, "", f"## {INSTAGRAM_HEADINGS[0]}", caption, "",
+           f"## {INSTAGRAM_HEADINGS[1]}", _joined(p["tags"], ", "), ""]  # fmt: skip
+    return "\n".join(out), warnings
+
+
+def write_instagram(sdir: Path, short, settings: dict | None = None) -> dict | None:
+    """Write out/instagram-post.md when Instagram is among the user's platforms (post_format.platforms); None when
+    it is not. Same hand-edit protection as the pack; adds "warnings"."""
+    if not wants_instagram(settings):
+        return None
+    text, warnings = instagram_markdown(short, settings)
+    wrong = heading_problems(text, INSTAGRAM_HEADINGS)
+    if wrong:
+        raise ValueError("the Instagram template breaks its own headings: " + "; ".join(wrong))
+    info = write_guarded(sdir, INSTAGRAM, INSTAGRAM_GENERATED, text.encode("utf-8"))
+    return {**info, "warnings": warnings}
+
+
+def write_all(sdir: Path, short, settings: dict | None = None) -> dict:
+    """Both post files. {"pack": info, "instagram": info or None, "warnings": [...]}: a warning for each file the user
+    edited (the new text went to its .generated.md), for headings of the user's own pack that are off, and for a
+    cut Instagram caption."""
+    pack = write_info(sdir, short, settings)
+    ig = write_instagram(sdir, short, settings)
+    warnings = []
+    for info, rel in ((pack, PACK), (ig, INSTAGRAM)):
+        if info and info["edited"]:
+            warnings.append(f"{rel} was edited by hand, so it was left as it is: the plugin's text is in "
+                            f"{Path(info['generated']).relative_to(Path(sdir)).as_posix()}")  # fmt: skip
+    if pack["edited"]:
+        try:
+            mine = (Path(sdir) / PACK).read_text(encoding="utf-8")
+        except OSError:
+            mine = ""
+        warnings += [f"{PACK}: {w}" for w in heading_problems(mine)]
+    if ig:
+        warnings += ig["warnings"]
+    return {"pack": pack, "instagram": ig, "warnings": warnings}
 
 
 def shown(sdir: Path) -> None:
@@ -231,6 +395,6 @@ def shown(sdir: Path) -> None:
     try:
         from bsa.short import load_short
 
-        write(sdir, load_short(Path(sdir) / "source" / "short.json"))
+        write_all(sdir, load_short(Path(sdir) / "source" / "short.json"))
     except Exception:  # noqa: BLE001, S110 - a side file must never break or slow the page
         pass

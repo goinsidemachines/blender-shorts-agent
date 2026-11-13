@@ -74,6 +74,7 @@ def _to_build(p: Pipeline, tmp_path: Path) -> Path:
     p.cli("settings", "set", "workspace", workspace)
     p.cli("settings", "set", "narrator.provider", "none")
     p.cli("settings", "set", "render.engine", "eevee")
+    p.cli("settings", "set", "render.chunk_frames", "40")  # small chunks: renders run as child Blenders
     p.cli("settings", "set", "handle", "example_user")  # an end card: the timeline holds the last shot for it
 
     short = Path(p.cli("new-short", "Pendulum")["short"])
@@ -155,6 +156,7 @@ def test_script_mode_end_to_end(tmp_path):
     findings += check["findings"]
     render = p.blender_cmd("render", "pendulum", "--preset", "preview", blend=blend)
     assert render["engine"] == "eevee"
+    assert render["chunks"] >= 2, render  # rendered in more than one child Blender, into one folder
     assert render["anchors"]["labels"] == 1  # render placed the near label's object for the edit
     status = p.cli("render-status", "pendulum", "--preset", "preview")  # the live status, read after the render
     assert status["state"] == "done" and status["alive"] is False and status["stale"] is False
@@ -328,6 +330,7 @@ def test_one_take_short_builds_and_edits(tmp_path):
     p.cli("settings", "set", "workspace", workspace)
     p.cli("settings", "set", "narrator.provider", "none")
     p.cli("settings", "set", "render.engine", "eevee")
+    p.cli("settings", "set", "render.chunk_frames", "40")  # small chunks: renders run as child Blenders
     p.cli("settings", "set", "handle", "")  # no end card: three 3 s windows have no room for one
     short = Path(p.cli("new-short", "Pendulum")["short"])
     for name in ("short.json", "build.py"):

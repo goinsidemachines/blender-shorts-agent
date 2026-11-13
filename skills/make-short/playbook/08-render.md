@@ -15,7 +15,33 @@ GPU lock (`<workspace>/.gpu.lock`: pid, short, command, start time), so two sess
 command waits: it says "waiting for pendulum render (pid 1234, since 14:02:31)" on stderr (and again every 30 s: "still waiting for ...: waited 1 min 30 s"), and `render-status` and
 the page say "final render waiting for the GPU: ...". It starts by itself when the first ends, or at once when the
 first's Blender is gone (a crashed or killed run leaves a stale lock, which is cleared). Tell the user what it waits
-for. With `--no-wait` it fails at once instead, naming the holder: use that when the user would rather not queue.
+for. The wait line also says how much memory the holder uses and how long it has run ("..., using 31.2 GB, running
+2 h 5 min"): a holder that is huge or has run far too long is stuck, so tell the user and offer to stop it (never
+kill it yourself). With `--no-wait` the command fails at once instead, naming the holder: use that when the user would
+rather not queue. With `--max-wait MINUTES` it waits that long, then gives up with an error naming the holder. The
+default is to wait for as long as it takes.
+
+## Memory guard
+
+Every GPU command above, the preview chain and `BLENDER check` run with a memory guard: a small watchdog process polls
+Blender's memory every 2 s and kills Blender if it passes `render.memory_limit_gb` (default: 60 % of the machine's
+RAM; `CLI settings set render.memory_limit_gb 20`, or `0` / `off` for no guard). It says why on stderr, marks the live
+status failed, and the GPU lock clears by itself because its holder is gone. When it fires ("stopped pendulum camtest:
+Blender used 41.2 GB, over the 18.0 GB limit"), look for Freestyle over many frames, live Boolean modifiers and many
+copied meshes (use one shared mesh), fix that in `build.py`, rebuild and run again. Raise the limit only when the scene really
+needs that much and the machine has it, and only on the user's yes.
+
+## Long renders run in chunks
+
+A render with more than `render.chunk_frames` frames still to render (default 250; `CLI settings set
+render.chunk_frames 400`, or `0` / `off` for one process) runs as a row of child Blender processes, each rendering at
+most that many frames, so memory a render leaks (Freestyle over many frames) is freed with each child and can never
+grow without end. This is automatic for `BLENDER render` and the preview chain's render step, preview and final. The
+parent keeps the GPU lock, the live status and the result for the whole run, and each child runs under the memory
+guard. The status goes on as one render; the result says `chunks` and `chunk_frames`, and stderr lines from a child
+start with "[chunk 2]". A render that fits in one chunk, and a redo of some frames, run in one process as before.
+If a child fails (memory guard, crash), the render stops with "chunk 2 failed: ...". Run the same command again: it
+starts from the frames on disk (a frame that is empty or cut off is deleted and rendered again, as for any resume).
 
 ## Test frames (a quick look before the preview)
 
@@ -91,6 +117,12 @@ The page updates itself while something runs.
   page shows the true state too. Each run has a `run_id` and `started_at`, and the summary ends "(run started
   14:02:31)": if that is before you launched the command, it is the last run, not yours (`note` says so). Blender
   takes a few seconds to start before the new run writes "starting": check again then.
+- **The check beside the preview render** sends its count while it runs ("check: 120 of 600 frames (20%), checking
+  s02"), says "check is starting (no count yet)" until its first count, and ends its own step when its process ends,
+  not when the render does (a check that only kept earlier results is done in seconds). If the process that writes
+  the status is gone, `render-status` says when its log stopped and how many frames are on disk ("its log stopped
+  at 14:02 and 310 of 480 frames are on disk"). If frames keep appearing after that, a Blender is still rendering
+  although its host died: wait for it, then run the command again.
 - Live warnings are early news, not the verdict: `BLENDER frame-check` still checks every frame afterwards.
 
 ## Only what changed renders again
@@ -107,6 +139,11 @@ told apart by what happens in their own frames: a camera key moved inside shot s
 if the move bends the camera's path inside s01). Anything you are unsure about counts as a change: at worst a shot
 renders again that did not need to. The fingerprints of a saved .blend are cached in
 `blend/short.fingerprints.json`; it is kept current by itself (never edit or copy it).
+
+A `BLENDER check` that is killed (a restart, a crash) is not lost: each shot's findings are saved as the shot
+finishes (`review/checks.json` says `incomplete: true` and lists `unchecked` meanwhile, and the final render still
+refuses it). Run `BLENDER check SHORT` again and it checks only the shots without a result, as long as the .blend
+and the timing did not change. An unfinished shot is checked whole, not object by object.
 
 `BLENDER check SHORT` works the same way: it re-checks only shots whose fingerprint, frames, short.json `scene` or
 `labels`, list of shots or objects' tags (`contact:`, `hero`, `grounded`, `overlay`, `surface`: a tag changes no
@@ -266,6 +303,25 @@ The single steps, when you need one on its own:
    marks `final`. The same edit also writes the caption files beside it: `out/<slug>.srt`, `out/<slug>.vtt` and
    `out/<slug>-transcript.txt`, cue for cue with the captions in the video. If you chain it after the render and frame-check, read every step's `BSA_RESULT`: a refusal
    prints one too (`"ok": false` and the `error`), so relay it rather than retrying blind.
+   **After the final edit** (the same command, in this order; none of it can fail the final, a problem is a warning in
+   the result):
+   - **Thumbnails.** When `post.thumbnail` is set, it makes the candidates (`thumbs` in the result) unless they are
+     already made from these frames and this text. If none is chosen yet, `thumbs.choose` says so: tell the user to
+     pick one on the Post stage (or `CLI page decide SHORT thumbnail --choice N`); nothing waits for it. After the
+     pick, `CLI deliver SHORT` copies the thumbnails too.
+   - **Post files.** `out/post-pack.md` (and `out/instagram-post.md` when `post_format.platforms` has `instagram`) are
+     kept current. A file the user edited by hand is never overwritten: the new text goes to
+     `out/post-pack.generated.md` (or `out/instagram-post.generated.md`) and a warning says so (`09-post.md`).
+   - **Deliver folder.** `CLI settings set render.deliver_dir final` makes the edit copy the MP4 and the chosen
+     thumbnails into `<short>/final/` (`deliver` in the result lists the paths). Unset: no copy. It overwrites only
+     files it put there before (it keeps a list in `.bsa-delivered.json`), never deletes, and skips and warns about
+     a file of the same name that is not its own.
+   - **After-final hook.** `CLI settings set hooks.after_final "COMMAND"` runs your own command once the final, the
+     thumbnails and the copy are done, with `{short_dir}`, `{mp4}`, `{deliver_dir}` and `{slug}` filled in (each stays
+     one argument, even with spaces; no shell). Example: `bash /path/to/backup.sh {mp4} {deliver_dir}`. `{deliver_dir}`
+     needs `render.deliver_dir`. It stops after 5 minutes, so a longer job (a full upload or backup) should start its
+     work in the background and return. `hook` in the result has its `exit_code` and `output`; a
+     failure is a warning, never a failed final.
 4. `BLENDER probe "<short>/out/<slug>.mp4"` if you want to double-check: width 1080, height 1920, fps 30, frames
    equal to the timeline's `n_frames`, `has_audio` true.
 

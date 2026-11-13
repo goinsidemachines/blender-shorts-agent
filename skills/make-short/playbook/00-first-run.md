@@ -48,7 +48,8 @@ offered.
 
 For a free voice: show `CLI voice plan MODEL` (each download, its source, licence and size, plus the total) and
 wait for a yes. Only then `CLI voice install MODEL` (it needs `uv`; if it is missing, the error says how to install
-it, and the user decides). Then let them hear it: `CLI voice list MODEL` (voices marked `narrator: true` are the
+it, and the user decides). A user who already has the model files and a matching Python environment can link them
+instead with `CLI voice use-local MODEL --weights FOLDER --python PYTHON` (no download). Then let them hear it: `CLI voice list MODEL` (voices marked `narrator: true` are the
 good ones), `CLI voice sample MODEL VOICE` (gives a WAV path to play). Save `narrator.provider`, `narrator.voice`,
 and optionally `narrator.speed` (1.0 default; 1.1 to 1.2 suits shorts).
 
@@ -200,6 +201,12 @@ settings, image and site stay in the user's own settings folder, never in a shor
 Don't ask about this. Add one line to the summary at the end of the first run: "If I hit a problem in the plugin
 itself I'll note it and, at the end, ask whether you want to send it to its authors. Change with settings set
 feedback never|off" (`never`: still note, never ask; `off`: don't note). Nothing is sent unless they choose to.
+
+## Memory limit (no question)
+
+Don't ask about this. `render.memory_limit_gb` is how much memory a heavy Blender command may use before the memory
+guard stops it. Unset, it is 60 % of the machine's RAM. `CLI settings set render.memory_limit_gb 20` changes it; `0` or
+`off` turns the guard off. See `08-render.md`.
 
 ## Phone access (no question)
 

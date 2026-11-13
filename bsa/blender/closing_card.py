@@ -136,11 +136,32 @@ def make_card(cfg: dict, brand: dict, out_png: Path, font_name: str | None = Non
         r.image_settings.color_depth = "8"
         r.use_file_extension = False
         r.filepath = str(out_png)
-        bpy.ops.render.render(write_still=True, scene=scene.name)
+        scene.frame_set(1)
+        # The card only exists at frame 1. Rendering with `scene=` alone still evaluates the strips at the context
+        # scene's frame, so a blend saved at frame 222 gave a black card (short 25): make the card the context scene.
+        with bpy.context.temp_override(scene=scene):
+            bpy.ops.render.render(write_still=True)
     finally:
         bpy.data.scenes.remove(scene)
         bg_png.unlink(missing_ok=True)
         stack.close()
     if not out_png.is_file() or out_png.stat().st_size == 0:
         raise RuntimeError(f"the closing card was not written to {out_png}")
+    from bsa.blender.pixels import read_png
+
+    if not cfg.get("image"):  # a card the plugin drew always has text on it; the user's own image is theirs
+        check_not_blank(read_png(out_png), out_png)
     return out_png
+
+
+def check_not_blank(px, out_png: Path) -> None:
+    """Refuse a card that came out as one flat colour (black, or a background with nothing on it): the website and
+    @handle would be lost from the video without any error."""
+    import numpy as np
+
+    rgb = px[..., :3].astype(np.int16)
+    if int(np.abs(rgb - rgb[0, 0]).max()) <= 2:
+        raise RuntimeError(
+            f"the closing card at {out_png} came out as one flat colour {tuple(int(v) for v in rgb[0, 0])}: "
+            "nothing on it would show. Report this as a plugin problem."
+        )

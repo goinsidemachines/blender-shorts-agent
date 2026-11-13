@@ -67,15 +67,18 @@ _ID = re.compile(r"^r(\d+)$")
 # Phrases whose words never mean what a rule forbids, whatever the rule: physics terms ("rigid body" is no one's
 # body) and machine terms whose body-part word is not a person ("cylinder head", "clock hand", "eye bolt"). Only
 # whole phrases, matched word by word (plurals too): the word alone, or in a name that is no known machine term
-# ("Head white plastic", "worker's hand"), is still flagged. Keep it a plain sorted tuple.
+# ("Head white plastic", "worker's hand"), is still flagged. Mechanical senses count too ("brake drum", "leveling
+# foot", "spider gear"). Keep it a plain sorted tuple.
 INNOCENT_PHRASES = (
-    "bolt head", "cam face", "cam follower", "car body", "chair leg", "clock face", "clock hand", "comb tooth",
-    "control arm", "crane arm", "crank arm", "cutter head", "cylinder head", "dial face", "drill head", "eye bolt",
-    "gear face", "gear tooth", "hammer head", "head bolt", "head gasket", "head unit", "hook eye", "hour hand",
-    "lens body", "lever arm", "minute hand", "nail head", "needle eye", "piston head", "pitman arm", "print head",
-    "pump body", "pump head", "read head", "rigid body", "rivet head", "robot arm", "rocker arm", "saw tooth",
-    "screw head", "second hand", "shower head", "soft body", "sprinkler head", "sprocket tooth", "swing arm",
-    "table leg", "throttle body", "tone arm", "tripod leg", "valve body", "valve face", "wiper arm", "write head",
+    "bolt head", "brake drum", "cam face", "cam follower", "car body", "chair leg", "clock face", "clock hand",
+    "comb tooth", "control arm", "crane arm", "crank arm", "cutter head", "cylinder head", "dial face", "drill head",
+    "drum brake", "eye bolt", "gear face", "gear tooth", "hammer head", "head bolt", "head gasket", "head unit",
+    "hook eye", "hour hand", "lens body", "leveling feet", "leveling foot", "levelling feet", "levelling foot",
+    "lever arm", "minute hand", "nail head", "needle eye", "piston head", "pitman arm", "print head", "pump body",
+    "pump head", "read head", "rigid body", "rivet head", "robot arm", "rocker arm", "saw tooth", "screw head",
+    "second hand", "shower head", "soft body", "spider arm", "spider gear", "spider hub", "sprinkler head",
+    "sprocket tooth", "swing arm", "table leg", "throttle body", "tone arm", "tripod leg", "valve body", "valve face",
+    "washing drum", "wiper arm", "write head",
 )
 # Names Blender gives its own data (a rigid-body world's collections, made by bpy.ops.rigidbody.world_add): the
 # user never chose them, so the scene-name scan skips them. A ".001" suffix is Blender's too.
@@ -475,7 +478,10 @@ def name_hits(rules: list[dict], short, names) -> list[dict]:
                 out.append({"rule": r, "obj": obj, "words": found,
                             "message": f"{where} has {', '.join(repr(w) for w in found)}, which hard rule "
                                        f"{describe(r)} may forbid: look at it, remove it, or say why it keeps the "
-                                       f"rule in rules_check.{r.get('id')}.cleared"})  # fmt: skip
+                                       f"rule in rules_check.{r.get('id')}.cleared. To clear it, add to short.json: "
+                                       f"\"rules_check\": {{\"{r.get('id')}\": {{\"cleared\": "
+                                       f"{json.dumps({found[0]: 'why it is fine here'}, ensure_ascii=False)}}}}}"
+                                       })  # fmt: skip
     return out
 
 

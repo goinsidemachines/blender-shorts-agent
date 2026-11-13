@@ -74,6 +74,29 @@ def test_frame_objects_over_the_frames_of_a_motion_and_aim():
     assert abs((x1 - x0) - area.w) < 2 or abs((y1 - y0) - area.h) < 2
 
 
+def test_a_moving_part_gives_one_steady_camera_for_the_whole_shot():
+    """E-23: frame_objects with the shot's frames frames the union box over all of them: one pose, the same whichever
+    frame the scene is on when it is called, and every frame of the motion stays inside the band."""
+    sc, cam = _scene()
+    tower = _box("Tower", (0.6, 0.6, 3.0), (0, 0, 1.5))
+    ball = _box("Ball", (0.3, 0.3, 0.3), (0, 0, 3.2))
+    bake.keyframe_series(ball, "location", 0, [2.0 * math.sin(i / 5) for i in range(30)])
+    frames = list(range(1, 31))
+    poses = []
+    for now in (1, 17, 30):
+        sc.frame_set(now)
+        cam.location = (1.0, -3.0, 2.0)
+        cam.rotation_euler = (math.radians(80), 0, math.radians(5))
+        camera.frame_objects(cam, [tower, ball], frames=frames, aim=True, margin=40)
+        poses.append(tuple(cam.matrix_world.translation))
+    assert np.allclose(poses[0], poses[1], atol=1e-4) and np.allclose(poses[0], poses[2], atol=1e-4), poses
+    area = target_area(margin=40)
+    for f in frames:  # the camera is not keyed, so it cannot shake: the part just moves inside the band
+        x0, y0, x1, y1 = _projected(sc, cam, [tower, ball], [f])
+        assert x0 >= area.x - 1 and x1 <= area.right + 1 and y0 >= area.y - 1 and y1 <= area.bottom + 1, (f, x0, x1)
+    assert cam.animation_data is None or cam.animation_data.action is None
+
+
 def test_frame_objects_with_an_orthographic_camera_and_no_band():
     sc, cam = _scene("ORTHO")
     cam.rotation_euler = (math.radians(90), 0, 0)

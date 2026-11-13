@@ -52,6 +52,40 @@ def _image(seq, name: str, png: Path, channel: int, place: dict):
     return s
 
 
+def drawn_lines(lay: Layout, font_name: str | None, cache_dirs: list[Path] | None = None) -> dict[int, int]:
+    """{index in lay.cards: how many lines Blender draws its text in} for every text card, measured with Blender's own
+    word wrap (blf, the sequencer's text strip wraps the same way) at the strip's wrap width in the font the strip
+    uses. The layout wraps the text itself, so a card drawn in more lines than `Card.lines` is a card Blender wrapped
+    differently: it is taller than its box and may cover the next card."""
+    import blf
+
+    font, _, _ = _load_font(font_name, cache_dirs)
+    texts = _Texts(None, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
+    strips = iter(card_strips(lay))
+    out, loaded = {}, []
+    try:
+        for i, card in enumerate(lay.cards):
+            if card.spec is not None:
+                continue
+            c = next(strips)
+            f = texts._font_for(c["text"])
+            fid = 0
+            if f is not None and f.filepath != "<builtin>":
+                loaded.append(bpy.path.abspath(f.filepath))
+                fid = blf.load(loaded[-1])
+            blf.size(fid, c["size"])
+            blf.enable(fid, blf.WORD_WRAP)
+            blf.word_wrap(fid, int(c["wrap_px"]))
+            one = blf.dimensions(fid, "Ag")[1]
+            pitch = blf.dimensions(fid, "Ag\nAg")[1] - one
+            height = blf.dimensions(fid, c["text"])[1]
+            out[i] = 1 + max(round((height - one) / pitch), 0) if pitch > 0 else 1
+    finally:
+        for path in loaded:
+            blf.unload(path)
+    return out
+
+
 def render(lay: Layout, src_png: Path, out_png: Path, font_name: str | None, cache_dirs: list[Path] | None = None,
            notes: list[str] | None = None, card_dir: Path | None = None) -> Path:  # fmt: skip
     """Render `lay` with the hero frame `src_png` (any size: the layout's source rect is in 1080x1920 pixels) to

@@ -394,3 +394,85 @@ def timeline_hash(data: dict) -> str:
     builds (scene["bsa_timeline"]) so the Blender commands can tell a .blend built for another timing."""
     text = json.dumps(data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+# --------------------------------------------------------------------------- frames from the timeline
+
+_USED: dict[str, Timeline | None] = {"tl": None, "path": None}
+
+
+def use_timeline(short_dir) -> None:
+    """Make `short_dir`'s source/timeline.json the one `at` reads (the build commands call this; it is read again
+    each time `at` runs, so a rebuild never sees an old timing)."""
+    from pathlib import Path
+
+    _USED["path"] = str(Path(short_dir) / "source" / "timeline.json")
+
+
+def _found_timeline() -> Timeline:
+    """The timeline `at` reads: the one use_timeline named, else source/timeline.json of the short_dir a script-mode
+    build was given (`-- PLUGIN_ROOT SHORT_DIR`), else of the open .blend (short/blend/short.blend)."""
+    import sys
+    from pathlib import Path
+
+    paths = []
+    if _USED["path"]:
+        paths.append(Path(_USED["path"]))
+    if "--" in sys.argv:
+        rest = sys.argv[sys.argv.index("--") + 1 :]
+        if len(rest) >= 2:
+            paths.append(Path(rest[1]) / "source" / "timeline.json")
+    bpy = sys.modules.get("bpy")
+    blend = getattr(getattr(bpy, "data", None), "filepath", "") if bpy is not None else ""
+    if blend:
+        paths.append(Path(blend).resolve().parent.parent / "source" / "timeline.json")
+    for path in paths:
+        if path.is_file():
+            return timeline_from_json(json.loads(path.read_text(encoding="utf-8")))
+    raise FileNotFoundError("no source/timeline.json to read frames from: run CLI timeline SHORT first")
+
+
+def frame_at(tl: Timeline, shot: str, offset: float | str = 0.0, fraction: bool = False) -> int:
+    """The frame `offset` seconds into shot `shot` (the shot's first frame at 0). "end" is its last frame;
+    with `fraction`, `offset` is 0..1 of the shot's length. ValueError for an unknown shot or an offset past
+    the shot's end: a frame in the next shot is never returned."""
+    span = next((s for s in tl.shots if s.id == shot), None)
+    if span is None:
+        raise ValueError(f"no shot {shot!r} in the timeline (shots: {', '.join(s.id for s in tl.shots)})")
+    if offset == "end":
+        return span.f1
+    if isinstance(offset, str):
+        raise TypeError(f"offset must be seconds or \"end\", not {offset!r}")
+    n = span.f1 - span.f0
+    frame = span.f0 + (round(offset * n) if fraction else round(offset * tl.fps))
+    if offset < 0 or frame > span.f1:
+        raise ValueError(f"{offset}{'' if fraction else ' s'} is outside shot {shot} ({n / tl.fps:.2f} s long)")
+    return frame
+
+
+def at(shot: str, offset: float | str = 0.0, fraction: bool = False, tl: Timeline | None = None) -> int:
+    """The frame `offset` seconds into `shot`, read from the short's source/timeline.json (or from `tl`). Use it in
+    build and model code instead of a frame number: a re-timed short then rebuilds correctly.
+    at("s07", 1.5), at("s07", "end"), at("s07", 0.5, fraction=True)."""
+    return frame_at(tl if tl is not None else _found_timeline(), shot, offset, fraction)
+
+
+def retime_report(old: dict | None, new: Timeline) -> list[str]:
+    """One line per shot whose first frame or length moved between the previous timeline JSON and `new`, with old
+    and new frames; shots that appeared or went too. [] when nothing moved or there is no previous timeline."""
+    if not old:
+        return []
+    try:
+        before = {s.id: s for s in timeline_from_json(old).shots}
+    except ValueError:
+        return []
+    out = []
+    for s in new.shots:
+        b = before.pop(s.id, None)
+        if b is None:
+            out.append(f"{s.id} is new: frames {s.f0}-{s.f1}.")
+        elif (b.f0, b.f1 - b.f0) != (s.f0, s.f1 - s.f0):
+            out.append(f"{s.id} moved: frames {b.f0}-{b.f1} \u2192 {s.f0}-{s.f1}. Re-check anything keyed to fixed "
+                       "frames in it.")  # fmt: skip
+    out += [f"{sid} is gone (it was frames {b.f0}-{b.f1})." for sid, b in before.items()]
+    return out

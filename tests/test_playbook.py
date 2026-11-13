@@ -528,3 +528,12 @@ def test_skill_lists_every_new_command():
     build = _flat(_read("playbook/06-build.md"))
     assert "camera.follow" in build and "window_frames" in build
     assert "camera stage" in _flat(skill)
+
+
+def test_release_steps_are_in_the_playbook():
+    render = _flat(_read("playbook/08-render.md"))
+    for word in ("render.deliver_dir", "hooks.after_final", "{mp4}", "{deliver_dir}", "CLI deliver SHORT"):
+        assert word in render, word
+    post = _flat(_read("playbook/09-post.md"))
+    assert "post-pack.generated.md" in post and "instagram-post.md" in post and "Pinned comment" in post
+    assert "CLI workspace rename SHORT NEW-SLUG" in _read("SKILL.md")

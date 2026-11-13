@@ -25,7 +25,7 @@ def _touched(scene) -> list[tuple[object, str]]:
     enum). Properties this Blender lacks are left out."""
     r = scene.render
     ims, ff, vs, sh = r.image_settings, r.ffmpeg, scene.view_settings, scene.display.shading
-    props = [(r, "film_transparent"), (r, "filepath"), (r, "use_file_extension"), (ims, "media_type"),
+    props = [(r, "use_freestyle"), (r, "film_transparent"), (r, "filepath"), (r, "use_file_extension"), (ims, "media_type"),
              (ims, "file_format"), (ims, "color_mode"), (ims, "color_depth"), (ims, "color_management"),
              (ff, "format"), (ff, "codec"), (r, "use_compositing"), (r, "use_sequencer"), (vs, "view_transform"),
              (vs, "look"), (vs, "exposure"), (vs, "gamma"), (sh, "light"), (sh, "color_type"), (sh, "single_color"),
@@ -40,7 +40,7 @@ def _value(v):
 
 @contextlib.contextmanager
 def workbench_pass(scene, percent: int):
-    """Inside: `scene` in Workbench at `percent`, studio light, one grey, no shadows, cavity, x-ray or outline, PNG
+    """Inside: `scene` in Workbench at `percent`, no Freestyle, studio light, one grey, no shadows, cavity, x-ray or outline, PNG
     RGB 8-bit following the scene's colour management, no compositor or sequencer, the Standard view at exposure 0
     and gamma 1, film not transparent, every frame (step 1). Afterwards every one of those settings, the output path,
     the image and video settings and the frame range and current frame are as they were (preserved_render_state
@@ -56,6 +56,7 @@ def workbench_pass(scene, percent: int):
             r.engine = "BLENDER_WORKBENCH"
             r.resolution_percentage = percent
             r.film_transparent = False
+            r.use_freestyle = False  # grey needs no lines; Freestyle over a long path grew to 83-98 GB (shorts 20, 21)
             r.use_compositing = r.use_sequencer = False
             vs.view_transform = "Standard"
             vs.look = "None"

@@ -27,15 +27,25 @@ final edit. Edit only the `post` block (keep the rest of short.json as it is, UT
    **The user's post format.** The first time, run `CLI settings post-format`. When `asked` is false, ask once: "Do
    you have a usual format for your posts? Paste an earlier post and I'll save its pattern." Save what you find
    with `CLI settings set post_format '{...}'` (keys: `title_suffix`, `title_style` question or statement,
-   `link_line` with `{link}`, `pinned_comment`, `always_hashtags`). If they have none, run `CLI settings set
+   `link_line` with `{link}`, `pinned_comment`, `always_hashtags`, `platforms`: a list of `youtube`, `instagram`,
+   `tiktok`; with `instagram` in it the post step also writes `out/instagram-post.md`). If they have none, run `CLI settings set
    post_format_asked true` and never ask again. When a format is saved, follow it when writing every field.
 2. `CLI validate SHORT` (the post must not break the spec), then `CLI post SHORT`: it writes `out/post-pack.md`
    with every field and file in one place and lists the problems. Fix the errors; mention the warnings.
 
+   **Post files are the user's once they edit them.** The plugin remembers what it last wrote to `out/post-pack.md`
+   and `out/instagram-post.md`. If the file on disk differs, the user edited it: the plugin leaves it alone, writes
+   its new text to `out/post-pack.generated.md` (`out/instagram-post.generated.md`), and the result says so (`edited`,
+   and a warning). Tell the user; never copy one over the other for them. The pack's headings are fixed: Title,
+   Description, Hashtags, Tags, Pinned comment, Link, Related video, Files (a hand-edited pack with other headings
+   gets a warning, because a script may read them by name). `out/instagram-post.md` has `## Caption` (title, text,
+   "Link in bio.", hashtags, within Instagram's 2,200 characters) and `## Tags box`.
+
    **Thumbnails.** Write `post.thumbnail`: `title` (one or two short lines, about 6 words), `kicker` (small text
    above, optional) and `fact` (one line, optional). A number in any of them needs a fact in `facts` that states
    it, or validate refuses it. Then run `BLENDER thumbs SHORT` with `run_in_background: true`; the candidates show
-   on the Post stage in both sizes, with how each looks in the feed and any warnings. The user may leave a note on
+   on the Post stage in both sizes, with how each looks in the feed and any warnings. A warning "the text cards overlap" means a card sits over
+   another one: shorten the title or put a line break in it. The user may leave a note on
    a candidate: change the text, or `heroes[N-1]` (`{"shot", "frame"}`), then `BLENDER thumbs SHORT --only N`.
    `--only N` remakes candidate N from short.json's Nth hero only when the candidates were made from
    `post.thumbnail.heroes`; otherwise from the candidate's own hero. To give a candidate a new frame directly, run

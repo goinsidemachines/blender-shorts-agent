@@ -218,3 +218,38 @@ def test_kit_cards_without_a_card_dir_go_in_a_temp_folder_removed_after_the_rend
         tempfile.tempdir = saved
     assert px.shape[:2] == (lay.size[1], lay.size[0])
     assert not list((tmp / "t").iterdir())  # its one temp card folder is gone
+
+
+def test_a_title_that_wrapped_in_three_lines_is_drawn_in_the_lines_measured():
+    """Short 29: "Why doesn't it fall?" in the 1280x720 panel. The layout estimated two lines; Blender drew three and
+    the kicker sat over the third. Now the layout wraps the title, Blender draws those lines, the card is as tall as
+    laid out, the kicker clears it, and Blender's own wrap counts the same lines (so no overlap warning)."""
+    text = thumbs.ThumbText(("Why doesn't it fall?",), "Gyroscopes", None)
+    tmp = Path(tempfile.mkdtemp())
+    src = tmp / "src.png"
+    _source(src)
+    for lay in (thumbs.landscape(text, HERO, STYLE), thumbs.vertical(text, HERO, STYLE)):
+        px = read_png(bsa.blender.thumbs.render(lay, src, tmp / f"w-{lay.size[0]}.png", None))
+        title, kicker = (next(c for c in lay.cards if c.kind == k) for k in ("title", "kicker"))
+        rows = _drawn_rows(px, title)
+        assert rows is not None and abs(rows[0] - title.rect.y) <= 4 and abs(rows[1] - title.rect.bottom) <= 4, (
+            lay.size, title.rect, rows)
+        assert kicker.rect.y >= title.rect.bottom + thumbs.GAP - 1e-6
+        drawn = bsa.blender.thumbs.drawn_lines(lay, None)
+        assert drawn[lay.cards.index(title)] == len(title.lines), (lay.size, drawn, title.lines)
+        assert thumbs.drawn_overlaps(lay, STYLE, drawn) == []
+
+
+def test_the_old_unwrapped_title_is_seen_as_three_lines_and_overlaps_the_kicker():
+    """The guard measures what Blender draws: the unwrapped title is three lines at the panel's wrap width, where
+    the layout once estimated two."""
+    text = thumbs.ThumbText(("Why doesn't it fall?",), "Gyroscopes", None)
+    lay = thumbs.landscape(text, HERO, STYLE)
+    title = next(c for c in lay.cards if c.kind == "title")
+    import dataclasses
+
+    two = dataclasses.replace(title, lines=("Why doesn't", "it fall?"))  # what the estimate believed
+    old = dataclasses.replace(lay, cards=[two if c is title else c for c in lay.cards])
+    drawn = bsa.blender.thumbs.drawn_lines(lay, None)
+    assert drawn[lay.cards.index(title)] == 3
+    assert any(w.startswith(thumbs.CARDS_OVERLAP) for w in thumbs.drawn_overlaps(old, STYLE, drawn))

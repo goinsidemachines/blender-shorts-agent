@@ -157,3 +157,34 @@ def test_gpu_without_a_workspace_says_so():
     gpu = next(c for c in doctor.run({}, None) if c["id"] == "gpu")
     assert gpu["level"] == "ok"
     assert "No workspace" in gpu["text"]
+
+
+def test_run_cheap_keeps_the_saved_blender_result_and_reruns_the_rest(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise AssertionError("the cheap run must not start Blender")
+
+    monkeypatch.setattr(locate, "find_blender", boom)
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: (0, 0, 50 * 10**9))
+    saved = [{"id": "blender", "level": "ok", "text": "Blender 5.2", "fix": None}]
+    checks = doctor.run_cheap({"narrator": {"provider": "none"}}, tmp_path, saved=saved)
+    assert [c["id"] for c in checks] == ["blender", "gpu", "voice", "disk", "font", "server"]
+    assert checks[0] is saved[0]
+
+
+def test_assets_download_refreshes_the_health_banner(home, pendulum, monkeypatch, capsys):
+    import bsa_cli
+    from bsa.assets import polyhaven
+    from bsa.review import snapshot
+
+    stale = [{"id": "voice", "level": "warn", "text": "No narrator is chosen yet.", "fix": "x"},
+             {"id": "blender", "level": "ok", "text": "Blender 5.2", "fix": None}]  # fmt: skip
+    doctor.save(pendulum, stale)
+    ok(run(home, "settings", "set", "narrator.provider", "none"))  # what the user fixed since doctor last ran
+    plan = [{"id": "a1", "name": "A", "kind": "textures", "source": "Poly Haven", "license": "CC0", "files": [],
+             "bytes": 0}]  # fmt: skip
+    (pendulum / "source" / "assets-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    monkeypatch.setattr(polyhaven, "download", lambda plans, cache_dir: {})
+    monkeypatch.setenv("BSA_HOME", str(home))
+    assert bsa_cli.main(["assets", "download", str(pendulum)]) == 0, capsys.readouterr().err
+    assert "voice" not in [h["id"] for h in snapshot.build(pendulum)["health"]]
+    assert doctor.saved_checks(pendulum)[0]["text"] == "Blender 5.2"  # Blender's result carried over

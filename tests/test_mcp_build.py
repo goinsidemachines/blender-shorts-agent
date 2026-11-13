@@ -54,7 +54,7 @@ def test_build_short_runs_build_py_with_current_code(stale_bsa, tmp_path):
     out = runpy.run_path(str(ROOT / "bsa_mcp_build.py"))["build_short"](short)
     path, tags = (short / "built.txt").read_text(encoding="utf-8").split("|")
     assert Path(path).resolve() == (ROOT / "bsa" / "short.py").resolve() and tags == "hero:s03,s04"
-    assert out["reloaded"] >= 4 and out["blend"].endswith("short.blend")
+    assert out["reloaded"] >= 4 and out["blend"].endswith("short.blend") and out["heavy"] == []
 
 
 def test_build_py_without_build_is_a_plain_error(stale_bsa, tmp_path):

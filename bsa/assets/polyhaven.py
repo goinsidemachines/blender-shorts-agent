@@ -13,7 +13,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from bsa import __version__
+from bsa import __version__, net
 from bsa.short import Asset, Short
 
 API = "https://api.polyhaven.com"
@@ -29,7 +29,7 @@ Http = Callable[[str], object]  # url -> file-like object with .read(n) and .clo
 
 def _urlopen(url: str):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    return urllib.request.urlopen(req, timeout=TIMEOUT_S)
+    return net.urlopen(req, timeout=TIMEOUT_S)
 
 
 def _get_json(url: str, http: Http):

@@ -182,7 +182,7 @@ def test_validate_rejects_an_unknown_policy():
 def test_prepare_trims_jitters_and_fades():
     x = _tone(sec=1.0, lead_silence=0.2)
     y, gain = recorded.prepare(x, dur_s=0.5, seed=3)
-    assert len(y) <= round(0.5 * SR) + 1
+    assert len(y) <= round((0.5 + recorded.SUSTAINED_FADE_OUT_S) * SR) + 1  # decays past dur_s, up to 1 s
     assert np.abs(y[: round(0.008 * SR)]).max() > 0.1  # 0.2 s of leading silence cut to a few ms of pre-roll
     assert abs(y[-1]) < 1e-3  # faded out
     assert abs(gain) <= recorded.GAIN_JITTER_DB
@@ -216,6 +216,7 @@ def test_sound_playbook_documents_every_kind_and_the_policy():
     for kind in recorded.SYNTHETIC_KINDS:
         assert f"| `{kind}` |" in text and "synthetic |" in text.split(f"| `{kind}` |")[1].split("\n")[0]
     assert "natural-only" in text and 'clip("' in text and "assets search sounds" in text
+    assert "| `room` |" in text and "room tone" in text and "sound.room_db" in text and "sound.reverb" in text
 
 
 # --------------------------------------------------------------------------- bsa.audio.clip
@@ -266,3 +267,123 @@ def test_flatness_scores_noise_high_and_a_tone_low():
     assert recorded.flatness(rng.standard_normal(SR // 4)) > 0.5
     assert recorded.flatness(_tone(0.25)) < 0.05
     assert recorded.flatness(np.zeros(100)) is None
+
+
+def test_room_clip_policy_and_status(tmp_path):
+    lib = _library(tmp_path, {"sounds/p/roomtone_a.wav": ["room"], "sounds/p/thud.wav": ["thud"]})
+    assert recorded.room_clip(lib)["path"] == "sounds/p/roomtone_a.wav"
+    assert recorded.room_clip(lib, "natural-only") is not None  # recordings only: natural-only allows it
+    assert recorded.room_clip(None) is None and recorded.room_clip(recorded.Library(tmp_path / "x")) is None
+    on = recorded.room_status(lib, "any", -50.0)
+    assert on["used"] and on["clip"] == "sounds/p/roomtone_a.wav" and on["license"] == "CC0" and on["level_db"] == -50.0
+    assert recorded.room_status(lib, "any", None) == {"enabled": False, "used": False, "note": on_off_note()}
+    gone = recorded.room_status(recorded.Library(tmp_path / "x"), "any", -50.0)
+    assert not gone["used"] and "room tone" in gone["note"] and "assets search sounds" in gone["note"]
+    rep = recorded.report([], on)
+    assert rep["room"] == on and rep["clips"][0]["clip"] == "sounds/p/roomtone_a.wav"
+    assert any("room tone" in n for n in recorded.report([], gone)["notes"])
+    assert recorded.report([], recorded.room_status(lib, "any", None))["notes"] == []  # off: nothing to warn about
+
+
+def on_off_note():
+    return "sound.room_db is off: no room tone floor"
+
+
+def test_missing_room_tone_is_a_validate_warning_only_when_the_floor_is_on(tmp_path):
+    lib = recorded.Library(tmp_path / "c")
+    short = _short([])
+    (w,) = recorded.policy_warnings(short, lib, "any", room=True)
+    assert "room tone" in w and 'assets search sounds "room tone"' in w
+    assert recorded.policy_warnings(short, lib, "any", room=False) == []
+    full = _library(tmp_path / "d", {"sounds/p/ambience.wav": ["room"]})
+    assert recorded.policy_warnings(short, full, "any", room=True) == []
+
+
+def test_prepare_shapes_by_kind():
+    x = _tone(sec=1.5, lead_silence=0.1)
+    hit, _ = recorded.prepare(x, dur_s=0.3, seed=1, kind="impact")
+    held, _ = recorded.prepare(x, dur_s=0.3, seed=1, kind="rumble")
+    assert len(hit) > round(0.3 * SR)  # the transient rings past dur_s
+    assert len(held) > round(0.3 * SR)  # so does the sustained one: it decays over the 1 s after dur_s
+    assert np.abs(hit).max() == pytest.approx(1.0) and abs(hit[0]) < 0.05  # peak-normalised, faded in
+    assert np.abs(held[: round(0.002 * SR)]).max() < 0.05  # the sustained one fades in slowly (0.1 s here)
+
+
+# --------------------------------------------------------------------------- named clips
+
+
+def test_named_clip_plays_even_when_its_kind_differs_and_keeps_rotation(tmp_path):
+    lib = _library(tmp_path, {"sounds/p/thud_1.wav": ["thud"], "sounds/p/thud_2.wav": ["thud"],
+                              "sounds/p/thunder.wav": ["rumble"]})  # fmt: skip
+    plain = [Sfx("thud", "s01", t, 0.3, -18) for t in (0.5, 1.5, 2.5)]
+    base = recorded.resolve(_short(plain), lib, "any")
+    named = [plain[0], Sfx("thud", "s01", 1.0, 0.3, -18, clip="thunder", clip_at_s=1.5)] + plain[1:]
+    res = recorded.resolve(_short(named), lib, "any")
+    assert res[1]["use"] == "recording" and res[1]["clip"] == "sounds/p/thunder.wav" and res[1]["reason"] is None
+    assert res[1]["clip_at_s"] == 1.5 and res[0]["clip_at_s"] == 0.0
+    assert [res[0]["clip"], res[2]["clip"], res[3]["clip"]] == [r["clip"] for r in base]  # rotation undisturbed
+
+
+def test_named_clip_matches_by_asset_stem(tmp_path):
+    lib = _library(tmp_path, {"sounds/p/bike.wav": ["slide"]})
+    res = recorded.resolve(_short([Sfx("rumble", "s01", 0, 1, -20, clip="sfx-test/bike")]), lib, "any")
+    assert res[0]["clip"] == "sounds/p/bike.wav"
+
+
+def test_missing_named_clip_falls_back_with_a_reason(tmp_path):
+    lib = _library(tmp_path, {"sounds/p/thud_1.wav": ["thud"]})
+    res = recorded.resolve(_short([Sfx("thud", "s01", 1, 0.3, -18, clip="nope"),
+                                   Sfx("creak", "s01", 2, 0.3, -18, clip="nada")]), lib, "any")  # fmt: skip
+    assert res[0]["use"] == "recording" and res[0]["clip"] == "sounds/p/thud_1.wav"
+    assert "'nope' is not cached" in res[0]["reason"]
+    assert res[1]["use"] == "synth" and "'nada' is not cached" in res[1]["reason"]
+    w = recorded.policy_warnings(_short([Sfx("thud", "s01", 1, 0.3, -18, clip="nope")]), lib, "any")
+    assert any("'nope'" in x and "assets search sounds" in x for x in w)
+
+
+def test_natural_only_skips_a_named_designed_clip(tmp_path):
+    lib = _library(tmp_path, {"sounds/p/ui.wav": ["click"]})
+    lib.clips[0]["designed"] = True
+    res = recorded.resolve(_short([Sfx("thud", "s01", 1, 0.3, -18, clip="ui")]), lib, "natural-only")
+    assert res[0]["use"] == "skipped" and "designed" in res[0]["reason"]
+    assert recorded.resolve(_short([Sfx("thud", "s01", 1, 0.3, -18, clip="ui")]), lib, "any")[0]["use"] == "recording"
+
+
+def test_clip_at_s_starts_the_recording_later(tmp_path):
+    cache = tmp_path / ".assets-cache"
+    x = np.zeros(2 * SR)
+    t = np.arange(SR // 2) / SR
+    x[SR // 2 : SR // 2 + len(t)] = 0.5 * np.sin(2 * np.pi * 300 * t)  # a 300 Hz burst at 0.5 s ...
+    x[SR + SR // 2 :] = 0.5 * np.sin(2 * np.pi * 1200 * np.arange(len(x) - SR - SR // 2) / SR)  # ... 1200 Hz at 1.5 s
+    _wav(cache / "sounds/p/two.wav", x)
+    lib = recorded.Library(cache)
+    lib.add([{"path": "sounds/p/two.wav", "kinds": ["rumble"], "asset": "a", "source": "S", "license": "CC0"}])
+    lib.save()
+    lib = recorded.Library(cache)
+
+    def peak(at):
+        out, _ = mix(_tl(), _short([Sfx("rumble", "s01", 1.0, 0.4, -18, clip="two", clip_at_s=at)]), None, library=lib)
+        seg = out[SR + 2000 : SR + int(0.3 * SR), 0]
+        return np.fft.rfftfreq(len(seg), 1 / SR)[np.abs(np.fft.rfft(seg)).argmax()]
+
+    assert 200 < peak(0.0) < 400
+    assert 1000 < peak(1.5) < 1400
+    out, _ = mix(_tl(), _short([Sfx("rumble", "s01", 1.0, 0.4, -18, clip="two", clip_at_s=5.0)]), None, library=lib)
+    assert np.abs(out).max() == 0  # past the end: the event is skipped
+
+
+def test_save_short_omits_default_clip_fields_and_round_trips_others(tmp_path):
+    from bsa.short import load_short, save_short
+
+    short = _short([Sfx("thud", "s01", 1, 0.3, -18), Sfx("rumble", "s01", 2, 1, -20, clip="bike", clip_at_s=2.5)])
+    save_short(short, tmp_path / "short.json")
+    raw = json.loads((tmp_path / "short.json").read_text(encoding="utf-8"))["sfx"]
+    assert set(raw[0]) == {"kind", "shot", "at_s", "dur_s", "level_db"}
+    assert raw[1]["clip"] == "bike" and raw[1]["clip_at_s"] == 2.5
+    back = load_short(tmp_path / "short.json").sfx
+    assert back[0].clip == "" and back[1].clip == "bike" and back[1].clip_at_s == 2.5
+
+
+def test_validate_rejects_negative_clip_at_s():
+    assert any("clip_at_s" in e for e in validate(_short([Sfx("thud", "s01", 1, 0.3, -18, clip_at_s=-1)])))
+    assert not any("clip_at_s" in e for e in validate(_short([Sfx("thud", "s01", 1, 0.3, -18, clip_at_s=2)])))

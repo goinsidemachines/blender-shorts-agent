@@ -165,3 +165,13 @@ def test_camtest_restores_the_rest_when_one_restore_fails():
         assert _state(sc) == before
     finally:
         camtest._touched = real
+
+
+def test_camtest_switches_freestyle_off_and_back():
+    """Shorts 20 and 21: Freestyle left on in the Workbench pass grew to 83-98 GB over 2,025 frames. The grey pass
+    never needs its lines; the user's Freestyle is back on afterwards."""
+    sc = _scene()
+    sc.render.use_freestyle = True
+    with camtest.workbench_pass(sc, 35):
+        assert sc.render.use_freestyle is False
+    assert sc.render.use_freestyle is True

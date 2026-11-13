@@ -8,12 +8,18 @@ from bsa.short import Line, Short, Shot, load_short
 from bsa.timeline import (
     CARD_MAX_CHARS,
     CARD_MAX_WORDS,
+    Span,
+    Timeline,
+    at,
     build_timeline,
     chunk_caption,
+    frame_at,
     length_drift,
     reading_time,
+    retime_report,
     timeline_from_json,
     to_json,
+    use_timeline,
 )
 
 SAMPLE = Path(__file__).parent / "e2e" / "pendulum" / "source" / "short.json"
@@ -419,3 +425,65 @@ def test_cuts_timelines_are_unchanged():
     assert to_json(got) == TWO_LINE_TIMELINE
     syn.camera = {"style": "cuts", "approve": True}  # a cuts short asking for the camera stage: same timeline
     assert to_json(build_timeline(syn, {"l01": 3.1, "l02": 1.4}, end_card=True, onsets={"l02": 0.25})) == TWO_LINE_TIMELINE
+
+
+# --- frames from the timeline: at() and the retime report
+
+
+def _tl(*shots):
+    return Timeline(30, shots[-1][2], [Span(*s) for s in shots], [], [])
+
+
+def test_at_counts_seconds_into_the_shot():
+    tl = _tl(("s01", 1, 99), ("s07", 100, 220))
+    assert frame_at(tl, "s07", 1.5) == 145 and frame_at(tl, "s07") == 100
+
+
+def test_at_end_is_the_last_frame_of_the_shot():
+    assert frame_at(_tl(("s01", 1, 99), ("s07", 100, 220)), "s07", "end") == 220
+
+
+def test_at_fraction_is_a_share_of_the_shot():
+    tl = _tl(("s07", 100, 220))
+    assert frame_at(tl, "s07", 0.5, fraction=True) == 160 and frame_at(tl, "s07", 1.0, fraction=True) == 220
+
+
+def test_at_refuses_an_offset_past_the_shot_rather_than_land_in_the_next():
+    tl = _tl(("s01", 1, 99), ("s07", 100, 220))
+    with pytest.raises(ValueError, match="outside shot s01"):
+        frame_at(tl, "s01", 4.0)
+
+
+def test_at_refuses_an_unknown_shot():
+    with pytest.raises(ValueError, match="no shot 's09'"):
+        frame_at(_tl(("s01", 1, 99)), "s09", 1)
+
+
+def test_at_reads_the_timeline_of_the_short_in_use(tmp_path):
+    (tmp_path / "source").mkdir()
+    tl = _tl(("s01", 1, 99), ("s07", 100, 220))
+    (tmp_path / "source" / "timeline.json").write_text(json.dumps(to_json(tl)), encoding="utf-8")
+    use_timeline(tmp_path)
+    assert at("s07", 1.5) == 145
+    # a re-timed short: the same call follows the new timeline
+    (tmp_path / "source" / "timeline.json").write_text(
+        json.dumps(to_json(_tl(("s01", 1, 140), ("s07", 141, 300)))), encoding="utf-8")
+    assert at("s07", 1.5) == 186
+
+
+def test_retime_report_lists_the_moved_shots_with_old_and_new_frames():
+    old = to_json(_tl(("s01", 1, 99), ("s06", 100, 199), ("s07", 700, 820)))
+    new = _tl(("s01", 1, 99), ("s06", 100, 199), ("s07", 745, 880))
+    expected = "s07 moved: frames 700-820 \u2192 745-880. Re-check anything keyed to fixed frames in it."
+    assert retime_report(old, new) == [expected]
+
+
+def test_retime_report_is_empty_when_nothing_moved_or_there_is_no_old_timeline():
+    tl = _tl(("s01", 1, 99))
+    assert retime_report(to_json(tl), tl) == [] and retime_report(None, tl) == []
+
+
+def test_retime_report_names_a_shot_that_appeared_or_went():
+    old = to_json(_tl(("s01", 1, 99), ("s02", 100, 150)))
+    out = retime_report(old, _tl(("s01", 1, 99), ("s03", 100, 150)))
+    assert any(r.startswith("s03 is new") for r in out) and any(r.startswith("s02 is gone") for r in out)

@@ -279,6 +279,11 @@ class _Contact:
     outer_open: int = 0  # the outer object is open and not flat (its open edges): the depth means nothing
 
 
+def live_booleans(obj) -> list:
+    """The Boolean modifiers on `obj` that render live (also what the build-time scene scan looks at)."""
+    return [m for m in obj.modifiers if m.type == "BOOLEAN" and m.show_render]
+
+
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
                rules: list[dict] | None = None, cap: bool = True,
                keep_objects: set[str] | None = None) -> list[Finding]:  # fmt: skip
@@ -489,7 +494,8 @@ class _Run:
     def pop_in(self, shot, frame, objs, before: dict[str, bool]) -> dict[str, bool]:
         """Warn about an object (not an overlay) that switches on inside the camera frame after its shot's first
         frame: it was not rendered (hide_render, a hidden collection) or was scaled to nothing at the frame before,
-        and now part of its box is on screen. It pops into view. A part tagged swap:<other> is left to report_swaps.
+        and now part of its box is on screen. It pops into view, unless a keyed material fade (see _fades_in) starts
+        there: a row that is switched on at the start of its fade-in is an entrance. A part tagged swap:<other> is left to report_swaps.
         Records each object's switch frames (on: shown now and not at the frame before; off: the reverse) in
         self.switches. Returns what is shown now, for the next frame."""
         cam = self.scene.camera
@@ -514,6 +520,8 @@ class _Run:
             box = SimpleNamespace(lo=world.min(0), hi=world.max(0))
             if _box_state(self.scene, cam, box) == "out":
                 continue
+            if _fades_in(obj, frame):
+                continue  # switched on at the start of a keyed material fade: it fades in, it does not pop
             how = "grows from zero scale" if obj.name in before else "is switched on (render visibility)"
             self.add("pop_in", "warning", obj.name, frame,
                      f"{obj.name!r} {how} at frame {frame} in shot {shot.id!r} with part of it inside the camera "
@@ -849,15 +857,14 @@ class _Run:
             ev.to_mesh_clear()
 
     def booleans(self, obj, frame):
-        for mod in obj.modifiers:
-            if mod.type == "BOOLEAN" and mod.show_render:
-                solver = getattr(mod, "solver", "")
-                how = f" ({solver} solver)" if solver else ""
-                self.add("boolean", "warning", obj.name, frame, f"live Boolean modifier {mod.name!r}{how}: it is "
-                         "evaluated again for every render and can come out differently (an opening that shows in "
-                         "the stills can vanish in the final render). Build the opening into the mesh itself (leave "
-                         "out the faces, close the edges), or apply the modifier in build.py and check the face count",
-                         key=(obj.name, mod.name))  # fmt: skip
+        for mod in live_booleans(obj):
+            solver = getattr(mod, "solver", "")
+            how = f" ({solver} solver)" if solver else ""
+            self.add("boolean", "warning", obj.name, frame, f"live Boolean modifier {mod.name!r}{how}: it is "
+                     "evaluated again for every render and can come out differently (an opening that shows in "
+                     "the stills can vanish in the final render). Build the opening into the mesh itself (leave "
+                     "out the faces, close the edges), or apply the modifier in build.py and check the face count",
+                     key=(obj.name, mod.name))  # fmt: skip
 
     def normals(self, obj, bm, frame):
         open_edges = sum(1 for e in bm.edges if not e.is_manifold)
@@ -1287,6 +1294,47 @@ def _depsgraph(scene, view_layer):
         return bpy.context.evaluated_depsgraph_get()
 
 
+def _fades_in(obj, frame: int) -> bool:
+    """True when one of the object's materials has a keyed fade that is at one end of its range at `frame` and still
+    moves after it: keyed alpha, a keyed Mix/transparency factor, a keyed emission strength (a node input named
+    Alpha, Fac, Factor, Strength, Emission Strength or Opacity) or the material's viewport alpha. Such an object
+    is fading in on screen, an entrance, not a pop. Nothing here changes the scene."""
+    from bsa.blender import extremes
+
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None:
+            continue
+        curves = []  # (fcurve, True when its low end is the invisible one)
+        tree = mat.node_tree
+        if tree is not None:
+            for fc in extremes.fcurves(tree):
+                try:
+                    socket = tree.path_resolve(fc.data_path.rsplit(".", 1)[0])
+                except (ValueError, AttributeError):
+                    continue
+                name = getattr(socket, "name", None)
+                if name in FADE_SOCKETS:
+                    curves.append((fc, name in FADE_LOW_IS_HIDDEN))
+        curves += [(fc, True) for fc in extremes.fcurves(mat) if fc.data_path == "diffuse_color" and fc.array_index == 3]
+        for fc, low_hidden in curves:
+            pts = [(k.co[0], k.co[1]) for k in fc.keyframe_points]
+            if len(pts) < 2:
+                continue
+            lo, hi = min(v for _, v in pts), max(v for _, v in pts)
+            if hi - lo < FADE_MIN_RANGE:
+                continue
+            at = fc.evaluate(frame)
+            near = 0.1 * (hi - lo)
+            # starts at the hidden end (either end for a Mix factor, whose direction is unknown) ...
+            starts = abs(at - lo) <= near if low_hidden else min(abs(at - lo), abs(hi - at)) <= near
+            # ... and really moves soon after the switch: a fade-out keyed seconds later does not excuse a pop
+            moves = abs(fc.evaluate(frame + FADE_WINDOW) - at) > 0.05 * (hi - lo)
+            if starts and moves:
+                return True
+    return False
+
+
 def _render_meshes(scene, view_layer, types=("MESH",)) -> list:
     """Objects of `types` that render: not hidden for render, in a collection that is neither excluded nor hidden."""
     reach: set[str] = set()
@@ -1595,6 +1643,10 @@ def _view_state(scene, cam, geo: _Geo) -> str:
     return _view(scene, cam, geo)[0]
 
 
+FADE_SOCKETS = frozenset({"Alpha", "Fac", "Factor", "Strength", "Emission Strength", "Opacity"})
+FADE_MIN_RANGE = 0.2  # a fade's keys must move the value at least this far
+FADE_LOW_IS_HIDDEN = frozenset({"Alpha", "Opacity", "Strength", "Emission Strength"})  # 0 = not seen
+FADE_WINDOW = 24  # frames after the switch within which a fade-in must visibly move
 POP_IN_SCALE = 1e-4  # an object scaled to this or less (its largest axis) is not shown: it can pop in
 EDGE_VERTS = 4000  # vertices sampled for the share outside when the box straddles the camera plane
 

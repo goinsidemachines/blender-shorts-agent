@@ -23,6 +23,7 @@ from bsa.overlays import SMALL_MARGIN, STACK_GAP_PX
 # index in shot.labels. Pointer lines (3-8) sit under every static card, so a line that crosses one passes behind it;
 # the progress bar takes 9 (track), 10 (fill) and 11 (outline). Near cards and their dots draw over everything. The
 # end card keeps 30 and up (today's text strips).
+BADGE_WRAP_PX = 560  # a badge wraps wider than a label: "Simplified · Slowed down" stays on one line
 CH = {"pointer": 3, "progress": 9, "title": 12, "bars": 13, "caption": 14, "logo": 20, "category": 21, "badge": 22,
       "step": 23, "stacked": 24, "near": 50, "dot": 60}  # fmt: skip
 # Labels per shot: stacked ones take 24 + index, which must stay under the end card's 30; pointers 3-8 stay under the
@@ -289,7 +290,9 @@ def _lay(shot, kit, font, logo: CardSpec | None, labels_right: bool, small_title
 
     def stacked(kind, text, channel) -> None:
         nonlocal stack_y
-        stack_y = put(kind, text, cards.pill(kit, kind, text, font), left, stack_y, channel).bottom + STACK_GAP_PX
+        wrap = BADGE_WRAP_PX if kind == "badge" else cards.NEAR_WRAP_PX
+        spec = cards.pill(kit, kind, text, font, wrap=wrap)
+        stack_y = put(kind, text, spec, left, stack_y, channel).bottom + STACK_GAP_PX
 
     def column(kind, text, channel) -> None:  # right-aligned, moved under any card it would sit on
         nonlocal col_y

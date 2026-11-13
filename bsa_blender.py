@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import re
 import sys
 import time
@@ -24,10 +25,19 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from bsa import freshness, jobstate, messages, rules, settings, workspace  # needs the plugin root on sys.path (above)
+from bsa import (  # needs the plugin root on sys.path (above)
+    chunks,
+    freshness,
+    jobstate,
+    messages,
+    rules,
+    settings,
+    workspace,
+)
 
 RESULT_PREFIX = "BSA_RESULT "
 PROGRESS_PREFIX = "BSA_PROGRESS "  # a progress line of `check --in-chain` on stdout, for the preview chain to record
+RENDER_PREFIX = "BSA_RENDER "  # a render chunk (a child Blender of `render`, bsa.chunks) sends its live status as these lines
 ERROR_LIMIT = 600  # the one plain error line is trimmed at a sentence or clause boundary past this
 
 
@@ -561,9 +571,11 @@ def _progress_cb(fn):
 
 def cmd_render(args) -> dict:
     sdir = _short_dir(args.short)
-    if args.preset == "final":
+    if args.preset == "final" and not getattr(args, "in_chunk", False):
         freshness.require_current_build(sdir, "the final render")
     short = _load(sdir)
+    if getattr(args, "in_chunk", False):  # a child of a chunked render: its parent holds the lock and the status
+        return _cmd_render(args, sdir, short, _ChunkReport())
     key = _status_key(sdir, args, args.preset)
     with _recording(sdir, short, args.preset, "render", key) as run, _gpu(args, sdir, short.slug, "render", key):
         out = _cmd_render(args, sdir, short, run)
@@ -589,7 +601,10 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     parts = _parts(sdir, fps)
     check_keys = _check_keys(short, tl, fps, parts, _objects(sdir, fps))
-    if args.preset == "final":  # the final render needs checks that passed on every shot as it is now
+    in_chunk = getattr(args, "in_chunk", False)
+    if in_chunk:  # the parent did these before it started this child
+        failed = None
+    elif args.preset == "final":  # the final render needs checks that passed on every shot as it is now
         freshness.require_checks(sdir, tl_hash, check_keys, "the final render", key=_short_key(sdir))
         failed = None
     elif getattr(args, "checks_beside", False):  # the preview chain's checks run beside it: it says after they end
@@ -598,7 +613,8 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
         failed = _failed_checks_warning(sdir, short, tl_hash, check_keys)
         if failed:
             print(f"warning: {failed}", file=sys.stderr, flush=True)
-    _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
+    if not in_chunk:
+        _check_near_objects(data, short, tl_hash)  # before any frame: anchors run after the render
     stamps = {s.id: freshness.frames_stamp(spans[s.id], engine, (fps or {}).get(s.id), args.preset, parts.get(s.id))
               for s in shots}  # fmt: skip
     damaged = _drop_damaged(root, shots, spans, stamps, redo)  # before the plan counts what is kept
@@ -606,6 +622,23 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     tracker, watch, plan = _render_watch(sdir, short, args.preset, engine, shots, spans, stamps, fps, tl_hash, redo,
                                          run=run, root=root, key=key)  # fmt: skip
     done, warnings = [], [*([failed] if failed else []), *_damaged_warnings(damaged)]
+    size = 0 if in_chunk or redo is not None else chunks.resolve(settings.load_settings())  # (a redo is short)
+    fresh = sum(p["total"] - p["reused"] for p in plan.values())
+    if chunks.wanted(fresh, size):  # a long render: a child Blender per `size` fresh frames (bsa.chunks)
+        merged = _render_chunks(args, sdir, run, size=size, fresh=fresh)
+        for row in merged["shots"]:
+            if row["shot"] in damaged:
+                row["damaged"] = freshness.frames_spec(damaged[row["shot"]])
+        warnings += [w for w in merged["warnings"] if w not in warnings]
+        engine_runs.record_render(sdir, args.preset, side, frames=merged["fresh_frames"],
+                                  seconds=merged["render_seconds"])  # fmt: skip
+        spf = round(merged["render_seconds"] / merged["fresh_frames"], 3) if merged["fresh_frames"] else None
+        out = _render_out(args, sdir, side, key, root, redo, engine, merged["shots"], merged["anchors"], spf,
+                          warnings)  # fmt: skip
+        out.update(chunks=merged["chunks"], chunk_frames=size)
+        return out
+    budget = getattr(args, "max_frames", None)  # a chunk: render at most this many fresh frames, then stop
+    more = False
     with watch:
         tracker.start()
         try:
@@ -623,30 +656,63 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
                     freshness.prepare_frames(folder, stamps[shot.id])
                 tracker.begin_shot(shot.id)
                 p = plan[shot.id]
+                rendered = p["total"] - p["reused"]
                 if p["reason"] is None and p["reused"] == p["total"]:  # unchanged and complete: nothing to render
                     frames = [folder / f"{f:04d}.png" for f in range(span.f0, span.f1 + 1)]
-                else:
+                elif budget is None:
                     frames = render_range(scene, span.f0, span.f1, folder, args.preset, engine=engine,
                                           on_start=watch.on_start)  # fmt: skip
-                tracker.end_shot(shot.id)
-                done.append({"shot": shot.id, "frames": len(frames), "rendered": p["total"] - p["reused"],
-                             "kept": p["reused"], "why": p["reason"] or "unchanged", "folder": str(folder)})  # fmt: skip
+                else:  # a chunk: the first `budget` frames still missing (the rest is for the next child)
+                    todo = chunks.missing(folder, span.f0, span.f1)
+                    if todo and budget <= 0:
+                        more = True
+                        break
+                    rendered = 0
+                    if todo:
+                        first, last, rendered = chunks.take(todo, budget)
+                        render_range(scene, first, last, folder, args.preset, engine=engine, on_start=watch.on_start)
+                        budget -= rendered
+                    frames = [folder / f"{f:04d}.png" for f in range(span.f0, span.f1 + 1)]
+                    if rendered < len(todo):  # cut across two chunks: this shot ends in the next child
+                        more = True
+                row = {"shot": shot.id, "frames": len(frames), "rendered": rendered, "kept": p["reused"],
+                       "why": p["reason"] or "unchanged", "folder": str(folder)}  # fmt: skip
                 if shot.id in damaged:
-                    done[-1]["damaged"] = freshness.frames_spec(damaged[shot.id])
-            tracker.set_phase("anchors")
-            anchors = _write_anchors(sdir, short, tl, tl_hash, data, fps)  # the edit places near labels from these
+                    row["damaged"] = freshness.frames_spec(damaged[shot.id])
+                if more:
+                    done.append({**row, "partial": True})
+                    break
+                tracker.end_shot(shot.id)
+                done.append(row)
+            if more:  # the next child goes on from the frames on disk: no anchors, no end to the status yet
+                tracker.write(force=True)
+            else:
+                tracker.set_phase("anchors")
+                anchors = _write_anchors(sdir, short, tl, tl_hash, data, fps)  # the edit places near labels from these
         except BaseException as exc:
             stopped = watch.cancelled or isinstance(exc, KeyboardInterrupt)
             tracker.finish("stopped" if stopped else "failed", error=_one_line(f"{exc}") or type(exc).__name__)
             raise
-        tracker.finish("done")
-    from bsa import render_status as rs
-
+        if not more:
+            tracker.finish("done")
+    if budget is not None:  # a chunk reports to its parent, which records the run and builds the result
+        return {"more": more, "fresh_frames": len(tracker.durations), "render_seconds": tracker.render_s,
+                "shots": done, "anchors": None if more else anchors, "warnings": warnings}  # fmt: skip
     measured = tracker.snapshot()  # the seconds per frame this run measured, for the engine comparison
     engine_runs.record_render(sdir, args.preset, side, frames=len(tracker.durations), seconds=tracker.render_s)
+    return _render_out(args, sdir, side, key, root, redo, engine, done, anchors, measured.get("avg_s_per_frame"),
+                       warnings)  # fmt: skip
+
+
+def _render_out(args, sdir: Path, side, key: str, root: Path, redo, engine, done: list, anchors, s_per_frame,
+                warnings: list) -> dict:  # fmt: skip
+    """The result of `render`: one row per shot, the anchors, the live status's path and the engine comparison."""
+    from bsa import engine_runs
+    from bsa import render_status as rs
+
     out = {"preset": args.preset, "engine": engine, "shots": done, "anchors": anchors,
            "status": str(rs.status_path(sdir, key)),
-           "s_per_frame": measured.get("avg_s_per_frame"), "engines": engine_runs.compare(sdir, args.preset)}  # fmt: skip
+           "s_per_frame": s_per_frame, "engines": engine_runs.compare(sdir, args.preset)}  # fmt: skip
     if side.tag:
         out.update(tag=side.tag, frames_dir=str(root))
     if redo is not None:
@@ -654,6 +720,163 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     if warnings:
         out["warnings"] = warnings
     return out
+
+
+class _ChunkReport:
+    """The run a render chunk (a child Blender, `render --in-chunk`) reports to: its live status goes to its parent as
+    RENDER_PREFIX lines on stdout (_render_chunks forwards them to the real run); nothing is written to a file."""
+
+    inert = False
+
+    def set_render(self, status: dict) -> None:
+        print(RENDER_PREFIX + json.dumps(status, default=str), flush=True)
+
+    def summarize(self, name: str, summary: dict) -> None:
+        pass
+
+
+def _render_chunks(args, sdir: Path, run, *, size: int, fresh: int, spawn=None) -> dict:
+    """Render in chunks (bsa.chunks): child Blender processes, each rendering at most `size` fresh frames from the frames
+    on disk, one after another, until none says it has more. Each child's live status is forwarded to `run`. Returns
+    {"shots", "anchors", "warnings", "fresh_frames", "render_seconds", "chunks"}. A child that fails stops the render
+    (the frames it finished are kept: run it again and it resumes)."""
+    spawn = spawn or _spawn_chunk
+    started = time.time()
+    rows, warnings, anchors = [], [], None
+    n_fresh, seconds, number = 0, 0.0, 0
+    reasons: dict = {}  # each shot's reason as the run first saw it (_keep_reasons)
+    while True:
+        number += 1
+        try:
+            res = spawn(args, sdir, number, size, run, started, reasons)
+        except CliError as exc:
+            raise CliError(f"chunk {number} failed: {exc}. The frames it finished are kept: run it again and it "
+                           "resumes from them") from exc  # fmt: skip
+        rows.append(res.get("shots") or [])
+        warnings += [w for w in res.get("warnings") or [] if w not in warnings]
+        n_fresh += int(res.get("fresh_frames") or 0)
+        seconds += float(res.get("render_seconds") or 0.0)
+        if res.get("anchors") is not None:
+            anchors = res["anchors"]
+        if not res.get("more"):
+            break
+        if not res.get("fresh_frames"):
+            raise CliError(f"chunk {number} made no progress (it rendered no frame but says more are left): stopped "
+                           "so it does not loop")  # fmt: skip
+    return {"shots": chunks.merge_shots(rows), "anchors": anchors, "warnings": warnings, "fresh_frames": n_fresh,
+            "render_seconds": seconds, "chunks": number}  # fmt: skip
+
+
+def _keep_reasons(status: dict, reasons: dict) -> None:
+    """Each shot keeps, in the live status of a chunked render, the reason the run started with ("fingerprint
+    changed"): a later child sees the shot half rendered and calls it "resuming", which is true for it but not for the
+    run. `reasons` ({shot id: reason}) is filled by the first status that names the shot."""
+    for shot in status.get("shots") or []:
+        if isinstance(shot, dict) and "id" in shot:
+            shot["reason"] = reasons.setdefault(shot["id"], shot.get("reason"))
+
+
+def _chunk_command(args, sdir: Path, size: int) -> list[str]:
+    import bpy
+
+    cmd = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "1", "--python",
+           str(PLUGIN_ROOT / "bsa_blender.py"), "--", "render", str(sdir), "--preset", args.preset,
+           "--max-frames", str(size), "--in-chunk"]  # fmt: skip
+    for flag, value in (("--shot", getattr(args, "shot", None)), ("--engine", getattr(args, "engine", None)),
+                        ("--tag", getattr(args, "tag", None))):  # fmt: skip
+        if value:
+            cmd += [flag, str(value)]
+    return cmd
+
+
+def _die_with_parent():
+    """Linux: a child Blender ends when the process that started it is killed (the memory guard, a crash), so a
+    render in chunks never leaves one rendering on its own. Elsewhere there is no such hook; the child ends with its
+    work."""
+    if not sys.platform.startswith("linux"):
+        return None
+
+    def hook() -> None:
+        import ctypes
+        import signal
+
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+
+    return hook
+
+
+def _spawn_chunk(args, sdir: Path, number: int, size: int, run, started: float, reasons: dict | None = None) -> dict:
+    """One chunk: a child Blender (`render ... --max-frames SIZE --in-chunk`). Its live status lines go to `run` (with
+    this process as the writer, and the whole run's start); its stderr is echoed with "[chunk N]"; its result is
+    returned. CliError when it fails (its last stderr line, usually the memory guard's, says why)."""
+    import subprocess
+    import threading
+
+    from bsa import proc as _proc
+    from bsa import render_status as rs
+
+    state: dict = {"result": None, "err": None}
+    me, token = os.getpid(), rs.process_token(os.getpid())
+    pre = _die_with_parent()
+    proc = _proc.popen(_chunk_command(args, sdir, size), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                       encoding="utf-8", errors="replace", **({"preexec_fn": pre} if pre else {}))  # fmt: skip
+
+    def read_out() -> None:
+        for raw in proc.stdout:
+            line = raw.rstrip("\r\n")
+            try:
+                if line.startswith(RENDER_PREFIX):
+                    status = json.loads(line[len(RENDER_PREFIX) :])
+                    now = time.time()
+                    status.update(pid=me, pid_token=token, started=started, elapsed_s=round(now - started, 2),
+                                  chunk=number)  # fmt: skip
+                    _keep_reasons(status, reasons if reasons is not None else {})
+                    run.set_render(status)
+                elif line.startswith(RESULT_PREFIX):
+                    state["result"] = json.loads(line[len(RESULT_PREFIX) :])
+            except Exception as exc:  # noqa: BLE001 - status only: the render goes on
+                print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+    def read_err() -> None:
+        for raw in proc.stderr:
+            line = raw.rstrip("\r\n")
+            print(f"[chunk {number}] {line}" if line.strip() else line, file=sys.stderr, flush=True)
+            if line.strip():
+                state["err"] = line.strip()
+
+    threads = [threading.Thread(target=read_out, daemon=True, name="chunk-out"),
+               threading.Thread(target=read_err, daemon=True, name="chunk-err")]  # fmt: skip
+    for t in threads:
+        t.start()
+    try:
+        while True:  # a wait with a timeout, so Ctrl+C reaches this process and ends the child (below)
+            try:
+                code = proc.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        for t in threads:
+            t.join(timeout=5)
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    res = state["result"]
+    if not isinstance(res, dict):
+        raise CliError(state["err"] or f"its Blender ended with exit code {code} and no result")
+    if res.get("ok") is False:
+        raise CliError(str(res.get("error") or state["err"] or "it failed"), {k: v for k, v in res.items()
+                                                                              if k not in ("ok", "error")})
+    return res
 
 
 def _failed_checks_warning(sdir: Path, short, tl_hash: str, keys: dict, most: int = 3) -> str | None:
@@ -876,10 +1099,30 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
               file=sys.stderr, flush=True)  # fmt: skip
     line = None
     hard_rules = _hard_rules(short)  # scene names a rule may forbid are warnings (bsa.rules.name_hits)
+    finished: list[str] = []  # the shots whose findings are in `rows` (kept or checked), in plan order
+
+    def save_progress() -> None:
+        """Findings so far into review/checks.json, under a stamp of only the shots done (kept shots later in the
+        plan included), so a check that is killed (a restart, a crash) is resumed by the next run: it checks only
+        the shots without a result. Marked "incomplete": the final render and edit still need every shot."""
+        ahead = [s.id for s, _ in plan if s.id in reuse and s.id not in finished]
+        done_ids = [*finished, *ahead]
+        part = {**stamp, "shots": {s: stamp["shots"][s] for s in done_ids},
+                **({"inputs": {s: stamp["inputs"][s] for s in done_ids if s in stamp["inputs"]}}
+                   if isinstance(stamp.get("inputs"), dict) else {})}  # fmt: skip
+        more = [{**f, "shots": [s]} for s in ahead for f in reuse[s]]
+        try:
+            _write_checks(sdir / "review" / "checks.json", _merge_findings([*rows, *more]), part,
+                          [s.id for s in short.shots], OVERLAP_MAX_FINDINGS, incomplete=True,
+                          unchecked=[s.id for s, _ in plan if s.id not in done_ids])  # fmt: skip
+        except CliError as exc:  # a checkpoint that can't be written is not worth stopping for
+            print(f"couldn't save the checks so far: {_one_line(exc)}", file=sys.stderr, flush=True)
+
     for (shot, span), item in zip(plan, progress, strict=True):
         if shot.id in reuse:
             rows += [{**f, "shots": [shot.id]} for f in reuse[shot.id]]
             kept.append(shot.id)
+            finished.append(shot.id)
             continue
         _, scene = _scene(data, short, shot.id, tl_hash)
         item["state"] = "checking"
@@ -907,6 +1150,8 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         rows += [_check_row(f, shot.id, scene.name) for f in found]
         rows += [{**f, "shots": [shot.id]} for f in kept_rows]  # the unchanged objects' and pairs' own findings
         checked.append(shot.id)
+        finished.append(shot.id)
+        save_progress()
     run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
     out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
                         OVERLAP_MAX_FINDINGS, checked=checked, kept=kept,
@@ -1270,7 +1515,92 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
             out["captions"] = captions.write_files(sdir, short, s)
         except Exception as exc:  # noqa: BLE001 - auxiliary output: never lose the recorded MP4 result
             warnings.append(f"caption files not written: {exc}")
+        warnings += _after_final(sdir, short, out, s, tl_hash)
     return {**out, "warnings": warnings} if warnings else out
+
+
+def _after_final(sdir: Path, short, out: dict, s: dict, tl_hash: str) -> list[str]:
+    """After a final edit that worked: the thumbnails, the post files, the deliver folder, the user's hook. Each is
+    recorded in `out` ("thumbs", "post", "deliver", "hook") and none can fail the final: a problem is a warning."""
+    warnings: list[str] = []
+    made = _final_thumbs(sdir, short, s, tl_hash, warnings)
+    if made is not None:
+        out["thumbs"] = made
+    try:
+        files = _final_post_files(sdir, short, s, warnings)
+        if files is not None:
+            out["post"] = files
+    except Exception as exc:  # noqa: BLE001 - side files: never lose the recorded MP4 result
+        warnings.append(f"post files not written: {exc}")
+    from bsa import deliver, hooks
+
+    mp4 = Path(out["mp4"])
+    delivered = None
+    try:
+        delivered = deliver.deliver(sdir, short, s)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"the deliver folder was not filled: {exc}")
+    if delivered is not None:
+        out["deliver"] = delivered
+        warnings += delivered["warnings"]
+    hook = hooks.run_after_final(s, sdir, short.slug, mp4, Path(delivered["dir"]) if delivered else None)
+    if hook is not None:
+        out["hook"] = hook
+        if hook.get("warning"):
+            warnings.append(hook["warning"])
+    return warnings
+
+
+def _final_thumbs(sdir: Path, short, s: dict, tl_hash: str, warnings: list[str]) -> dict | None:
+    """Make the thumbnail candidates after the final when post.thumbnail is set and they are not already made from
+    these frames and this text. None when the short has no post.thumbnail. A failure is a warning. When none is
+    chosen yet it says to choose: it never waits."""
+    from bsa import post, thumbs
+
+    p = post.fields(short)
+    if thumbs.text_from_post(p) is None:
+        return None
+    res: dict = {}
+    key = thumbs.inputs_key(tl_hash, p)
+    if thumbs.is_fresh(sdir, key):
+        res["made"] = False
+        res["note"] = "thumbnail candidates are current: kept"
+    else:
+        import types
+
+        try:
+            made = cmd_thumbs(types.SimpleNamespace(short=str(sdir), hero=None, only=None))
+        except CliError as exc:
+            warnings.append(f"thumbnails not made: {exc}")
+            return {"made": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - the final is made; thumbnails are one step further
+            warnings.append(f"thumbnails not made: {type(exc).__name__}: {exc}")
+            return {"made": False, "error": str(exc)}
+        res["made"] = True
+        res["candidates"] = len(made.get("candidates") or [])
+        warnings += made.get("warnings") or []
+    try:
+        chosen = thumbs._chosen_n(thumbs.load(sdir).get("chosen"))
+    except Exception:  # noqa: BLE001
+        chosen = None
+    res["chosen"] = chosen
+    if chosen is None:
+        where = workspace.short_key(sdir, s.get("workspace"))
+        res["choose"] = f"choose a thumbnail: CLI page decide {where} thumbnail --choice N (or on the page's Post stage)"
+        warnings.append(res["choose"])
+    return res
+
+
+def _final_post_files(sdir: Path, short, s: dict, warnings: list[str]) -> dict | None:
+    """out/post-pack.md (and out/instagram-post.md) kept current; a file the user edited is left as it is. None when
+    the short has no post title yet."""
+    from bsa import post, postpack
+
+    if not str(post.fields(short).get("title") or "").strip():
+        return None
+    res = postpack.write_all(sdir, short, s)
+    warnings += res["warnings"]
+    return {"pack": str(res["pack"]["path"]), "instagram": str(res["instagram"]["path"]) if res["instagram"] else None}
 
 
 def _edit_record(tl_hash: str, fps: float, n_frames: int, end: dict | None) -> dict:
@@ -1466,7 +1796,8 @@ def cmd_thumbs(args) -> dict:
 
     sdir = _short_dir(args.short)
     short = _load(sdir)
-    api = types.SimpleNamespace(render=blender_thumbs.render, read_png=read_png, boxes=_thumb_boxes)
+    api = types.SimpleNamespace(render=blender_thumbs.render, read_png=read_png, boxes=_thumb_boxes,
+                                drawn_lines=blender_thumbs.drawn_lines)
     return _cmd_thumbs(args, sdir, short, api)
 
 
@@ -1590,6 +1921,10 @@ def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
             layouts[size] = thumbs.layout_dict(lay)
             findings += image_checks.thumb_findings(api.read_png(out), layouts[size], size, busy=preset == "final")
             warnings += [w for w in lay.warnings if w not in warnings]
+            drawn_lines = getattr(api, "drawn_lines", None)  # what Blender drew: overlap between the cards
+            if drawn_lines is not None:
+                warnings += [w for w in thumbs.drawn_overlaps(lay, style, drawn_lines(lay, style.font, caches))
+                             if w not in warnings]  # fmt: skip
         rows.append({"n": n, "hero": {"shot": h.shot, "frame": h.frame, "crop": list(h.crop) if h.crop else None,
                                       "why": h.why},
                      "source": preset, "files": files, "layouts": layouts, "findings": findings,
@@ -1598,6 +1933,8 @@ def _cmd_thumbs(args, sdir: Path, short, api) -> dict:
         thumbs.put_candidates(sdir, rows, only=args.only)
     except StoreDamaged as exc:
         raise CliError(str(exc)) from exc
+    if args.only is None:  # every candidate is from these inputs: the final's thumbs step may keep them
+        thumbs.stamp(sdir, thumbs.inputs_key(tl_hash, p))
     if args.only is None:  # all made again: the files of candidates no longer there go
         keep = {(sdir / rel).name for r in rows for rel in r["files"].values()}
         for old in (sdir / thumbs.DIR).glob("*.png"):
@@ -1923,11 +2260,22 @@ def _framing_notes(sdir: Path) -> list[str]:
             for n in framing_notes(sc)]  # fmt: skip
 
 
+def _heavy_notes(sdir: Path) -> list[str]:
+    """The fast heavy-scene scan of the built blend (bsa.blender.scenescan), one line each. Never stops a build."""
+    try:
+        from bsa.blender import scenescan
+
+        return [f["message"] for f in scenescan.scan(_open_blend(sdir), _blend(sdir))]
+    except Exception as exc:  # noqa: BLE001 - a warning aid must not fail the build
+        return [f"the heavy-scene scan did not run: {exc}"]
+
+
 def _build_and_reopen(sdir: Path) -> dict:
-    """Build in script mode, open the new blend/short.blend, and name the framing warnings build.py kept on it."""
+    """Build in script mode, open the new blend/short.blend, and name the framing warnings build.py kept on it and
+    anything that makes the scene heavy."""
     blend = _build_script_mode(sdir)
     _reopen(sdir)
-    return {"blend": str(blend), "framing": _framing_notes(sdir)}
+    return {"blend": str(blend), "framing": _framing_notes(sdir), "heavy": _heavy_notes(sdir)}
 
 
 def _reopen(sdir: Path) -> None:
@@ -2043,7 +2391,8 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
         stop("build", f"the scene file is not current ({why}): rebuild it through the MCP (bsa_mcp_build.py), then "
                       "run BLENDER preview SHORT --no-build again")  # fmt: skip
     if why:
-        run("build", _build_and_reopen, sdir, summary=lambda o: {"why": why, "framing": o.get("framing")})
+        run("build", _build_and_reopen, sdir, summary=lambda o: {"why": why, "framing": o.get("framing"),
+                                                                  "heavy": o.get("heavy")})
     else:
         skip("build", "the .blend is current")
     if why or not _marked_after(sdir, "build", _blend(sdir)):
@@ -2066,7 +2415,8 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
     warnings: list[str] = []
     try:
         run("render", cmd_render, ns(short=args.short, preset="preview", shot=None, frames=None, redo_flagged=False,
-                                     no_wait=getattr(args, "no_wait", False), checks_beside=checking is not None,
+                                     no_wait=getattr(args, "no_wait", False),
+                                     max_wait=getattr(args, "max_wait", None), checks_beside=checking is not None,
                                      **which), summary=_render_summary)  # fmt: skip
         run("frame-check", cmd_frame_check, ns(short=args.short, preset="preview", **which),
             summary=lambda o: {"warnings": o.get("warnings")})  # fmt: skip
@@ -2168,6 +2518,24 @@ class _SideCheck:
                     self.result = json.loads(line[len(RESULT_PREFIX) :])
                 except ValueError:
                     pass
+        self._note_ended()
+
+    def _note_ended(self) -> None:
+        """The check process ended: say so in the chain's status now, not when the chain joins it after the render
+        (a check that finished in seconds read "running" for the whole render). join() records the same outcome
+        later; a step already ended keeps its first end."""
+        try:
+            res = self.result
+            if isinstance(res, dict) and res.get("ok") is not False:
+                self.chain.summarize("check", {"warnings": res.get("warnings"), "checked": res.get("checked"),
+                                               "kept": res.get("kept")})  # fmt: skip
+                self.chain.end("check")
+            elif isinstance(res, dict):
+                self.chain.end("check", "failed", str(res.get("error") or "the checks failed"))
+            else:
+                self.chain.end("check", "failed", "the check process ended without a result")
+        except Exception as exc:  # noqa: BLE001 - status only
+            print(f"status: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
     def _read_err(self) -> None:
         for raw in self.proc.stderr:
@@ -2397,6 +2765,23 @@ def cmd_relink(args) -> dict:
 # --------------------------------------------------------------------------- parser
 
 
+def _wait_args(sp) -> None:
+    """--no-wait / --max-wait: what a GPU command does when another command holds the GPU lock (default: wait)."""
+    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    sp.add_argument("--max-wait", type=_minutes, default=None, metavar="MINUTES",
+                    help="give up (with an error naming the holder) after waiting this many minutes for the GPU lock")
+
+
+def _minutes(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        value = float("nan")
+    if not value > 0 or value == float("inf"):
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number of minutes above 0")
+    return value
+
+
 def _engine_args(sp) -> None:
     """--engine / --tag: a side run in its own frames folder and MP4 (bsa.engine_runs); the approved run is kept."""
     sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
@@ -2412,7 +2797,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("short")
     sp.add_argument("--shot")
     sp.add_argument("--out")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     sp.add_argument("--guides", action="store_true",
                     help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
                     "framing band outlined")
@@ -2424,7 +2809,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("estimate", help="final render time for EEVEE and Cycles, in seconds")
     sp.add_argument("short")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     sp.set_defaults(fn=cmd_estimate)
 
     sp = sub.add_parser("render", help="render PNG frames (resumable; only shots that changed render again)")
@@ -2435,8 +2820,10 @@ def build_parser() -> argparse.ArgumentParser:
     redo.add_argument("--frames", help="with --shot: render just these frames again, e.g. 120-140,200")
     redo.add_argument("--redo-flagged", action="store_true",
                       help="render again the frames the last frame-check flagged (flicker: and one either side)")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     _engine_args(sp)
+    sp.add_argument("--max-frames", type=int, default=None, help=argparse.SUPPRESS)  # a chunk of a long render
+    sp.add_argument("--in-chunk", action="store_true", help=argparse.SUPPRESS)  # the parent holds the lock and status
     sp.set_defaults(fn=cmd_render)
 
     sp = sub.add_parser("check", help="scene checks into review/checks.json (only shots that changed)")
@@ -2479,14 +2866,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("extremes", help="full-size stills of each hero at the min/max of each animated channel")
     sp.add_argument("short")
     sp.add_argument("--shot")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     sp.set_defaults(fn=cmd_extremes)
 
     sp = sub.add_parser("test-frames", help="single frames at fractions of shots, reduced size, into review/test-frames/")
     sp.add_argument("short")
     sp.add_argument("--at", type=_at_spec, nargs="+", required=True, metavar="SHOT:FRACTION", help="e.g. s01:0.5")
     sp.add_argument("--scale", type=float, default=0.4, help="fraction of the full resolution (default 0.4)")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     sp.add_argument("--guides", action="store_true",
                     help="also write <name>-guides.png beside each frame: the caption zone, the top cards and the "
                     "framing band outlined")
@@ -2498,7 +2885,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--scale", type=float, default=0.33,
                     help="fraction of the full size (default 0.33), rounded to the nearest 5%%")
     sp.add_argument("--shots", metavar="S01,S02", help="only these shots, comma separated; else every shot")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     sp.set_defaults(fn=cmd_camtest)
 
     sp = sub.add_parser("preview", help="after an edit: build, mark build done, mix, check, render, frame-check, edit")
@@ -2506,7 +2893,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--rebuild", action="store_true", help="run build.py even when the .blend looks current")
     sp.add_argument("--no-build", action="store_true", help="MCP mode: never run build.py (rebuild through the MCP)")
     sp.add_argument("--every", type=int, default=5, help="check every Nth frame (as BLENDER check)")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     _engine_args(sp)
     sp.set_defaults(fn=cmd_preview)
 
@@ -2544,7 +2931,7 @@ def build_parser() -> argparse.ArgumentParser:
                                                   "of the built one (in memory only)")  # fmt: skip
     sp.add_argument("--engine", choices=["cycles", "eevee"], default=None,
                     help="the render engine (the user's choice); else the short's approved engine or render.engine")
-    sp.add_argument("--no-wait", action="store_true", help="fail at once when another command holds the GPU lock")
+    _wait_args(sp)
     sp.set_defaults(fn=cmd_look)
 
     sp = sub.add_parser("probe", help="size, fps, frames and audio of an MP4")
@@ -2604,6 +2991,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"ok": False, "error": "invalid command line (usage on stderr)"})
         return int(exc.code or 0)
     status = _say_starting(args)
+    guard = _start_memwatch(args, status)
     try:
         place = _gpu_place(args) if args.command in GPU_COMMANDS - {"render"} else None  # render takes it itself
         if place is not None:  # (so the preview chain's render does too)
@@ -2611,8 +2999,9 @@ def main(argv: list[str] | None = None) -> int:
                 out = args.fn(args)
         else:
             out = args.fn(args)
-        _warn_stale_build(args, out)
-        _add_page_notes(args, out)
+        if not getattr(args, "in_chunk", False):  # (the parent says these once)
+            _warn_stale_build(args, out)
+            _add_page_notes(args, out)
     except Exception as exc:  # noqa: BLE001 - every failure becomes one plain line for Claude to relay
         plain = isinstance(exc, (freshness.StaleError, CliError, jobstate.StateDamaged))
         message = _one_line(exc if plain else f"{type(exc).__name__}: {exc}")
@@ -2622,6 +3011,8 @@ def main(argv: list[str] | None = None) -> int:
     except BaseException:  # interrupted before its run started: the "starting" status must not stay running
         _settle_starting(status, "stopped")
         raise
+    finally:
+        _stop_memwatch(guard)
     _settle_starting(status, None)
     _emit(out)
     return 0
@@ -2629,6 +3020,32 @@ def main(argv: list[str] | None = None) -> int:
 
 RECORDING = {"render", "check", "frame-check", "edit", "preview"}  # the commands that keep a live status
 GPU_COMMANDS = {"render", "extremes", "estimate", "test-frames", "look", "style-sample", "stills", "camtest"}  # one at a time per workspace (gpulock); preview via render
+MEMWATCHED = GPU_COMMANDS | {"check", "preview"}  # the commands the memory guard (bsa.memwatch) watches
+
+
+def _start_memwatch(args, status):
+    """Start the memory guard (bsa.memwatch) beside a heavy command: a watchdog process that stops this Blender, with
+    a plain message, if it grows past render.memory_limit_gb. Never stops the command from running."""
+    if args.command not in MEMWATCHED:
+        return None
+    try:
+        from bsa import machine, memwatch
+
+        try:
+            short = _short_dir(args.short).name if getattr(args, "short", None) else args.command
+        except Exception:  # noqa: BLE001 - the command itself reports a bad short
+            short = str(getattr(args, "short", None) or args.command)
+        return memwatch.start(PLUGIN_ROOT, short=short, command=args.command, status=status,
+                              settings=settings.load_settings(), ram_gb=machine._ram_gb())  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - the guard is a safety net, not a requirement
+        print(f"memory guard: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _stop_memwatch(guard) -> None:
+    from bsa import memwatch
+
+    memwatch.stop(guard)
 
 
 def _gpu_place(args) -> Path | None:
@@ -2661,8 +3078,10 @@ def _gpu(args, sdir: Path, short: str, command: str, preset: str | None = None):
             rs.note_waiting(status, text)
 
     try:
+        max_wait = getattr(args, "max_wait", None)
         ctx = gpulock.held(gpulock.lock_path(sdir.parent), short=short, command=command,
-                           wait=not getattr(args, "no_wait", False), on_wait=on_wait)  # fmt: skip
+                           wait=not getattr(args, "no_wait", False), on_wait=on_wait,
+                           max_wait_s=max_wait * 60 if max_wait else None)  # fmt: skip
         ctx.__enter__()
     except gpulock.GpuBusy as exc:
         raise CliError(str(exc)) from exc
@@ -2678,7 +3097,8 @@ def _say_starting(args):
     """For a command that records a live status: write "starting" (this process, the command) to it at once,
     before the command reads anything or opens the .blend, so the last run is never shown as current meanwhile.
     Returns the status path, or None. A status problem never stops the command."""
-    if args.command not in RECORDING or getattr(args, "in_chain", False):  # the chain beside it says it started
+    if args.command not in RECORDING or getattr(args, "in_chain", False) or getattr(args, "in_chunk", False):
+        # (the chain beside it, or the parent of a render chunk, says it started)
         return None
     try:
         from bsa import render_status as rs
