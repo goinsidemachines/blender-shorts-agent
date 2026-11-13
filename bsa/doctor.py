@@ -132,6 +132,26 @@ def run(settings: dict, workspace: Path | None, short=None, server: dict | None 
             _server(server)]  # fmt: skip
 
 
+def run_cheap(settings: dict, workspace: Path | None, short=None, server: dict | None = None,
+              cache_dirs: list[Path] | None = None, saved: list[dict] | None = None) -> list[dict]:  # fmt: skip
+    """The checks that cost nothing (GPU lock, voice, disk, font, server) run again; the Blender check (it starts
+    Blender) is carried over from `saved`, the checks an earlier doctor wrote, and only run when there is none. This
+    keeps the page's health banner current after things change (an assets download, a voice install, a font)."""
+    settings = settings or {}
+    old = next((c for c in saved or [] if isinstance(c, dict) and c.get("id") == "blender"), None)
+    return [old or _blender(settings), _gpu(workspace), _voice(settings), _disk(workspace),
+            _font(settings, short, cache_dirs), _server(server)]  # fmt: skip
+
+
+def saved_checks(sdir: Path) -> list[dict]:
+    """The checks in <short>/review/doctor.json ([] when there is none or it can't be read)."""
+    try:
+        checks = json.loads((Path(sdir) / "review" / "doctor.json").read_text("utf-8")).get("checks")
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [c for c in checks if isinstance(c, dict)] if isinstance(checks, list) else []
+
+
 def save(sdir: Path, checks: list[dict]) -> Path:
     """Write <short>/review/doctor.json for the review page."""
     path = Path(sdir) / "review" / "doctor.json"

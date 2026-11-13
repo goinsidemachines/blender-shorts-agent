@@ -743,8 +743,7 @@ def _page_open(args, sdir: Path) -> dict:
     except launch.ServerUnavailable as exc:
         info, failed = None, exc
     doctor_json = sdir / "review" / "doctor.json"
-    if not doctor_json.is_file():
-        _doctor_checks(sdir, ws, info, save=True)
+    _doctor_checks(sdir, ws, info, save=True, cheap=True)  # the banner shows today's state, not the last doctor's
 
     def ensure(_ws):
         if failed is not None:
@@ -762,7 +761,10 @@ def _page_open(args, sdir: Path) -> dict:
     return {**out, "health": health, "phone": phone}
 
 
-def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool) -> list[dict]:
+def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save: bool,
+                   cheap: bool = False) -> list[dict]:  # fmt: skip
+    """Run doctor. `cheap` runs again only the checks that cost nothing (Blender's result is kept from the last
+    doctor), for the page and for after something that changes them (an assets download)."""
     from bsa import doctor, fonts
 
     short = None
@@ -771,7 +773,11 @@ def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save
             short = load(sdir)
         except CliError:
             short = None  # a bad spec is validate's finding; the font check falls back to the brand font
-    checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
+    if cheap and sdir is not None:
+        checks = doctor.run_cheap(settings.load_settings(), ws, short, server=server,
+                                  cache_dirs=fonts.font_caches(sdir), saved=doctor.saved_checks(sdir))  # fmt: skip
+    else:
+        checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
     if save and sdir is not None:
         doctor.save(sdir, checks)
     return checks
@@ -1523,6 +1529,10 @@ def cmd_assets(args) -> dict:
     polyhaven.record(short, plans)
     save_short(short, short_json(sdir))
     path.unlink()
+    from bsa.review import launch
+
+    # a new font or sound changes what doctor says (the caption font); refresh the page's health banner now
+    _doctor_checks(sdir, sdir.parent, launch.server_info(sdir.parent), save=True, cheap=True)
     return {"files": {k: [str(p) for p in v] for k, v in files.items()}}
 
 
