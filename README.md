@@ -47,20 +47,25 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
-## What's new in 0.5.0
+## What's new in 0.6.0
 
-- **[One page per short](#how-it-works)** with notes, approvals, a timeline, before and after, a fact panel and a
-  voice check.
-- **[Thumbnails, post pack and caption files](#9-post)**, including subtitles in other languages.
-- **[Your brand](#your-brand)**: seven styles, four sets, cards drawn by the plugin, and a colour-blind check.
-- **[Camera](#camera)**: `camera.follow`, one-take shorts where the picture sets the clock, and a quick grey camera
-  test you can approve before anything renders.
-- **[Faster checks](#checks-that-catch-what-youd-miss)**: the preview renders while the checks run, a re-check tests
-  only what changed, and one run lists every overlapping pair, grouped.
-- **[Make the next one faster](#make-the-next-one-faster)**: start from an earlier short, speak in paragraphs, and
-  set your voice engine's own settings.
-- **Fewer false alarms**: narrow tags for real designs (`fast`, `swap`, `rigid`, `assembly`, `volume`,
-  `hero:s07@0.6`), and many fixes from real shorts.
+Every fix in 0.6.0 comes from a real short, and every output now gets a check of its own, so the same kind of
+bug can't ship silently again.
+
+- **[Nothing ships broken](#checks-that-catch-what-youd-miss)**: an end card that came out black, a thumbnail title
+  you couldn't see, a kicker covering a three-line title, a line cut at the wrong word. Each is now caught on the
+  output itself.
+- **[Safe on your machine](#7-render)**: a memory guard stops a runaway Blender before it takes the PC down, long
+  renders run in chunks in fresh Blenders, and a quick scan after the build warns about heavy scenes before any
+  render.
+- **[Picks up where it stopped](#7-render)**: an interrupted check or render resumes from what it finished, and the
+  live status says what really happened.
+- **[Release files in one place](#8-final)**: a delivery folder with the final video and thumbnails, a command of
+  your own run after every final, and a hand-edited post pack that is never overwritten.
+- **[A professional sound mix](#sound-voice-and-look)**: levelled effects, soft room tone, a short room reverb,
+  ducking under the voice and smooth crossfades at cuts.
+- **Fewer false alarms**: fades count as entrances, and machine words (brake drum, levelling foot, spider gear) no
+  longer trip your hard rules.
 
 ## How it works
 
@@ -144,6 +149,14 @@ A live view of the whole chain (timeline, build, mix, checks, render, frame-chec
 frames done, time left, per-shot thumbnails and any warning as it appears. The checks run beside the preview
 render, and only shots whose content changed render again.
 
+- **Memory guard**: a Blender that grows past `render.memory_limit_gb` (by default 60 % of your RAM) is stopped, with
+  the likely cause, before it takes the machine down.
+- **Chunked renders**: long renders run `render.chunk_frames` frames at a time (250 by default), each chunk in a
+  fresh Blender, so memory stays bounded and a crashed render resumes from the frames on disk. An interrupted check
+  resumes too.
+- **A clear GPU queue**: a command waiting for the GPU shows who holds it, for how long and with how much memory;
+  `--max-wait` gives up instead of waiting for hours.
+
 ### 8. Final
 
 <img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/stage-final.jpg" width="640" alt="Final stage">
@@ -151,12 +164,17 @@ render, and only shots whose content changed render again.
 The video, a timeline of every shot and line, a before and after for anything you asked to change, and a
 fact panel with each number and its source.
 
+Set `render.deliver_dir` and the final video and both thumbnails are copied there as soon as the final is done.
+`hooks.after_final` runs a command of your own afterwards (a backup or an upload, say) with the short's paths; it
+never fails the final.
+
 ### 9. Post
 
 <img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/stage-post.jpg" width="640" alt="Post stage">
 
 Thumbnail candidates to choose from, the post pack with copy buttons, the caption files (and any
-translations), and a before-you-post checklist.
+translations), and a before-you-post checklist. There is one post file per platform you post to, with fixed headings.
+If you edited the post pack by hand, a new run writes `post-pack.generated.md` beside it and leaves yours alone.
 
 ## Checks that catch what you'd miss
 
@@ -174,6 +192,10 @@ frame, before you see the video.
 
 Every finding says what is wrong, where (object, shot, frame, position) and how to fix it, and the agent fixes it
 itself and checks again. Single bad frames can be re-rendered on their own.
+
+The outputs are checked too, not just the scene: an end card that comes out one flat colour is refused, a thumbnail
+title always has a visible colour and its text boxes are measured for overlaps, and a narration line spoken far
+faster or slower than the rest of its take is re-spoken.
 
 - **Fast:** the preview renders while the checks run in a second Blender, with a progress line per shot. A re-check
   after a fix tests only the objects and pairs that changed. Errors still block the final.
@@ -213,14 +235,20 @@ Add a hard rule: no humans, no people, body parts, faces, silhouettes or stick f
   one command. Any voice problem means captions only, and the short goes on.
 - **Sound effects** from recorded CC0 packs (OpenGameArt, Kenney, Wikimedia Commons, Freesound with a key), placed
   on the moments your simulation reports. Designed UI sounds are kept out of a natural-sounds-only mix.
+- **A professional mix**: each effect is levelled to the same loudness and shaped to its kind, effects get a short
+  room reverb, the voice ducks them ahead of time, sustained sounds crossfade at cuts, and a limiter keeps peaks
+  clean. A soft room tone (`sound.room_db`) runs under everything, the closing card included, so silence never
+  sounds dead.
+- **A voice check for any voice**, your own tool included: `CLI voice use-local` points the plugin at a speech
+  recogniser you already have, with nothing downloaded.
 - **Captions** timed to the narration, kept clear of the platform's buttons, and checked for missing glyphs.
 - **Your brand or a fresh look per short**: your colours, fonts, handle and end card, or a new style chosen on the
   story page.
 - **A closing card**: set your website (and, if you like, your own 1080x1920 image and a line for the narrator) and
   every short ends on it for a few seconds, the line read over it, so viewers who can't tap a link still see and hear
   where to go. Without an image the plugin makes one from your brand. No music or sound is added.
-- **Honesty**: every number on screen or in the narration has a source; exaggerated or slowed motion carries a badge;
-  myths are cut.
+- **Honesty**: every number on screen or in the narration has a source; exaggerated or slowed motion carries a badge
+  (a shot's `time_scale` other than 1 needs one); myths are cut.
 
 ## Your brand
 
@@ -261,7 +289,10 @@ Every camera style is your choice, short by short:
 - **Machinery sounds**: two CC0 packs with steam hiss, machine rumble and impacts, offered with their size before
   anything downloads.
 - **Move your workspace** with `CLI workspace move NEW`: it refuses while anything is running, fixes every stored
-  path, and never deletes the old folder.
+  path, and never deletes the old folder. `CLI workspace rename SHORT NEW-SLUG` renames one short when its title
+  changed.
+- **Frames from the timeline**: build code asks `bsa.timeline.at("s07", 1.5)` for a frame, and after narration the
+  plugin lists the shots that moved, so nothing keyed stays at an old frame.
 
 ## Built for real machines
 
@@ -312,8 +343,8 @@ hand whenever a [new release](https://github.com/goinsidemachines/blender-shorts
 /plugin update blender-shorts-agent@blender-shorts-agent
 ```
 
-After updating to 0.5.0 with a local voice, run `CLI voice install <voice>` once so the voice runner knows the new
-settings.
+After updating to 0.6.0 with a local voice, run `CLI voice install <voice>` once so the voice runner picks up its
+fixes.
 
 **Script mode or MCP mode.** By default the plugin drives Blender in the background from the command line. If you
 use the [Blender MCP](docs/mcp-setup.md) add-on, it can build in your open Blender instead, so you watch the scene
