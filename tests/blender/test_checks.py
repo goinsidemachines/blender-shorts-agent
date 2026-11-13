@@ -662,6 +662,46 @@ def test_an_object_switched_on_inside_the_frame_pops_in():
     assert "switched on" in key_f.message and "grows" in next(f for f in found if f.obj == "Grow").message
 
 
+def _fade(mat, socket_of, frame_from, frame_to, v0, v1):
+    sock = socket_of(mat.node_tree)
+    sock.default_value = v0
+    sock.keyframe_insert("default_value", frame=frame_from)
+    sock.default_value = v1
+    sock.keyframe_insert("default_value", frame=frame_to)
+
+
+def test_a_row_switched_on_at_the_start_of_a_keyed_material_fade_is_not_a_pop_in():
+    """E-24: switched on while its alpha, mix factor or emission strength is fading up on screen = an entrance."""
+    sc = _scene()
+    cases = {
+        "FadeAlpha": lambda t: t.nodes["Principled BSDF"].inputs["Alpha"],
+        "FadeStrength": lambda t: t.nodes["Principled BSDF"].inputs["Emission Strength"],
+    }
+    for i, (name, socket_of) in enumerate(cases.items()):
+        obj = _cube(name, (-1 + i, 0, 0.5), size=0.5)
+        obj.data.materials[0] = bpy.data.materials.new(name + "Mat")
+        mat = obj.data.materials[0]
+        mat.use_nodes = True
+        _fade(mat, socket_of, 15, 25, 0.0, 1.0)
+        _switch_on(obj, 15)
+    mixed = _cube("FadeMix", (2, 0, 0.5), size=0.5)
+    mixed.data.materials[0] = bpy.data.materials.new("MixMat")
+    mm = mixed.data.materials[0]
+    mm.use_nodes = True
+    mix = mm.node_tree.nodes.new("ShaderNodeMixShader")
+    _fade(mm, lambda t: t.nodes[mix.name].inputs["Fac"], 15, 25, 1.0, 0.0)  # transparent to opaque
+    _switch_on(mixed, 15)
+    plain = _cube("NoFade", (0, 0, 2.0), size=0.5)
+    _switch_on(plain, 15)  # no fade at all: still a pop
+    found = [f.obj for f in checks.run_checks(sc, _timeline()) if f.check == "pop_in"]
+    assert found == ["NoFade"], found
+    plain.data.materials[0] = bpy.data.materials.new("Flat")
+    plain.data.materials[0].use_nodes = True
+    _fade(plain.data.materials[0], lambda t: t.nodes["Principled BSDF"].inputs["Alpha"], 3, 12, 0.0, 1.0)
+    found = [f.obj for f in checks.run_checks(sc, _timeline()) if f.check == "pop_in"]
+    assert found == ["NoFade"], found  # a fade that is over by the switch frame is not an entrance
+
+
 def test_per_shot_hero_only_checked_in_its_shots():
     sc = _scene()
     hero = _cube("Hero", (0, 0, 0.5))
