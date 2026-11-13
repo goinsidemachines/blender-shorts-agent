@@ -40,6 +40,10 @@ missing or too old, tell the user plainly (Blender 4.5 or newer from blender.org
 - **CLI** = `"<blender_python>" "<root>/bsa_cli.py"`. Prints one JSON object on stdout. On failure: non-zero exit,
   one plain line on stderr (relay it in your own words).
 - **BLENDER** = `"<blender>" -b --factory-startup --python-exit-code 1 --python "<root>/bsa_blender.py" --`.
+  When BLENDER steps are chained (build, check, preview, relink in a row), put them in a bash script (`#!/usr/bin/env
+  bash`, one `BLENDER=(...)` array or the full command on each line), not a one-line shell variable: zsh does not
+  split an unquoted `$B` into words, so `$B build SHORT` fails there with "command not found". Bash arrays
+  (`"${BLENDER[@]}" build SHORT`) work in both.
   Blender prints its own log lines, so read the line starting `BSA_RESULT ` (JSON). Failure: non-zero exit, a
   `BSA_RESULT` line with `"ok": false` and the `error`, and the same plain line on stderr (relay it). Don't pass the
   .blend: each command opens `blend/short.blend` itself when it needs it, after it has marked its run as starting in
@@ -140,7 +144,7 @@ Run these commands through the **Bash** tool (Git Bash on Windows), not PowerShe
    change. Talk about what is on it; never paste short.json or ask the user to open your working files.
    - **Open it once, at the interview:** `CLI page SHORT` (`playbook/01-interview.md`). Its result has `url` and
      `opened`. When `opened` is false, the page did not open (or never checked in): tell the user it didn't open
-     and give the `url` as a link they can click. Never carry on as if it opened. Relay anything in `health`.
+     and give the `url` as a link they can click. Never carry on as if it opened. Relay anything in `health`. (The cheap doctor checks run again each time the page is opened and after `assets download`, so the page's health banner shows the current state.)
    - **Show a stage:** when the tab is already open, `CLI page SHORT --stage STAGE` switches it there (Python can't
      bring the browser window to the front), so say so: "the page has switched to the storyboard".
    - **Wait for a yes:** after showing a stage that needs one (story, storyboard, engine), run `CLI page wait SHORT

@@ -65,8 +65,9 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   (it would show in the video);
 - avoid what makes a scene heavy: right after a build the result lists `heavy` warnings (also the build step's
   summary). A live Boolean on an animated object, parent or operand is evaluated every frame: apply it once at build
-  time. A .blend over 300 MB is often many copied meshes: share one mesh between copies
-  (`bpy.data.objects.new(name, shared_mesh)`, not `mesh.copy()`). Freestyle over a long range is slow: see
+  time. A .blend over 300 MB is often many copied meshes: scattered assets (bolts, rivets, tiles, leaves, a
+  row of the same part) share one mesh between copies, linked duplicates (`bpy.data.objects.new(name, shared_mesh)`:
+  one mesh datablock, many objects), never `mesh.copy()` or a duplicate that copies the data once per copy. Freestyle over a long range is slow: see
   `render.chunk_frames`;
 - save to `blend/short.blend`. Rebuild after every edit to build.py or a script it imports: when `source/build.py`,
   or a local script under `source/` that it imports (followed through their imports), is newer than
