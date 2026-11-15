@@ -189,7 +189,7 @@ def test_a_chunk_child_is_started_like_the_side_check(monkeypatch):
     args = types.SimpleNamespace(preset="final", shot="s02", engine="cycles", tag="fast")
     cmd = bsa_blender._chunk_command(args, Path("/ws/pendulum"), 250)
     assert cmd[:6] == ["/b/blender", "-b", "--factory-startup", "--python-exit-code", "1", "--python"]
-    assert cmd[cmd.index("--") + 1 :] == ["render", "/ws/pendulum", "--preset", "final", "--max-frames", "250",
+    assert cmd[cmd.index("--") + 1 :] == ["render", str(Path("/ws/pendulum")), "--preset", "final", "--max-frames", "250",
                                           "--in-chunk", "--shot", "s02", "--engine", "cycles", "--tag", "fast"]
 
 

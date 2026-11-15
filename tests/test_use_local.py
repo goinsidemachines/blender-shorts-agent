@@ -82,7 +82,9 @@ def test_weights_and_python_are_linked_and_counted_as_installed(fake, tmp_path, 
     out = install.use_local("tiny", fake, py)
     assert install.installed() == {"tiny": True} and out["installed"] == {"tiny": True}
     dest = bsa_home / "voices" / "weights" / "tiny"
-    assert (dest / "model.bin").read_bytes() == FILES["model.bin"] and (dest / "model.bin").is_symlink()
+    assert (dest / "model.bin").read_bytes() == FILES["model.bin"]
+    if os.name != "nt":  # Windows without the symlink right falls back to a hard link or a copy
+        assert (dest / "model.bin").is_symlink()
     assert json.loads((dest / ".complete").read_text()) == {"repo": "o/tiny", "revision": "abc"}
     assert json.loads((dest / ".local.json").read_text())["weights_from"] == str(fake.resolve())
     assert install.local_links()["tiny"]["python_from"] == str((tmp_path / "env").resolve())
@@ -142,7 +144,7 @@ def test_a_missing_package_is_refused_but_other_versions_are_fine(fake, tmp_path
 
 def test_a_python_outside_a_venv_is_refused(fake):
     with pytest.raises(NarrationError, match="not inside a virtual environment"):
-        install.use_local("tiny", fake, Path(sys.base_prefix) / "bin" / "python3")
+        install.use_local("tiny", fake, Path(sys.base_prefix) / ("python.exe" if os.name == "nt" else "bin/python3"))
 
 
 def test_without_python_an_installed_environment_is_needed(fake, tmp_path, bsa_home):

@@ -21,11 +21,13 @@ SAMPLE = ROOT / "tests" / "e2e" / "pendulum" / "source" / "short.json"
 
 
 def run(home: Path, *args, cwd: Path | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
-    env = {**os.environ, "BSA_HOME": str(home)}
+    # one encoding both ways: on Windows the locale default (cp1252) garbles non-ASCII paths otherwise
+    env = {**os.environ, "BSA_HOME": str(home), "PYTHONIOENCODING": "utf-8"}
     env.pop("ELEVENLABS_API_KEY", None)
     return _proc.run(
         [sys.executable, str(CLI), *map(str, args)],
-        check=False, capture_output=True, text=True, env=env, cwd=str(cwd or home), timeout=timeout,
+        check=False, capture_output=True, text=True, encoding="utf-8", env=env, cwd=str(cwd or home),
+        timeout=timeout,
     )  # fmt: skip
 
 

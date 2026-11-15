@@ -19,7 +19,7 @@ def test_ssl_context_falls_back_to_a_system_bundle(monkeypatch, tmp_path):
         net.ssl_context()
     finally:
         net.ssl_context.cache_clear()
-    assert loaded == [str(bundle)]
+    assert [c for c in loaded if c] == [str(bundle)]  # (Windows also loads its system store at creation)
 
 
 def test_ssl_context_keeps_the_default_when_it_can_verify(monkeypatch):
@@ -31,7 +31,7 @@ def test_ssl_context_keeps_the_default_when_it_can_verify(monkeypatch):
         assert net.ssl_context().verify_mode == ssl.CERT_REQUIRED
     finally:
         net.ssl_context.cache_clear()
-    assert loaded == []
+    assert [kw for kw in loaded if "cadata" not in kw] == []  # (Windows loads its system store at creation)
 
 
 def test_user_cert_env_is_trusted(monkeypatch):

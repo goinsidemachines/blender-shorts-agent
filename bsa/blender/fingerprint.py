@@ -222,6 +222,9 @@ class _Hasher:
                 h.update(b"!" + ident.encode())
                 continue
             h.update(ident.encode())
+            if ident == "is_visible" and isinstance(struct, bpy.types.LayerCollection):
+                # runtime state: False for every scene but the window's (always, after a reload in background mode)
+                value = not (struct.exclude or struct.hide_viewport)
             if kind in ("BOOLEAN", "INT", "FLOAT", "STRING", "ENUM"):
                 h.update(_enc(value))
             elif kind == "POINTER":
