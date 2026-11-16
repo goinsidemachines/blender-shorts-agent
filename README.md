@@ -47,6 +47,12 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
+## What's new in 0.6.1
+
+- **Windows**: the full test suite now passes on Windows 11 with Blender 5.3.
+- **No needless re-renders**: a scene's fingerprint no longer changes after the file is reloaded in the background,
+  so cached results are kept when nothing in the scene changed.
+
 ## What's new in 0.6.0
 
 Every fix in 0.6.0 comes from a real short, and every output now gets a check of its own, so the same kind of
