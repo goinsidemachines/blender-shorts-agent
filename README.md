@@ -56,6 +56,9 @@ A small fix release.
 - **Animated geometry-nodes values**: keys on a modifier's own inputs showed only frame 1 in renders on Blender 5.3.
   New `bsa.blender.controls` keys values on a control Empty instead, with negative values kept, and the build
   chapter explains it.
+- **Loudness master**: a dense, peaky mix now reaches its loudness target under the true-peak ceiling (it measures
+  after the limiter and makes up the level) instead of landing about half an LU short.
+- **Target report**: the "last line echoes the hook" row names the shared words when it passes.
 
 ## What's new in 0.7.0
 
