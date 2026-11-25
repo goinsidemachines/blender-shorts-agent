@@ -1525,6 +1525,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
             warnings.append(f"the end card stays in the upper third without checking it is clear of the heroes ({exc})")
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
     mix = sdir / "audio" / "mix.wav"
+    if args.preset == "final":
+        warnings += _remix_if_stale(sdir, short, s)
     end, card_warnings = _closing_plan(sdir, short, tl, mix)
     warnings += card_warnings
     n_frames = tl.n_frames + (end["n_frames"] if end else 0)
@@ -1577,6 +1579,27 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     return {**out, "warnings": warnings} if warnings else out
 
 
+def _remix_if_stale(sdir: Path, short, s: dict) -> list[str]:
+    """Before a final edit uses audio/mix.wav: re-make the mix (CLI mix, the same code) when it was not mastered as the
+    current master settings and code would (bsa.audio.master.stale_reason), so the final never keeps an old loudness.
+    Returns the note to tell the user ("remixed: ..."). Only the final: a preview's loudness is not checked, and
+    BLENDER preview already runs the mix itself."""
+    from bsa import presets
+    from bsa.audio import master as audio_master
+
+    values, _ = presets.master_resolved(s, short)
+    why = audio_master.stale_reason(sdir, values)
+    if why is None:
+        return []
+    import bsa_cli
+
+    try:
+        bsa_cli.cmd_mix(argparse.Namespace(short=str(sdir)))
+    except bsa_cli.CliError as exc:
+        raise CliError(f"audio/mix.wav needs re-making ({why}) but the mix failed: {exc}") from exc
+    return [f"remixed: {why}; audio/mix.wav was made again before the edit"]
+
+
 def _loudness_check(sdir: Path, short, s: dict, mp4: Path) -> tuple[dict, list[str]]:
     """(the record, warnings) of measuring the audio of the final video as a viewer gets it: integrated loudness, true
     peak and loudness range against the master settings. Written to review/loudness.json. Never blocks: a miss (more
@@ -1601,7 +1624,8 @@ def _loudness_check(sdir: Path, short, s: dict, mp4: Path) -> tuple[dict, list[s
             if problems:
                 record["problems"] = problems
                 warnings.append("the final video's sound is off its master targets: " + "; ".join(problems)
-                                + ". Run CLI mix SHORT and the final edit again, or change the master settings.")  # fmt: skip
+                                + ". The mix was just made with the current master, so change the master settings (or the sound itself) "
+                                "if this is not what you want.")  # fmt: skip
     except Exception as exc:  # noqa: BLE001 - a measuring problem never fails the final
         record["error"] = str(exc)
         warnings.append(f"the final video's loudness was not measured: {exc}")

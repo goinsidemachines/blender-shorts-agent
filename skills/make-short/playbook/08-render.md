@@ -335,7 +335,7 @@ The single steps, when you need one on its own:
      has `master` (before, after, targets). The final edit then measures the audio of the finished MP4 and writes
      `review/loudness.json` (`integrated_lufs`, `true_peak_dbtp`, `lra_lu`, `targets`, `ok`); loudness more than
      0.5 LU off, a true peak more than 0.2 dB over the ceiling or a range over `max_lra_lu` is a warning in the
-     edit's result, never a failed final. After changing a master setting, run `CLI mix SHORT` and the edit again.
+     edit's result, never a failed final. `CLI mix` stamps `audio/mix.json` (the master values and the master's version); the final edit compares it with the current master and, when it is missing or differs (a changed master setting, an upgraded plugin), re-makes the mix itself first and says `remixed: ...` in its warnings, so there is nothing to re-run by hand. A preview edit uses the mix as it is.
 4. `BLENDER probe "<short>/out/<slug>.mp4"` if you want to double-check: width 1080, height 1920, fps 30, frames
    equal to the timeline's `n_frames`, `has_audio` true.
 
