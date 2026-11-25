@@ -47,6 +47,27 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
+## What's new in 0.7.0
+
+Your style, written down once. Everything below is off or unchanged until you set it, so existing shorts look and
+sound exactly as before.
+
+- **Style presets**: keep your pacing, caption size, loop and loudness as a named preset in your settings
+  (`preset save NAME --from SHORT`), pick one as your default, or choose one per short. Two ship with the plugin:
+  `explainer` (the classic pace) and `fast-loop` (tight gaps, 1–3 word captions, loop ending).
+- **Pacing you control**: the gaps between lines, the lead-in and tail, the end-card hold and the size of caption cards
+  are settings now (`timing.*`, `captions.*`), in every process, background renders included.
+- **Loop endings**: `loop: true` drops the end and closing cards, blends the sound across the loop point, and a new
+  check tells you which object or camera move doesn't come back to frame 1. Builder helpers make whole turns and
+  smooth joins easy.
+- **Loudness master**: the final mix is brought to a target level (−14 LUFS, −1 dBTP by default; set your own), and the
+  finished video is measured again so you know it landed.
+- **Targets (optional)**: set the pace, longest pause, how many numbers you say, the most cuts, the length, when the
+  payoff lands, a hook that pays off at the end, or motion in the very first frame. Each one is a warning with the
+  measured value next to your target, on the review page and with `check-targets`.
+- **Captions without a box**: `brand.caption.style outline` draws bold white text with a dark outline and soft shadow,
+  and a `*word*` in a line is drawn in your highlight colour.
+
 ## What's new in 0.6.1
 
 - **Windows**: the full test suite now passes on Windows 11 with Blender 5.3.
