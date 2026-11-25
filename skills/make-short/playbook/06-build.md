@@ -450,6 +450,32 @@ within 0.01. It warns, naming the object, the channel and the frames; fix it in 
 speed changes at the loop point. A short whose first and last shots are in different scenes cannot be measured:
 look at the last frame next to the first.
 
+## Animating geometry-nodes values
+
+Do not key a geometry-nodes modifier's own inputs (`mod.properties.inputs[...]["value"]` plus `keyframe_insert`). The
+keys are written and survive saving, but on Blender 5.3 a frame-by-frame render (`render_range`, so every background
+render) shows every frame as frame 1: the modifier is not re-evaluated when the frame changes. Tested with a plain
+`bpy.ops.render.render(animation=True)` as well, so it is Blender, not the plugin; rendering one frame at a time after
+`frame_set` does move, which is why it can look fine in the viewport and in a single still.
+
+Key the values on a control Empty's **location** and read them inside the node group instead. Never use scale:
+Object Info's Scale output loses the sign (a negative key comes back positive), which is why a value is never stored
+as `value + 1` any more.
+
+```python
+from bsa.blender import controls
+
+chans = controls.ControlSet("Wave", ["Lo", "Hi", "Phase", "A1", "A2"], collection=coll)  # 5 channels: 2 Empties
+chans.key("Phase", frames, phase_values)       # signed floats, any frames; linear between keys
+out = chans.wire(node_group)                   # once per group: adds Object inputs "Control 1", "Control 2",
+                                               # and returns {"Lo": socket, ...} to link inside the group
+chans.bind(modifier, node_group)               # points one modifier at this set's Empties
+```
+
+Three signed floats fit on one Empty (X, Y, Z); more channels get more Empties automatically. One node group serves
+every object: `wire` it once, then give each object its own `ControlSet` and `bind` it. Values that do not change
+over time can stay ordinary modifier inputs.
+
 ## Sound mix
 
 Write the mix after the build (it needs the final timing): `CLI mix SHORT` writes `audio/mix.wav` (voice at -15
