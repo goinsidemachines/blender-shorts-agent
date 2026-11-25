@@ -955,6 +955,7 @@ def cmd_validate(args) -> dict:
         rows, pace_warnings = _pacing(short, tl)
         warnings += pace_warnings
         source = "takes" if from_takes else "reading pace"
+        warnings += _targets_report(sdir, short)["warnings"]  # only when some target is set
     warnings += _font_and_sound_warnings(sdir, short)
     warnings += kit.problems(settings.load_settings(), short)
     out = {"ok": not errors, "errors": errors, "warnings": warnings, "pacing": rows, "pacing_from": source}
@@ -1169,6 +1170,9 @@ def cmd_narrate(args) -> dict:
             "provider"), message=message)  # fmt: skip
         out.update(status="captions-only", durations=None, message=message)
         out["timeline"] = cmd_timeline(args)
+    report = _targets_report(sdir, short)  # only when some target is set; warnings never block
+    if report["warnings"]:
+        out.setdefault("warnings", []).extend(report["warnings"])
     return out
 
 
@@ -1238,6 +1242,9 @@ def cmd_mix(args) -> dict:
         if card["voice_line"] and from_takes and not end["line_f0"]:
             out["warnings"] = [("the closing line has no take yet, so the closing card is silent: run CLI narrate "
                                 "SHORT again (it makes only the missing take), then mix")]  # fmt: skip
+    report = _targets_report(sdir, short, "final")  # the pause target again, on the mixed voice; only when set
+    if report["warnings"]:
+        out.setdefault("warnings", []).extend(report["warnings"])
     return out
 
 
@@ -1260,6 +1267,35 @@ def _one_page(sdir: Path, stage: str, open_: bool) -> dict:
         return {"page": None, "stage": stage,
                 "page_hint": f"The review page isn't running: CLI page SHORT --stage {stage} opens it."}  # fmt: skip
     return {"page": launch.page_url(info, sdir.name, stage), "stage": stage}
+
+
+def _targets_report(sdir: Path, short, stage: str = "narration") -> dict:
+    """Measure the script and edit targets that are set (bsa.targets) on what exists now, write review/targets.json and
+    return {"rows", "warnings", "notes"}. Nothing set: the empty report, no file. A problem measuring is a note, never
+    an error: a target only ever warns."""
+    from bsa import targets
+
+    s = settings.load_settings()
+    try:
+        if not targets.resolved(s, short):
+            return targets.report(sdir, short, s)
+        try:
+            tl, narrated = current_timeline(sdir, short)
+        except Exception:  # noqa: BLE001 - broken takes or a window overrun: the voice targets wait, narrate says why
+            tl, narrated = None, False
+        return targets.report(sdir, short, s, tl, sdir / "audio" / "vo", narrated, stage)
+    except Exception as exc:  # noqa: BLE001 - targets never block
+        return {"rows": [], "warnings": [], "notes": [f"targets were not measured: {_one_line(exc)}"]}
+
+
+def cmd_check_targets(args) -> dict:
+    """Every script and edit target that is set and measurable now: rows of target, measured, wanted and ok (ok null:
+    not measurable yet, the row's text says when). Always succeeds; writes review/targets.json."""
+    sdir = short_dir(args.short)
+    report = _targets_report(sdir, load(sdir))
+    if not report["rows"] and not report["notes"]:
+        report["note"] = "no targets are set (settings targets, a preset's targets or the short's own targets)"
+    return report
 
 
 def cmd_captions(args) -> dict:
@@ -2022,6 +2058,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("captions", help="SHORT: write the final video's SRT, VTT and transcript beside it")
     sp.add_argument("short")
     sp.set_defaults(fn=cmd_captions)
+
+    sp = sub.add_parser("check-targets", help="SHORT: measure the optional script and edit targets that are set "
+                        "(wpm, pauses, numbers, cuts, length, hook, payoff) and list them; never fails")  # fmt: skip
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_check_targets)
 
     sp = sub.add_parser("post", help="SHORT: write out/post-pack.md with every post field and file; lists problems")
     sp.add_argument("words", nargs="+")

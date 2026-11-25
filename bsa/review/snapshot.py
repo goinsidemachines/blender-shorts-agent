@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from bsa import captions, engine_runs, feedback, jobstate, messages, presets, render_status, rules, timing
+from bsa import captions, engine_runs, feedback, jobstate, messages, presets, render_status, rules, targets, timing
 from bsa import closing as closing_mod
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
@@ -816,9 +816,10 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"storyboard": ("style_preset",), "interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
-                "camera": ("stale", "command"),
-                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
+_UNVERSIONED = {"storyboard": ("style_preset", "targets"), "interview": ("started_from",), "engine": ("runs",),
+                "narration": ("voice", "targets"), "camera": ("stale", "command"),
+                "story": ("facts_panel", "targets"),
+                "final": ("timeline", "facts_panel", "timeline_problem", "captions", "targets"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
                          "checklist_problem", "thumbnail_problems")}
 
@@ -853,6 +854,33 @@ def stage_version(sdir: Path, stage: str, ctx: Ctx | None = None) -> int | None:
     return _version_of(sdir, stage, content)
 
 
+def _target_view(r: dict) -> dict:
+    measured = r.get("measured")
+    if isinstance(measured, list):
+        measured = ", ".join(str(m) for m in measured)
+    return {"target": r["target"], "ok": r["ok"], "measured": "" if measured is None else str(measured),
+            "wanted": str(r.get("wanted") or ""), "text": r.get("text") or ""}  # fmt: skip
+
+
+def _targets_block(ctx: Ctx, stage: str) -> list[dict]:
+    """The optional script and edit targets (bsa.targets) that are set and measured on this stage: the story's and the
+    storyboard's from the short itself, the narration's and the final's from review/targets.json (written by narrate,
+    mix, validate, check-targets and the checks). [] when no target is set."""
+    short = ctx.short
+    if short is None or stage not in ("story", "storyboard", "narration", "final"):
+        return []
+    values = targets.resolved(ctx.settings, short)
+    if not values:
+        return []
+    if stage == "story":
+        rows = targets.script_rows(short, values)
+    elif stage == "storyboard":
+        rows = targets.storyboard_rows(short, values)
+    else:
+        rows = [r for r in targets.read_rows(ctx.sdir) if r.get("stage") == stage and r.get("target") in values]
+    return [_target_view(r) for r in rows if isinstance(r.get("ok"), bool)]
+
+
 def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[str]) -> dict:
     out = {
         "id": stage,
@@ -869,6 +897,13 @@ def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[s
         out["content"] = BUILDERS[stage](ctx)
     except Exception as e:  # noqa: BLE001 - a bad input must never break the page
         out["problem"] = _plain(ctx.sdir, e)
+    if isinstance(out["content"], dict):  # beside the content, never in its version (_UNVERSIONED)
+        try:
+            block = _targets_block(ctx, stage)
+        except Exception:  # noqa: BLE001 - a target that can't be shown never breaks the page
+            block = []
+        if block:
+            out["content"]["targets"] = block
     if isinstance(out["content"], dict) and out["content"].get("timing_problem"):
         out["problem"] = out["content"]["timing_problem"]  # the storyboard's one-take window overrun
     if out["content"] is not None and stage in VERSIONED:

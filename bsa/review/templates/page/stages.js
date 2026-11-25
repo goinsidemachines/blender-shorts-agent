@@ -44,6 +44,16 @@
     return ctx.el("section", { class: "st-sec" }, ctx.el("h3", null, title), kids);
   }
 
+  // The optional script and edit targets that are set (content.targets): a missed one reads as a warning, a met one as
+  // a plain line. Nothing is drawn when no target is set.
+  function targetsBlock(ctx, rows) {
+    if (!rows || !rows.length) return null;
+    return section(ctx, "Targets", ctx.el("ul", { class: "warns" }, rows.map(function (r) {
+      var line = r.ok ? r.target + ": " + r.measured + " (target " + r.wanted + ")" : r.text || r.target;
+      return ctx.el("li", null, ctx.el("strong", null, r.ok ? "Met: " : "Warning: "), String(line));
+    })));
+  }
+
   function tag(ctx, text) {
     return text ? ctx.el("span", { class: "tag" }, String(text)) : null;
   }
@@ -217,6 +227,7 @@
     return ctx.el("div", { class: "st-story" },
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
       compareBlock(ctx, "story", content),
+      targetsBlock(ctx, content.targets),
       roles.hook ? null : quoteBlock(ctx, "Hook", content.hook),
       section(ctx, "The story", ctx.el("ol", { class: "beats" }, beats.map(function (b) {
         return ctx.el("li", { class: "beat" },
@@ -465,6 +476,7 @@
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
       content.style_preset ? ctx.el("p", { class: "muted" }, String(content.style_preset)) : null,
       compareBlock(ctx, "storyboard", content),
+      targetsBlock(ctx, content.targets),
       section(ctx, "Timing", timing(ctx, content)),
       lookSection(ctx, content),
       section(ctx, "Shots", [
@@ -600,6 +612,7 @@
     return ctx.el("div", null,
       ctx.el("p", { class: "muted" }, "Claude records the voice for every line. Add a note beside this stage if it needs a change."),
       dl,
+      targetsBlock(ctx, content.targets),
       content.voice && BSA.review && BSA.review.voice ? BSA.review.voice(ctx, content.voice) : null);
   };
 
@@ -835,6 +848,7 @@
       track ? section(ctx, "Timeline", track) : null,
       compareBlock(ctx, "final", content),
       ackBlock(ctx, content),
+      targetsBlock(ctx, content.targets),
       section(ctx, "Checks", findingsBlock(ctx, content)),
       factsPanel(ctx, content.facts_panel),
       rulesPanel(ctx, content.rules, "How this short keeps each of your rules."),

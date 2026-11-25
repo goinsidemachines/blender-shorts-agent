@@ -60,6 +60,9 @@ class Shot:
     # The screen speed of this shot's motion relative to real time: 1 = real time, 0.25 = shown four times slower, 2 =
     # twice as fast (the model's time factor). Not written when None or 1. Its badge must say so (validate).
     time_scale: float | None = None
+    # True: this is the payoff shot (the moment the short is about); the payoff_by_s target (bsa.targets) measures when
+    # it starts. Not written when false.
+    payoff: bool = False
 
 
 @dataclass
@@ -153,6 +156,10 @@ class Short:
     # This short's own loudness master values over the settings' and the preset's (bsa.master): any subset of
     # enabled, integrated_lufs, true_peak_dbtp, max_lra_lu. Empty = the settings.
     master: dict = dc_field(default_factory=dict)
+    # This short's own script and edit targets over the settings' and the preset's (bsa.targets): any subset of wpm,
+    # max_pause_s, max_numbers, numbers_on_screen, max_cuts, length_s, hook_callback, payoff_by_s, motion_at_frame_1.
+    # Empty = the settings (all off by default). Not written when empty.
+    targets: dict = dc_field(default_factory=dict)
 
 
 NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "params", "voice_for")
@@ -184,6 +191,8 @@ def save_short(short: Short, path: Path) -> None:
         del data["loop"]
     if not data["master"]:
         del data["master"]
+    if not data["targets"]:
+        del data["targets"]
     if not data["camera"]:  # a cuts short's file is written exactly as before one-take shorts
         del data["camera"]
     for shot in data["shots"]:
@@ -191,6 +200,8 @@ def save_short(short: Short, path: Path) -> None:
             del shot["at"]
         if shot["time_scale"] is None or (_number(shot["time_scale"]) and shot["time_scale"] == 1):
             del shot["time_scale"]
+        if not shot["payoff"]:
+            del shot["payoff"]
     for fx in data["sfx"]:
         if not fx["clip"]:
             del fx["clip"]
@@ -739,6 +750,14 @@ def validate(short: Short) -> list[str]:
     from bsa import master as master_mod
 
     errors += master_mod.problems_in(short.master)
+    from bsa import targets as targets_mod
+
+    errors += targets_mod.problems_in(short.targets)
+    errors += [f"shot {s.id} payoff must be true or false, got {s.payoff!r}" for s in short.shots
+               if not isinstance(s.payoff, bool)]  # fmt: skip
+    payoffs = [s.id for s in short.shots if s.payoff is True]
+    if len(payoffs) > 1:
+        errors.append(f"only one shot can be the payoff, got {', '.join(payoffs)}")
     errors += _pace_problems(short.pace)
     errors += _like_problems(short.like)
     if short.sound_policy not in SOUND_POLICIES:

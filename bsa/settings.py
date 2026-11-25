@@ -10,7 +10,7 @@ import shlex
 import time
 from pathlib import Path
 
-from bsa import master, timing
+from bsa import master, targets, timing
 
 DEFAULTS = {
     "workspace": None,
@@ -50,6 +50,8 @@ DEFAULTS = {
     "loop": False,
     # The loudness master of the final mix (bsa.master): the defaults are the public streaming norm; set your own.
     "master": master.defaults(),
+    # Optional script and edit targets (bsa.targets), all null = off. A set target is reported as a warning, never a block.
+    "targets": targets.defaults(),
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -337,6 +339,15 @@ def check_value(path: str, value):
         return {k: master.check(k, v) for k, v in value.items()}
     if path.startswith("master.") and path.count(".") == 1:
         return master.check(path.split(".")[1], value)
+    if path == targets.GROUP:  # the whole object: every key checked as its own targets.KEY
+        if not isinstance(value, dict):
+            raise ValueError(f"targets must be an object of targets, got {value!r}")
+        bad = targets.problems_in(value)
+        if bad:
+            raise ValueError("; ".join(bad))
+        return {k: targets.check(k, v) for k, v in value.items()}
+    if path.startswith("targets.") and path.count(".") == 1:
+        return targets.check(path.split(".")[1], value)
     if path in timing.GROUPS:  # the whole object: every key checked as its own timing.KEY / captions.KEY
         if not isinstance(value, dict):
             raise ValueError(f"{path} must be an object of {path} settings, got {value!r}")

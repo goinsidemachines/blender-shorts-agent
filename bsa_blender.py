@@ -1084,7 +1084,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     full = getattr(args, "full", False)
     reuse = {} if full else freshness.reusable_checks(sdir, stamp)
     partial = {} if full else freshness.partial_checks(sdir, stamp)  # changed shots: the objects that did not change
-    reuse = {sid: [f for f in rows_ if f.get("check") != "loop"] for sid, rows_ in reuse.items()}  # made again below
+    reuse = {sid: [f for f in rows_ if f.get("check") not in ("loop", "target")] for sid, rows_ in reuse.items()}  # made again below
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,
                  "done": span.f1 - span.f0 + 1 if shot.id in reuse else 0,
@@ -1188,6 +1188,34 @@ def _loop_rows(data, short, plan, tl_hash: str) -> list[dict]:
     else:
         found = loop_findings(last_scene, f_span.f0, l_span.f1)
     return [_check_row(f, last.id, last_scene.name) for f in found]
+
+
+def _target_rows(sdir: Path, data, short, plan, tl_hash: str) -> list[dict]:
+    """The motion_at_frame_1 target (bsa.targets) when it is set: a warning row (check "target") on the first shot when
+    nothing moves between frame 1 and 2, and the measured row in review/targets.json. Measured again every run (two
+    frames), never kept. Nothing set: nothing happens."""
+    from bsa import targets
+
+    values = targets.resolved(settings.load_settings(), short)
+    if "motion_at_frame_1" not in values or not plan:
+        return []
+    from bsa.blender.checks import Finding
+    from bsa.blender.targetcheck import moving_at_start
+
+    (first, f_span) = plan[0]
+    _, scene = _scene(data, short, first.id, tl_hash)
+    moving = moving_at_start(scene, f_span.f0)
+    text = "nothing moves between frame 1 and frame 2 (the camera and every rendered object stand still)"
+    result = targets.row("motion_at_frame_1", "final", moving or "nothing moving", "something moving", bool(moving),
+                         text if not moving else "")  # fmt: skip
+    try:
+        targets.write_rows(sdir, [result])
+    except OSError as exc:
+        print(f"review/targets.json not written: {exc}", file=sys.stderr, flush=True)
+    if moving:
+        return []
+    return [_check_row(Finding("target", "warning", None, f_span.f0, f"target motion_at_frame_1: {text}"),
+                       first.id, scene.name)]  # fmt: skip
 
 
 def _rendered(sdir: Path, short, preset: str, tl, fps: dict | None, run=None) -> list:

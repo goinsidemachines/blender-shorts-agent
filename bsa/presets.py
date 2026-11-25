@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import re
 
-from bsa import master, timing
+from bsa import master, targets, timing
 
 # The groups a preset may hold. One place to extend: a new group is added here (and given its check in
 # `_group_problems` and its reader in `_valid_flat`) when its feature lands.
-GROUPS = ("timing", "captions", "loop", "master")
+GROUPS = ("timing", "captions", "loop", "master", "targets")
 # `loop` is one yes/no value (a short that ends seamlessly back into frame 1), not an object like the other groups.
 FLAGS = ("loop",)
 EXTEND = "extend"
@@ -107,6 +107,8 @@ def _group_problems(group: str, value) -> list[str]:
         return [] if value is None or isinstance(value, bool) else [f"{group} must be true or false, got {value!r}"]
     if group == master.GROUP:
         return master.problems_in(value)
+    if group == targets.GROUP:
+        return targets.problems_in(value)
     if group in timing.GROUPS:
         return timing.problems_in(group, value)
     return [f"unsupported group {group!r}"]  # a group in GROUPS without a check here would be a bug
@@ -175,6 +177,8 @@ def problems(settings: dict | None = None, short=None) -> list[str]:
         out += [f"short.json {p}" for p in _name_known("preset", own, merged)]
     out += _group_problems(master.GROUP, (settings or {}).get(master.GROUP))
     out += [f"short.json {p}" for p in _group_problems(master.GROUP, _short_value(short, master.GROUP))]
+    out += _group_problems(targets.GROUP, (settings or {}).get(targets.GROUP))
+    out += [f"short.json {p}" for p in _group_problems(targets.GROUP, _short_value(short, targets.GROUP))]
     for flag in FLAGS:
         out += _group_problems(flag, (settings or {}).get(flag))
         out += [f"short.json {p}" for p in _group_problems(flag, _short_value(short, flag))]
@@ -255,27 +259,26 @@ def loop_on(settings: dict | None, short=None) -> bool:
     return loop_resolved(settings, short)[0]
 
 
-def _valid_master(source) -> dict:
-    """{key: checked value} of the `master` object in `source` (a dict); a bad value is left out."""
-    own = source.get(master.GROUP) if isinstance(source, dict) else None
+def _valid_group(mod, source) -> dict:
+    """{key: checked value} of the `mod.GROUP` object in `source` (a dict); a bad value is left out."""
+    own = source.get(mod.GROUP) if isinstance(source, dict) else None
     out: dict = {}
     for k, v in own.items() if isinstance(own, dict) else ():
-        if k in master.SPEC:
+        if k in mod.SPEC:
             try:
-                out[k] = master.check(k, v)
+                out[k] = mod.check(k, v)
             except ValueError:
                 pass
     return out
 
 
-def master_resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
-    """(the loudness master's values, where each came from): same order as the timing values, last wins: the built-in
-    defaults (`bsa.master.SPEC`), the settings' own `master` (a value equal to the default is no layer, as the settings
-    file holds every default), the chosen preset (its `extend` chain base first), the short's own `master`. Where:
-    "default", "settings", "preset:<name>", "short". A bad value is ignored here (validation reports it)."""
-    values = master.defaults()
+def _spec_resolved(mod, settings: dict | None, short=None) -> tuple[dict, dict]:
+    """(values, where) of a spec group (`bsa.master`, `bsa.targets`): the built-in defaults, the settings' own object (a
+    value equal to the default is no layer, as the settings file holds every default), the chosen preset (its `extend`
+    chain base first), the short's own. Where: "default", "settings", "preset:<name>", "short"."""
+    values = mod.defaults()
     where = {k: "default" for k in values}
-    own = {k: v for k, v in _valid_master(settings or {}).items() if v != values[k]}
+    own = {k: v for k, v in _valid_group(mod, settings or {}).items() if v != values[k]}
     stack: list[tuple[str, dict]] = [("settings", own)]
     name = chosen(settings, short)
     if name:
@@ -284,13 +287,25 @@ def master_resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
             names = chain(name, merged)
         except PresetError:
             names = []
-        stack += [(f"preset:{n}", _valid_master(merged[n])) for n in names]
-    mine = short if isinstance(short, dict) else {master.GROUP: getattr(short, master.GROUP, None)}
-    stack.append(("short", _valid_master(mine)))
+        stack += [(f"preset:{n}", _valid_group(mod, merged[n])) for n in names]
+    mine = short if isinstance(short, dict) else {mod.GROUP: getattr(short, mod.GROUP, None)}
+    stack.append(("short", _valid_group(mod, mine)))
     for label, flat in stack:
         for k, v in flat.items():
             values[k], where[k] = v, label
     return values, where
+
+
+def master_resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
+    """(the loudness master's values, where each came from): same order as the timing values, last wins (see
+    `_spec_resolved`). A bad value is ignored here (validation reports it)."""
+    return _spec_resolved(master, settings, short)
+
+
+def targets_resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
+    """(the script and edit targets' values, where each came from), all null (off) unless something sets them: the
+    same order as `master_resolved`. A bad value is ignored here (validation reports it)."""
+    return _spec_resolved(targets, settings, short)
 
 
 def resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
@@ -348,4 +363,7 @@ def from_short(settings: dict | None, short) -> dict:
     mdiff = {k: v for k, v in mvalues.items() if v != master.defaults()[k]}
     if mdiff:
         out[master.GROUP] = mdiff
+    tvalues = targets.active(targets_resolved(settings, short)[0])
+    if tvalues:
+        out[targets.GROUP] = tvalues
     return out
