@@ -47,6 +47,16 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
+## What's new in 0.7.1
+
+A small fix release.
+
+- **Post title check**: a question title that ends with an emoji or hashtags (`Why does X? 🎧 #shorts`) is no longer
+  flagged as "not a question".
+- **Animated geometry-nodes values**: keys on a modifier's own inputs showed only frame 1 in renders on Blender 5.3.
+  New `bsa.blender.controls` keys values on a control Empty instead, with negative values kept, and the build
+  chapter explains it.
+
 ## What's new in 0.7.0
 
 Your style, written down once. Everything below is off or unchanged until you set it, so existing shorts look and
