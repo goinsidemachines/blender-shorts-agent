@@ -48,7 +48,7 @@ def _breaks_after(shot: Shot | None, lines: list[Line], t: Timing) -> bool:
     if shot.hold is True or (isinstance(shot.hold, list) and shot.hold):
         return True
     own = [ln for ln in lines if ln.shot == shot.id]
-    need = sum(timeline.reading_time(ln.text) for ln in own) + t.lead_in_s + t.tail_s
+    need = sum(timeline.reading_time(ln.text.replace("*", "")) for ln in own) + t.lead_in_s + t.tail_s
     return shot.min_s > need + HOLD_BREAK_S
 
 

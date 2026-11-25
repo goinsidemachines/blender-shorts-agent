@@ -318,3 +318,67 @@ def test_kit_sample_progress_bar_is_40_percent_full():
     want = prog.at.x + o + round(prog.fill.w * 2 / 5)
     got = _fill_right(read_png(out), prog)
     assert abs(got - want) <= 2, (got, want, prog.at.x + o + prog.fill.w)
+
+
+def test_a_no_box_caption_is_white_text_in_a_dark_outline_and_soft_shadow_with_an_accent_word():
+    mine = Path(tempfile.mkdtemp())
+    out = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline"}})
+    spec = cards.caption(out, "and every *crossing*", FONT, 1080)
+    png = bsa.blender.cards.render(spec, mine / "outline.png")
+    px = read_png(png)
+    assert px.shape[:2] == (spec.h, spec.w) and spec.fill is None
+    rgb, a = px[..., :3].astype(int), px[..., 3]
+    assert a[0, 0] == 0 and a[0, -1] == 0 and a[-1, 0] == 0 and a[-1, -1] == 0  # nothing at the corners: no box
+    white = (rgb >= 240).all(axis=-1) & (a > 250)
+    accent = (np.abs(rgb - np.array([0x7A, 0x4C, 0xE0])).max(axis=-1) <= 6) & (a > 250)
+    dark = (np.abs(rgb - np.array(INK)).max(axis=-1) <= 6) & (a > 250)
+    assert white.sum() > 500 and accent.sum() > 200 and dark.sum() > white.sum() // 4, (white.sum(), accent.sum(), dark.sum())
+    assert accent[:, : spec.w // 2].sum() < accent.sum() // 10  # the highlighted word is at the end, not the start
+    cols = np.where(white.any(axis=0) | accent.any(axis=0))[0]
+    rows = np.where(white.any(axis=1) | accent.any(axis=1))[0]
+    assert cols.min() >= spec.w * 0 + spec.fx.stroke_px and cols.max() <= spec.w - spec.fx.stroke_px  # inside its margin
+    soft = (a > 0) & (a < 200) & (rgb.max(axis=-1) < 0x40)  # the see-through shadow
+    below = soft[rows.max() + spec.fx.stroke_px + 1 :, :].sum()
+    above = soft[: max(rows.min() - spec.fx.stroke_px - 1, 0), :].sum()
+    assert below > 100 and below > 3 * above, (below, above)  # the shadow falls down, not up
+    off = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline", "shadow": False}})
+    flat = read_png(bsa.blender.cards.render(cards.caption(off, "and every *crossing*", FONT, 1080), mine / "flat.png"))
+    assert (flat[..., 3] > 0).sum() < (a > 0).sum()  # no shadow: fewer pixels touched
+    assert not [s for s in bpy.data.scenes if s.name.startswith("Card")]
+    assert sorted(p.name for p in mine.iterdir()) == ["flat.png", "outline.png"]  # the temp mask and shape files are gone
+
+
+def test_a_box_caption_highlights_a_word_too():
+    spec = cards.caption(K, "and every *crossing*", FONT, 1080)
+    px = read_png(bsa.blender.cards.render(spec, Path(tempfile.mkdtemp()) / "boxhl.png"))
+    rgb, a = px[..., :3].astype(int), px[..., 3]
+    accent = (np.abs(rgb - np.array([0x7A, 0x4C, 0xE0])).max(axis=-1) <= 6) & (a > 250)
+    assert accent.sum() > 100 and spec.fx is None
+
+
+def _ink_gaps(px, colour):
+    rgb, a = px[..., :3].astype(int), px[..., 3]
+    white = (rgb >= 240).all(axis=-1) & (a > 250)
+    tint = (np.abs(rgb - np.array(colour)).max(axis=-1) <= 24) & (a > 250)
+    cols = np.flatnonzero((white | tint).any(axis=0))
+    cuts = np.flatnonzero(np.diff(cols) > 1)
+    starts, ends = [cols[0], *cols[cuts + 1]], [*cols[cuts], cols[-1]]
+    return [int(starts[i + 1] - ends[i] - 1) for i in range(len(ends) - 1)], tint, white
+
+
+def test_a_highlighted_word_keeps_the_spacing_of_plain_text_and_is_coloured_only_in_its_columns():
+    out = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline", "size": 66}})
+    mine = Path(tempfile.mkdtemp())
+    spec = cards.caption(out, "that *conducts*, today ok", FONT, 1080)
+    plain = cards.caption(out, "that conducts, today ok", FONT, 1080)
+    assert spec.w == plain.w
+    hl = read_png(bsa.blender.cards.render(spec, mine / "hl.png"))
+    flat = read_png(bsa.blender.cards.render(plain, mine / "flat.png"))
+    gaps_hl, tint, white = _ink_gaps(hl, (0x7A, 0x4C, 0xE0))
+    gaps_flat, _, _ = _ink_gaps(flat, (0x7A, 0x4C, 0xE0))
+    assert len(gaps_hl) == len(gaps_flat) and max(abs(a - b) for a, b in zip(gaps_hl, gaps_flat)) <= 2  # no gap before or overlap round the coloured word: the plain text's own layout
+    cols = np.flatnonzero(tint.any(axis=0))
+    assert tint.sum() > 300 and cols.min() > spec.w * 0.15 and cols.max() < spec.w * 0.6  # "conducts" only
+    assert white[:, : cols.min() - 8].sum() > 200 and white[:, cols.max() + 24 :].sum() > 200  # the rest stays white
+    assert (hl[..., 3] > 0).sum() == (flat[..., 3] > 0).sum()  # the same outline and shadow
+    assert sorted(p.name for p in mine.iterdir()) == ["flat.png", "hl.png"]  # the temp drawings are gone

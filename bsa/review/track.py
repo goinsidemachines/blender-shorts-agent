@@ -143,7 +143,7 @@ def build(sdir: Path, short: Short, run_key: str) -> dict | None:
         "duration_s": round(frames / fps, 3),
         "tracks": {
             "shots": [{"id": s.id, "f0": s.f0, "f1": s.f1, "title": titles.get(s.id, "")} for s in tl.shots],
-            "captions": [{"f0": c.f0, "f1": c.f1, "text": c.text, "line": c.line_id} for c in tl.cards],
+            "captions": [{"f0": c.f0, "f1": c.f1, "text": c.text.replace("*", ""), "line": c.line_id} for c in tl.cards],
             "sounds": sounds,
             "findings": findings,
             "holds": holds,

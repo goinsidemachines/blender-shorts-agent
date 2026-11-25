@@ -318,7 +318,8 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
 - **Safe area:** x 60-940, y 220-1500. The bottom 420 px and the right 140 px are under the platform's buttons.
 - **Caption band: rows about 1165-1395 (61-73% down the frame)** whenever a caption shows, full safe width. That
   is a two-line card (default 64 px captions: a card wraps at about 22 characters, so most cards are two lines) with
-  its box; a one-line card covers about 1245-1395. A larger `style.caption.size` makes the band taller upward. Keep
+  its box (with `caption.style outline` there is no box and a card is as wide as its text, but the band is the same
+  height: plan for it as if the box were there); a one-line card covers about 1245-1395. A larger `style.caption.size` makes the band taller upward. Keep
   heroes, the parts the line talks about, scale figures and comparison bars out of this band while captions show:
   the band is not the bottom fifth, it is two-thirds of the way down.
 - **Badge: top-left, rows about 221-297**, x from 61 to about 100 + 17 px per character (about 400 for "MOTION

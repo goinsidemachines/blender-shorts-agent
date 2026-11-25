@@ -56,6 +56,16 @@ of the shot in `short.json`:
 
 The **progress bar** runs under the caption bar and fills over the short; `brand.progress false` turns it off.
 `brand.caption.draw false` (or `style.caption.draw false` for one short) draws no caption bar at all.
+**Caption style:** `brand.caption.style` is `box` (the default: bold text on a box) or `outline` (no box: bold
+white text with a dark outline and a soft dark shadow, so it covers as little of the picture as possible; one line
+when it fits, the card as wide as the text). Set it per short with `style.caption.style`. `outline` also takes
+`brand.caption.stroke_px` (the outline's thickness at size 70, default 4, scaled with `caption.size`, 0 to 12) and
+`brand.caption.shadow` (true or false); the outline and shadow use the `caption.box` colour (opacity applies to a box
+only). A word wrapped in asterisks in a line's `text` (`"and every *crossing*"`) is drawn in `brand.caption.highlight`
+(a hex colour; default the palette accent) in both styles; the asterisks are never shown, spoken or written to the
+caption files. One highlight per card is enough; keep it inside one caption card (a highlighted phrase that is split
+across two cards loses its colour on the second one). Without a kit (no `brand.style`) `outline` uses Blender's own
+text outline and shadow in one colour and the asterisks are just dropped.
 A kit draws at most 6 labels per shot (`CLI validate` and the edit refuse more): move some to another shot.
 The static top cards (logo, badge, step, stacked labels, category tag, title card, value bars) must end above the
 captions and the progress bar: when the corner stack is too tall its stacked labels move to the right column under

@@ -49,12 +49,75 @@ def caption_colours(short, settings: dict) -> tuple[tuple, tuple]:
     return text, box
 
 
+HIGHLIGHT_COLOR = "#2EC5FF"  # a *highlighted* caption word when nothing names a colour: a clear cyan
+
+
+def caption_highlight(short, settings: dict) -> str:
+    """"#RRGGBB" of a caption's *highlighted* word without a brand kit: `caption.highlight` (the short's own
+    `style.caption`, else `brand.caption`), else the short's `style.palette.accent`, else `brand.palette.accent`, else
+    HIGHLIGHT_COLOR (a value that is not 6 or 8 hex digits is skipped)."""
+    from bsa.settings import brand_for
+
+    brand, own = brand_for(settings, short), (getattr(short, "style", None) or {})
+
+    def pick(src, *path):
+        for key in path:
+            src = src.get(key) if isinstance(src, dict) else None
+        return src
+
+    for value in (pick(own, "caption", "highlight"), pick(brand, "caption", "highlight"),
+                  pick(own, "palette", "accent"), pick(brand, "palette", "accent")):  # fmt: skip
+        rgba = hex_colour(value, 1.0)
+        if rgba is not None:
+            return "#" + "".join(f"{round(c * 255):02X}" for c in rgba[:3])
+    return HIGHLIGHT_COLOR
+
+
+_HIGHLIGHT = re.compile(r"\*([^*]+)\*")
+
+
+def plain(text: str) -> str:
+    """`text` as shown and spoken: the asterisks of a highlight (`and every *crossing*`) removed, the words kept.
+    Everything that measures, spells out or compares a caption's words uses this, never the marked-up text."""
+    return str(text).replace("*", "")
+
+
+def marked(text: str) -> list[tuple[str, bool]]:
+    """`text` as (piece, highlighted) in order: the words between a pair of asterisks are highlighted, the asterisks
+    themselves are dropped (a stray one is dropped too). A highlight stays inside one caption card."""
+    out, at = [], 0
+    for m in _HIGHLIGHT.finditer(text):
+        out += [(text[at : m.start()], False), (m.group(1), True)]
+        at = m.end()
+    out.append((text[at:], False))
+    return [(plain(t), hl) for t, hl in out if plain(t)] or [("", False)]
+
+
+def has_highlight(text: str) -> bool:
+    """Whether `text` holds a *highlighted* word."""
+    return any(hl for _, hl in marked(text))
+
+
+def caption_style(short, settings: dict) -> str:
+    """"box" or "outline": `caption.style` of the short's own `style.caption`, else of `brand.caption` (as
+    caption_colours reads them); "box" when neither says "outline"."""
+    from bsa.settings import brand_for
+
+    style = "box"
+    for src in (brand_for(settings, short).get("caption"), (short.style or {}).get("caption")):
+        if isinstance(src, dict) and str(src.get("style") or "").strip().lower() in ("box", "outline"):
+            style = str(src["style"]).strip().lower()
+    return style
+
+
 def est_lines(text: str, size_px: float, wrap_px: float) -> int:
+    text = plain(text)
     per_line = max(1, int(wrap_px / (size_px * CHAR_W)))
     return max(1, sum(max(1, math.ceil(len(part) / per_line)) for part in text.split("\n")))
 
 
 def est_width(text: str, size_px: float, wrap_px: float) -> float:
+    text = plain(text)
     longest = max(len(part) for part in text.split("\n"))
     return min(wrap_px, longest * size_px * CHAR_W)
 
@@ -198,7 +261,7 @@ def shot_boxes(short, tl, shot, span, anchors: dict | None = None, heroes: dict 
     corner = [(kind, text, corner_rect(kind, text, x, y)) for kind, text, _, x, y in corner_stack(shot)]
     out: dict[int, list] = {f: [] for f in frames}
     for f in frames:
-        out[f] += [("caption", tl.cards[i].text, None, c[3]) for i, c in enumerate(caps) if c[0] <= f <= c[1]]
+        out[f] += [("caption", plain(tl.cards[i].text), None, c[3]) for i, c in enumerate(caps) if c[0] <= f <= c[1]]
         out[f] += [(kind, text, None, rect) for kind, text, rect in corner]
     placed: dict = {}
     for label in getattr(shot, "labels", None) or []:

@@ -44,12 +44,17 @@ def _frames(seconds: float, fps: int) -> int:
     return math.ceil(round(seconds * fps, 6))
 
 
+def _len(text: str) -> int:
+    """The characters a card shows: a *highlight*'s asterisks are not drawn, so they take no room."""
+    return len(text.replace("*", ""))
+
+
 def _pack(words: list[str], t: Timing) -> list[str]:
     cards: list[str] = []
     cur: list[str] = []
     for w in words:
         trial = " ".join([*cur, w])
-        if cur and (len(cur) >= t.max_words or len(trial) > t.max_chars):
+        if cur and (len(cur) >= t.max_words or _len(trial) > t.max_chars):
             cards.append(" ".join(cur))
             cur = []
         cur.append(w)
@@ -60,13 +65,13 @@ def _pack(words: list[str], t: Timing) -> list[str]:
 
 def _orphan(card: str, t: Timing) -> bool:
     """A card of a single short word ("one.")."""
-    return len(card.split()) == 1 and len(card) <= t.orphan_max_chars
+    return len(card.split()) == 1 and _len(card) <= t.orphan_max_chars
 
 
 def _fits(a: str, b: str, t: Timing) -> bool:
     """Whether two cards may be joined: a little over the usual limits, to avoid an orphan."""
     joined = f"{a} {b}"
-    return len(joined) <= t.max_chars + 6 and len(joined.split()) <= t.max_words + 1
+    return _len(joined) <= t.max_chars + 6 and len(joined.split()) <= t.max_words + 1
 
 
 def _join_orphans(cards: list[str], t: Timing) -> list[str]:
@@ -140,16 +145,16 @@ def _split_cards(text: str, line_id: str, f0: int, f1: int, t: Timing | None = N
         return []
     pieces = chunk_caption(text, t)
     while len(pieces) > n:  # fewer frames than cards: merge the shortest adjacent pair
-        i = min(range(len(pieces) - 1), key=lambda j: len(pieces[j]) + len(pieces[j + 1]))
+        i = min(range(len(pieces) - 1), key=lambda j: _len(pieces[j]) + _len(pieces[j + 1]))
         pieces[i : i + 2] = [f"{pieces[i]} {pieces[i + 1]}"]
     k = len(pieces)
     if k == 0:
         return []
-    total = sum(len(p) for p in pieces)
+    total = sum(_len(p) for p in pieces)
     ends = []  # exclusive end offset of each card within the line
     cum = 0
     for p in pieces:
-        cum += len(p)
+        cum += _len(p)
         ends.append(round(n * cum / total))
     ends[-1] = n
     for i in range(k):  # every card gets at least one frame
@@ -187,7 +192,7 @@ def build_timeline(short: Short, durations: dict[str, float] | None, end_card: b
         lens = []
         for ln in mine:
             secs = durations.get(ln.id) if durations is not None else None
-            lens.append(_frames(secs if secs is not None else reading_time(ln.text), fps))
+            lens.append(_frames(secs if secs is not None else reading_time(ln.text.replace("*", "")), fps))
         content = lead + sum(lens) + gap * max(len(mine) - 1, 0) + tail
         length = max(_frames(shot.min_s, fps), content)
         if end_card and shot is short.shots[-1]:
@@ -264,7 +269,7 @@ def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_car
         lens = []
         for ln in mine:
             secs = durations.get(ln.id) if durations is not None else None
-            lens.append(_frames(secs if secs is not None else reading_time(ln.text), fps))
+            lens.append(_frames(secs if secs is not None else reading_time(ln.text.replace("*", "")), fps))
         need = lead + sum(lens) + gap * (len(mine) - 1) + tail if mine else 0
         last = i == len(ids) - 1
         if end_card and last:
