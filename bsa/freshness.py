@@ -343,11 +343,11 @@ def reusable_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str) -
     (same timing and fingerprint): the anchors are projected again only for the others."""
     data = read_anchors(short_dir) or {}
     out: dict = {"shots": {}, "heroes": {}}
-    for key in ("shots", "heroes"):
+    for key in ("shots", "heroes", "callouts"):
         entries = data.get(key)
         for shot, entry in entries.items() if isinstance(entries, dict) else ():
             if _anchors_current(data.get("stamp"), fingerprints, tl_hash, [shot]):
-                out[key][shot] = entry
+                out.setdefault(key, {})[shot] = entry  # "callouts" only exists when the file holds some
     return out
 
 
@@ -377,6 +377,18 @@ def load_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str, need=
         if name not in (shots.get(shot_id) or {}):
             raise StaleError(f"no anchors for label {text!r} near {name!r} in shot {shot_id}: {_ANCHORS_AGAIN}")
     return shots
+
+
+def load_callout_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str, need=()) -> dict:
+    """source/anchors.json's "callouts" ({shot: {str(callout index): {"f0", "points"}}}), which must be from this
+    timing and each needed shot's current fingerprint, and hold every (shot id, callout index, callout text) in
+    `need`."""
+    data = _read_anchors(short_dir, fingerprints, tl_hash, sorted({s for s, _, _ in need}))
+    found = data.get("callouts") if isinstance(data.get("callouts"), dict) else {}
+    for shot_id, i, text in need:
+        if str(i) not in (found.get(shot_id) or {}):
+            raise StaleError(f"no anchors for callout {text!r} in shot {shot_id}: {_ANCHORS_AGAIN}")
+    return found
 
 
 # --------------------------------------------------------------------------- rendered frames

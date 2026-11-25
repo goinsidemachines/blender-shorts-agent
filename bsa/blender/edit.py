@@ -413,6 +413,7 @@ def build_edit(
     hero_boxes: dict | None = None,
     label_heroes: dict | None = None,
     closing: dict | None = None,
+    callouts: dict | None = None,
 ):
     """Create the `Edit` scene: shot frames, captions, badges, labels, optional @handle end card, the closing card
     and sound. With a brand kit (bsa.kit.kit_for: brand.style set) the captions, badges and labels are the kit's
@@ -421,7 +422,9 @@ def build_edit(
     f0 (the frame after the timeline) for n_frames; the mix already covers them. `anchors`
     ({shot: {object: {"f0", "points"}}}, from source/anchors.json) places labels that are near an object; `hero_boxes`
     (the last shot's {"f0", "boxes", "scenery"} from anchors.json) keeps the end card off its heroes, then off its
-    other meshes; `label_heroes` ({shot: {"f0", "boxes"}}) keeps near labels off the other heroes of their shot."""
+    other meshes; `label_heroes` ({shot: {"f0", "boxes"}}) keeps near labels off the other heroes of their shot.
+    `callouts` ({"cues": bsa.callouts.load(...), "anchors": {shot: {str(i): {"f0", "points"}}}}; None when the short
+    has none) adds each callout's label pop-in and arrow over everything else (bsa.blender.callout_edit)."""
     old = bpy.data.scenes.get("Edit")
     if old is not None:
         bpy.data.scenes.remove(old)
@@ -445,6 +448,7 @@ def build_edit(
     if used:
         scene[FONT_USED_PROP] = used
     texts = _Texts(seq.strips, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
+    card_font = None
     if k is None:  # no brand.style: exactly today's text captions, badges and labels
         _add_overlays(short, tl, texts, settings, anchors, label_heroes, seq, sdir)
     else:
@@ -458,6 +462,11 @@ def build_edit(
                 scene[FONT_USED_PROP] = family_of(card_font)
             except RuntimeError:
                 pass
+    if callouts:
+        from bsa.blender import callout_edit
+
+        callout_edit.add(short, tl, seq, texts, settings, callouts, anchors, label_heroes, k, card_font,
+                         Path(sdir) / "cards" if sdir is not None else _temp_card_dir())  # fmt: skip
     note = _add_end_card(tl, texts, settings, hero_boxes, short)  # today's text strips, with a kit too
     if note:
         scene[END_NOTE_PROP] = note

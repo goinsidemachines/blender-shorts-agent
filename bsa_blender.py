@@ -456,9 +456,10 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
                 raise CliError(str(exc)) from exc
         entry["category"] = category(scene.objects.get(name))  # read fresh every run: a retag needs no projection
         shots.setdefault(shot_id, {})[key] = entry
+    callout_anchors = _callout_anchors(sdir, short, tl, tl_hash, data, reuse.get("callouts") or {}, projected)
     last = short.shots[-1]  # the end card shows over the last shot: it must stay off that shot's heroes
     heroes: dict[str, dict] = {}
-    for shot_id in [*sorted(shots), last.id]:  # near labels keep off the other heroes of their shot
+    for shot_id in [*sorted(set(shots) | set(callout_anchors)), last.id]:  # labels keep off the other heroes
         if shot_id in heroes:
             continue
         _, scene = _scene(data, short, shot_id, tl_hash)
@@ -478,10 +479,48 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
         except ValueError as exc:
             raise CliError(str(exc)) from exc
     out = {"stamp": freshness.anchors_stamp(fps, tl_hash), "shots": shots, "heroes": heroes}
+    if callout_anchors:  # only a short with callouts has the key
+        out["callouts"] = callout_anchors
     path = sdir / "source" / freshness.ANCHORS
     path.write_text(json.dumps(out) + chr(10), encoding="utf-8")
     return {"path": str(path), "labels": sum(len(v) for v in shots.values()), "heroes": len(heroes[last.id]["boxes"]),
             "projected": sorted(projected)}  # fmt: skip
+
+
+def _callout_anchors(sdir: Path, short, tl, tl_hash: str, data, reuse: dict, projected: set) -> dict:
+    """{shot: {str(callout index): {"f0", "points"}}}: each callout's part (its `near` object, or its `at` point on
+    it) projected through its shot's camera at every frame of the shot; {} when the short has no callouts. Shots
+    unchanged since the last anchors keep theirs. Adds the shots it projected to `projected`."""
+    from bsa import callouts as callouts_mod
+    from bsa.blender.anchors import project
+
+    wanted = {s.id: callouts_mod.callouts_of(s) for s in short.shots}
+    wanted = {k: v for k, v in wanted.items() if v}
+    if not wanted:
+        return {}
+    try:
+        callouts_mod.load(sdir, tl_hash)  # the cue file must be this timing's (the edit reads it)
+    except freshness.StaleError as exc:
+        raise CliError(str(exc)) from exc
+    spans = {s.id: s for s in tl.shots}
+    out: dict[str, dict] = {}
+    for shot_id, calls in wanted.items():
+        prior = reuse.get(shot_id) or {}
+        _, scene = _scene(data, short, shot_id, tl_hash)
+        for i, c in enumerate(calls):
+            if scene.objects.get(c.near) is None:
+                raise CliError(f"shot {shot_id} callout {c.text!r} is near {c.near!r}, which scene {scene.name!r} does "
+                               "not have (use the object's exact name)")  # fmt: skip
+            if isinstance(prior.get(str(i)), dict) and set(prior) == {str(k) for k in range(len(calls))}:
+                out.setdefault(shot_id, {})[str(i)] = prior[str(i)]
+                continue
+            projected.add(shot_id)
+            try:
+                out.setdefault(shot_id, {})[str(i)] = project(scene, [c.near], spans[shot_id].f0, spans[shot_id].f1,
+                                                               c.at)[c.near]  # fmt: skip
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+    return out
 
 
 def cmd_anchors(args) -> dict:
@@ -1511,7 +1550,14 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
 
     need = [(shot_id, text, key) for shot_id, text, _name, key, _at in near_anchors(short)]
     anchors = freshness.load_anchors(sdir, fps, tl_hash, need) if need else None
-    label_heroes = _label_heroes(sdir, fps, tl_hash, need)
+    from bsa import callouts as callouts_mod
+
+    callout_need = [(sh.id, i, c.text) for sh in short.shots for i, c in enumerate(callouts_mod.callouts_of(sh))]
+    callouts = None
+    if callout_need:  # a short with callouts: their cue frames and anchors (stale ones refuse the edit, as labels do)
+        callouts = {"cues": callouts_mod.load(sdir, tl_hash),
+                    "anchors": freshness.load_callout_anchors(sdir, fps, tl_hash, callout_need)}  # fmt: skip
+    label_heroes = _label_heroes(sdir, fps, tl_hash, [*need, *callout_need])
     warnings, heroes = [], None
     if settings.has_end_card(s, short):  # the end card is polish: without anchors it is only warned
         try:
@@ -1536,7 +1582,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     scene = edit.build_edit(short, tl, engine_runs.frames_root(sdir, args.preset, side), mix if mix.is_file() else None,
                             out_mp4,
                             s, preset=args.preset, anchors=anchors, hero_boxes=heroes,
-                            label_heroes=label_heroes, closing=end)  # fmt: skip
+                            label_heroes=label_heroes, closing=end,
+                            **({"callouts": callouts} if callouts else {}))  # fmt: skip
     run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
     info = edit.probe(path)

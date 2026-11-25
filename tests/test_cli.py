@@ -3376,3 +3376,50 @@ def test_mix_masters_to_the_target_and_master_enabled_false_leaves_the_mix(home,
     raw = decode.load(pendulum / "audio" / "mix.wav")
     assert dsp.gated_lufs(raw) != pytest.approx(-20.0, abs=0.5) and np.isfinite(raw).all()
     assert run(home, "settings", "set", "master.integrated_lufs", "-40").returncode != 0
+
+
+def test_anchors_json_has_a_callouts_key_only_for_a_short_with_callouts(home, pendulum, monkeypatch):
+    import types
+
+    import bsa_blender
+    from bsa import freshness
+
+    path = pendulum / "source" / "short.json"
+    monkeypatch.setenv("BSA_HOME", str(home))
+    fake = types.ModuleType("bsa.blender.anchors")
+    fake.project = lambda scene, names, f0, f1, at=None: {n: {"f0": f0, "points": [[7, 8]] * (f1 - f0 + 1)}
+                                                          for n in names}  # fmt: skip
+    fake.hero_boxes = lambda scene, names, f0, f1: {"f0": f0, "boxes": {}}
+    fake.scenery_boxes = lambda scene, f0, f1, shot_id=None: {"f0": f0, "boxes": []}
+    fake.heroes = lambda scene, shot_id: []
+    monkeypatch.setitem(sys.modules, "bsa.blender.anchors", fake)
+
+    def anchors_json():
+        _rendered(home, pendulum, "preview")  # timeline.json (and callouts.json when the short has callouts)
+        short = bsa_blender._load(pendulum)
+        tl, tl_hash = bsa_blender._timeline(pendulum, short)
+
+        class Scene:
+            name = "Scene"
+
+            def __init__(self):
+                self.objects = {"Bob": {}}
+
+            def get(self, key, default=None):
+                return tl_hash if key == freshness.TIMELINE_PROP else default
+
+        data = types.SimpleNamespace(scenes={s.scene: Scene() for s in short.shots})
+        bsa_blender._write_anchors(pendulum, short, tl, tl_hash, data, fps={})
+        return json.loads((pendulum / "source" / "anchors.json").read_text(encoding="utf-8"))
+
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    for sh in spec["shots"]:
+        sh["labels"] = []
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    assert set(anchors_json()) == {"stamp", "shots", "heroes"}  # no callouts: the file is what it was
+    word = "pendulum"
+    spec["shots"][0]["callouts"] = [{"text": "Bob", "near": "Bob", "on": word}]
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    out = anchors_json()
+    shot = spec["shots"][0]["id"]
+    assert out["callouts"][shot]["0"]["points"][0] == [7, 8] and shot in out["heroes"]

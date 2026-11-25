@@ -1008,6 +1008,7 @@ def cmd_timeline(args) -> dict:
             previous = None
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     rows, warnings = _pacing(short, tl)
+    warnings += _write_callouts(sdir, short, tl)  # the callouts' cue frames, stamped with this timeline's hash
     retimed = retime_report(previous, tl)
     return {
         **({"retimed": retimed} if retimed else {}),
