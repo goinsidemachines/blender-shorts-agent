@@ -63,6 +63,10 @@ class Shot:
     # True: this is the payoff shot (the moment the short is about); the payoff_by_s target (bsa.targets) measures when
     # it starts. Not written when false.
     payoff: bool = False
+    # Callouts (bsa.callouts): each {"text", "near": "<object name>", "on": "<word in this shot's narration>", "at"?,
+    # "hold_s"?, "glow"?, "culprit"?}. A label pops in near the part, an arrow points and the part glows when the word
+    # is spoken. Not written when empty.
+    callouts: list = dc_field(default_factory=list)
 
 
 @dataclass
@@ -202,6 +206,8 @@ def save_short(short: Short, path: Path) -> None:
             del shot["time_scale"]
         if not shot["payoff"]:
             del shot["payoff"]
+        if not shot["callouts"]:
+            del shot["callouts"]
     for fx in data["sfx"]:
         if not fx["clip"]:
             del fx["clip"]
@@ -346,6 +352,50 @@ def _label_problem(label) -> str | None:
     if not isinstance(near, str) or not near.strip():
         return f"{label!r} needs near: the name of the object it sits next to"
     return None
+
+
+CALLOUT_KEYS = ("text", "near", "on", "at", "hold_s", "glow", "culprit")
+
+
+def _callout_problem(c) -> str | None:
+    if not isinstance(c, dict):
+        return f"must be an object with text, near and on, got {c!r}"
+    extra = sorted(set(c) - set(CALLOUT_KEYS))
+    if extra:
+        return f"{c!r} has unknown keys {extra}: use {', '.join(CALLOUT_KEYS)}"
+    for key, what in (("text", "the label"), ("near", "the name of the object it points at"),
+                      ("on", "the word in the shot's narration that triggers it")):  # fmt: skip
+        if not isinstance(c.get(key), str) or not c[key].strip():
+            return f"{c!r} needs {key}: {what}"
+    if "at" in c and not (isinstance(c["at"], (list, tuple)) and len(c["at"]) == 3
+                          and all(_number(v) for v in c["at"])):  # fmt: skip
+        return f"{c!r} at must be three numbers [x, y, z], a point in the near object's local space"
+    if "hold_s" in c and not (_number(c["hold_s"]) and c["hold_s"] > 0):
+        return f"{c!r} hold_s must be a number of seconds above 0"
+    for key in ("glow", "culprit"):
+        if key in c and not isinstance(c[key], bool):
+            return f"{c!r} {key} must be true or false"
+    return None
+
+
+def _callout_errors(short) -> list[str]:
+    from bsa.callouts import found_in
+
+    errors = []
+    for s in short.shots:
+        calls = s.callouts
+        if not isinstance(calls, list):
+            errors.append(f"shot {s.id} callouts must be a list")
+            continue
+        texts = [spoken_text(ln).split() for ln in short.lines if ln.shot == s.id]
+        for c in calls:
+            problem = _callout_problem(c)
+            if problem:
+                errors.append(f"shot {s.id} callout {problem}")
+                continue
+            if not found_in(c["on"], texts):
+                errors.append(f"shot {s.id} callout {c['text']!r}: the word {c['on']!r} is not in the shot's narration")
+    return errors
 
 
 def _clean_lines(value) -> tuple[str, ...]:
@@ -718,6 +768,8 @@ def validate(short: Short) -> list[str]:
         if not isinstance(s.wide, str) and _hold_problem(s.wide):
             errors.append(f"shot {s.id} wide must be true, false, a reason or a list of [from_s, to_s] ranges "
                           f"(seconds from the shot's start, from_s <= to_s), got {s.wide!r}")  # fmt: skip
+
+    errors += _callout_errors(short)
 
     card = short.end_card
     if isinstance(card, dict):

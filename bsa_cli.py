@@ -915,6 +915,9 @@ def cmd_validate(args) -> dict:
     errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
+    from bsa import callouts as callouts_mod
+
+    warnings += callouts_mod.warnings(short)
     gone = workspace.slug_words_missing(sdir.name, short.title)
     if gone:  # the folder still carries a word the title dropped
         warnings.append(f"the folder name {sdir.name} has {', '.join(repr(w) for w in gone)}, which the title "
@@ -964,6 +967,29 @@ def cmd_validate(args) -> dict:
     if errors:
         raise CliError(f"short.json has {len(errors)} problem(s): " + "; ".join(errors), out)
     return out
+
+
+def _write_callouts(sdir: Path, short, tl) -> list[str]:
+    """source/callouts.json for the timeline just written (none for a short without callouts). A callout whose word is
+    not in the narration is a warning here (validate names it as an error) and leaves no file."""
+    from bsa import callouts
+
+    words = None
+    if any(s.callouts for s in short.shots):
+        try:  # Whisper's word starts, when it is installed and the takes exist; else the cue is estimated
+            from bsa.narrate import local
+            from bsa.narrate.run import takes_durations
+
+            if takes_durations(sdir, short) is not None:
+                words = local.word_times(short.lines, sdir / "audio" / "vo")
+        except Exception:  # noqa: BLE001 - word times are best-effort
+            words = None
+    try:
+        callouts.write(sdir, short, tl, words)
+    except ValueError as exc:
+        callouts.path(sdir).unlink(missing_ok=True)
+        return [str(exc)]
+    return []
 
 
 def cmd_timeline(args) -> dict:
