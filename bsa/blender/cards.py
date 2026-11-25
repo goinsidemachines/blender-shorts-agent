@@ -71,7 +71,7 @@ def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec, colour: str |
     if font is not None:
         s.font = font
     s.font_size = run.size
-    s.use_bold = bool(spec.fx and spec.fx.bold)
+    s.use_bold = bool(spec.bold or (spec.fx and spec.fx.bold))
     s.color = hex_colour(colour or run.colour) or (0.0, 0.0, 0.0, 1.0)
     s.location = (run.x / spec.w, 1.0 - top / spec.h)
     s.anchor_x, s.anchor_y = run.anchor, "TOP"
@@ -86,31 +86,46 @@ def render(spec: CardSpec, out_png: Path) -> Path:
     """Draw `spec` as a `spec.w` x `spec.h` 8-bit RGBA PNG at `out_png` (written to a temp name, then moved in), in a
     one-frame sequencer scene "Card-<tag>" that is removed afterwards. A "no box" caption (`spec.fx`) is drawn twice:
     its text in white first, to get the text's own shape, from which cards.fx_shape_rgba makes the outline and the
-    soft shadow that go under the text."""
+    soft shadow that go under the text. A caption with highlighted words (a run's `marks`) is drawn whole in its text
+    colour, then again with its marked runs in the highlight colour, and the second drawing's columns over each word
+    (cards.mark_boxes finds them in the text's shape) replace the first's: the line is laid out by the sequencer as
+    plain text is, with no gap or overlap round a coloured word."""
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     tag = uuid.uuid4().hex[:12]
     shape_png = out_png.with_name(f".{out_png.stem}-{tag}-shape.png")
     mask_png = out_png.with_name(f".{out_png.stem}-{tag}-mask.png")
+    alt_png = out_png.with_name(f".{out_png.stem}-{tag}-hl.png")
     tmp_png = out_png.with_name(f".{out_png.stem}-{tag}.tmp.png")
     try:
         shape = cards.shape_rgba(spec)
-        if spec.fx:
+        marked = any(r.marks for r in spec.runs)
+        if spec.fx or marked:
             _draw(spec, mask_png, None, tag + "m", white=True)
-            shape = cards.fx_shape_rgba(spec, read_png(mask_png)[..., 3] / 255.0)
+            cover = read_png(mask_png)[..., 3] / 255.0
+        if spec.fx:
+            shape = cards.fx_shape_rgba(spec, cover)
         _draw(spec, tmp_png, shape, tag, shape_png=shape_png)
+        boxes = cards.mark_boxes(spec, cover) if marked else []
+        if boxes:
+            _draw(spec, alt_png, shape, tag + "h", shape_png=shape_png, marked=True)
+            px, alt = read_png(tmp_png), read_png(alt_png)
+            for x0, x1, y0, y1, _ in boxes:
+                px[y0:y1, x0:x1] = alt[y0:y1, x0:x1]
+            _write_rgba(px, tmp_png)
         if not tmp_png.is_file() or tmp_png.stat().st_size == 0:
             raise RuntimeError(f"the card {spec.kind!r} was not written to {tmp_png}")
         os.replace(tmp_png, out_png)
     finally:
-        for f in (shape_png, mask_png, tmp_png):
+        for f in (shape_png, mask_png, alt_png, tmp_png):
             f.unlink(missing_ok=True)
     return out_png
 
 
-def _draw(spec: CardSpec, png: Path, shape, tag: str, white: bool = False, shape_png: Path | None = None) -> None:
+def _draw(spec: CardSpec, png: Path, shape, tag: str, white: bool = False, shape_png: Path | None = None,
+          marked: bool = False) -> None:  # fmt: skip
     """One render of `spec` to `png`: the `shape` pixels (None: none), the logo and the text strips (all white for the
-    glyph mask)."""
+    glyph mask; with `marked` the runs that have highlighted words in the highlight colour)."""
     scene = bpy.data.scenes.new(f"{SCENE}-{tag}")  # its own name: a scene the user named "Card" is left alone
     try:
         r = scene.render
@@ -131,7 +146,7 @@ def _draw(spec: CardSpec, png: Path, shape, tag: str, white: bool = False, shape
                    strip_placement(Rect(0, 0, lw, lh), Rect(*spec.logo_rect), (lw, lh), size, (lw, lh)))
         font = bpy.data.fonts.load(str(spec.font), check_existing=True) if spec.font else None
         for i, run in enumerate(spec.runs):
-            _text(seq, run, 3 + i, font, spec, "#FFFFFF" if white else None)
+            _text(seq, run, 3 + i, font, spec, "#FFFFFF" if white else (run.mark if marked and run.marks else None))
         if hasattr(r.image_settings, "media_type"):
             r.image_settings.media_type = "IMAGE"
         r.image_settings.file_format = "PNG"

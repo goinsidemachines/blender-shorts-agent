@@ -241,7 +241,7 @@ def test_cache_key_changes_with_text_kit_and_font_file(font, tmp_path):
     st = font.stat()
     os.utime(font, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
     assert cards.cache_key(a) != before
-    assert cards.CARD_VERSION == 2
+    assert cards.CARD_VERSION == 3
 
 
 def test_card_font_falls_back_to_an_os_font(monkeypatch, tmp_path):
@@ -360,30 +360,59 @@ def test_the_stroke_scales_with_the_size_and_the_shadow_can_go(font):
     assert cards.caption_pad(off) == 1 and cards.caption(off, "a", font, 600).h < cards.caption(OUT, "a", font, 600).h
 
 
-def test_a_highlighted_word_is_drawn_in_the_accent_without_asterisks_in_both_styles(font):
+def test_a_highlighted_word_is_marked_in_the_accent_in_a_run_laid_out_as_plain_text(font):
     for k in (OUT, K):
-        bold = k is OUT
         c = cards.caption(k, "and every *crossing* ok", font, 1080)
-        assert [(r.text, r.colour) for r in c.runs] == [("and every", "#FFFFFF"), ("crossing", "#7A4CE0"),
-                                                         ("ok", "#FFFFFF")], k.caption["style"]
-        assert all(r.anchor == "LEFT" for r in c.runs) and "*" not in "".join(r.text for r in c.runs)
-        size = k.caption["size"]
-        left = c.w / 2 - cards.measure("and every crossing ok", size, font, bold) / 2
-        assert c.runs[0].x == pytest.approx(left)  # the line stays centred as a whole
-        assert c.runs[1].x == pytest.approx(left + cards.measure("and every ", size, font, bold))
+        plain_c = cards.caption(k, "and every crossing ok", font, 1080)
+        assert [(r.text, r.anchor, r.x) for r in c.runs] == [(r.text, r.anchor, r.x) for r in plain_c.runs]
+        (run,) = c.runs  # one centred run: the sequencer lays it out, so spacing is the plain text's
+        assert run.text == "and every crossing ok" and run.anchor == "CENTER" and run.colour == "#FFFFFF"
+        assert run.marks == ((10, 18),) and run.mark == "#7A4CE0" and "*" not in run.text
     mine = kit.kit_from({**KIT, "caption": {**KIT["caption"], "highlight": "#00ff88"}})
-    assert cards.caption(mine, "*go*", font, 600).runs[0].colour == "#00FF88"  # caption.highlight wins over the accent
-    assert [(r.text, r.colour) for r in cards.caption(K, "*two words* x", font, 600).runs] == [
-        ("two words", "#7A4CE0"), ("x", "#FFFFFF")]
-    assert [r.text for r in cards.caption(K, "no markup", font, 600).runs] == ["no markup"]  # one centred run, as before
+    assert cards.caption(mine, "*go*", font, 600).runs[0].mark == "#00FF88"  # caption.highlight wins over the accent
+    two = cards.caption(K, "*two words* x", font, 600).runs[0]
+    assert two.text == "two words x" and two.marks == ((0, 3), (4, 9)) and two.mark == "#7A4CE0"
+    none = cards.caption(K, "no markup", font, 600).runs[0]
+    assert none.text == "no markup" and none.marks == () and none.mark is None
 
 
-def test_a_highlight_keeps_the_rest_of_its_word_plain_and_a_stray_asterisk_is_dropped(font):
-    assert [(r.text, r.colour) for r in cards.caption(K, "*one*.", font, 600).runs] == [("one", "#7A4CE0"),
-                                                                                       (".", "#FFFFFF")]
+def test_a_highlight_marks_the_whole_word_and_a_stray_asterisk_is_dropped(font):
+    (run,) = cards.caption(K, "*one*.", font, 600).runs
+    assert (run.text, run.marks) == ("one.", ((0, 4),))
     c = cards.caption(K, "stray * and *two*", font, 1080)
     assert not [r for r in c.runs if "*" in r.text]
     assert "".join(r.text for r in c.runs).replace(" ", "") == "strayandtwo"
+    assert c.runs[0].marks == ((6, 9),)  # the pair of asterisks is "* and *": that word is the highlight
+
+
+def _ink(w, h, y, spans):
+    cov = np.zeros((h, w))
+    for x0, x1 in spans:
+        cov[y - 5 : y + 5, x0:x1] = 1.0
+    return cov
+
+
+def test_mark_boxes_cut_half_way_across_the_widest_gaps(font):
+    c = cards.caption(OUT, "ab cd ef", font, 1080)
+    run = cards.Run("ab cd ef", 40, "#FFFFFF", c.w / 2, 30, "CENTER", ((3, 5),), "#FF0000")
+    spec = cards.CardSpec(**{**c.__dict__, "w": 300, "h": 60, "runs": (run,)})
+    # letters 4 px apart inside a word, 20 px between the words
+    cov = _ink(300, 60, 30, [(20, 40), (44, 64), (84, 104), (108, 128), (148, 168), (172, 192)])
+    (box,) = cards.mark_boxes(spec, cov)
+    assert box[0] == round((64 + 84) / 2) and box[1] == round((128 + 148) / 2) and box[4] == "#FF0000"
+    assert box[2] < 30 < box[3]
+    first = cards.Run("ab cd ef", 40, "#FFFFFF", 150, 30, "CENTER", ((0, 2), (6, 8)), "#FF0000")
+    boxes = cards.mark_boxes(cards.CardSpec(**{**spec.__dict__, "runs": (first,)}), cov)
+    assert [(b[0], b[1]) for b in boxes] == [(0, 74), (138, 300)]  # the card's edges bound the first and last word
+    assert cards.mark_boxes(spec, np.zeros((60, 300))) == []  # no ink: nothing to recolour
+
+
+def test_mark_boxes_fall_back_to_the_measured_widths_when_the_ink_has_too_few_clusters(font):
+    c = cards.caption(OUT, "x", font, 600)
+    run = cards.Run("aa bb", 40, "#FFFFFF", 100, 30, "CENTER", ((3, 5),), "#FF0000")
+    spec = cards.CardSpec(**{**c.__dict__, "w": 200, "h": 60, "runs": (run,)})
+    (box,) = cards.mark_boxes(spec, _ink(200, 60, 30, [(20, 180)]))  # one solid cluster for two words
+    assert 60 < box[0] < 140 and box[1] == 200
 
 
 def test_fx_shape_is_a_dark_outline_and_a_soft_shadow_under_the_text(font):
@@ -422,3 +451,21 @@ def test_plain_and_marked_text():
     assert marked("and every *crossing*!") == [("and every ", False), ("crossing", True), ("!", False)]
     assert marked("no marks") == [("no marks", False)] and marked("stray * one") == [("stray  one", False)]
     assert est_lines("*abcd* efgh", 10, 10000) == 1 and est_width("*abcd* efgh", 10, 10000) == len("abcd efgh") * 10 * 0.56
+
+
+def test_caption_highlight_colour_without_a_kit_follows_caption_then_short_palette_then_brand_palette():
+    from types import SimpleNamespace
+
+    from bsa.overlays import HIGHLIGHT_COLOR, caption_highlight, has_highlight
+
+    def short(**style):
+        return SimpleNamespace(style=style, look=None)
+
+    brand = {"brand": {"mode": "brand", "palette": {"accent": "#112233"}}}
+    assert caption_highlight(short(), {}) == HIGHLIGHT_COLOR  # nothing names a colour: the cyan
+    assert caption_highlight(short(), brand) == "#112233"
+    assert caption_highlight(short(palette={"accent": "#2ec5ff"}), brand) == "#2EC5FF"
+    own = short(palette={"accent": "#2ec5ff"}, caption={"highlight": "#00ff88"})
+    assert caption_highlight(own, brand) == "#00FF88"
+    assert caption_highlight(short(palette={"accent": "nope"}), {}) == HIGHLIGHT_COLOR  # a bad value is skipped
+    assert has_highlight("that *conducts*,") and not has_highlight("no markup * here")

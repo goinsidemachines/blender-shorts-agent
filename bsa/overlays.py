@@ -49,6 +49,30 @@ def caption_colours(short, settings: dict) -> tuple[tuple, tuple]:
     return text, box
 
 
+HIGHLIGHT_COLOR = "#2EC5FF"  # a *highlighted* caption word when nothing names a colour: a clear cyan
+
+
+def caption_highlight(short, settings: dict) -> str:
+    """"#RRGGBB" of a caption's *highlighted* word without a brand kit: `caption.highlight` (the short's own
+    `style.caption`, else `brand.caption`), else the short's `style.palette.accent`, else `brand.palette.accent`, else
+    HIGHLIGHT_COLOR (a value that is not 6 or 8 hex digits is skipped)."""
+    from bsa.settings import brand_for
+
+    brand, own = brand_for(settings, short), (getattr(short, "style", None) or {})
+
+    def pick(src, *path):
+        for key in path:
+            src = src.get(key) if isinstance(src, dict) else None
+        return src
+
+    for value in (pick(own, "caption", "highlight"), pick(brand, "caption", "highlight"),
+                  pick(own, "palette", "accent"), pick(brand, "palette", "accent")):  # fmt: skip
+        rgba = hex_colour(value, 1.0)
+        if rgba is not None:
+            return "#" + "".join(f"{round(c * 255):02X}" for c in rgba[:3])
+    return HIGHLIGHT_COLOR
+
+
 _HIGHLIGHT = re.compile(r"\*([^*]+)\*")
 
 
@@ -67,6 +91,11 @@ def marked(text: str) -> list[tuple[str, bool]]:
         at = m.end()
     out.append((text[at:], False))
     return [(plain(t), hl) for t, hl in out if plain(t)] or [("", False)]
+
+
+def has_highlight(text: str) -> bool:
+    """Whether `text` holds a *highlighted* word."""
+    return any(hl for _, hl in marked(text))
 
 
 def caption_style(short, settings: dict) -> str:

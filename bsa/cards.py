@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import platform
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from bsa.closing import on_colour
 from bsa.layout import safe_rect
 from bsa.overlays import NEAR_WRAP_PX, hex_colour, marked, plain
 
-CARD_VERSION = 2  # in every cache key: bump when the drawing changes
+CARD_VERSION = 3  # in every cache key: bump when the drawing changes
 
 SIZES = {"badge": 30, "category": 34, "step": 34, "label": 40, "measure": 40, "logo_name": 36, "title": 90,
          "title_highlight": 120, "bar": 34, "verdict": 36, "lead": 56, "website": 84, "handle": 52, "thumb_fact": 44,
@@ -68,6 +69,8 @@ class Run:
     x: float
     y: float
     anchor: str
+    marks: tuple = ()  # ((start, end), ...): the words of `text` (character ranges) drawn in `mark` instead of `colour`
+    mark: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,7 @@ class CardSpec:
     logo_rect: tuple | None = None
     bars: tuple = ()
     fx: TextFx | None = None  # a caption without a box: its text's outline and shadow (drawn from the text's shape)
+    bold: bool = False  # the text drawn bold (a caption with a box that is bold, as the plain text captions are)
 
 
 # --------------------------------------------------------------------------- fonts and measuring
@@ -267,39 +271,66 @@ def _flags(text: str) -> list[bool]:
     return [hl for piece, hl in marked(text) for ch in piece if not ch.isspace()]
 
 
-def _runs(lines: list[str], flags: list[bool], ys: list[float], off: float, size: int, w: float, font, colour: str,
-          highlight: str, bold: bool = False) -> tuple[Run, ...]:  # fmt: skip
-    """The caption's runs: a line is one centred Run, or, when it holds highlighted words, one left-anchored Run per
-    stretch of same-coloured words, each at its measured x (the line stays centred as a whole)."""
+def _runs(lines: list[str], flags: list[bool], ys: list[float], off: float, w: float, size: int, colour: str,
+          highlight: str) -> tuple[Run, ...]:  # fmt: skip
+    """The caption's runs: one centred Run per line, exactly as plain text is laid out. The words with a highlighted
+    character (`flags`: one per non-space character, in order) are listed in the run's `marks` and drawn in
+    `highlight` by the renderer, which finds where the sequencer put them (bsa.blender.cards): measuring them here
+    drifted a few pixels from the real layout, a visible gap before the word."""
     runs, at = [], 0
     for ln, y in zip(lines, ys, strict=True):
-        per = []  # each character's flag: a space between two highlighted characters is highlighted too
-        for ch in ln:
-            if ch.isspace():
-                per.append(None)
-            else:
-                per.append(flags[at] if at < len(flags) else False)
-                at += 1
-        for i, f in enumerate(per):
-            if f is None:
-                before = next((per[j] for j in range(i - 1, -1, -1) if per[j] is not None), False)
-                after = next((per[j] for j in range(i + 1, len(per)) if per[j] is not None), False)
-                per[i] = before and after
-        if not any(per):
-            runs.append(Run(ln, size, colour, w / 2, off + y, "CENTER"))
-            continue
-        left, i = w / 2 - measure(ln, size, font, bold) / 2, 0
-        while i < len(ln):
-            j = i
-            while j + 1 < len(ln) and per[j + 1] == per[i]:
-                j += 1
-            text = ln[i : j + 1].strip()
-            if text:
-                start = i + len(ln[i : j + 1]) - len(ln[i : j + 1].lstrip())
-                runs.append(Run(text, size, highlight if per[i] else colour, left + measure(ln[:start], size, font, bold),
-                                off + y, "LEFT"))
-            i = j + 1
+        marks = []
+        for m in re.finditer(r"\S+", ln):
+            word = flags[at : at + len(m.group())]
+            at += len(m.group())
+            if any(word):
+                marks.append((m.start(), m.end()))
+        runs.append(Run(ln, size, colour, w / 2, off + y, "CENTER", tuple(marks), highlight if marks else None))
     return tuple(runs)
+
+
+def mark_boxes(spec: CardSpec, coverage) -> list[tuple[int, int, int, int, str]]:
+    """Where each highlighted word of `spec` is on the card: (x0, x1, y0, y1, colour), pixel columns x0..x1 and rows
+    y0..y1 (end excluded) to take from a drawing of the card with the words in their colour. `coverage` is the text
+    as Blender drew it ((h, w) floats 0..1, every run in white). A run's words are its ink clusters in its row band;
+    the run's widest gaps are the spaces between the words, each cut half-way across its gap (the first word's box
+    reaches the card's left edge, the last one's the right edge). Where the ink has fewer clusters than the run has
+    words (a word wider apart than the spaces, say), the words are placed by their measured widths over the run's ink."""
+    cov = np.asarray(coverage, dtype=np.float64)
+    h, w = cov.shape
+    pitch = metrics(spec.font)[0]
+    out = []
+    for run in spec.runs:
+        if not run.marks:
+            continue
+        mid = run.y + text_drop(spec.font) * run.size
+        y0, y1 = max(0, math.floor(mid - pitch * run.size / 2)), min(h, math.ceil(mid + pitch * run.size / 2))
+        xs = np.flatnonzero((cov[y0:y1] > 0.25).any(axis=0)) if y1 > y0 else np.array([], dtype=int)
+        words = [m.span() for m in re.finditer(r"\S+", run.text)]
+        if not len(xs) or not words:
+            continue
+        runs = np.split(xs, np.flatnonzero(np.diff(xs) > 1) + 1)
+        spans = [(int(r[0]), int(r[-1]) + 1) for r in runs]  # each cluster's ink columns, end excluded
+        if len(spans) >= len(words):
+            gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
+            cuts = sorted(sorted(range(len(gaps)), key=lambda i: -gaps[i])[: len(words) - 1])
+            groups, first = [], 0
+            for c in [*cuts, len(spans) - 1]:
+                groups.append((spans[first][0], spans[c][1]))
+                first = c + 1
+        else:  # the words by their measured widths, scaled to the run's ink
+            font = Path(spec.font) if spec.font else None
+            total = measure(run.text, run.size, font, bool(spec.bold or (spec.fx and spec.fx.bold))) or 1.0
+            left, right = spans[0][0], spans[-1][1]
+            groups = [(left + (right - left) * measure(run.text[:a], run.size, font) / total,
+                       left + (right - left) * measure(run.text[:b], run.size, font) / total) for a, b in words]  # fmt: skip
+        for i, word in enumerate(words):
+            if word not in run.marks:
+                continue
+            x0 = 0 if i == 0 else round((groups[i - 1][1] + groups[i][0]) / 2)
+            x1 = w if i == len(words) - 1 else round((groups[i][1] + groups[i + 1][0]) / 2)
+            out.append((x0, x1, y0, y1, run.mark))
+    return out
 
 
 def caption(kit, text: str, font, width) -> CardSpec:
@@ -309,21 +340,22 @@ def caption(kit, text: str, font, width) -> CardSpec:
     asterisks (`every *crossing*`) is drawn in `caption.highlight` (else the palette accent), the asterisks not."""
     cap = kit.caption
     outline = cap.get("style") == "outline"
+    bold = outline or bool(cap.get("bold"))  # the plain text captions (no kit) are bold, with a box too
+    hug = outline or bool(cap.get("hug"))  # the card as wide as its text
     size, pad, maxw = int(cap["size"]), caption_pad(kit), _max_w(width)
     shown = plain(text)
     font, _ = font_for(shown, font)
-    lines = _lines(shown, size, font, maxw - 2 * pad, outline)
-    w = min(maxw, math.ceil(max(measure(ln, size, font, True) for ln in lines)) + 2 * pad) if outline else maxw
+    lines = _lines(shown, size, font, maxw - 2 * pad, bold)
+    w = min(maxw, math.ceil(max(measure(ln, size, font, bold) for ln in lines)) + 2 * pad) if hug else maxw
     total, ys = _stack([size] * len(lines), font)
     box_h = round(total + 2 * pad)
     off = (box_h - total) / 2
-    runs = _runs(lines, _flags(text), ys, off, size, w, font, cap["color"], cap.get("highlight") or kit.palette["accent"],
-                 outline)
+    runs = _runs(lines, _flags(text), ys, off, w, size, cap["color"], cap.get("highlight") or kit.palette["accent"])
     if outline:
         return CardSpec("caption", w, box_h, box_h, None, None, 0, 0, 0, runs, str(font) if font else None,
-                        fx=outline_fx(kit))  # fmt: skip
+                        fx=outline_fx(kit), bold=True)  # fmt: skip
     return CardSpec("caption", w, box_h, box_h, _hexa(cap["box"], cap["opacity"]), None, 0, 0, cap["corner_px"], runs,
-                    str(font) if font else None)  # fmt: skip
+                    str(font) if font else None, bold=bold)  # fmt: skip
 
 
 def title(kit, lines, highlight: int | None, font, width, size: int | None = None) -> CardSpec:

@@ -39,11 +39,13 @@ from bsa.overlays import (  # noqa: F401 - the text sizes, estimates and colours
     SMALL_MARGIN,
     STACK_GAP_PX,
     caption_colours,
+    caption_highlight,
     caption_size,
     caption_style,
     captions,
     corner_stack,
     follow,
+    has_highlight,
     hero_rects,
     plain,
 )
@@ -210,18 +212,65 @@ def _follow(strip, points: dict, span, captions, fixed=(), placed: dict | None =
 _hero_rects = hero_rects
 
 
+def _hex8(rgba) -> str:
+    return "#" + "".join(f"{round(c * 255):02X}" for c in rgba)
+
+
+def _temp_card_dir() -> Path:
+    import tempfile
+
+    # one temp folder per call without a short folder, kept until Blender exits (the strips are encoded after this)
+    _TEMP_CARD_DIRS.append(tempfile.TemporaryDirectory(prefix="bsa-cards-", ignore_cleanup_errors=True))
+    return Path(_TEMP_CARD_DIRS[-1].name)
+
+
+def _add_plain_caption_cards(short: Short, tl: Timeline, seq, texts: _Texts, rows: list, settings: dict,
+                             sdir: Path | None) -> None:  # fmt: skip
+    """The captions of a short without a brand kit as card images, drawn by the card code a kit's captions use
+    (bsa.cards.caption, drawn in bsa.blender.cards): the text in the caption colour with the style's outline and soft
+    shadow (or box), a *highlighted* word in the highlight colour (bsa.overlays.caption_highlight). Each card sits on
+    the bottom anchor the text strips use, centred, so placement and the overlap checks see no change."""
+    from bsa import cards
+    from bsa import kit as kit_mod
+    from bsa.blender.cards import add_overlay
+    from bsa.kitlayout import KitOverlay, Placed
+
+    safe = safe_rect()
+    size = caption_size(short)
+    colour, box = caption_colours(short, settings)
+    pad = round(CAPTION_MARGIN * H)
+    caption = {"color": _hex8(colour), "box": _hex8(box), "size": size, "opacity": 1,
+               "style": caption_style(short, settings), "highlight": caption_highlight(short, settings), "hug": True,
+               "bold": True, "pad_px": pad, "corner_px": round(0.4 * (size * LINE_H / 2 + pad))}  # fmt: skip
+    kit = kit_mod.kit_from({"caption": caption})
+    font = texts.font_path
+    cp = cards.caption_pad(kit)
+    placed = []
+    for card, (f0, f1, _, _, bottom) in zip(tl.cards, rows, strict=True):
+        spec = cards.caption(kit, card.text, font, safe.w)
+        placed.append(Placed(spec, f0, f1, CH_CAPTION, text=plain(card.text),
+                             at=Rect(safe.x + (safe.w - spec.w) / 2, bottom + cp - spec.box_h, spec.w, spec.h)))  # fmt: skip
+    cache_dir = Path(sdir) / "cards" if sdir is not None else _temp_card_dir()
+    add_overlay(seq, KitOverlay(placed, [], None, []), cache_dir)
+
+
 def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anchors: dict | None = None,
-                  label_heroes: dict | None = None) -> None:  # fmt: skip
-    """Captions, each shot's badge and stacked labels, and its near labels, where bsa.overlays places them."""
+                  label_heroes: dict | None = None, seq=None, sdir: Path | None = None) -> None:  # fmt: skip
+    """Captions, each shot's badge and stacked labels, and its near labels, where bsa.overlays places them. The
+    captions are text strips, except in style "outline" or when a caption holds a *highlighted* word: a text strip
+    draws one colour, so those are card images (_add_plain_caption_cards)."""
     safe = safe_rect()
     size = caption_size(short)
     cx = safe.x + safe.w / 2
     colour, box = caption_colours(short, settings)
     cards = captions(short, tl)  # near labels keep off the caption bands; none with style.caption.draw false
     outline = caption_style(short, settings) == "outline"
-    for card, (f0, f1, _, _, bottom) in zip(tl.cards if cards else [], cards, strict=True):
-        texts.add(plain(card.text), f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
-                  color=colour, box=box, outline=outline)  # fmt: skip
+    if cards and seq is not None and (outline or any(has_highlight(c.text) for c in tl.cards)):
+        _add_plain_caption_cards(short, tl, seq, texts, cards, settings, sdir)
+    else:
+        for card, (f0, f1, _, _, bottom) in zip(tl.cards if cards else [], cards, strict=True):
+            texts.add(plain(card.text), f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"),
+                      CAPTION_MARGIN, color=colour, box=box, outline=outline)  # fmt: skip
 
     spans = {s.id: s for s in tl.shots}
     for shot in short.shots:
@@ -256,18 +305,12 @@ def _add_kit(short: Short, tl: Timeline, seq, k, sdir: Path | None, anchors: dic
              label_heroes: dict | None) -> tuple[int, list[str], Path | None]:  # fmt: skip
     """The brand kit's cards as image strips where bsa.kitlayout puts them, drawn into `sdir`/cards (a temp folder
     without a short folder). Returns (card images placed, notes: the card font's and the layout's, the card font)."""
-    import tempfile
-
     from bsa import cards, kitlayout
     from bsa.blender.cards import add_overlay
 
     font, note = cards.card_font_and_note(k, font_caches(sdir))
     ov = kitlayout.build(short, tl, k, font, anchors, label_heroes)
-    if sdir is not None:
-        cache_dir = Path(sdir) / "cards"
-    else:  # one temp folder per call, kept until Blender exits (the strips are encoded after this returns)
-        _TEMP_CARD_DIRS.append(tempfile.TemporaryDirectory(prefix="bsa-cards-", ignore_cleanup_errors=True))
-        cache_dir = Path(_TEMP_CARD_DIRS[-1].name)
+    cache_dir = Path(sdir) / "cards" if sdir is not None else _temp_card_dir()
     before = {s.name for s in seq.strips_all}
     add_overlay(seq, ov, cache_dir)
     placed = sum(1 for s in seq.strips_all if s.type == "IMAGE" and s.name not in before)
@@ -403,7 +446,7 @@ def build_edit(
         scene[FONT_USED_PROP] = used
     texts = _Texts(seq.strips, font, Path(bpy.path.abspath(font.filepath)) if font is not None else None)
     if k is None:  # no brand.style: exactly today's text captions, badges and labels
-        _add_overlays(short, tl, texts, settings, anchors, label_heroes)
+        _add_overlays(short, tl, texts, settings, anchors, label_heroes, seq, sdir)
     else:
         n, notes, card_font = _add_kit(short, tl, seq, k, sdir, anchors, label_heroes)
         scene[KIT_CARDS_PROP] = n

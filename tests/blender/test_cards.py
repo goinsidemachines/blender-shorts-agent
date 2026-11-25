@@ -354,3 +354,31 @@ def test_a_box_caption_highlights_a_word_too():
     rgb, a = px[..., :3].astype(int), px[..., 3]
     accent = (np.abs(rgb - np.array([0x7A, 0x4C, 0xE0])).max(axis=-1) <= 6) & (a > 250)
     assert accent.sum() > 100 and spec.fx is None
+
+
+def _ink_gaps(px, colour):
+    rgb, a = px[..., :3].astype(int), px[..., 3]
+    white = (rgb >= 240).all(axis=-1) & (a > 250)
+    tint = (np.abs(rgb - np.array(colour)).max(axis=-1) <= 24) & (a > 250)
+    cols = np.flatnonzero((white | tint).any(axis=0))
+    cuts = np.flatnonzero(np.diff(cols) > 1)
+    starts, ends = [cols[0], *cols[cuts + 1]], [*cols[cuts], cols[-1]]
+    return [int(starts[i + 1] - ends[i] - 1) for i in range(len(ends) - 1)], tint, white
+
+
+def test_a_highlighted_word_keeps_the_spacing_of_plain_text_and_is_coloured_only_in_its_columns():
+    out = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline", "size": 66}})
+    mine = Path(tempfile.mkdtemp())
+    spec = cards.caption(out, "that *conducts*, today ok", FONT, 1080)
+    plain = cards.caption(out, "that conducts, today ok", FONT, 1080)
+    assert spec.w == plain.w
+    hl = read_png(bsa.blender.cards.render(spec, mine / "hl.png"))
+    flat = read_png(bsa.blender.cards.render(plain, mine / "flat.png"))
+    gaps_hl, tint, white = _ink_gaps(hl, (0x7A, 0x4C, 0xE0))
+    gaps_flat, _, _ = _ink_gaps(flat, (0x7A, 0x4C, 0xE0))
+    assert len(gaps_hl) == len(gaps_flat) and max(abs(a - b) for a, b in zip(gaps_hl, gaps_flat)) <= 2  # no gap before or overlap round the coloured word: the plain text's own layout
+    cols = np.flatnonzero(tint.any(axis=0))
+    assert tint.sum() > 300 and cols.min() > spec.w * 0.15 and cols.max() < spec.w * 0.6  # "conducts" only
+    assert white[:, : cols.min() - 8].sum() > 200 and white[:, cols.max() + 24 :].sum() > 200  # the rest stays white
+    assert (hl[..., 3] > 0).sum() == (flat[..., 3] > 0).sum()  # the same outline and shadow
+    assert sorted(p.name for p in mine.iterdir()) == ["flat.png", "hl.png"]  # the temp drawings are gone
