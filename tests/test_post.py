@@ -187,3 +187,27 @@ def test_add_posted_appends_once_per_url(tmp_path):
     with pytest.raises(ValueError):
         post.add_posted(sdir, "vimeo", "https://v.example/x")
     assert post.problems(load_short(sdir / "source" / "short.json"), {})[0] == []
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Why does X? 🎧 #shorts",
+        "Why does X? 🎧🔇✨ #shorts",
+        "Why does X? 👩‍🔬 #shorts",
+        "Why does X? ❤️ #shorts",
+        "Why does X? #shorts",
+        "Why does X? #audio #physics #shorts",
+        "Why does X？ #shorts",
+        "Why does X? 🎧 #audio #shorts",
+    ],
+)
+def test_question_title_ignores_trailing_emoji_and_hashtags(title):
+    s = {"post_format": {"title_suffix": " #shorts", "title_style": "question"}}
+    assert not any("not a question" in w for w in post.problems(short_with(title=title), s)[1])
+
+
+@pytest.mark.parametrize("title", ["Why does X 🎧 #shorts", "Noise cancelling explained ✨ #audio #shorts", "Why? Because. #shorts"])
+def test_non_question_title_still_warns_with_emoji_and_hashtags(title):
+    s = {"post_format": {"title_suffix": " #shorts", "title_style": "question"}}
+    assert any("not a question" in w for w in post.problems(short_with(title=title), s)[1])
