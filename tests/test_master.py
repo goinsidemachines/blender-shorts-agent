@@ -274,3 +274,27 @@ def test_final_check_that_cannot_measure_is_a_warning(tmp_path, monkeypatch):
     record, warnings = bsa_blender._loudness_check(tmp_path, Short(slug="t", title="T", length_s=10),
                                                    settings.DEFAULTS, tmp_path / "x.mp4")
     assert record["ok"] is None and "not measured: no sound" in warnings[0]
+
+
+def _peaky_dense(seconds=20, seed=3):
+    """A dense bed with sharp spikes: a single gain to the target leaves the peaks far over the ceiling, so the limiter
+    takes a lot of level away and the master has to make it up."""
+    n = round(seconds * SR)
+    x = _noise(seconds, 0.07, seed)
+    rng = np.random.default_rng(seed)
+    for i in range(0, n - 200, SR // 8):
+        x[i : i + 40] += rng.choice([-1, 1]) * 0.8  # a click every 125 ms
+    return _stereo(np.clip(x, -0.99, 0.99))
+
+
+def test_master_makes_up_what_the_limiter_takes_away_on_a_dense_peaky_mix():
+    values = {**master.defaults(), "integrated_lufs": -11.0, "true_peak_dbtp": -1.0, "max_lra_lu": 3.0}
+    x = _peaky_dense()
+    one_pass = dsp.limit(x * dsp.db(-11.0 - dsp.gated_lufs(x)), -1.3)
+    assert dsp.gated_lufs(one_pass) < -11.0 - 0.3  # the premise: one gain pass and the limiter miss the target
+    out, report = amaster.master(x, values)
+    assert abs(dsp.gated_lufs(out) - -11.0) <= 0.2
+    assert dsp.true_peak(out) <= -1.0
+    ok, _ = amaster.verdict(dsp.measure(out), values)
+    assert ok
+    assert report["rounds"] > 1

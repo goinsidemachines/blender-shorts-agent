@@ -236,6 +236,25 @@ def _thumbnail_errors(short, th) -> list[str]:
     return errors
 
 
+_TRAIL_HASHTAG = re.compile(r"(?:\s+|^)#\w+\s*$")
+_TRAIL_DECOR = re.compile(  # whitespace, ZWJ, variation selectors, keycap, arrows, technical/dingbat symbols, emoji, tags
+    r"[\s\u200d\ufe0e\ufe0f\u20e3\u2190-\u21ff\u2300-\u23ff\u2460-\u27bf\u2900-\u297f\u2b00-\u2bff"
+    r"\U0001f000-\U0001faff\U000e0020-\U000e007f]+$"
+)
+
+
+def _is_question(body: str) -> bool:
+    """True when the title text ends in a question mark (`?` or full-width), once trailing hashtags, emoji and other
+    pictographic symbols, variation selectors, joiners and spaces are ignored."""
+    text = body
+    while True:
+        stripped = _TRAIL_DECOR.sub("", _TRAIL_HASHTAG.sub("", text))
+        if stripped == text:
+            break
+        text = stripped
+    return text.endswith(("?", "\uff1f"))
+
+
 def _format_warnings(p: dict, s: dict) -> list[str]:
     fmt = (s or {}).get("post_format")
     if not isinstance(fmt, dict) or not fmt:
@@ -246,7 +265,7 @@ def _format_warnings(p: dict, s: dict) -> list[str]:
     if suffix and not title.endswith(suffix):
         warnings.append(f"post title does not end with your title suffix {suffix!r}")
     body = title[: len(title) - len(suffix)] if suffix and title.endswith(suffix) else title
-    if fmt.get("title_style") == "question" and title and not body.rstrip().endswith("?"):
+    if fmt.get("title_style") == "question" and title and not _is_question(body):
         warnings.append("post title is not a question, which your post format asks for")
     have = {h.lower() for h in p["hashtags"] if isinstance(h, str)}
     missing = [h for h in fmt.get("always_hashtags") or [] if h.lower() not in have]

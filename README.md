@@ -47,6 +47,19 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
+## What's new in 0.7.1
+
+A small fix release.
+
+- **Post title check**: a question title that ends with an emoji or hashtags (`Why does X? 🎧 #shorts`) is no longer
+  flagged as "not a question".
+- **Animated geometry-nodes values**: keys on a modifier's own inputs showed only frame 1 in renders on Blender 5.3.
+  New `bsa.blender.controls` keys values on a control Empty instead, with negative values kept, and the build
+  chapter explains it.
+- **Loudness master**: a dense, peaky mix now reaches its loudness target under the true-peak ceiling (it measures
+  after the limiter and makes up the level) instead of landing about half an LU short.
+- **Target report**: the "last line echoes the hook" row names the shared words when it passes.
+
 ## What's new in 0.7.0
 
 Your style, written down once. Everything below is off or unchanged until you set it, so existing shorts look and

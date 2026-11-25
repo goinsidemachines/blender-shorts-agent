@@ -159,9 +159,10 @@ def test_hook_callback_fires_and_stays_silent():
     echo = _short([Line("l1", "A *pendulum* swings like clockwork.", "s1"), Line("l2", "Pendulums keep time.", "s2")])
     row = targets.script_rows(echo, {"hook_callback": True})[0]
     assert row["ok"] is True and row["measured"] == ["pendulum"]  # plural stripped, asterisks gone
+    assert "shares pendulum" in row["text"] and "no word" not in row["text"]  # a pass names the shared words
     no_echo = _short([Line("l1", "A pendulum swings.", "s1"), Line("l2", "Follow for more.", "s2")], title="Clocks")
     miss = targets.script_rows(no_echo, {"hook_callback": True})[0]
-    assert miss["ok"] is False and "simple word-overlap" in miss["text"]
+    assert miss["ok"] is False and "simple word-overlap" in miss["text"] and "shares no word" in miss["text"]
     via_title = _short([Line("l1", "A pendulum swings.", "s1"), Line("l2", "Clocks use this.", "s2")], title="Clocks")
     assert targets.script_rows(via_title, {"hook_callback": True})[0]["ok"] is True
     stop_only = _short([Line("l1", "It is the one.", "s1"), Line("l2", "That is the end.", "s2")], title="x")

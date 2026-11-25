@@ -26,6 +26,12 @@ def _guarded_bind(self, address):
 
 socket.socket.bind = _guarded_bind
 
+# Tests never read the developer's own settings (a default style preset there would re-time every test short): every
+# run starts from an empty settings home. Tests that need settings use the bsa_home fixture, which points elsewhere.
+import tempfile as _tempfile
+
+os.environ["BSA_HOME"] = _tempfile.mkdtemp(prefix="bsa-test-home-")
+
 # On Windows every program a test starts (Blender, ffmpeg, the CLI, helper Pythons) runs without a console window, so
 # a test run never pops windows over the developer's work. The plugin's own code does this through bsa.proc; this also
 # covers tests that call subprocess directly.
