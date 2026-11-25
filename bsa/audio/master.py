@@ -62,7 +62,9 @@ def _score(result, target, ceiling, max_lra) -> tuple:
 
 
 def _good(result, target, ceiling, max_lra) -> bool:
-    return _score(result, target, ceiling, max_lra) == (0.0, 0.0, 0) and result[1]["true_peak_dbtp"] <= ceiling
+    over, wide, _ = _score(result, target, ceiling, max_lra)
+    m = result[1]
+    return over == 0.0 and wide == 0.0 and m["true_peak_dbtp"] <= ceiling and abs(m["integrated_lufs"] - target) <= AIM_LU
 
 
 def _search(base: np.ndarray, gain: float, target: float, ceiling: float, max_lra) -> tuple[tuple, int]:
