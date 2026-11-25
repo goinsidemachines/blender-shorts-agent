@@ -375,10 +375,15 @@ def script_rows(short, values: dict) -> list[dict]:
                             "hook_callback: the short has one line, nothing to compare"))  # fmt: skip
         else:
             shared = key_words(last.text) & (key_words(first.text) | key_words(short.title))
+            text = (
+                f"the last line echoes the hook: it shares {', '.join(sorted(shared))} with the first line or the title"
+                if shared
+                else "the last line shares no word with the first line or the title (a simple word-overlap "
+                "check: reword the ending to come back to the hook, or leave it if the echo is meant "
+                "in other words)"
+            )
             rows.append(row("hook_callback", "story", sorted(shared) or "no shared word", "a shared word", bool(shared),
-                            "the last line shares no word with the first line or the title (a simple word-overlap "
-                            "check: reword the ending to come back to the hook, or leave it if the echo is meant "
-                            "in other words)"))  # fmt: skip
+                            text))  # fmt: skip
     return rows
 
 
