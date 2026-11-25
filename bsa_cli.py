@@ -1231,6 +1231,9 @@ def cmd_mix(args) -> dict:
             levels["peak_dbfs"] = round(float(20 * np.log10(max(float(np.abs(stereo).max()), 1e-9))), 2)
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
+    from bsa.audio import master as audio_master
+
+    audio_master.write_stamp(sdir, master_values)  # audio/mix.json: a final edit re-makes a mix whose master moved on
     out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
            "master": mastered if mastered is not None else {"applied": False, "note": "master.enabled is false"},

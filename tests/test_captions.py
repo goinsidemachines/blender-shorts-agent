@@ -176,7 +176,7 @@ def test_cli_captions_refuses_a_stale_final(home, pendulum):  # noqa: F811
     assert not list((pendulum / "out").glob("*.vtt"))
 
 
-def _stubbed_edit(monkeypatch, sdir, tl_hash):
+def _stubbed_edit(monkeypatch, sdir, tl_hash, has_audio=False, preset="final"):
     """bsa_blender._cmd_edit with Blender's parts stubbed: it reaches the caption hook after recording the MP4."""
     import types
 
@@ -192,7 +192,7 @@ def _stubbed_edit(monkeypatch, sdir, tl_hash):
     monkeypatch.setattr(bsa_blender, "_timeline", lambda sdir, short: (types.SimpleNamespace(n_frames=30), tl_hash))
     monkeypatch.setattr(freshness, "require_checks", lambda *a, **k: None)
     monkeypatch.setattr(freshness, "load_anchors", lambda *a, **k: {})
-    info = {"width": 1080, "height": 1920, "frames": 30, "fps": 30.0, "has_audio": False}
+    info = {"width": 1080, "height": 1920, "frames": 30, "fps": 30.0, "has_audio": has_audio}
 
     def encode(scene, progress=None):
         mp4.write_bytes(b"mp4")
@@ -202,7 +202,7 @@ def _stubbed_edit(monkeypatch, sdir, tl_hash):
                                  end_card_note=lambda s: None, glyph_fallbacks=lambda s: [],
                                  font_used=lambda s: "f", font_note=lambda s: None, kit_cards=lambda s: 0)  # fmt: skip
     run = types.SimpleNamespace(progress=lambda *a, **k: None)
-    args = types.SimpleNamespace(preset="final")
+    args = types.SimpleNamespace(preset=preset)
     short = bsa_blender._load(sdir)
     return lambda: bsa_blender._cmd_edit(args, sdir, short, run, fake)
 

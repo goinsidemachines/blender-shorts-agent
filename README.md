@@ -47,6 +47,14 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
+## What's new in 0.7.2
+
+A small fix release.
+
+- **Final edit never keeps an old loudness**: `CLI mix` now stamps `audio/mix.json` with the master settings and the
+  master's version, and the final edit re-makes the mix itself (and says "remixed: ...") when they have changed,
+  so a short mixed before an upgrade or a settings change no longer ships at the old level.
+
 ## What's new in 0.7.1
 
 A small fix release.

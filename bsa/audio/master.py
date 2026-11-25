@@ -10,15 +10,65 @@ gentle compressor (3:1, at most about 3 dB of gain reduction) and search again, 
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 from bsa.audio import dsp
+
+# Bump whenever the master's behaviour changes (its steps, aims or limits), so a mix mastered by older code is re-made
+# before a final edit uses it. 1 is 0.7.0's master (and any mix with no stamp); 2 is 0.7.1's.
+MASTER_VERSION = 2
+STAMP_NAME = "mix.json"  # next to audio/mix.wav
 
 TOLERANCE_LU = 0.5  # the check on a finished file (verdict)
 AIM_LU = 0.15  # what the master itself aims for, so the check has room (a codec moves the level a little)
 PEAK_MARGIN_DB = 0.3  # the limiter's sample-peak ceiling sits this far under the true-peak ceiling
 ROUNDS = 8  # gain / limit / measure rounds per attempt
 MAX_REDUCTION_DB = 3.0
+
+
+def stamp_path(sdir: Path) -> Path:
+    return Path(sdir) / "audio" / STAMP_NAME
+
+
+def make_stamp(values: dict) -> dict:
+    """What `CLI mix` records next to the mix: the resolved master values and the master's code version."""
+    return {"master_version": MASTER_VERSION, "master": json.loads(json.dumps(values))}
+
+
+def write_stamp(sdir: Path, values: dict) -> Path:
+    path = stamp_path(sdir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(make_stamp(values), indent=2), encoding="utf-8")
+    return path
+
+
+def stale_reason(sdir: Path, values: dict) -> str | None:
+    """Why audio/mix.wav was not mastered as the current master settings and code would (None when it was, or when
+    there is no mix). A missing or unreadable stamp counts as stale when the master is on; with the master off only a
+    stamp that says the mix was mastered does."""
+    sdir = Path(sdir)
+    if not (sdir / "audio" / "mix.wav").is_file():
+        return None
+    try:
+        stamp = json.loads(stamp_path(sdir).read_text(encoding="utf-8"))
+        if not isinstance(stamp, dict) or not isinstance(stamp.get("master"), dict):
+            raise TypeError("not a stamp")
+    except (OSError, ValueError, TypeError):
+        stamp = None
+    if not values["enabled"]:
+        if stamp is not None and stamp["master"].get("enabled"):
+            return "the master was on when audio/mix.wav was made and is off now"
+        return None
+    if stamp is None:
+        return f"there is no readable audio/{STAMP_NAME} (the mix was made before the loudness master was stamped)"
+    if stamp.get("master_version") != MASTER_VERSION:
+        return f"the master changed since audio/{STAMP_NAME} (version {stamp.get('master_version')}, now {MASTER_VERSION})"
+    if stamp["master"] != json.loads(json.dumps(values)):
+        return f"the master settings changed since audio/{STAMP_NAME}"
+    return None
 
 
 def targets(values: dict) -> dict:
