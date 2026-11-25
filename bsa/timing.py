@@ -1,8 +1,8 @@
 """Timing and caption-card values of a short: one place that turns the settings (and the short's own `timing` and
 `captions` objects) into the numbers the timeline, the takes and the checks use. Stdlib only.
 
-Order of precedence, last wins: the built-in defaults, the `timing` / `captions` settings, the short's own
-`timing` / `captions` in short.json. Worker Blender processes call `resolve` with the settings file and short.json they
+Order of precedence, last wins: the built-in defaults, the `timing` / `captions` settings, the chosen style preset
+(bsa.presets), the short's own `timing` / `captions` in short.json. Worker Blender processes call `resolve` with the settings file and short.json they
 already load, so a value set in either reaches them without patching any module."""
 
 from __future__ import annotations
@@ -93,21 +93,13 @@ def problems(settings: dict | None = None, short=None) -> list[str]:
 
 
 def resolve(settings: dict | None = None, short=None) -> Timing:
-    """The Timing for a short: defaults, then the settings' `timing` / `captions`, then the short's own. Values that
-    do not validate are ignored here (validate and settings set report them), so a bad file never stops a build."""
-    values = Timing().as_dict()
-    for source in (settings or {}, short):
-        for group in GROUPS:
-            own = source.get(group) if isinstance(source, dict) else getattr(source, group, None)
-            if not isinstance(own, dict):
-                continue
-            for k, v in own.items():
-                if k in SPEC[group]:
-                    try:
-                        values[k] = check(group, k, v)
-                    except ValueError:
-                        pass
-    return Timing(**values)
+    """The Timing for a short, last wins: the built-in defaults, the settings' own `timing` / `captions`, the chosen
+    style preset (settings `style_preset`, or the short's `preset`; its `extend` chain base first; see bsa.presets),
+    then the short's own `timing` / `captions`. Values that do not validate (and an unknown preset name) are ignored
+    here (validate, settings set and `preset` report them), so a bad file never stops a build."""
+    from bsa import presets
+
+    return Timing(**presets.resolved(settings, short)[0])
 
 
 def for_short(short=None) -> Timing:

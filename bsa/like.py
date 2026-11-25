@@ -8,7 +8,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bsa import engine_runs, jobstate, kit, settings, workspace
+from bsa import engine_runs, jobstate, kit, presets, settings, workspace
 from bsa.narrate import run as narrate_run
 from bsa.short import Short, load_short
 
@@ -79,12 +79,12 @@ def list_shorts(root: Path, settings_: dict) -> list[dict]:
 
 # "Make it like that one": what `new-short --like` copies from an earlier short. Never its story, facts, sources,
 # shots, assets, post or thumbnail, and never the engine it was made with: the engine is always the user's choice.
-COPY_KEYS = ("style", "look", "length_s", "pace", "end_card", "closing", "narrator")
+COPY_KEYS = ("style", "look", "length_s", "pace", "end_card", "closing", "narrator", "preset")
 LABELS = {"style": "the look", "look": "the brand or fresh look", "length_s": "the length", "pace": "the pace",
-          "end_card": "the end card", "closing": "the closing", "narrator": "the voice"}  # fmt: skip
+          "end_card": "the end card", "closing": "the closing", "narrator": "the voice", "preset": "the style preset"}  # fmt: skip
 # The interview question each copied key answers (the interview skips those).
 SKIP = {"length_s": "length", "pace": "pace", "style": "look", "look": "look", "end_card": "closing",
-        "closing": "closing", "narrator": "voice"}  # fmt: skip
+        "closing": "closing", "narrator": "voice", "preset": None}  # fmt: skip
 
 
 def pace_of(short) -> dict:
@@ -226,6 +226,8 @@ def copy_from(other: Path, settings_: dict) -> tuple[dict, list[str], list[str]]
     for key in ("end_card", "closing"):
         if getattr(short, key) is not None:
             values[key] = copy.deepcopy(getattr(short, key))
+    if isinstance(short.preset, str) and short.preset.strip() and short.preset.strip() != presets.active_name(settings_):
+        values["preset"] = short.preset.strip()
     narrator, voice_notes = _narrator_from(other, short, settings_)
     if narrator:
         values["narrator"] = narrator
@@ -352,6 +354,8 @@ def _describe(key: str, value) -> str:
         if value is True:
             return "on"
         return str(value) if value else "none"
+    if key == "preset":
+        return str(value)
     if key == "narrator":
         parts = []
         if value.get("voice"):

@@ -221,3 +221,9 @@ Setting it back to `false` turns it off.
 The user changes any setting by saying so ("use Cycles from now on", "switch to Kokoro"). Save it with `settings
 set` and show the new `settings summary`. Hard rules change only with `settings rule add|remove` (or `rule none`),
 and only when the user asks.
+
+## Style preset (optional, never asked)
+
+New shorts use the built-in `explainer` pacing. If the user wants a different feel (for example tight pacing for a
+loop), offer `CLI preset list` and set it with `CLI settings set style_preset NAME`. Details: 05-narration.md,
+"Style presets".

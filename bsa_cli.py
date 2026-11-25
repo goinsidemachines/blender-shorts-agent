@@ -224,7 +224,10 @@ def cmd_settings(args) -> dict:
         from bsa import kit
 
         s = settings.load_settings()
-        return {"advice": kit.advice(s), "problems": kit.problems(s) + settings.narrator_problems(s)}
+        from bsa import presets
+
+        return {"advice": kit.advice(s),
+                "problems": kit.problems(s) + settings.narrator_problems(s) + presets.problems(s)}  # fmt: skip
     # set
     if not args.key or args.value is None:
         raise CliError("usage: settings set KEY VALUE (for example: settings set render.engine cycles)")
@@ -264,6 +267,48 @@ def cmd_settings(args) -> dict:
 
         out["font_check"] = fonts.brand_font_check(font)
     return out
+
+
+def cmd_preset(args) -> dict:
+    from bsa import presets
+
+    s = settings.load_settings()
+    if args.action == "list":
+        return {"presets": presets.listing(s), "active": presets.active_name(s),
+                "chosen_by": "settings style_preset" if presets.chosen(s) else "built-in default"}  # fmt: skip
+    short = load(short_dir(args.short)) if getattr(args, "short", None) else None
+    if args.action == "show":
+        if not args.name:
+            raise CliError("usage: preset show NAME [--short SHORT]")
+        merged = presets.all_presets(s)
+        try:
+            names = presets.chain(args.name, merged)
+        except presets.PresetError as exc:
+            raise CliError(str(exc)) from exc
+        # the values as this preset would give them (the chosen name replaced), with the settings and the short around it
+        probe = {**s, "style_preset": args.name}
+        if short is not None:
+            short = copy.copy(short)
+            short.preset = None
+        values, where = presets.resolved(probe, short)
+        return {"preset": args.name, "source": presets.source_of(args.name, s), "chain": names,
+                "values": values, "from": where, "short": getattr(short, "slug", None)}  # fmt: skip
+    # save
+    if not args.name or not args.source:
+        raise CliError("usage: preset save NAME --from SHORT [--force]")
+    bad = presets.name_problem(args.name)
+    if bad:
+        raise CliError(bad)
+    own = presets.user_presets(s)
+    if args.name in own and not args.force:
+        raise CliError(f"preset {args.name!r} already exists in your settings: use --force to replace it")
+    if args.name in presets.SHIPPED and args.name not in own and not args.force:
+        raise CliError(f"{args.name!r} is a shipped preset: pick another name, or --force to replace it for you")
+    source = load(short_dir(args.source))
+    preset = presets.from_short(s, source)
+    value = settings.check_value(f"presets.{args.name}", preset)
+    settings.set_value(f"presets.{args.name}", value)
+    return {"saved": args.name, "from": source.slug, "preset": preset}
 
 
 def cmd_machine(args) -> dict:
@@ -864,6 +909,9 @@ def cmd_validate(args) -> dict:
     rule_errors, rule_warnings = _rule_problems(short, sdir)
     errors = validate(short) + rule_errors
     post_errors, post_warnings = post.problems(short, settings.load_settings())
+    from bsa import presets
+
+    errors += presets.problems(settings.load_settings(), short)
     errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
@@ -1886,6 +1934,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", default=None, help="a rule kind the plugin checks itself (settings rules lists them)")
     sp.add_argument("--part-of", default=None, help="the broad rule this concrete rule spells out")
     sp.set_defaults(fn=cmd_settings)
+
+    sp = sub.add_parser("preset", help="list | show NAME [--short SHORT] | save NAME --from SHORT [--force]: named style "
+                        "presets (timing and caption values)")  # fmt: skip
+    sp.add_argument("action", choices=["list", "show", "save"])
+    sp.add_argument("name", nargs="?")
+    sp.add_argument("--short", default=None, help="show: resolve with this short's own values on top")
+    sp.add_argument("--from", dest="source", default=None, help="save: the short whose resolved values to keep")
+    sp.add_argument("--force", action="store_true", help="save: replace an existing preset")
+    sp.set_defaults(fn=cmd_preset)
 
     sp = sub.add_parser("machine", help="CPU, RAM, GPUs and free video memory")
     sp.add_argument("--need-gb", type=float, default=None, help="warn if no GPU has this much video memory free")

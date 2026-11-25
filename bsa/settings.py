@@ -41,6 +41,10 @@ DEFAULTS = {
     # Pacing of the timeline and of the caption cards (bsa.timing); a short's own `timing` / `captions` win.
     "timing": timing.defaults("timing"),
     "captions": timing.defaults("captions"),
+    # Named style presets (bsa.presets): `presets` holds the user's own {name: preset}; `style_preset` picks the one
+    # every short uses (null = the built-in "explainer"); a short's own `preset` wins.
+    "presets": {},
+    "style_preset": None,
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -288,6 +292,37 @@ def check_value(path: str, value):
         if level is None or not ROOM_DB_RANGE[0] <= level <= ROOM_DB_RANGE[1]:
             raise ValueError(room_db_error(value))
         return level
+    if path == "style_preset":  # a preset name (shipped or the user's), or null for the built-in explainer
+        if value is None or (isinstance(value, str) and value.strip().lower() in ("", "null", "none")):
+            return None
+        from bsa import presets
+
+        name = str(value).strip()
+        try:
+            presets.chain(name, presets.all_presets(load_settings()))
+        except presets.PresetError as exc:
+            raise ValueError(str(exc)) from exc
+        return name
+    if path == "presets" or path.startswith("presets."):
+        from bsa import presets
+
+        if path == "presets":
+            if not isinstance(value, dict):
+                raise ValueError(f"presets must be an object of {{name: preset}}, got {value!r}")
+            items = value
+        else:
+            name = path.split(".", 1)[1]
+            if value is None:  # null removes the preset
+                return None
+            items = {name: value}
+        merged = {**presets.all_presets(load_settings()), **items}
+        wrong = []
+        for name, preset in items.items():
+            bad = presets.name_problem(name)
+            wrong += [bad] if bad else presets.preset_problems(name, preset, merged)
+        if wrong:
+            raise ValueError("; ".join(wrong))
+        return value
     if path in timing.GROUPS:  # the whole object: every key checked as its own timing.KEY / captions.KEY
         if not isinstance(value, dict):
             raise ValueError(f"{path} must be an object of {path} settings, got {value!r}")
@@ -324,7 +359,7 @@ def set_value(path: str, value) -> dict:
         if not isinstance(node.get(k), dict):
             node[k] = {}
         node = node[k]
-    if value is None and path.startswith(("brand.", "narrator.params.")):  # brand.style none, brand.logo null,
+    if value is None and path.startswith(("brand.", "narrator.params.", "presets.")):  # brand.style none, brand.logo null,
         # narrator.params.temperature null: the key is removed
         node.pop(keys[-1], None)
     else:

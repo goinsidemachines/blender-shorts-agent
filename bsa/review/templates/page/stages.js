@@ -463,6 +463,7 @@
   BSA.stages.storyboard = function (content, ctx) {
     return ctx.el("div", { class: "st-board" },
       ctx.el("p", { class: "lead" }, String(content.lead || "")),
+      content.style_preset ? ctx.el("p", { class: "muted" }, String(content.style_preset)) : null,
       compareBlock(ctx, "storyboard", content),
       section(ctx, "Timing", timing(ctx, content)),
       lookSection(ctx, content),

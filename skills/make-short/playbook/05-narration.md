@@ -122,6 +122,31 @@ validate (short). Changing a value changes the timeline, so the shots, captions 
 stale and `CLI timeline SHORT` plus a rebuild is needed; `timing.take_tail_s` re-cuts paragraph takes. `CLI doctor`
 warns when a `source/*.py` file assigns to `bsa.timeline` constants: move those values to the settings above.
 
+### Style presets
+
+A preset is a named, reusable block of those values, so a user keeps one style instead of re-setting eight numbers.
+It is an object with `timing` and/or `captions` (the same keys as above) and optionally `"extend": "<other preset>"`
+(that one is applied first). Two presets ship: `explainer` (empty: the defaults above) and `fast-loop` (tight gaps and
+short caption cards: `timing` lead_in_s 0.05, gap_s 0.2, tail_s 0.1, take_tail_s 0.12, end_card_s 0; `captions`
+max_words 3, max_chars 18, orphan_max_chars 6). The user's own presets live in the settings key `presets`; one with a
+shipped name replaces the shipped one. A preset can never hold the render engine (or any `render` key): the engine is
+always the user's choice per short.
+
+Choose one with `CLI settings set style_preset NAME` (null = `explainer`) for every short, or `"preset": "NAME"` in a
+short's `short.json` (the short wins). Order, last wins: built-in defaults, the settings' own `timing` / `captions`,
+the chosen preset (its `extend` chain base first), the short's own `timing` / `captions`.
+
+- `CLI preset list`: every preset, shipped or user, and which one new shorts get.
+- `CLI preset show NAME [--short SHORT]`: the fully resolved values and where each came from (`default`, `settings`,
+  `preset:<name>`, `short`).
+- `CLI preset save NAME --from SHORT [--force]`: keep a short's resolved timing and captions values as the user's
+  preset NAME. It refuses to replace an existing preset (or a shipped name) without `--force`.
+- `CLI settings set presets.NAME '{"timing": {"gap_s": 0.25}}'` writes one by hand; `null` removes it.
+
+`new-short --like` copies the earlier short's `preset`. `CLI validate` and `CLI settings check` report an unknown
+preset name, a bad key or value, a loop in `extend`, or an engine key. The review page's Storyboard shows the active
+preset and the short's own overrides. Changing the preset changes the timeline, like any timing value.
+
 ## Engine parameters
 
 `narrator.params` holds the local voice engine's own parameters, over the engine's and the voice's defaults

@@ -144,6 +144,9 @@ class Short:
     # gap_s, tail_s, take_tail_s, end_card_s and captions' max_words, max_chars, orphan_max_chars. Empty = the settings.
     timing: dict = dc_field(default_factory=dict)
     captions: dict = dc_field(default_factory=dict)
+    # The named style preset this short uses (bsa.presets); None = the settings' `style_preset`. Its own timing and
+    # captions above win over the preset.
+    preset: str | None = None
 
 
 NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "params", "voice_for")
@@ -169,6 +172,8 @@ def save_short(short: Short, path: Path) -> None:
     for key in ("timing", "captions"):  # a short without its own pacing is written exactly as before
         if not data[key]:
             del data[key]
+    if data["preset"] is None:
+        del data["preset"]
     if not data["camera"]:  # a cuts short's file is written exactly as before one-take shorts
         del data["camera"]
     for shot in data["shots"]:
@@ -717,6 +722,8 @@ def validate(short: Short) -> list[str]:
     from bsa import timing as timing_mod
 
     errors += [p for g in timing_mod.GROUPS for p in timing_mod.problems_in(g, getattr(short, g, None))]
+    if short.preset is not None and (not isinstance(short.preset, str) or not short.preset.strip()):
+        errors.append(f"preset must be the name of a style preset (text), got {short.preset!r}")
     errors += _pace_problems(short.pace)
     errors += _like_problems(short.like)
     if short.sound_policy not in SOUND_POLICIES:

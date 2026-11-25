@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from bsa import captions, engine_runs, feedback, jobstate, messages, render_status, rules, timing
+from bsa import captions, engine_runs, feedback, jobstate, messages, presets, render_status, rules, timing
 from bsa import closing as closing_mod
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
@@ -377,6 +377,7 @@ def _storyboard(ctx: Ctx) -> dict | None:
         "closing": _closing_card(ctx, short),
         "rules": _rule_rows(ctx, short),
         "look": _look(ctx, short),
+        "style_preset": presets.line(ctx.settings, short),
         "frame": {
             "safe": _rect_pct(safe_rect()),
             "caption": _rect_pct(caption_rect(pages.CAPTION_LINES, size)),
@@ -815,7 +816,7 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
+_UNVERSIONED = {"storyboard": ("style_preset",), "interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
                 "camera": ("stale", "command"),
                 "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
