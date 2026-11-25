@@ -331,7 +331,7 @@ The single steps, when you need one on its own:
      short can carry its own `master` object the same way (`"master": {"integrated_lufs": -16}` in the preset or in
      short.json; the short wins over the preset, the preset over the settings). It scales to the target; if the true
      peak would pass the ceiling, or the range passes `max_lra_lu`, it first runs one gentle compressor (3:1, at most
-     about 3 dB), then the peak limiter, and repeats up to three times until it lands within 0.5 LU. The `mix` result
+     about 3 dB), then the peak limiter, and measures and corrects the gain after the limiter (up to eight rounds) until it lands within about 0.15 LU, so a peaky mix still reaches its target under the ceiling. The `mix` result
      has `master` (before, after, targets). The final edit then measures the audio of the finished MP4 and writes
      `review/loudness.json` (`integrated_lufs`, `true_peak_dbtp`, `lra_lu`, `targets`, `ok`); loudness more than
      0.5 LU off, a true peak more than 0.2 dB over the ceiling or a range over `max_lra_lu` is a warning in the
