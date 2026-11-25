@@ -10,6 +10,8 @@ import shlex
 import time
 from pathlib import Path
 
+from bsa import timing
+
 DEFAULTS = {
     "workspace": None,
     "blender_exe": None,
@@ -36,6 +38,9 @@ DEFAULTS = {
     "post_format_asked": False,  # the post-format question was answered
     "hooks": {"after_final": None},  # a command run after a successful final (bsa.hooks)
     "page": {"lan": False},  # phone access: the review page server also answers on the local network (token-protected)
+    # Pacing of the timeline and of the caption cards (bsa.timing); a short's own `timing` / `captions` win.
+    "timing": timing.defaults("timing"),
+    "captions": timing.defaults("captions"),
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -283,6 +288,16 @@ def check_value(path: str, value):
         if level is None or not ROOM_DB_RANGE[0] <= level <= ROOM_DB_RANGE[1]:
             raise ValueError(room_db_error(value))
         return level
+    if path in timing.GROUPS:  # the whole object: every key checked as its own timing.KEY / captions.KEY
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must be an object of {path} settings, got {value!r}")
+        problems = timing.problems_in(path, value)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return {k: timing.check(path, k, v) for k, v in value.items()}
+    if path.split(".")[0] in timing.GROUPS and path.count(".") == 1:
+        group, key = path.split(".")
+        return timing.check(group, key, value)
     if path in BOOLEANS:
         if not isinstance(value, bool):
             raise ValueError(f"{value!r} is not a valid {path}: use true or false")

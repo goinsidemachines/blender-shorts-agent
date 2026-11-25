@@ -9,7 +9,10 @@ import re
 from dataclasses import asdict, dataclass
 
 from bsa.short import Short, camera_problems, one_take
+from bsa.timing import Timing
 
+# The defaults. The values a short really uses come from bsa.timing.resolve (settings `timing` / `captions`, then the
+# short's own); build_timeline and the helpers below take them as a `timing` argument. Left alone, they read these.
 LEAD_IN_S = 0.2
 GAP_S = 0.35
 TAIL_S = 0.6
@@ -24,6 +27,14 @@ _SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 _CLAUSE = re.compile(r"(?<=[,;:—–])\s+")
 
 
+def default_timing() -> Timing:
+    """The Timing of the module constants as they are now (what a call without `timing` uses)."""
+    from bsa.timing import SPEC
+
+    return Timing(LEAD_IN_S, GAP_S, TAIL_S, SPEC["timing"]["take_tail_s"][0], END_CARD_S, CARD_MAX_WORDS,
+                  CARD_MAX_CHARS, ORPHAN_MAX_CHARS)
+
+
 def reading_time(text: str) -> float:
     return max(READ_MIN_S, len(text.split()) / READ_WPS + 0.3)
 
@@ -33,12 +44,12 @@ def _frames(seconds: float, fps: int) -> int:
     return math.ceil(round(seconds * fps, 6))
 
 
-def _pack(words: list[str]) -> list[str]:
+def _pack(words: list[str], t: Timing) -> list[str]:
     cards: list[str] = []
     cur: list[str] = []
     for w in words:
         trial = " ".join([*cur, w])
-        if cur and (len(cur) >= CARD_MAX_WORDS or len(trial) > CARD_MAX_CHARS):
+        if cur and (len(cur) >= t.max_words or len(trial) > t.max_chars):
             cards.append(" ".join(cur))
             cur = []
         cur.append(w)
@@ -47,29 +58,29 @@ def _pack(words: list[str]) -> list[str]:
     return cards
 
 
-def _orphan(card: str) -> bool:
+def _orphan(card: str, t: Timing) -> bool:
     """A card of a single short word ("one.")."""
-    return len(card.split()) == 1 and len(card) <= ORPHAN_MAX_CHARS
+    return len(card.split()) == 1 and len(card) <= t.orphan_max_chars
 
 
-def _fits(a: str, b: str) -> bool:
+def _fits(a: str, b: str, t: Timing) -> bool:
     """Whether two cards may be joined: a little over the usual limits, to avoid an orphan."""
     joined = f"{a} {b}"
-    return len(joined) <= CARD_MAX_CHARS + 6 and len(joined.split()) <= CARD_MAX_WORDS + 1
+    return len(joined) <= t.max_chars + 6 and len(joined.split()) <= t.max_words + 1
 
 
-def _join_orphans(cards: list[str]) -> list[str]:
+def _join_orphans(cards: list[str], t: Timing) -> list[str]:
     """Join each one-word card to its neighbour: to the next card when it leads into it ("Then,"), else to the
     previous one; when neither fits, move the split point so the previous card's last word comes down with it
     (never across the end of a sentence)."""
     out = list(cards)
     i = 0
     while i < len(out):
-        if _orphan(out[i]):
-            if out[i][-1] in ",;:—–" and i + 1 < len(out) and _fits(out[i], out[i + 1]):
+        if _orphan(out[i], t):
+            if out[i][-1] in ",;:—–" and i + 1 < len(out) and _fits(out[i], out[i + 1], t):
                 out[i : i + 2] = [f"{out[i]} {out[i + 1]}"]
                 continue
-            if i > 0 and _fits(out[i - 1], out[i]):
+            if i > 0 and _fits(out[i - 1], out[i], t):
                 out[i - 1 : i + 1] = [f"{out[i - 1]} {out[i]}"]
                 continue
             head = out[i - 1].split() if i > 0 else []
@@ -79,16 +90,17 @@ def _join_orphans(cards: list[str]) -> list[str]:
     return out
 
 
-def chunk_caption(text: str) -> list[str]:
-    """Split on sentence then clause boundaries, then by the word and character limits; never leave a one-word card
-    that can join a neighbour."""
+def chunk_caption(text: str, timing: Timing | None = None) -> list[str]:
+    """Split on sentence then clause boundaries, then by the word and character limits (`timing`'s max_words and
+    max_chars); never leave a one-word card that can join a neighbour."""
+    t = timing or default_timing()
     cards: list[str] = []
     for sentence in _SENTENCE.split(text.strip()):
         for clause in _CLAUSE.split(sentence):
             words = clause.split()
             if words:
-                cards += _pack(words)
-    return _join_orphans(cards)
+                cards += _pack(words, t)
+    return _join_orphans(cards, t)
 
 
 @dataclass
@@ -121,12 +133,12 @@ def end_card_start(tl: Timeline) -> int:
     return max([c.f1 for c in tl.cards] + [ln.f1 for ln in tl.lines] + [0]) + 1
 
 
-def _split_cards(text: str, line_id: str, f0: int, f1: int) -> list[Card]:
+def _split_cards(text: str, line_id: str, f0: int, f1: int, t: Timing | None = None) -> list[Card]:
     """Share the line's frames between its cards in proportion to their characters."""
     n = f1 - f0 + 1
     if n <= 0:  # a zero-length take: no frames, so no cards
         return []
-    pieces = chunk_caption(text)
+    pieces = chunk_caption(text, t)
     while len(pieces) > n:  # fewer frames than cards: merge the shortest adjacent pair
         i = min(range(len(pieces) - 1), key=lambda j: len(pieces[j]) + len(pieces[j + 1]))
         pieces[i : i + 2] = [f"{pieces[i]} {pieces[i + 1]}"]
@@ -153,17 +165,19 @@ def _split_cards(text: str, line_id: str, f0: int, f1: int) -> list[Card]:
 
 
 def build_timeline(short: Short, durations: dict[str, float] | None, end_card: bool = False,
-                   onsets: dict[str, float] | None = None) -> Timeline:  # fmt: skip
+                   onsets: dict[str, float] | None = None, timing: Timing | None = None) -> Timeline:  # fmt: skip
     """Lay shots out back to back; durations maps line id to its audio length in seconds. With `end_card` (the user
-    has a handle) the last shot holds END_CARD_S longer, so the end card never covers a line or its caption.
+    has a handle) the last shot holds `timing.end_card_s` longer, so the end card never covers a line or its caption.
     `onsets` maps line id to the seconds of silence its take opens with (bsa.narrate.run.takes_onsets): the line and
-    its audio keep their frames, its caption cards start when the voice does."""
+    its audio keep their frames, its caption cards start when the voice does. `timing` is bsa.timing.resolve(settings,
+    short) (None: the module's default constants)."""
+    t = timing or default_timing()
     if one_take(short):
-        return _one_take_timeline(short, durations, end_card, onsets)
+        return _one_take_timeline(short, durations, end_card, onsets, t)
     fps = short.fps
-    lead = round(LEAD_IN_S * fps)
-    gap = _frames(GAP_S, fps)
-    tail = _frames(TAIL_S, fps)
+    lead = round(t.lead_in_s * fps)
+    gap = _frames(t.gap_s, fps)
+    tail = _frames(t.tail_s, fps)
     shots: list[Span] = []
     lines: list[Span] = []
     cards: list[Card] = []
@@ -177,13 +191,13 @@ def build_timeline(short: Short, durations: dict[str, float] | None, end_card: b
         content = lead + sum(lens) + gap * max(len(mine) - 1, 0) + tail
         length = max(_frames(shot.min_s, fps), content)
         if end_card and shot is short.shots[-1]:
-            length += _frames(END_CARD_S, fps)
+            length += _frames(t.end_card_s, fps)
         shots.append(Span(shot.id, cursor, cursor + length - 1))
         pos = cursor + lead
         for ln, n in zip(mine, lens, strict=True):
             lines.append(Span(ln.id, pos, pos + n - 1))
             wait = min(round(float((onsets or {}).get(ln.id) or 0.0) * fps), max(n - 1, 0))
-            cards += _split_cards(ln.text, ln.id, pos + max(wait, 0), pos + n - 1)
+            cards += _split_cards(ln.text, ln.id, pos + max(wait, 0), pos + n - 1, t)
             pos += n + gap
         cursor += length
     return Timeline(fps, cursor - 1, shots, lines, cards)
@@ -230,14 +244,14 @@ def window_frames(short: Short) -> dict[str, tuple[int, int]]:
 
 
 def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_card: bool,
-                       onsets: dict[str, float] | None) -> Timeline:  # fmt: skip
+                       onsets: dict[str, float] | None, t: Timing) -> Timeline:  # fmt: skip
     """The picture sets the clock: each shot is its window; its lines start at the window's start plus the lead and
     follow with the usual gaps; a window with time left over holds. min_s is not used. WindowOverrun (every window
     too short, joined by "; ") when a window's lines need more than it has."""
     fps = short.fps
-    lead = round(LEAD_IN_S * fps)
-    gap = _frames(GAP_S, fps)
-    tail = _frames(TAIL_S, fps)
+    lead = round(t.lead_in_s * fps)
+    gap = _frames(t.gap_s, fps)
+    tail = _frames(t.tail_s, fps)
     windows = window_frames(short)
     ids = list(windows)
     shots: list[Span] = []
@@ -254,7 +268,7 @@ def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_car
         need = lead + sum(lens) + gap * (len(mine) - 1) + tail if mine else 0
         last = i == len(ids) - 1
         if end_card and last:
-            need += _frames(END_CARD_S, fps)
+            need += _frames(t.end_card_s, fps)
         have = f1 - f0 + 1
         if need > have:
             fix = "make camera.seconds {d:.1f} s longer" if last else f"move {ids[i + 1]}'s start {{d:.1f}} s later"
@@ -265,7 +279,7 @@ def _one_take_timeline(short: Short, durations: dict[str, float] | None, end_car
         for ln, n in zip(mine, lens, strict=True):
             lines.append(Span(ln.id, pos, pos + n - 1))
             wait = min(round(float((onsets or {}).get(ln.id) or 0.0) * fps), max(n - 1, 0))
-            cards += _split_cards(ln.text, ln.id, pos + max(wait, 0), pos + n - 1)
+            cards += _split_cards(ln.text, ln.id, pos + max(wait, 0), pos + n - 1, t)
             pos += n + gap
     tl = Timeline(fps, windows[ids[-1]][1] if ids else 0, shots, lines, cards)
     if overruns:
@@ -302,18 +316,19 @@ QUICK_BEAT_S = 2.5  # a silent shot this short or shorter is a quick visual beat
 SPEECH_ROOM = 1.25  # a suggested shot length: its speech plus 25%
 
 
-def pacing(short: Short, tl: Timeline, end_card: bool = False) -> list[dict]:
+def pacing(short: Short, tl: Timeline, end_card: bool = False, timing: Timing | None = None) -> list[dict]:
     """Per shot: its length, the seconds a line is spoken in it and the seconds nothing is said (`seconds`,
     `spoken_s`, `silent_s`, `silent_frac`), `too_silent` (more than SILENT_LIMIT silent and longer than a quick
     beat) and `suggest_s` (speech + 25%, never less than the lines need). With `end_card` the last shot's end-card
     hold is left out: it is there on purpose."""
+    t = timing or default_timing()
     fps = tl.fps
-    lead, gap, tail = round(LEAD_IN_S * fps), _frames(GAP_S, fps), _frames(TAIL_S, fps)
+    lead, gap, tail = round(t.lead_in_s * fps), _frames(t.gap_s, fps), _frames(t.tail_s, fps)
     out = []
     for i, span in enumerate(tl.shots):
         frames = span.f1 - span.f0 + 1
         if end_card and i == len(tl.shots) - 1:
-            frames -= _frames(END_CARD_S, fps)
+            frames -= _frames(t.end_card_s, fps)
         mine = [ln for ln in short.lines if ln.shot == span.id]
         spoken = sum(s.f1 - s.f0 + 1 for s in tl.lines if s.id in {ln.id for ln in mine} and span.f0 <= s.f0 <= span.f1)
         need = lead + spoken + gap * max(len(mine) - 1, 0) + tail if mine else 0
@@ -329,10 +344,10 @@ def pacing(short: Short, tl: Timeline, end_card: bool = False) -> list[dict]:
     return out
 
 
-def pacing_warnings(short: Short, tl: Timeline, end_card: bool = False) -> list[str]:
+def pacing_warnings(short: Short, tl: Timeline, end_card: bool = False, timing: Timing | None = None) -> list[str]:
     """One warning per shot that is mostly silent, with a length to try."""
     out = []
-    for row in pacing(short, tl, end_card):
+    for row in pacing(short, tl, end_card, timing):
         if not row["too_silent"]:
             continue
         if row["spoken_s"] == 0:

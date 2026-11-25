@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -125,22 +126,53 @@ def _server(server: dict | None) -> dict:
     return _check("server", "ok", f"The review page server is running on port {server.get('port')}.")
 
 
+TIMING_PATCH = re.compile(
+    r"\btimeline\.(LEAD_IN_S|GAP_S|TAIL_S|END_CARD_S|CARD_MAX_WORDS|CARD_MAX_CHARS|ORPHAN_MAX_CHARS)\s*=(?!=)"
+)
+_PATCH_TO = {"LEAD_IN_S": "timing.lead_in_s", "GAP_S": "timing.gap_s", "TAIL_S": "timing.tail_s",
+             "END_CARD_S": "timing.end_card_s", "CARD_MAX_WORDS": "captions.max_words",
+             "CARD_MAX_CHARS": "captions.max_chars", "ORPHAN_MAX_CHARS": "captions.orphan_max_chars"}  # fmt: skip
+
+
+def timing_patches(sdir: Path | None) -> list[dict]:
+    """A warning when a .py file in the short's source/ assigns to the bsa.timeline timing constants: a worker Blender
+    process never sees such a patch, so the render and the page would disagree. [] when there is none."""
+    if sdir is None:
+        return []
+    found: dict[str, set[str]] = {}
+    for path in sorted((Path(sdir) / "source").glob("*.py")):
+        try:
+            names = {m.group(1) for m in TIMING_PATCH.finditer(path.read_text(encoding="utf-8"))}
+        except (OSError, UnicodeDecodeError):
+            continue
+        if names:
+            found[path.name] = names
+    if not found:
+        return []
+    files = ", ".join(found)
+    keys = ", ".join(sorted({_PATCH_TO[n] for names in found.values() for n in names}))
+    return [_check("timing_patch", "warn", f"{files} sets bsa.timeline timing constants, which worker Blender "
+                   "processes do not see.", f"Move the values to the {keys} settings (CLI settings set), or to "
+                   "the short's own timing / captions in short.json.")]  # fmt: skip
+
+
 def run(settings: dict, workspace: Path | None, short=None, server: dict | None = None,
-        cache_dirs: list[Path] | None = None) -> list[dict]:  # fmt: skip
+        cache_dirs: list[Path] | None = None, sdir: Path | None = None) -> list[dict]:  # fmt: skip
     settings = settings or {}
     return [_blender(settings), _gpu(workspace), _voice(settings), _disk(workspace), _font(settings, short, cache_dirs),
-            _server(server)]  # fmt: skip
+            _server(server), *timing_patches(sdir)]  # fmt: skip
 
 
 def run_cheap(settings: dict, workspace: Path | None, short=None, server: dict | None = None,
-              cache_dirs: list[Path] | None = None, saved: list[dict] | None = None) -> list[dict]:  # fmt: skip
+              cache_dirs: list[Path] | None = None, saved: list[dict] | None = None,
+        sdir: Path | None = None) -> list[dict]:  # fmt: skip
     """The checks that cost nothing (GPU lock, voice, disk, font, server) run again; the Blender check (it starts
     Blender) is carried over from `saved`, the checks an earlier doctor wrote, and only run when there is none. This
     keeps the page's health banner current after things change (an assets download, a voice install, a font)."""
     settings = settings or {}
     old = next((c for c in saved or [] if isinstance(c, dict) and c.get("id") == "blender"), None)
     return [old or _blender(settings), _gpu(workspace), _voice(settings), _disk(workspace),
-            _font(settings, short, cache_dirs), _server(server)]  # fmt: skip
+            _font(settings, short, cache_dirs), _server(server), *timing_patches(sdir)]  # fmt: skip
 
 
 def saved_checks(sdir: Path) -> list[dict]:

@@ -140,6 +140,10 @@ class Short:
     # Subtitles in other languages (bsa.translations): {lang: {"lines": {line id: text}, "closing": text}}.
     # None = not asked yet; {} = asked, none wanted.
     captions_translations: dict | None = None
+    # This short's own pacing over the `timing` and `captions` settings (bsa.timing): any subset of timing's lead_in_s,
+    # gap_s, tail_s, take_tail_s, end_card_s and captions' max_words, max_chars, orphan_max_chars. Empty = the settings.
+    timing: dict = dc_field(default_factory=dict)
+    captions: dict = dc_field(default_factory=dict)
 
 
 NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "params", "voice_for")
@@ -162,6 +166,9 @@ def save_short(short: Short, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(short)
+    for key in ("timing", "captions"):  # a short without its own pacing is written exactly as before
+        if not data[key]:
+            del data[key]
     if not data["camera"]:  # a cuts short's file is written exactly as before one-take shorts
         del data["camera"]
     for shot in data["shots"]:
@@ -707,6 +714,9 @@ def validate(short: Short) -> list[str]:
     errors += _render_problems(short.render)
     errors += camera_problems(short)
     errors += _narrator_problems(short.narrator)
+    from bsa import timing as timing_mod
+
+    errors += [p for g in timing_mod.GROUPS for p in timing_mod.problems_in(g, getattr(short, g, None))]
     errors += _pace_problems(short.pace)
     errors += _like_problems(short.like)
     if short.sound_policy not in SOUND_POLICIES:

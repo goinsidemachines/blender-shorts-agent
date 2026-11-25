@@ -145,9 +145,11 @@ def caption_lines(short, tl, kit, font) -> int:
         return 2
     if not overlays.captions_drawn(short):
         return 0
+    from bsa import timing
     from bsa.timeline import chunk_caption
 
-    texts = [t for ln in getattr(short, "lines", None) or [] for t in chunk_caption(ln.text)]
+    pacing = timing.for_short(short)
+    texts = [t for ln in getattr(short, "lines", None) or [] for t in chunk_caption(ln.text, pacing)]
     if tl is not None:
         texts += [c.text for c in tl.cards]
     if not texts:

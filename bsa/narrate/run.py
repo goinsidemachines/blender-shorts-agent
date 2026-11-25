@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from bsa import jobstate
+from bsa import timing as timing_mod
 from bsa.narrate import custom as _custom
 from bsa.narrate import elevenlabs as _elevenlabs
 from bsa.narrate import local as _local
@@ -345,9 +346,9 @@ def _record_take(out_dir: Path, tid: str, entry: dict | None) -> str | None:
     return None
 
 
-def current_takes(short: Short) -> dict[str, list[str]]:
+def current_takes(short: Short, timing=None) -> dict[str, list[str]]:
     """{take id: its line ids} for the paragraph takes the short's lines group into now (groups of 2+ lines)."""
-    groups = _takes.group(short.lines, short.shots)
+    groups = _takes.group(short.lines, short.shots, timing)
     return {_takes.take_id(i): [ln.id for ln in g] for i, g in enumerate(groups, start=1) if len(g) >= 2}
 
 
@@ -358,12 +359,12 @@ def _take_samples(path: Path) -> np.ndarray:
     return np.frombuffer(data, dtype="<i2").astype(np.float64) / 32768.0
 
 
-def _plan(short: Short, todo: list) -> tuple[list[tuple[str, list]], list]:
+def _plan(short: Short, todo: list, timing=None) -> tuple[list[tuple[str, list]], list]:
     """([(take id, its lines)] to speak as paragraph takes, lines to speak on their own): a group of 2+ lines that all
     need speaking is a take; the lines of any other group that need speaking are spoken on their own."""
     need = {ln.id for ln in todo}
     paragraphs, alone = [], []
-    for i, g in enumerate(_takes.group(short.lines, short.shots), start=1):
+    for i, g in enumerate(_takes.group(short.lines, short.shots, timing), start=1):
         if len(g) >= 2 and all(ln.id in need for ln in g):
             paragraphs.append((_takes.take_id(i), g))
         else:
@@ -371,12 +372,12 @@ def _plan(short: Short, todo: list) -> tuple[list[tuple[str, list]], list]:
     return paragraphs, alone
 
 
-def _speak_takes(short: Short, out_dir: Path, todo: list, speak, take, words, lead_in: float):
+def _speak_takes(short: Short, out_dir: Path, todo: list, speak, take, words, lead_in: float, timing=None):
     """Paragraph mode: speak each planned take, cut it into line takes and speak the lines it couldn't cut on their
     own; then the lines that are no take's. Each take, its lines' seeds and sources are recorded as soon as it is
     done, so a run that stops half way keeps the takes it finished. A take the engine fails on is spoken line by
     line instead (source "fallback"). Returns (durations, seed used per line, notes)."""
-    paragraphs, alone = _plan(short, todo)
+    paragraphs, alone = _plan(short, todo, timing)
     old = {t["id"]: t for t in take_records(out_dir)}
     takes_dir = out_dir / TAKES_DIR
     durations: dict[str, float] = {}
@@ -398,7 +399,8 @@ def _speak_takes(short: Short, out_dir: Path, todo: list, speak, take, words, le
             notes.append(_record_take(out_dir, tid, None))
         else:
             timings = (words([take_line], takes_dir) if words else None) or {}
-            pieces = _takes.cut(x, [spoken_text(ln) for ln in g], ids, words=timings.get(tid))
+            pieces = _takes.cut(x, [spoken_text(ln) for ln in g], ids, words=timings.get(tid),
+                               **({"tail_s": timing.take_tail_s} if timing and timing.take_tail_s != _takes.TAIL_S else {}))
             cut_ids = [ids[p.line] for p in pieces if p.start is not None]
             secs = _takes.write_pieces(x, pieces, ids, out_dir)
             forget_durations(out_dir, cut_ids)  # an engine's old durations.json entry must not outlive its take
@@ -429,6 +431,7 @@ def _speak_takes(short: Short, out_dir: Path, todo: list, speak, take, words, le
 
 
 def _spoken(short: Short, out_dir: Path, speak, hear, check, *, take=None, words=None, lead_in: float = 0.0,
+            timing=None,
             retry: bool = True, note: str | None = None) -> NarrationResult:  # fmt: skip
     """Only lines without a good take on disk are spoken (clear_stale_takes has already removed takes of another
     voice, speed or text), so an interrupted, re-taken or reworded run remakes only what it must. Each take is
@@ -461,7 +464,7 @@ def _spoken(short: Short, out_dir: Path, speak, hear, check, *, take=None, words
     notes: list[str | None] = [note]
     used: dict[str, int] = {}
     if take is not None:
-        got, used, more = _speak_takes(short, out_dir, todo, speak, take, words, lead_in)
+        got, used, more = _speak_takes(short, out_dir, todo, speak, take, words, lead_in, timing)
         durations.update(got)
         notes += more
     else:
@@ -557,6 +560,7 @@ def _local_narrate(provider: str, short: Short, narrator: dict, out_dir: Path, m
         take=take if para else None,
         words=_words(mod) if para else None,
         lead_in=float(narrator.get("lead_in") or 0.0),
+        timing=narrator.get("_timing"),
     )  # fmt: skip
 
 
@@ -598,6 +602,7 @@ def _custom_narrate(short: Short, narrator: dict, out_dir: Path, mod, local) -> 
         take=take if para else None,
         words=_words(local) if para else None,
         lead_in=float(narrator.get("lead_in") or 0.0),
+        timing=narrator.get("_timing"),
         note=NO_TAKE_PLACEHOLDER if _paragraph(narrator) and not para else None,
     )  # fmt: skip
 
@@ -618,6 +623,7 @@ def _elevenlabs_paragraph(short: Short, narrator: dict, out_dir: Path, gen, loca
         narrator.get("verify", True),
         take=take, words=_words(local), retry=False,
         lead_in=float(narrator.get("lead_in") or 0.0),
+        timing=narrator.get("_timing"),
     )  # fmt: skip
 
 
@@ -679,10 +685,16 @@ def narrator_for(settings: dict, short) -> dict:
     return out
 
 
+def with_timing(narrator: dict, settings: dict, short) -> dict:
+    """`narrator` plus `_timing`, the short's resolved bsa.timing values: the grouping and the cut of paragraph takes
+    follow them (narrate and clear_stale_takes take the narrator with it)."""
+    return {**narrator, "_timing": timing_mod.resolve(settings, short)}
+
+
 def narrate(short_dir: Path, short: Short, settings: dict, **providers) -> NarrationResult:
     check_line_ids(short)
     short_dir = Path(short_dir)
-    narrator = narrator_for(settings, short)
+    narrator = with_timing(narrator_for(settings, short), settings, short)
     provider = narrator.get("provider")
     out_dir = short_dir / "audio" / "vo"
     if provider in (None, "none"):
@@ -730,6 +742,9 @@ def _takes_record(short: Short, narrator: dict) -> dict:
         extra["take_mode"] = "paragraph"
     if float(narrator.get("lead_in") or 0.0) > 0:
         extra["lead_in"] = float(narrator["lead_in"])
+    tail = getattr(narrator.get("_timing"), "take_tail_s", _takes.TAIL_S)
+    if tail != _takes.TAIL_S and narrator.get("take_mode") == "paragraph":  # the cut points of paragraph takes: a change re-cuts them (default = no key, as before)
+        extra["take_tail_s"] = tail
     if narrator.get("params"):  # the engine's params: a change re-speaks the takes (none = no key, as before)
         extra["params"] = dict(narrator["params"])
     return {
@@ -755,7 +770,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     except (OSError, ValueError):
         had = None
     same_voice = isinstance(had, dict) and all(had.get(k) == want[k] for k in ("provider", "voice", "speed", "command"))
-    same_voice = same_voice and all(had.get(k) == want.get(k) for k in ("take_mode", "lead_in", "params"))
+    same_voice = same_voice and all(had.get(k) == want.get(k) for k in ("take_mode", "lead_in", "params", "take_tail_s"))
     old_lines = had.get("lines", {}) if same_voice else {}
     removed = []
     waiting = {lid for lid in take_seeds(out_dir) if not (out_dir / f"{lid}.wav").is_file()}  # a re-take's line
@@ -777,7 +792,7 @@ def clear_stale_takes(out_dir: Path, short: Short, narrator: dict) -> list[str]:
     want["reasons"] = {lid: v["reason"] for lid, v in had_sources.items() if lid in want["sources"] and v["reason"]}
     # a paragraph take is kept (for re-cuts) while it is of this voice and its lines' words are unchanged
     # and while the lines still group into it (a hold or a reworded line can regroup the paragraphs)
-    now = current_takes(short)
+    now = current_takes(short, narrator.get("_timing"))
     kept_takes = [t for t in (take_records(out_dir) if same_voice else [])
                   if now.get(t["id"]) == t["lines"]
                   and all(old_lines.get(lid) == want["lines"][lid] for lid in t["lines"])]  # fmt: skip

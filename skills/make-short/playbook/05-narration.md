@@ -99,6 +99,29 @@ retry and the closing line are spoken alone, like before.
 `narrator.lead_in` is the quiet before the voice in each take, from 0 to 1 second (default 0). The captions start
 with the voice, not with the quiet.
 
+## Pacing and caption cards
+
+The gaps in the timeline and the size of the caption cards are settings, never something to patch in code (a patched
+constant is invisible to the worker Blender processes that render and check). Defaults are the old fixed values:
+
+| Setting | Default | Range | Meaning |
+|---|---|---|---|
+| `timing.lead_in_s` | 0.2 | 0-2 s | silence before a shot's first line |
+| `timing.gap_s` | 0.35 | 0-2 s | silence between two lines of a shot |
+| `timing.tail_s` | 0.6 | 0-2 s | hold after a shot's last line |
+| `timing.take_tail_s` | 0.35 | 0-2 s | pause kept after a line's last word when a paragraph take is cut |
+| `timing.end_card_s` | 1.5 | 0-5 s | hold added to the last shot for the end card |
+| `captions.max_words` | 6 | 1-12 | most words on one caption card |
+| `captions.max_chars` | 32 | 6-60 | most characters on one caption card |
+| `captions.orphan_max_chars` | 8 | 0-20 | a one-word card this short joins a neighbour |
+
+Set one with `CLI settings set timing.gap_s 0.2`, or a few at once with `CLI settings set timing '{"gap_s": 0.2}'`.
+A short can carry its own `"timing": {...}` and `"captions": {...}` in `short.json` (any subset of those keys); the
+short's value wins over the setting. A value out of range or an unknown key is refused (settings) or reported by
+validate (short). Changing a value changes the timeline, so the shots, captions and renders that depend on it show as
+stale and `CLI timeline SHORT` plus a rebuild is needed; `timing.take_tail_s` re-cuts paragraph takes. `CLI doctor`
+warns when a `source/*.py` file assigns to `bsa.timeline` constants: move those values to the settings above.
+
 ## Engine parameters
 
 `narrator.params` holds the local voice engine's own parameters, over the engine's and the voice's defaults

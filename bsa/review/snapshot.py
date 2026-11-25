@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from bsa import captions, engine_runs, feedback, jobstate, messages, render_status, rules
+from bsa import captions, engine_runs, feedback, jobstate, messages, render_status, rules, timing
 from bsa import closing as closing_mod
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
@@ -130,7 +130,8 @@ def _reading_timeline_and_problem(ctx: Ctx, short: Short):
     """(the timeline at reading pace, None), or for a one-take short whose lines overrun a window (the timeline it
     would be, the WindowOverrun's one line): the shots still show while the storyboard says what to fix."""
     try:
-        return build_timeline(short, None, settings_mod.has_end_card(ctx.settings, short)), None
+        return build_timeline(short, None, settings_mod.has_end_card(ctx.settings, short),
+                              timing=timing.resolve(ctx.settings, short)), None
     except WindowOverrun as e:
         if e.timeline is None:
             raise
@@ -164,7 +165,7 @@ def _story(ctx: Ctx) -> dict | None:
     short = _short(ctx)
     tl = _reading_timeline(ctx, short)
     end_card = settings_mod.has_end_card(ctx.settings, short)
-    pace = {row["shot"]: row for row in pacing(short, tl, end_card)}
+    pace = {row["shot"]: row for row in pacing(short, tl, end_card, timing.resolve(ctx.settings, short))}
     beats = []
     for i, shot in enumerate(short.shots, 1):
         row = pace.get(shot.id)
@@ -423,7 +424,7 @@ def _camera_stale(ctx: Ctx, short: Short, rec: dict) -> str | None:
 
     durations = takes_durations(ctx.sdir, short)
     tl = build_timeline(short, durations, settings_mod.has_end_card(ctx.settings, short),
-                        onsets=takes_onsets(ctx.sdir, short) if durations is not None else None)  # fmt: skip
+                        timing=timing.resolve(ctx.settings, short), onsets=takes_onsets(ctx.sdir, short) if durations is not None else None)  # fmt: skip
     tl_hash = timeline_hash(json.loads(json.dumps(to_json(tl))))
     return camtest.path_stale(rec, camtest.shot_spans(tl), tl.fps, camtest.build_stamp(ctx.sdir),
                               freshness.blend_stat(ctx.sdir), tl_hash)  # fmt: skip

@@ -26,6 +26,20 @@ def _guarded_bind(self, address):
 
 socket.socket.bind = _guarded_bind
 
+# On Windows every program a test starts (Blender, ffmpeg, the CLI, helper Pythons) runs without a console window, so
+# a test run never pops windows over the developer's work. The plugin's own code does this through bsa.proc; this also
+# covers tests that call subprocess directly.
+if os.name == "nt":
+    import subprocess as _sp
+
+    _real_popen_init = _sp.Popen.__init__
+
+    def _no_window_init(self, *args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | _sp.CREATE_NO_WINDOW
+        _real_popen_init(self, *args, **kwargs)
+
+    _sp.Popen.__init__ = _no_window_init
+
 # Modules under tests/blender import bpy and only run inside Blender (via runner.py).
 collect_ignore_glob = ["blender/test_*.py"]
 

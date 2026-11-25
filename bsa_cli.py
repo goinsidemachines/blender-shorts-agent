@@ -57,14 +57,17 @@ def load(sdir: Path):
 def current_timeline(sdir: Path, short):
     """The timeline from the takes when narration finished with a voice, else from reading time. A one-take short's
     window too short for its lines is a CliError (its cause the WindowOverrun): one plain line saying what to fix."""
+    from bsa import timing
     from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import WindowOverrun, build_timeline
 
     durations = takes_durations(sdir, short)
-    end_card = settings.has_end_card(settings.load_settings(), short)
+    s = settings.load_settings()
+    end_card = settings.has_end_card(s, short)
     onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
     try:
-        return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
+        return build_timeline(short, durations, end_card=end_card, onsets=onsets,
+                              timing=timing.resolve(s, short)), durations is not None
     except WindowOverrun as exc:
         raise CliError(str(exc)) from exc
 
@@ -775,9 +778,10 @@ def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save
             short = None  # a bad spec is validate's finding; the font check falls back to the brand font
     if cheap and sdir is not None:
         checks = doctor.run_cheap(settings.load_settings(), ws, short, server=server,
-                                  cache_dirs=fonts.font_caches(sdir), saved=doctor.saved_checks(sdir))  # fmt: skip
+                                  cache_dirs=fonts.font_caches(sdir), saved=doctor.saved_checks(sdir), sdir=sdir)  # fmt: skip
     else:
-        checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
+        checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir),
+                            sdir=sdir)
     if save and sdir is not None:
         doctor.save(sdir, checks)
     return checks
@@ -831,17 +835,21 @@ def _font_and_sound_warnings(sdir: Path, short) -> list[str]:
 
 def _pacing(short, tl) -> tuple[list, list]:
     """(per-shot spoken vs silent seconds, warnings for shots that are mostly silent)."""
+    from bsa import timing
     from bsa.timeline import pacing, pacing_warnings
 
     end_card = settings.has_end_card(settings.load_settings(), short)
-    return pacing(short, tl, end_card), pacing_warnings(short, tl, end_card)
+    t = timing.resolve(settings.load_settings(), short)
+    return pacing(short, tl, end_card, t), pacing_warnings(short, tl, end_card, t)
 
 
 def _reading_timeline(short):
     """The timeline at reading pace (no takes)."""
+    from bsa import timing
     from bsa.timeline import build_timeline
 
-    return build_timeline(short, None, settings.has_end_card(settings.load_settings(), short))
+    s = settings.load_settings()
+    return build_timeline(short, None, settings.has_end_card(s, short), timing=timing.resolve(s, short))
 
 
 def cmd_validate(args) -> dict:
@@ -1015,7 +1023,14 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
 
 
 def cmd_narrate(args) -> dict:
-    from bsa.narrate.run import HEARD_FILE, check_line_ids, clear_stale_takes, narrate, narrator_for
+    from bsa.narrate.run import (
+        HEARD_FILE,
+        check_line_ids,
+        clear_stale_takes,
+        narrate,
+        narrator_for,
+        with_timing,
+    )
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
@@ -1027,7 +1042,7 @@ def cmd_narrate(args) -> dict:
     from bsa import closing
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
-    narrator = narrator_for(s, short)
+    narrator = with_timing(narrator_for(s, short), s, short)
     try:
         check_line_ids(voiced)  # before anything is deleted or spoken
     except ValueError as exc:

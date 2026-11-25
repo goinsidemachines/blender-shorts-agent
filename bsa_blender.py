@@ -69,11 +69,13 @@ def _load(sdir: Path):
 
 
 def _timeline(sdir: Path, short):
+    from bsa import timing
     from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import build_timeline
 
     durations = takes_durations(sdir, short)
-    tl = build_timeline(short, durations, settings.has_end_card(settings.load_settings(), short),
+    s = settings.load_settings()
+    tl = build_timeline(short, durations, settings.has_end_card(s, short), timing=timing.resolve(s, short),
                         onsets=takes_onsets(sdir, short) if durations is not None else None)  # fmt: skip
     return tl, freshness.check_timeline(sdir, tl, _short_key(sdir))  # (timeline, hash): must match timeline.json
 
