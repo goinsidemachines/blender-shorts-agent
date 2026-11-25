@@ -15,19 +15,19 @@ one page in your browser; between approvals it runs on its own, and it checks it
 
 <table>
 <tr>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/sxrs0NHUBh8"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-car-engine.gif" width="200" alt="Inside a car engine short"></a><br><b>Inside a car engine</b><br><a href="https://www.youtube.com/shorts/sxrs0NHUBh8">Watch</a> · <a href="https://goinsidemachines.com/everyday/car-engine/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/98EPe6p-uas"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-jet-engine.gif" width="200" alt="Inside a jet engine short"></a><br><b>Inside a jet engine</b><br><a href="https://www.youtube.com/shorts/98EPe6p-uas">Watch</a> · <a href="https://goinsidemachines.com/everyday/jet-engine/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/tb6BCOTsYPY"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-mechanical-watch.gif" width="200" alt="Inside a mechanical watch short"></a><br><b>Inside a mechanical watch</b><br><a href="https://www.youtube.com/shorts/tb6BCOTsYPY">Watch</a> · <a href="https://goinsidemachines.com/everyday/mechanical-watch/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/83NjKyYNS5c"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-bolt-cutters.gif" width="200" alt="Why small hands can cut a steel lock short"></a><br><b>Bolt cutters</b><br><a href="https://www.youtube.com/shorts/83NjKyYNS5c">Watch</a> · <a href="https://goinsidemachines.com/everyday/bolt-cutters/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/8J5cl5dGP3E"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-spinning-top.gif" width="200" alt="Why a spinning top doesn't fall short"></a><br><b>A spinning top</b><br><a href="https://www.youtube.com/shorts/8J5cl5dGP3E">Watch</a> · <a href="https://goinsidemachines.com/everyday/spinning-top/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/dLJHlfaAmX4"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-archimedes-screw.gif" width="200" alt="How a screw lifts water uphill short"></a><br><b>Archimedes' screw</b><br><a href="https://www.youtube.com/shorts/dLJHlfaAmX4">Watch</a> · <a href="https://goinsidemachines.com/everyday/archimedes-screw/">Read</a></td>
 </tr>
 <tr>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/LGQQ5k23KCk"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-fridge.gif" width="200" alt="Inside a refrigerator short"></a><br><b>Inside a fridge</b><br><a href="https://www.youtube.com/shorts/LGQQ5k23KCk">Watch</a> · <a href="https://goinsidemachines.com/everyday/fridge/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/3ZuydOa6TxA"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-big-ben.gif" width="200" alt="How old pennies keep Big Ben on time short"></a><br><b>Big Ben's pennies</b><br><a href="https://www.youtube.com/shorts/3ZuydOa6TxA">Watch</a> · <a href="https://goinsidemachines.com/machines/the-great-clock/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/5y8AbpL8xd8"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-zipper.gif" width="200" alt="How a zipper locks short"></a><br><b>How a zipper locks</b><br><a href="https://www.youtube.com/shorts/5y8AbpL8xd8">Watch</a> · <a href="https://goinsidemachines.com/everyday/zipper/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/ombLkhxwT4M"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-tyre-grooves.gif" width="200" alt="Why car tyres have grooves short"></a><br><b>Tyre grooves</b><br><a href="https://www.youtube.com/shorts/ombLkhxwT4M">Watch</a> · <a href="https://goinsidemachines.com/everyday/tyre-grooves/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/B-ipgPVnwmk"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-differential.gif" width="200" alt="How a car's wheels turn at different speeds short"></a><br><b>The differential</b><br><a href="https://www.youtube.com/shorts/B-ipgPVnwmk">Watch</a> · <a href="https://goinsidemachines.com/everyday/differential/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/d7loNS34YTM"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-wobbly-toy.gif" width="200" alt="Why a wobbly toy always stands back up short"></a><br><b>The toy that stands back up</b><br><a href="https://www.youtube.com/shorts/d7loNS34YTM">Watch</a> · <a href="https://goinsidemachines.com/everyday/wobbly-toy/">Read</a></td>
 </tr>
 <tr>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/qe_AIuflBl4"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-pulleys.gif" width="200" alt="How a pulley multiplies your pull short"></a><br><b>Pulleys</b><br><a href="https://www.youtube.com/shorts/qe_AIuflBl4">Watch</a> · <a href="https://goinsidemachines.com/machines/pulleys/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/PZWokxHSg_0"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-taipei-101.gif" width="200" alt="Taipei 101 damper short"></a><br><b>The Taipei 101 damper</b><br><a href="https://www.youtube.com/shorts/PZWokxHSg_0">Watch</a> · <a href="https://goinsidemachines.com/machines/the-taipei-101-damper/">Read</a></td>
-<td align="center" width="33%"><a href="https://www.youtube.com/shorts/CiJkurEFW2g"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-pendulum.gif" width="200" alt="Heavy or light pendulum short"></a><br><b>Heavy or light pendulum</b><br><a href="https://www.youtube.com/shorts/CiJkurEFW2g">Watch</a> · <a href="https://goinsidemachines.com/everyday/heavy-or-light-pendulum/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/MHxMNozLVCY"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-ratchet-spanner.gif" width="200" alt="Why a ratchet wrench turns only one way short"></a><br><b>A ratchet wrench</b><br><a href="https://www.youtube.com/shorts/MHxMNozLVCY">Watch</a> · <a href="https://goinsidemachines.com/everyday/ratchet-spanner/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/FL28ff3AYgw"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-curiosity-sky-crane.gif" width="200" alt="Why NASA lowered Curiosity on ropes short"></a><br><b>Curiosity's sky crane</b><br><a href="https://www.youtube.com/shorts/FL28ff3AYgw">Watch</a> · <a href="https://goinsidemachines.com/everyday/curiosity-sky-crane/">Read</a></td>
+<td align="center" width="33%"><a href="https://www.youtube.com/shorts/AoFg5paD270"><img src="https://raw.githubusercontent.com/goinsidemachines/blender-shorts-agent/media/demo-well-winch.gif" width="200" alt="Why a 20 kg bucket feels like 4 kg short"></a><br><b>The well winch</b><br><a href="https://www.youtube.com/shorts/AoFg5paD270">Watch</a> · <a href="https://goinsidemachines.com/machines/well-winch/">Read</a></td>
 </tr>
 </table>
 
@@ -39,7 +39,7 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 ## What you get
 
 - **A finished MP4**, 1080×1920 at 30 fps, with narration, captions timed to it, recorded sound effects and your own
-  closing card. No music, ever.
+  closing card (or a seamless loop instead), mastered to the loudness you set. No music, ever.
 - **A post pack**: title, description with sources, hashtags, a thumbnail you pick from candidates, SRT and VTT
   caption files (and translated ones, if you ask), and a before-you-post checklist.
 - **One page per short** instead of chat walls: every stage, every approval, your notes and the review tools in one
@@ -222,7 +222,10 @@ itself and checks again. Single bad frames can be re-rendered on their own.
 
 The outputs are checked too, not just the scene: an end card that comes out one flat colour is refused, a thumbnail
 title always has a visible colour and its text boxes are measured for overlaps, and a narration line spoken far
-faster or slower than the rest of its take is re-spoken.
+faster or slower than the rest of its take is re-spoken. A loop short is checked for any object or camera move that
+doesn't come back to frame 1, the final's loudness is measured again after encoding (`review/loudness.json`), and any
+targets you set (pace, pauses, numbers, cuts, length, payoff time, motion in frame 1) are reported as warnings with
+the measured value.
 
 - **Fast:** the preview renders while the checks run in a second Blender, with a progress line per shot. A re-check
   after a fix tests only the objects and pairs that changed. Errors still block the final.
@@ -265,7 +268,8 @@ Add a hard rule: no humans, no people, body parts, faces, silhouettes or stick f
 - **A professional mix**: each effect is levelled to the same loudness and shaped to its kind, effects get a short
   room reverb, the voice ducks them ahead of time, sustained sounds crossfade at cuts, and a limiter keeps peaks
   clean. A soft room tone (`sound.room_db`) runs under everything, the closing card included, so silence never
-  sounds dead.
+  sounds dead. A loudness master then brings the whole mix to your level (`master.*`, −14 LUFS and −1 dBTP by
+  default) without changing the voice-to-effects balance.
 - **A voice check for any voice**, your own tool included: `CLI voice use-local` points the plugin at a speech
   recogniser you already have, with nothing downloaded.
 - **Captions** timed to the narration, kept clear of the platform's buttons, and checked for missing glyphs.
@@ -273,7 +277,8 @@ Add a hard rule: no humans, no people, body parts, faces, silhouettes or stick f
   story page.
 - **A closing card**: set your website (and, if you like, your own 1080x1920 image and a line for the narrator) and
   every short ends on it for a few seconds, the line read over it, so viewers who can't tap a link still see and hear
-  where to go. Without an image the plugin makes one from your brand. No music or sound is added.
+  where to go. Without an image the plugin makes one from your brand. No music or sound is added. A loop short
+  (`loop: true`) has no end or closing card: its last frame runs straight back into the first.
 - **Honesty**: every number on screen or in the narration has a source; exaggerated or slowed motion carries a badge
   (a shot's `time_scale` other than 1 needs one); myths are cut.
 
@@ -312,8 +317,11 @@ Every camera style is your choice, short by short:
 
 ## Make the next one faster
 
-- **Make it like that one**: `new-short --like 09` starts from an earlier short's look, pace, closing and voice. Only
-  the subject, story and facts are new, and the page shows exactly what was copied.
+- **Make it like that one**: `new-short --like 09` starts from an earlier short's look, pace, style preset, loop,
+  closing and voice. Only the subject, story and facts are new, and the page shows exactly what was copied.
+- **Your style as a preset**: `preset save NAME --from SHORT` keeps a short's pacing, captions, loop, loudness and
+  targets under a name; `settings set style_preset NAME` makes it the default, and `preset show NAME` lists every
+  value and where it came from. Any short can still override a single key.
 - **Paragraph takes**: the voice speaks a paragraph at a time and the plugin cuts it back into lines, so lines flow
   instead of starting cold. A lead-in gives every line the same breath before its first word.
 - **Your voice engine's own settings** (`narrator.params`) for the local voices.
@@ -342,7 +350,7 @@ What the playbook steers every short towards:
 - **Fast pace**: a shot runs about as long as its line plus a breath.
 - **Honest pictures**: every number has a source, slowed or exaggerated motion carries a badge, myths are cut.
 - **Approve stills before motion**, and a camera move before a long render.
-- **A closing line that lands**, over your own closing card.
+- **A closing line that lands**, over your own closing card, or a last line that calls back to the hook in a loop.
 
 ## Install
 
