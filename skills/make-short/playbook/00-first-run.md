@@ -119,7 +119,8 @@ so this question is not repeated; the engine stage then estimates and asks for e
     unset), ask which one they want for the sample first, and never pick one for them. Save the choice as
     `brand.style`;
   - `brand.set` `auto`, and `brand.caption.opacity 1` for a solid caption bar (`brand.caption` also takes `size`,
-    `color` and `box` as hex: 6 digits are opaque, 8 keep their alpha); and optionally `brand.material` (overall
+    `color` and `box` as hex: 6 digits are opaque, 8 keep their alpha, and `style` `outline` for captions with no
+    box, an outline and a soft shadow, see `look-and-brand.md`); and optionally `brand.material` (overall
     feel: matte clay, brushed metal, glossy toy...), `brand.exposure` (stops, e.g. `0.3`), `brand.look` (e.g.
     `Punchy`) and `brand.handle_place` (the handle goes on the end card after the last line; a logo is a card in
     the video, drawn from their own file, never over the captions or the platform buttons).
@@ -221,3 +222,9 @@ Setting it back to `false` turns it off.
 The user changes any setting by saying so ("use Cycles from now on", "switch to Kokoro"). Save it with `settings
 set` and show the new `settings summary`. Hard rules change only with `settings rule add|remove` (or `rule none`),
 and only when the user asks.
+
+## Style preset (optional, never asked)
+
+New shorts use the built-in `explainer` pacing. If the user wants a different feel (for example tight pacing for a
+loop), offer `CLI preset list` and set it with `CLI settings set style_preset NAME`. Details: 05-narration.md,
+"Style presets".

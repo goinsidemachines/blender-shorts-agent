@@ -408,3 +408,19 @@ def test_a_combined_badge_is_one_line_in_the_corner_stack():
     assert overlays.est_lines(text, overlays.BADGE_SIZE, safe_rect().w) == 1
     assert rect.h == pytest.approx(overlays.BADGE_SIZE * overlays.LINE_H + 2 * overlays.SMALL_MARGIN * 1920)
     assert rect.right <= 1080
+
+
+def test_a_highlight_is_not_spoken_or_counted():
+    from bsa.fonts import text_items
+    from bsa.short import spoken_text, spoken_warnings
+    from bsa.timeline import _len, chunk_caption
+
+    ln = Line("l01", "and every *crossing* counts", "s01")
+    assert spoken_text(ln) == "and every crossing counts"
+    assert spoken_text(Line("l02", "x", "s01", say="said *this*")) == "said this"
+    s = _short(lines=[ln])
+    assert [t for _, t in text_items(s, {}) if "crossing" in t] == ["and every crossing counts"]
+    assert spoken_warnings(_short(lines=[Line("l03", "a *=* b", "s01")]))  # the symbols still count
+    cards = chunk_caption("and every *crossing* counts as one more step")
+    assert [_len(c) for c in cards] == [len(c.replace("*", "")) for c in cards]
+    assert " ".join(cards) == "and every *crossing* counts as one more step"

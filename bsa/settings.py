@@ -10,6 +10,8 @@ import shlex
 import time
 from pathlib import Path
 
+from bsa import master, targets, timing
+
 DEFAULTS = {
     "workspace": None,
     "blender_exe": None,
@@ -36,6 +38,20 @@ DEFAULTS = {
     "post_format_asked": False,  # the post-format question was answered
     "hooks": {"after_final": None},  # a command run after a successful final (bsa.hooks)
     "page": {"lan": False},  # phone access: the review page server also answers on the local network (token-protected)
+    # Pacing of the timeline and of the caption cards (bsa.timing); a short's own `timing` / `captions` win.
+    "timing": timing.defaults("timing"),
+    "captions": timing.defaults("captions"),
+    # Named style presets (bsa.presets): `presets` holds the user's own {name: preset}; `style_preset` picks the one
+    # every short uses (null = the built-in "explainer"); a short's own `preset` wins.
+    "presets": {},
+    "style_preset": None,
+    # A short that ends seamlessly back into frame 1 (bsa.presets.loop_on): no end card, no closing card, a looped
+    # sound bed, and a check that the last frame runs into the first. A preset or a short's own `loop` wins.
+    "loop": False,
+    # The loudness master of the final mix (bsa.master): the defaults are the public streaming norm; set your own.
+    "master": master.defaults(),
+    # Optional script and edit targets (bsa.targets), all null = off. A set target is reported as a warning, never a block.
+    "targets": targets.defaults(),
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -76,7 +92,7 @@ def narrator_problems(s: dict) -> list[str]:
 
 
 # Settings that are true or false (JSON booleans on the command line).
-BOOLEANS = ("page.lan", "post_format_asked", "sound.reverb")
+BOOLEANS = ("page.lan", "post_format_asked", "sound.reverb", "loop")
 
 # sound.room_db: the room tone floor under the story, in LUFS-ish; null turns it off.
 ROOM_DB_RANGE = (-80.0, -20.0)
@@ -283,6 +299,65 @@ def check_value(path: str, value):
         if level is None or not ROOM_DB_RANGE[0] <= level <= ROOM_DB_RANGE[1]:
             raise ValueError(room_db_error(value))
         return level
+    if path == "style_preset":  # a preset name (shipped or the user's), or null for the built-in explainer
+        if value is None or (isinstance(value, str) and value.strip().lower() in ("", "null", "none")):
+            return None
+        from bsa import presets
+
+        name = str(value).strip()
+        try:
+            presets.chain(name, presets.all_presets(load_settings()))
+        except presets.PresetError as exc:
+            raise ValueError(str(exc)) from exc
+        return name
+    if path == "presets" or path.startswith("presets."):
+        from bsa import presets
+
+        if path == "presets":
+            if not isinstance(value, dict):
+                raise ValueError(f"presets must be an object of {{name: preset}}, got {value!r}")
+            items = value
+        else:
+            name = path.split(".", 1)[1]
+            if value is None:  # null removes the preset
+                return None
+            items = {name: value}
+        merged = {**presets.all_presets(load_settings()), **items}
+        wrong = []
+        for name, preset in items.items():
+            bad = presets.name_problem(name)
+            wrong += [bad] if bad else presets.preset_problems(name, preset, merged)
+        if wrong:
+            raise ValueError("; ".join(wrong))
+        return value
+    if path == master.GROUP:  # the whole object: every key checked as its own master.KEY
+        if not isinstance(value, dict):
+            raise ValueError(f"master must be an object of master settings, got {value!r}")
+        bad = master.problems_in(value)
+        if bad:
+            raise ValueError("; ".join(bad))
+        return {k: master.check(k, v) for k, v in value.items()}
+    if path.startswith("master.") and path.count(".") == 1:
+        return master.check(path.split(".")[1], value)
+    if path == targets.GROUP:  # the whole object: every key checked as its own targets.KEY
+        if not isinstance(value, dict):
+            raise ValueError(f"targets must be an object of targets, got {value!r}")
+        bad = targets.problems_in(value)
+        if bad:
+            raise ValueError("; ".join(bad))
+        return {k: targets.check(k, v) for k, v in value.items()}
+    if path.startswith("targets.") and path.count(".") == 1:
+        return targets.check(path.split(".")[1], value)
+    if path in timing.GROUPS:  # the whole object: every key checked as its own timing.KEY / captions.KEY
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must be an object of {path} settings, got {value!r}")
+        problems = timing.problems_in(path, value)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return {k: timing.check(path, k, v) for k, v in value.items()}
+    if path.split(".")[0] in timing.GROUPS and path.count(".") == 1:
+        group, key = path.split(".")
+        return timing.check(group, key, value)
     if path in BOOLEANS:
         if not isinstance(value, bool):
             raise ValueError(f"{value!r} is not a valid {path}: use true or false")
@@ -309,7 +384,7 @@ def set_value(path: str, value) -> dict:
         if not isinstance(node.get(k), dict):
             node[k] = {}
         node = node[k]
-    if value is None and path.startswith(("brand.", "narrator.params.")):  # brand.style none, brand.logo null,
+    if value is None and path.startswith(("brand.", "narrator.params.", "presets.")):  # brand.style none, brand.logo null,
         # narrator.params.temperature null: the key is removed
         node.pop(keys[-1], None)
     else:
@@ -327,10 +402,10 @@ def end_card(s: dict, short=None) -> dict:
     """What the end card shows: {"handle", "text", "second"} (each None when absent). The short's own `end_card`
     ("line", or {"text", "second"}) wins over the `end_card` setting. With no handle and no card of the short's own
     there is no end card at all (every value None): the setting's line never shows on its own. A short that ends on a
-    closing card (bsa.closing) has no end card: the card says it."""
-    from bsa import closing
+    closing card (bsa.closing) has no end card: the card says it. A looping short (bsa.presets.loop_on) has neither."""
+    from bsa import closing, presets
 
-    if closing.active(s, short):
+    if presets.loop_on(s, short) or closing.active(s, short):  # a looping short ends on frame 1: no card at all
         return {"handle": None, "text": None, "second": None}
     handle = str(s.get("handle") or "").strip().lstrip("@") or None
     own = getattr(short, "end_card", None)

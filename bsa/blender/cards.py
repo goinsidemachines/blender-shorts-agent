@@ -17,6 +17,7 @@ import bpy
 import numpy as np
 
 from bsa import cards
+from bsa.blender.pixels import read_png
 from bsa.cards import CardSpec
 from bsa.image_checks import png_size
 from bsa.kitlayout import CH, KitOverlay, pointer_transform
@@ -59,9 +60,10 @@ def _image(seq, name: str, png: Path, channel: int, f0: int, f1: int, place: dic
     return s
 
 
-def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec) -> None:
+def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec, colour: str | None = None) -> None:
     """A text strip for one line: its box (the first line's box height, as cards sized it) centred on run.y, its
-    x the middle (CENTER) or the left edge (LEFT) of the text. No box, no shadow, no wrapping."""
+    x the middle (CENTER) or the left edge (LEFT) of the text. No box, no shadow, no wrapping. `colour` replaces the
+    run's (the glyph mask is drawn white). A "no box" caption's text is bold."""
     _, box_h = cards.metrics(spec.font)  # the line metrics cards sized the card with
     top = run.y - box_h * run.size / 2 + cards.text_drop(spec.font) * run.size
     s = seq.strips.new_effect(f"T_{run.text[:18]}", "TEXT", channel, 1, length=1)
@@ -69,8 +71,8 @@ def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec) -> None:
     if font is not None:
         s.font = font
     s.font_size = run.size
-    s.use_bold = False
-    s.color = hex_colour(run.colour) or (0.0, 0.0, 0.0, 1.0)
+    s.use_bold = bool(spec.bold or (spec.fx and spec.fx.bold))
+    s.color = hex_colour(colour or run.colour) or (0.0, 0.0, 0.0, 1.0)
     s.location = (run.x / spec.w, 1.0 - top / spec.h)
     s.anchor_x, s.anchor_y = run.anchor, "TOP"
     s.alignment_x = run.anchor
@@ -82,12 +84,48 @@ def _text(seq, run: cards.Run, channel: int, font, spec: CardSpec) -> None:
 
 def render(spec: CardSpec, out_png: Path) -> Path:
     """Draw `spec` as a `spec.w` x `spec.h` 8-bit RGBA PNG at `out_png` (written to a temp name, then moved in), in a
-    one-frame sequencer scene "Card-<tag>" that is removed afterwards."""
+    one-frame sequencer scene "Card-<tag>" that is removed afterwards. A "no box" caption (`spec.fx`) is drawn twice:
+    its text in white first, to get the text's own shape, from which cards.fx_shape_rgba makes the outline and the
+    soft shadow that go under the text. A caption with highlighted words (a run's `marks`) is drawn whole in its text
+    colour, then again with its marked runs in the highlight colour, and the second drawing's columns over each word
+    (cards.mark_boxes finds them in the text's shape) replace the first's: the line is laid out by the sequencer as
+    plain text is, with no gap or overlap round a coloured word."""
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     tag = uuid.uuid4().hex[:12]
     shape_png = out_png.with_name(f".{out_png.stem}-{tag}-shape.png")
+    mask_png = out_png.with_name(f".{out_png.stem}-{tag}-mask.png")
+    alt_png = out_png.with_name(f".{out_png.stem}-{tag}-hl.png")
     tmp_png = out_png.with_name(f".{out_png.stem}-{tag}.tmp.png")
+    try:
+        shape = cards.shape_rgba(spec)
+        marked = any(r.marks for r in spec.runs)
+        if spec.fx or marked:
+            _draw(spec, mask_png, None, tag + "m", white=True)
+            cover = read_png(mask_png)[..., 3] / 255.0
+        if spec.fx:
+            shape = cards.fx_shape_rgba(spec, cover)
+        _draw(spec, tmp_png, shape, tag, shape_png=shape_png)
+        boxes = cards.mark_boxes(spec, cover) if marked else []
+        if boxes:
+            _draw(spec, alt_png, shape, tag + "h", shape_png=shape_png, marked=True)
+            px, alt = read_png(tmp_png), read_png(alt_png)
+            for x0, x1, y0, y1, _ in boxes:
+                px[y0:y1, x0:x1] = alt[y0:y1, x0:x1]
+            _write_rgba(px, tmp_png)
+        if not tmp_png.is_file() or tmp_png.stat().st_size == 0:
+            raise RuntimeError(f"the card {spec.kind!r} was not written to {tmp_png}")
+        os.replace(tmp_png, out_png)
+    finally:
+        for f in (shape_png, mask_png, alt_png, tmp_png):
+            f.unlink(missing_ok=True)
+    return out_png
+
+
+def _draw(spec: CardSpec, png: Path, shape, tag: str, white: bool = False, shape_png: Path | None = None,
+          marked: bool = False) -> None:  # fmt: skip
+    """One render of `spec` to `png`: the `shape` pixels (None: none), the logo and the text strips (all white for the
+    glyph mask; with `marked` the runs that have highlighted words in the highlight colour)."""
     scene = bpy.data.scenes.new(f"{SCENE}-{tag}")  # its own name: a scene the user named "Card" is left alone
     try:
         r = scene.render
@@ -98,32 +136,27 @@ def render(spec: CardSpec, out_png: Path) -> Path:
         scene.frame_start = scene.frame_end = 1
         seq = scene.sequence_editor_create()
         size = (spec.w, spec.h)
-        _write_rgba(cards.shape_rgba(spec), shape_png)
-        _image(seq, "Shape", shape_png, 1, 1, 1, strip_placement(Rect(0, 0, *size), Rect(0, 0, *size), size, size,
-                                                                 size))  # fmt: skip
-        if spec.logo and spec.logo_rect:
+        if shape is not None:
+            _write_rgba(shape, shape_png)
+            _image(seq, "Shape", shape_png, 1, 1, 1, strip_placement(Rect(0, 0, *size), Rect(0, 0, *size), size, size,
+                                                                     size))  # fmt: skip
+        if spec.logo and spec.logo_rect and not white:
             lw, lh = png_size(Path(spec.logo))
             _image(seq, "Logo", Path(spec.logo), 2, 1, 1,
                    strip_placement(Rect(0, 0, lw, lh), Rect(*spec.logo_rect), (lw, lh), size, (lw, lh)))
         font = bpy.data.fonts.load(str(spec.font), check_existing=True) if spec.font else None
         for i, run in enumerate(spec.runs):
-            _text(seq, run, 3 + i, font, spec)
+            _text(seq, run, 3 + i, font, spec, "#FFFFFF" if white else (run.mark if marked and run.marks else None))
         if hasattr(r.image_settings, "media_type"):
             r.image_settings.media_type = "IMAGE"
         r.image_settings.file_format = "PNG"
         r.image_settings.color_mode = "RGBA"
         r.image_settings.color_depth = "8"
         r.use_file_extension = False
-        r.filepath = str(tmp_png)
+        r.filepath = str(png)
         bpy.ops.render.render(write_still=True, scene=scene.name)
-        if not tmp_png.is_file() or tmp_png.stat().st_size == 0:
-            raise RuntimeError(f"the card {spec.kind!r} was not written to {tmp_png}")
-        os.replace(tmp_png, out_png)
     finally:
         bpy.data.scenes.remove(scene)
-        shape_png.unlink(missing_ok=True)
-        tmp_png.unlink(missing_ok=True)
-    return out_png
 
 
 def ensure(spec: CardSpec, cache_dir: Path) -> Path:

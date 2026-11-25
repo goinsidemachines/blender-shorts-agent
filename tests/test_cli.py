@@ -135,6 +135,14 @@ def test_setting_the_whole_brand_keeps_mode_exposure_and_prose_keys(home):
     assert run(home, "settings", "set", "brand", '{"mode": "loud"}').returncode != 0
     assert ok(run(home, "settings", "set", "brand.caption.box", "#14161A99"))["settings"]["brand"]["caption"][
         "box"] == "#14161A99"  # fmt: skip
+    cap = ok(run(home, "settings", "set", "brand.caption.style", "outline"))["settings"]["brand"]["caption"]
+    assert cap["style"] == "outline" and cap["box"] == "#14161A99"  # the other caption keys stay
+    assert ok(run(home, "settings", "set", "brand.caption.stroke_px", "6"))["settings"]["brand"]["caption"][
+        "stroke_px"] == 6  # fmt: skip
+    assert ok(run(home, "settings", "set", "brand.caption.shadow", "false"))["settings"]["brand"]["caption"][
+        "shadow"] is False  # fmt: skip
+    assert run(home, "settings", "set", "brand.caption.style", "glow").returncode != 0
+    assert run(home, "settings", "set", "brand.caption.stroke_px", "40").returncode != 0
 
 
 def test_the_kit_is_turned_off_from_the_command_line_keeping_the_rest_of_the_brand(home, tmp_path):
@@ -3336,3 +3344,35 @@ def test_mix_reports_room_tone_and_follows_the_sound_settings(home, pendulum):
     assert not data["sfx"]["room"]["enabled"] and not any("room tone" in n for n in data["sfx"]["notes"])
     assert not any("room tone" in w for w in ok(run(home, "validate", "pendulum"))["warnings"])
     assert run(home, "settings", "set", "sound.room_db", "-5").returncode != 0
+
+
+def test_mix_masters_to_the_target_and_master_enabled_false_leaves_the_mix(home, pendulum):
+    """The master brings the written mix.wav to master.integrated_lufs (default -14, the user can set their own);
+    master.enabled false writes the mix exactly as it was mixed."""
+    import numpy as np
+
+    from bsa.audio import decode, dsp
+
+    (pendulum / "source" / "sound.py").write_text(
+        "import numpy as np\n"
+        "def build_bed(short, timeline, short_dir):\n"
+        "    n = round(timeline.n_frames / timeline.fps * 48000)\n"
+        "    t = np.arange(n) / 48000\n"
+        "    return 0.05 * np.sin(2 * np.pi * 300 * t) * (1 + 0.5 * np.sin(2 * np.pi * 0.7 * t))\n",
+        encoding="utf-8",
+    )
+    ok(run(home, "timeline", "pendulum"))
+    data = ok(run(home, "mix", "pendulum"))
+    assert data["master"]["applied"] and data["master"]["targets"]["integrated_lufs"] == -14.0
+    wav = decode.load(pendulum / "audio" / "mix.wav")
+    assert abs(dsp.gated_lufs(wav) - -14.0) <= 0.5 and dsp.true_peak(wav) <= -0.9
+    assert data["levels"]["peak_dbfs"] <= -0.9
+    ok(run(home, "settings", "set", "master.integrated_lufs", "-20"))
+    ok(run(home, "mix", "pendulum"))
+    assert abs(dsp.gated_lufs(decode.load(pendulum / "audio" / "mix.wav")) - -20.0) <= 0.5
+    ok(run(home, "settings", "set", "master.enabled", "false"))
+    off = ok(run(home, "mix", "pendulum"))
+    assert off["master"]["applied"] is False
+    raw = decode.load(pendulum / "audio" / "mix.wav")
+    assert dsp.gated_lufs(raw) != pytest.approx(-20.0, abs=0.5) and np.isfinite(raw).all()
+    assert run(home, "settings", "set", "master.integrated_lufs", "-40").returncode != 0

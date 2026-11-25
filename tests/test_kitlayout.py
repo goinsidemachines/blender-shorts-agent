@@ -534,3 +534,34 @@ def test_a_combined_badge_draws_on_one_line_with_a_kit(tmp_path):
     ov = kitlayout.build(_short(badge="Simplified · Slowed down"), _tl(), K, wide)
     badge = one(ov, kitlayout.CH["badge"])
     assert len(badge.spec.runs) == 1 and inside_safe(badge.at)
+
+
+def test_outline_caption_is_centred_on_the_same_bottom_anchor_with_a_margin_only(short, tl, anchors, font):
+    out = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline"}})
+    ov = kitlayout.build(short, tl, out, font, anchors)
+    pad = cards.caption_pad(out)
+    assert pad < K.caption["pad_px"]
+    for (f0, f1, band, _box, bottom), p in zip(overlays.captions(short, tl), caps(ov), strict=True):
+        assert (p.f0, p.f1) == (f0, f1) and p.spec.fx is not None and p.spec.fill is None
+        assert p.at.y + p.spec.box_h == pytest.approx(bottom + pad)  # the text sits where a box's text would
+        assert p.at.x + p.at.w / 2 == pytest.approx(safe_rect().x + safe_rect().w / 2)  # centred
+        assert p.at.w < safe_rect().w and p.at.w == p.spec.w  # hugs the text
+        assert band.w >= safe_rect().w  # the near-label band stays the full width
+
+
+def test_caption_lines_counts_lines_not_highlight_runs(font):
+    from bsa.short import Line
+
+    one = Short(slug="x", title="X", length_s=2, shots=[Shot(id="a", title="t", picture="p", scene="Main")],
+                lines=[Line("l1", "and every *crossing* counts", "a")])  # fmt: skip
+    assert kitlayout.caption_lines(one, None, K, font) == 1
+
+
+def test_highlight_asterisks_never_reach_the_placed_text(font):
+    marked = Timeline(30, 60, [Span("a", 1, 60)], [], [Card("and every *crossing*", "l1", 1, 30)])
+    shot = _short().shots[0]
+    ov = kitlayout.build(_short(), marked, K, font)
+    (p,) = caps(ov)
+    assert p.text == "and every crossing" and all("*" not in r.text for r in p.spec.runs)
+    rects = kitlayout.shot_rects(_short(), marked, shot, Span("a", 1, 60), K, font, None, None, [1])
+    assert [t for k, t, *_ in rects[1] if k == "caption"] == ["and every crossing"]

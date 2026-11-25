@@ -60,6 +60,9 @@ class Shot:
     # The screen speed of this shot's motion relative to real time: 1 = real time, 0.25 = shown four times slower, 2 =
     # twice as fast (the model's time factor). Not written when None or 1. Its badge must say so (validate).
     time_scale: float | None = None
+    # True: this is the payoff shot (the moment the short is about); the payoff_by_s target (bsa.targets) measures when
+    # it starts. Not written when false.
+    payoff: bool = False
 
 
 @dataclass
@@ -140,6 +143,23 @@ class Short:
     # Subtitles in other languages (bsa.translations): {lang: {"lines": {line id: text}, "closing": text}}.
     # None = not asked yet; {} = asked, none wanted.
     captions_translations: dict | None = None
+    # This short's own pacing over the `timing` and `captions` settings (bsa.timing): any subset of timing's lead_in_s,
+    # gap_s, tail_s, take_tail_s, end_card_s and captions' max_words, max_chars, orphan_max_chars. Empty = the settings.
+    timing: dict = dc_field(default_factory=dict)
+    captions: dict = dc_field(default_factory=dict)
+    # The named style preset this short uses (bsa.presets); None = the settings' `style_preset`. Its own timing and
+    # captions above win over the preset.
+    preset: str | None = None
+    # True: this short ends seamlessly back into frame 1 (bsa.presets.loop_on): no end card, no closing card, a looped
+    # sound bed, and the loop check. None = the preset / the settings (false unless one of them says so).
+    loop: bool | None = None
+    # This short's own loudness master values over the settings' and the preset's (bsa.master): any subset of
+    # enabled, integrated_lufs, true_peak_dbtp, max_lra_lu. Empty = the settings.
+    master: dict = dc_field(default_factory=dict)
+    # This short's own script and edit targets over the settings' and the preset's (bsa.targets): any subset of wpm,
+    # max_pause_s, max_numbers, numbers_on_screen, max_cuts, length_s, hook_callback, payoff_by_s, motion_at_frame_1.
+    # Empty = the settings (all off by default). Not written when empty.
+    targets: dict = dc_field(default_factory=dict)
 
 
 NARRATOR_KEYS = ("voice", "speed", "take_mode", "lead_in", "params", "voice_for")
@@ -162,6 +182,17 @@ def save_short(short: Short, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(short)
+    for key in ("timing", "captions"):  # a short without its own pacing is written exactly as before
+        if not data[key]:
+            del data[key]
+    if data["preset"] is None:
+        del data["preset"]
+    if data["loop"] is None:
+        del data["loop"]
+    if not data["master"]:
+        del data["master"]
+    if not data["targets"]:
+        del data["targets"]
     if not data["camera"]:  # a cuts short's file is written exactly as before one-take shorts
         del data["camera"]
     for shot in data["shots"]:
@@ -169,6 +200,8 @@ def save_short(short: Short, path: Path) -> None:
             del shot["at"]
         if shot["time_scale"] is None or (_number(shot["time_scale"]) and shot["time_scale"] == 1):
             del shot["time_scale"]
+        if not shot["payoff"]:
+            del shot["payoff"]
     for fx in data["sfx"]:
         if not fx["clip"]:
             del fx["clip"]
@@ -438,7 +471,7 @@ def near_anchors(short) -> list[tuple[str, str, str, str, tuple | None]]:
 def spoken_text(line) -> str:
     """The words the narrator speaks for a line: its `say` when set, else its caption `text`."""
     say = line.say if isinstance(line.say, str) else None
-    return say.strip() if say and say.strip() else line.text
+    return (say.strip() if say and say.strip() else line.text).replace("*", "")  # a *highlight*'s asterisks are not spoken
 
 
 # Characters a voice reads unpredictably ("×" as "x" or nothing): a line showing them on screen wants a `say`.
@@ -450,7 +483,7 @@ def spoken_warnings(short) -> list[str]:
     out = []
     for ln in short.lines:
         if ln.say is None:
-            bad = sorted({ch for ch in ln.text if ch in UNSPOKEN})
+            bad = sorted({ch for ch in ln.text.replace("*", "") if ch in UNSPOKEN})
             if bad:
                 out.append(f"line {ln.id} shows {' '.join(bad)}, which a voice reads unpredictably: add a \"say\" "
                            "with it spelled out in words (the caption keeps the symbols)")  # fmt: skip
@@ -707,6 +740,24 @@ def validate(short: Short) -> list[str]:
     errors += _render_problems(short.render)
     errors += camera_problems(short)
     errors += _narrator_problems(short.narrator)
+    from bsa import timing as timing_mod
+
+    errors += [p for g in timing_mod.GROUPS for p in timing_mod.problems_in(g, getattr(short, g, None))]
+    if short.preset is not None and (not isinstance(short.preset, str) or not short.preset.strip()):
+        errors.append(f"preset must be the name of a style preset (text), got {short.preset!r}")
+    if short.loop is not None and not isinstance(short.loop, bool):
+        errors.append(f"loop must be true or false, got {short.loop!r}")
+    from bsa import master as master_mod
+
+    errors += master_mod.problems_in(short.master)
+    from bsa import targets as targets_mod
+
+    errors += targets_mod.problems_in(short.targets)
+    errors += [f"shot {s.id} payoff must be true or false, got {s.payoff!r}" for s in short.shots
+               if not isinstance(s.payoff, bool)]  # fmt: skip
+    payoffs = [s.id for s in short.shots if s.payoff is True]
+    if len(payoffs) > 1:
+        errors.append(f"only one shot can be the payoff, got {', '.join(payoffs)}")
     errors += _pace_problems(short.pace)
     errors += _like_problems(short.like)
     if short.sound_policy not in SOUND_POLICIES:

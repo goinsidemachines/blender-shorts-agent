@@ -20,8 +20,9 @@ ROLES = ("background", "ink", "card", "text", "accent", "highlight")
 LOGO_PLACES = ("top-left", "top-right")
 RANGES = {"outline_px": (0, 12), "shadow_px": (0, 24), "corner_px": (0, 80), "pill_corner_px": (0, 80),
           "caption.size": (32, 120), "caption.opacity": (0.0, 1.0), "caption.corner_px": (0, 80),
-          "caption.pad_px": (0, 60)}  # fmt: skip
-BOOLS = ("progress", "outline_3d", "caption.draw")
+          "caption.pad_px": (0, 60), "caption.stroke_px": (0, 12)}  # fmt: skip
+BOOLS = ("progress", "outline_3d", "caption.draw", "caption.shadow")
+CAPTION_STYLES = ("box", "outline")
 # Handled elsewhere (mode, exposure, look) or prose Claude reads: never validated here.
 PASS = ("mode", "exposure", "look", "material", "cards", "handle_place")
 _PROSE = ("material", "cards", "handle_place")
@@ -34,7 +35,7 @@ PLAIN = {
                 "highlight": "#FFCC59"},
     "categories": {}, "outline_px": 0, "shadow_px": 0, "corner_px": 16, "pill_corner_px": None, "font": None,
     "caption": {"color": "#FFFFFF", "box": "#050608", "size": 64, "opacity": 0.55, "corner_px": 16, "pad_px": 35,
-                "draw": True},
+                "draw": True, "style": "box", "stroke_px": 4, "shadow": True},
     "logo": None, "progress": True, "set": "auto", "outline_3d": False,
 }  # fmt: skip
 
@@ -174,6 +175,14 @@ def check(key: str, value, *, _must_exist: bool = True):
             return {k: check(f"caption.{k}", v) for k, v in _dict(key, value, "caption settings").items()}
         if rest in ("color", "box"):
             return _hex(key, value, alpha=True)
+        if rest == "highlight":
+            return _hex(key, value)
+        if rest == "style":
+            word = str(value).strip().lower()
+            if word not in CAPTION_STYLES:
+                raise ValueError(f"brand.caption.style must be box (a box behind the text) or outline (no box: an "
+                                 f"outline and a soft shadow), got {value!r}")  # fmt: skip
+            return word
         return value  # an unknown caption key passes
     if top == "logo":
         if not rest and off(value):  # no logo (settings.set_value deletes the key), never a file named "null"

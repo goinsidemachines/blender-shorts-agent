@@ -22,13 +22,14 @@ import numpy as np
 from bsa import closing, timeline
 from bsa.narrate.contract import LEAD_BELOW_PEAK_DB, LEAD_FLOOR_DBFS, SR
 from bsa.short import Line, Shot, spoken_text
+from bsa.timing import Timing
 
 TAKE_CHARS = 320  # longer takes can drift, so a take is a paragraph, not the whole script
 QUIET_DB = -40.0  # a 10 ms window this far below the take's loudest one is quiet
 MIN_PAUSE_S = 0.12
 WINDOW_S = 0.01
 LEAD_S = 0.25  # pause kept before a line's first word
-TAIL_S = 0.35  # pause kept after a line's last word
+TAIL_S = 0.35  # pause kept after a line's last word (the default of timing.take_tail_s)
 HOLD_BREAK_S = 1.0  # a shot held this much longer than its lines need ends the take
 
 
@@ -40,19 +41,20 @@ def joined(lines: list[Line]) -> str:
     return " ".join(spoken_text(ln) for ln in lines)
 
 
-def _breaks_after(shot: Shot | None, lines: list[Line]) -> bool:
+def _breaks_after(shot: Shot | None, lines: list[Line], t: Timing) -> bool:
     """A take ends at the end of this shot: it has a hold, or is held much longer than its lines need."""
     if shot is None:
         return False
     if shot.hold is True or (isinstance(shot.hold, list) and shot.hold):
         return True
     own = [ln for ln in lines if ln.shot == shot.id]
-    need = sum(timeline.reading_time(ln.text) for ln in own) + timeline.LEAD_IN_S + timeline.TAIL_S
+    need = sum(timeline.reading_time(ln.text.replace("*", "")) for ln in own) + t.lead_in_s + t.tail_s
     return shot.min_s > need + HOLD_BREAK_S
 
 
-def group(lines: list[Line], shots: list[Shot]) -> list[list[Line]]:
-    """Consecutive lines in paragraph-sized takes, in order (see the module doc)."""
+def group(lines: list[Line], shots: list[Shot], timing: Timing | None = None) -> list[list[Line]]:
+    """Consecutive lines in paragraph-sized takes, in order (see the module doc). `timing`: bsa.timing.resolve's."""
+    t = timing or timeline.default_timing()
     by_id = {s.id: s for s in shots}
     groups: list[list[Line]] = []
     cur: list[Line] = []
@@ -65,7 +67,7 @@ def group(lines: list[Line], shots: list[Shot]) -> list[list[Line]]:
             continue
         if cur and (
             len(joined([*cur, ln])) > TAKE_CHARS
-            or (ln.shot != cur[-1].shot and _breaks_after(by_id.get(cur[-1].shot), lines))
+            or (ln.shot != cur[-1].shot and _breaks_after(by_id.get(cur[-1].shot), lines, t))
         ):
             groups.append(cur)
             cur = []
@@ -281,20 +283,21 @@ def _match(found, span, texts, ids, words, sr) -> tuple[list[tuple[int, int] | s
 FLOOR_MARGIN_DB = 6.0  # a window within this much of the pause's quietest one is silent too (a noise floor)
 
 
-def _bounds(rms: np.ndarray, win: int, pause: tuple[int, int], sr: int) -> tuple[int, int]:
+def _bounds(rms: np.ndarray, win: int, pause: tuple[int, int], sr: int, tail_s: float = TAIL_S) -> tuple[int, int]:
     """(where the line before ends, where the next starts) in a matched pause.
 
     The pause is quiet by QUIET_DB, so a soft first consonant (or a soft last one) can sit inside it. The cut points
     stay in the pause's silent core: windows quieter than the onset detector's threshold, or within FLOOR_MARGIN_DB
     of the pause's own quietest window (a mic's noise floor), with one window of margin at each end. The next line
-    starts up to LEAD_S before the core's end (where its first sound begins) and the line before ends up to TAIL_S
+    starts up to LEAD_S before the core's end (where its first sound begins) and the line before ends up to `tail_s`
+    (timing.take_tail_s)
     after the core's start; in a short pause the next line's lead comes first and both meet there.
 
     An onset within FLOOR_MARGIN_DB of the noise floor counts as silent: it is still kept whole (the next line takes
     up to LEAD_S before the core's end, and all of a pause shorter than that), unless the silence before it is under
     about one window."""
     ps, pe = pause
-    lead, tail = round(LEAD_S * sr), round(TAIL_S * sr)
+    lead, tail = round(LEAD_S * sr), round(tail_s * sr)
     inside = rms[ps // win : pe // win]
     if len(inside) == 0:
         mid = (ps + pe) // 2
@@ -312,14 +315,15 @@ def _bounds(rms: np.ndarray, win: int, pause: tuple[int, int], sr: int) -> tuple
     return end, start
 
 
-def cut(x: np.ndarray, texts: list[str], ids: list[str], words=None, sr: int = SR) -> list[Piece]:
+def cut(x: np.ndarray, texts: list[str], ids: list[str], words=None, sr: int = SR,
+        tail_s: float = TAIL_S) -> list[Piece]:  # fmt: skip
     """One Piece per line: the samples it takes from the take, or start=end=None with the reason it can't be cut."""
     n = len(texts)
     if n == 1:
         return [Piece(0, 0, len(x), None)]
     rms, win = _window_rms(x, sr)
     matched, note = _match(_pauses(rms, win, sr), _span(rms, win, len(x)), texts, ids, words, sr)
-    cuts = [_bounds(rms, win, m, sr) if isinstance(m, tuple) else None for m in matched]
+    cuts = [_bounds(rms, win, m, sr, tail_s) if isinstance(m, tuple) else None for m in matched]
     pieces = []
     for i in range(n):
         before = matched[i - 1] if i else None

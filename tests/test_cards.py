@@ -241,7 +241,7 @@ def test_cache_key_changes_with_text_kit_and_font_file(font, tmp_path):
     st = font.stat()
     os.utime(font, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
     assert cards.cache_key(a) != before
-    assert cards.CARD_VERSION == 2
+    assert cards.CARD_VERSION == 3
 
 
 def test_card_font_falls_back_to_an_os_font(monkeypatch, tmp_path):
@@ -317,3 +317,155 @@ def test_card_font_and_note_resolves_once_and_says_why():
     missing = kit.kit_from({**KIT, "font": "No Such Font Anywhere"})
     path, note = cards.card_font_and_note(missing)
     assert note and "No Such Font Anywhere" in note and path == cards.card_font(missing)
+
+
+# --------------------------------------------------------------------------- the "no box" caption style
+
+OUT = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline"}})
+
+
+def test_the_outline_caption_has_no_box_and_hugs_its_text(font):
+    c = cards.caption(OUT, "aaaa bbbb", font, 1080)
+    fx, pad = cards.outline_fx(OUT), cards.caption_pad(OUT)
+    assert c.fill is None and c.outline is None and c.outline_px == 0 and c.shadow_px == 0 and c.fx == fx
+    assert pad == fx.stroke_px + 1 + fx.shadow_dy + 6  # the stroke, a pixel, the shadow's offset and its blur
+    size = OUT.caption["size"]
+    (run,) = c.runs  # one line: not forced narrower than the safe width
+    assert run.text == "aaaa bbbb" and run.anchor == "CENTER" and run.x == c.w / 2
+    assert c.w == pytest.approx(cards.measure("aaaa bbbb", size, font, bold=True) + 2 * pad, abs=1)
+    assert c.w < safe_rect().w and c.h == c.box_h == round(cards.text_height(1, size, font) + 2 * pad)
+    assert (run.y - cards.metrics(font)[1] * size / 2) == pytest.approx(pad, abs=0.6)  # the margin all round the text
+    assert not cards.shape_rgba(c).any()  # nothing is drawn but the text and its effects
+
+
+def test_the_outline_caption_wraps_only_past_the_safe_width_less_its_margin(font):
+    pad = cards.caption_pad(OUT)
+    c = cards.caption(OUT, "word " * 30, font, 4000)
+    assert c.w <= safe_rect().w and len({r.y for r in c.runs}) > 1
+    assert all(cards.measure(r.text, OUT.caption["size"], font, True) <= safe_rect().w - 2 * pad for r in c.runs)
+    box = cards.caption(K, "aaaa bbbb cccc dddd eeee ffff", font, 1080)  # a box is always the full width
+    assert box.w == safe_rect().w and box.fill is not None and box.fx is None
+
+
+def test_the_stroke_scales_with_the_size_and_the_shadow_can_go(font):
+    def fx(**cap):
+        return cards.outline_fx(kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline", **cap}}))
+
+    assert fx(size=70).stroke_px == 4 and fx(size=70, stroke_px=6).stroke_px == 6
+    assert fx(size=105).stroke_px == 6 and fx(size=35, stroke_px=4).stroke_px == 2 and fx(stroke_px=0).stroke_px == 0
+    assert fx(size=70).shadow_dy == 6 and fx(size=70, shadow=False).shadow_dy == 0
+    assert fx().stroke == "#1B2A3A"  # the caption's dark (box) colour
+    assert fx(box="#14161A80").stroke == "#14161A"  # whatever its alpha
+    off = kit.kit_from({**KIT, "caption": {**KIT["caption"], "style": "outline", "shadow": False, "stroke_px": 0}})
+    assert cards.caption_pad(off) == 1 and cards.caption(off, "a", font, 600).h < cards.caption(OUT, "a", font, 600).h
+
+
+def test_a_highlighted_word_is_marked_in_the_accent_in_a_run_laid_out_as_plain_text(font):
+    for k in (OUT, K):
+        c = cards.caption(k, "and every *crossing* ok", font, 1080)
+        plain_c = cards.caption(k, "and every crossing ok", font, 1080)
+        assert [(r.text, r.anchor, r.x) for r in c.runs] == [(r.text, r.anchor, r.x) for r in plain_c.runs]
+        (run,) = c.runs  # one centred run: the sequencer lays it out, so spacing is the plain text's
+        assert run.text == "and every crossing ok" and run.anchor == "CENTER" and run.colour == "#FFFFFF"
+        assert run.marks == ((10, 18),) and run.mark == "#7A4CE0" and "*" not in run.text
+    mine = kit.kit_from({**KIT, "caption": {**KIT["caption"], "highlight": "#00ff88"}})
+    assert cards.caption(mine, "*go*", font, 600).runs[0].mark == "#00FF88"  # caption.highlight wins over the accent
+    two = cards.caption(K, "*two words* x", font, 600).runs[0]
+    assert two.text == "two words x" and two.marks == ((0, 3), (4, 9)) and two.mark == "#7A4CE0"
+    none = cards.caption(K, "no markup", font, 600).runs[0]
+    assert none.text == "no markup" and none.marks == () and none.mark is None
+
+
+def test_a_highlight_marks_the_whole_word_and_a_stray_asterisk_is_dropped(font):
+    (run,) = cards.caption(K, "*one*.", font, 600).runs
+    assert (run.text, run.marks) == ("one.", ((0, 4),))
+    c = cards.caption(K, "stray * and *two*", font, 1080)
+    assert not [r for r in c.runs if "*" in r.text]
+    assert "".join(r.text for r in c.runs).replace(" ", "") == "strayandtwo"
+    assert c.runs[0].marks == ((6, 9),)  # the pair of asterisks is "* and *": that word is the highlight
+
+
+def _ink(w, h, y, spans):
+    cov = np.zeros((h, w))
+    for x0, x1 in spans:
+        cov[y - 5 : y + 5, x0:x1] = 1.0
+    return cov
+
+
+def test_mark_boxes_cut_half_way_across_the_widest_gaps(font):
+    c = cards.caption(OUT, "ab cd ef", font, 1080)
+    run = cards.Run("ab cd ef", 40, "#FFFFFF", c.w / 2, 30, "CENTER", ((3, 5),), "#FF0000")
+    spec = cards.CardSpec(**{**c.__dict__, "w": 300, "h": 60, "runs": (run,)})
+    # letters 4 px apart inside a word, 20 px between the words
+    cov = _ink(300, 60, 30, [(20, 40), (44, 64), (84, 104), (108, 128), (148, 168), (172, 192)])
+    (box,) = cards.mark_boxes(spec, cov)
+    assert box[0] == round((64 + 84) / 2) and box[1] == round((128 + 148) / 2) and box[4] == "#FF0000"
+    assert box[2] < 30 < box[3]
+    first = cards.Run("ab cd ef", 40, "#FFFFFF", 150, 30, "CENTER", ((0, 2), (6, 8)), "#FF0000")
+    boxes = cards.mark_boxes(cards.CardSpec(**{**spec.__dict__, "runs": (first,)}), cov)
+    assert [(b[0], b[1]) for b in boxes] == [(0, 74), (138, 300)]  # the card's edges bound the first and last word
+    assert cards.mark_boxes(spec, np.zeros((60, 300))) == []  # no ink: nothing to recolour
+
+
+def test_mark_boxes_fall_back_to_the_measured_widths_when_the_ink_has_too_few_clusters(font):
+    c = cards.caption(OUT, "x", font, 600)
+    run = cards.Run("aa bb", 40, "#FFFFFF", 100, 30, "CENTER", ((3, 5),), "#FF0000")
+    spec = cards.CardSpec(**{**c.__dict__, "w": 200, "h": 60, "runs": (run,)})
+    (box,) = cards.mark_boxes(spec, _ink(200, 60, 30, [(20, 180)]))  # one solid cluster for two words
+    assert 60 < box[0] < 140 and box[1] == 200
+
+
+def test_fx_shape_is_a_dark_outline_and_a_soft_shadow_under_the_text(font):
+    c = cards.caption(OUT, "aaaaaa", font, 600)
+    glyph = np.zeros((c.h, c.w))
+    glyph[50:90, 60:80] = 1.0
+    fx = c.fx
+    px = cards.fx_shape_rgba(c, glyph)
+    assert px.shape == (c.h, c.w, 4) and px.dtype == np.uint8
+    dark = (0x1B, 0x2A, 0x3A)
+    for y, x in ((70, 70), (50 - fx.stroke_px + 1, 70), (70, 60 - fx.stroke_px + 1), (70, 80 + fx.stroke_px - 2)):
+        assert tuple(px[y, x, :3]) == dark and px[y, x, 3] > 200, (y, x, px[y, x])  # inside and in the stroke
+    assert px[50 - fx.stroke_px - 3, 70, 3] == 0  # above the stroke: nothing, the shadow goes down
+    below = px[90 + fx.stroke_px + 1 : 90 + fx.stroke_px + fx.shadow_dy, 70, 3]
+    assert (below > 0).all() and (below <= round(255 * cards.SHADOW_ALPHA)).all()  # a soft, see-through shadow
+    col = px[90 + fx.stroke_px : c.h, 70, 3].astype(int)
+    assert col[0] > col[fx.shadow_dy + 3] and col[-1] == 0  # fading out downwards
+    off = cards.CardSpec(**{**c.__dict__, "fx": cards.TextFx(fx.stroke_px, fx.stroke, 0, 0.0, 0.0)})
+    flat = cards.fx_shape_rgba(off, glyph)
+    assert flat[90 + fx.stroke_px + 2, 70, 3] == 0 and flat[70, 70, 3] > 200  # no shadow: the stroke only
+    assert not cards.fx_shape_rgba(c, np.zeros((c.h, c.w))).any()
+
+
+def test_the_cache_key_follows_the_style_the_stroke_and_the_highlight(font):
+    a = cards.cache_key(cards.caption(OUT, "x", font, 600))
+    thick = kit.kit_from({**KIT, "caption": {**OUT.caption, "stroke_px": 8}})
+    assert a != cards.cache_key(cards.caption(thick, "x", font, 600))
+    assert a != cards.cache_key(cards.caption(K, "x", font, 600))
+    assert cards.cache_key(cards.caption(K, "x *y*", font, 600)) != cards.cache_key(cards.caption(K, "x y", font, 600))
+
+
+def test_plain_and_marked_text():
+    from bsa.overlays import est_lines, est_width, marked, plain
+
+    assert plain("and every *crossing*") == "and every crossing" and plain("a*b") == "ab"
+    assert marked("and every *crossing*!") == [("and every ", False), ("crossing", True), ("!", False)]
+    assert marked("no marks") == [("no marks", False)] and marked("stray * one") == [("stray  one", False)]
+    assert est_lines("*abcd* efgh", 10, 10000) == 1 and est_width("*abcd* efgh", 10, 10000) == len("abcd efgh") * 10 * 0.56
+
+
+def test_caption_highlight_colour_without_a_kit_follows_caption_then_short_palette_then_brand_palette():
+    from types import SimpleNamespace
+
+    from bsa.overlays import HIGHLIGHT_COLOR, caption_highlight, has_highlight
+
+    def short(**style):
+        return SimpleNamespace(style=style, look=None)
+
+    brand = {"brand": {"mode": "brand", "palette": {"accent": "#112233"}}}
+    assert caption_highlight(short(), {}) == HIGHLIGHT_COLOR  # nothing names a colour: the cyan
+    assert caption_highlight(short(), brand) == "#112233"
+    assert caption_highlight(short(palette={"accent": "#2ec5ff"}), brand) == "#2EC5FF"
+    own = short(palette={"accent": "#2ec5ff"}, caption={"highlight": "#00ff88"})
+    assert caption_highlight(own, brand) == "#00FF88"
+    assert caption_highlight(short(palette={"accent": "nope"}), {}) == HIGHLIGHT_COLOR  # a bad value is skipped
+    assert has_highlight("that *conducts*,") and not has_highlight("no markup * here")

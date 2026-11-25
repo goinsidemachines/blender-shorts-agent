@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from bsa import captions, engine_runs, feedback, jobstate, messages, render_status, rules
+from bsa import captions, engine_runs, feedback, jobstate, messages, presets, render_status, rules, targets, timing
 from bsa import closing as closing_mod
 from bsa import settings as settings_mod
 from bsa.layout import H, W, caption_rect, safe_rect
@@ -130,7 +130,8 @@ def _reading_timeline_and_problem(ctx: Ctx, short: Short):
     """(the timeline at reading pace, None), or for a one-take short whose lines overrun a window (the timeline it
     would be, the WindowOverrun's one line): the shots still show while the storyboard says what to fix."""
     try:
-        return build_timeline(short, None, settings_mod.has_end_card(ctx.settings, short)), None
+        return build_timeline(short, None, settings_mod.has_end_card(ctx.settings, short),
+                              timing=timing.resolve(ctx.settings, short)), None
     except WindowOverrun as e:
         if e.timeline is None:
             raise
@@ -164,7 +165,7 @@ def _story(ctx: Ctx) -> dict | None:
     short = _short(ctx)
     tl = _reading_timeline(ctx, short)
     end_card = settings_mod.has_end_card(ctx.settings, short)
-    pace = {row["shot"]: row for row in pacing(short, tl, end_card)}
+    pace = {row["shot"]: row for row in pacing(short, tl, end_card, timing.resolve(ctx.settings, short))}
     beats = []
     for i, shot in enumerate(short.shots, 1):
         row = pace.get(shot.id)
@@ -351,9 +352,9 @@ def _storyboard(ctx: Ctx) -> dict | None:
             lines.append(
                 {
                     "id": ln.id,
-                    "text": ln.text,
+                    "text": ln.text.replace("*", ""),
                     "at_s": round((ls.f0 - 1) / fps, 1) if ls else None,
-                    "cards": [c.text for c in tl.cards if c.line_id == ln.id],
+                    "cards": [c.text.replace("*", "") for c in tl.cards if c.line_id == ln.id],
                 }
             )
         shots.append(
@@ -376,6 +377,7 @@ def _storyboard(ctx: Ctx) -> dict | None:
         "closing": _closing_card(ctx, short),
         "rules": _rule_rows(ctx, short),
         "look": _look(ctx, short),
+        "style_preset": presets.line(ctx.settings, short),
         "frame": {
             "safe": _rect_pct(safe_rect()),
             "caption": _rect_pct(caption_rect(pages.CAPTION_LINES, size)),
@@ -423,7 +425,7 @@ def _camera_stale(ctx: Ctx, short: Short, rec: dict) -> str | None:
 
     durations = takes_durations(ctx.sdir, short)
     tl = build_timeline(short, durations, settings_mod.has_end_card(ctx.settings, short),
-                        onsets=takes_onsets(ctx.sdir, short) if durations is not None else None)  # fmt: skip
+                        timing=timing.resolve(ctx.settings, short), onsets=takes_onsets(ctx.sdir, short) if durations is not None else None)  # fmt: skip
     tl_hash = timeline_hash(json.loads(json.dumps(to_json(tl))))
     return camtest.path_stale(rec, camtest.shot_spans(tl), tl.fps, camtest.build_stamp(ctx.sdir),
                               freshness.blend_stat(ctx.sdir), tl_hash)  # fmt: skip
@@ -814,9 +816,10 @@ BUILDERS: dict[str, Callable[[Ctx], dict | None]] = {
 
 # Content keys left out of a stage's fingerprint: the engine's side-run measurements (a side run is not something the
 # user approves, so it must not move the version they answered).
-_UNVERSIONED = {"interview": ("started_from",), "engine": ("runs",), "narration": ("voice",),
-                "camera": ("stale", "command"),
-                "story": ("facts_panel",), "final": ("timeline", "facts_panel", "timeline_problem", "captions"),
+_UNVERSIONED = {"storyboard": ("style_preset", "targets"), "interview": ("started_from",), "engine": ("runs",),
+                "narration": ("voice", "targets"), "camera": ("stale", "command"),
+                "story": ("facts_panel", "targets"),
+                "final": ("timeline", "facts_panel", "timeline_problem", "captions", "targets"),
                 "post": ("candidates", "files", "checklist", "field_notes", "thumbs_problem",
                          "checklist_problem", "thumbnail_problems")}
 
@@ -851,6 +854,33 @@ def stage_version(sdir: Path, stage: str, ctx: Ctx | None = None) -> int | None:
     return _version_of(sdir, stage, content)
 
 
+def _target_view(r: dict) -> dict:
+    measured = r.get("measured")
+    if isinstance(measured, list):
+        measured = ", ".join(str(m) for m in measured)
+    return {"target": r["target"], "ok": r["ok"], "measured": "" if measured is None else str(measured),
+            "wanted": str(r.get("wanted") or ""), "text": r.get("text") or ""}  # fmt: skip
+
+
+def _targets_block(ctx: Ctx, stage: str) -> list[dict]:
+    """The optional script and edit targets (bsa.targets) that are set and measured on this stage: the story's and the
+    storyboard's from the short itself, the narration's and the final's from review/targets.json (written by narrate,
+    mix, validate, check-targets and the checks). [] when no target is set."""
+    short = ctx.short
+    if short is None or stage not in ("story", "storyboard", "narration", "final"):
+        return []
+    values = targets.resolved(ctx.settings, short)
+    if not values:
+        return []
+    if stage == "story":
+        rows = targets.script_rows(short, values)
+    elif stage == "storyboard":
+        rows = targets.storyboard_rows(short, values)
+    else:
+        rows = [r for r in targets.read_rows(ctx.sdir) if r.get("stage") == stage and r.get("target") in values]
+    return [_target_view(r) for r in rows if isinstance(r.get("ok"), bool)]
+
+
 def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[str]) -> dict:
     out = {
         "id": stage,
@@ -867,6 +897,13 @@ def _stage(ctx: Ctx, stage: str, status: str, live: list[dict], problems: list[s
         out["content"] = BUILDERS[stage](ctx)
     except Exception as e:  # noqa: BLE001 - a bad input must never break the page
         out["problem"] = _plain(ctx.sdir, e)
+    if isinstance(out["content"], dict):  # beside the content, never in its version (_UNVERSIONED)
+        try:
+            block = _targets_block(ctx, stage)
+        except Exception:  # noqa: BLE001 - a target that can't be shown never breaks the page
+            block = []
+        if block:
+            out["content"]["targets"] = block
     if isinstance(out["content"], dict) and out["content"].get("timing_problem"):
         out["problem"] = out["content"]["timing_problem"]  # the storyboard's one-take window overrun
     if out["content"] is not None and stage in VERSIONED:

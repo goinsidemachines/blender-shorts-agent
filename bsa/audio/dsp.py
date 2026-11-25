@@ -3,6 +3,8 @@
 - K-weighted loudness (ITU-R BS.1770): `momentary_lufs` (loudest 400 ms) and `integrated_lufs` (the whole signal).
   The K-weighting filter is applied as its magnitude response in the frequency domain (zero phase), which is exact
   for a loudness reading and needs no per-sample loop.
+- Measurement for the loudness master: `gated_lufs` (BS.1770-4 / R128 gating, stereo), `loudness_range` (EBU Tech
+  3342), `true_peak` (4x oversampling), `measure`, and a gentle `compress`.
 - Fades and seamless loops (equal-power).
 - The effects bus: a 75 Hz high-pass and one short room reverb, both as FFT convolution.
 - A ducking gain with lookahead, and a lookahead peak limiter. Both are vectorised: no per-sample Python loops.
@@ -107,6 +109,24 @@ def fade_in_curve(n: int) -> np.ndarray:
 
 def fade_out_curve(n: int) -> np.ndarray:
     return fade_in_curve(n)[::-1]
+
+
+def circular_xfade(x: np.ndarray, n: int) -> np.ndarray:
+    """`x` made to wrap: its last `n` samples fade out to silence (equal power) and are laid, under a bump that is zero
+    at both of its ends, on the first `n` samples, which fade in from silence. The result has the same length, is
+    silent at both ends (so it is continuous where the end meets the start) and keeps its level through the seam,
+    because the tail carries on under the head's fade-in. Works on (n_samples,) and (n_samples, channels)."""
+    x = np.asarray(x, dtype=np.float64)
+    n = min(int(n), len(x) // 2)
+    if n < 2:
+        return x.copy()
+    shape = (n,) + (1,) * (x.ndim - 1)
+    fin = fade_in_curve(n).reshape(shape)
+    fout = fade_out_curve(n).reshape(shape)
+    out = x.copy()
+    out[:n] = x[:n] * fin + x[-n:] * fout * fin
+    out[-n:] = x[-n:] * fout
+    return out
 
 
 def loop_to_length(x: np.ndarray, n: int, seed: int = 0, xfade_s: float = 1.0) -> np.ndarray:
@@ -267,3 +287,121 @@ def limit(x: np.ndarray, ceiling_db: float = -1.0, lookahead_s: float = 0.005, r
     gain = 1.0 - np.maximum(released, cut)
     out = x * (gain[:, None] if x.ndim == 2 else gain)
     return np.clip(out, -ceiling, ceiling)  # only float dust is left to catch
+
+
+# --------------------------------------------------------------------------- loudness measurement (BS.1770-4, EBU R128)
+
+ABS_GATE_LUFS = -70.0
+TP_OVERSAMPLE = 4
+
+
+def _channels(x: np.ndarray) -> np.ndarray:
+    """(n, channels) float64; a mono (n,) signal is one channel."""
+    x = np.asarray(x, dtype=np.float64)
+    return x[:, None] if x.ndim == 1 else x
+
+
+def _block_energy(x: np.ndarray, window_s: float, hop_s: float) -> np.ndarray:
+    """The K-weighted mean square of every window (length `window_s`, a new one every `hop_s`), summed over the
+    channels (BS.1770: left and right weigh 1). A signal shorter than one window counts as padded with silence."""
+    x = _channels(x)
+    w, h = round(window_s * SR), round(hop_s * SR)
+    n = len(x)
+    if n < w:
+        x = np.concatenate([x, np.zeros((w - n, x.shape[1]))])
+    power = sum(k_weight(x[:, c]) ** 2 for c in range(x.shape[1]))
+    c = np.concatenate([[0.0], np.cumsum(power)])
+    starts = np.arange(0, len(x) - w + 1, h)
+    return (c[starts + w] - c[starts]) / w
+
+
+def _to_lufs(z: np.ndarray) -> np.ndarray:
+    return np.where(z > 0, -0.691 + 10 * np.log10(np.maximum(z, 1e-300)), FLOOR_DB)
+
+
+def gated_lufs(x: np.ndarray) -> float:
+    """Integrated loudness in LUFS, gated as ITU-R BS.1770-4 / EBU R128: 400 ms blocks with 75 % overlap, blocks under
+    -70 LUFS dropped, then blocks more than 10 LU under the mean of what is left dropped. Mono or stereo."""
+    z = _block_energy(x, K_WINDOW_S, K_WINDOW_S / 4)
+    loud = _to_lufs(z)
+    kept = z[loud > ABS_GATE_LUFS]
+    if not len(kept):
+        return FLOOR_DB
+    rel = -0.691 + 10 * np.log10(float(kept.mean())) - 10.0
+    kept = z[(loud > ABS_GATE_LUFS) & (loud > rel)]
+    return float(-0.691 + 10 * np.log10(float(kept.mean()))) if len(kept) else FLOOR_DB
+
+
+def short_term_lufs(x: np.ndarray, hop_s: float = 0.1) -> np.ndarray:
+    """The short-term loudness (3 s windows) every `hop_s`, in LUFS."""
+    return _to_lufs(_block_energy(x, 3.0, hop_s))
+
+
+def loudness_range(x: np.ndarray) -> float:
+    """Loudness range LRA in LU, EBU Tech 3342: short-term loudness (3 s windows), gated at -70 LUFS absolute and 20 LU
+    under the (power) mean of what is left, then the spread between the 10th and 95th percentile. 0.0 for a signal
+    shorter than 3 s or with nothing above the gate."""
+    x = _channels(x)
+    if len(x) < round(3.0 * SR):
+        return 0.0
+    st = short_term_lufs(x)
+    st = st[st > ABS_GATE_LUFS]
+    if not len(st):
+        return 0.0
+    rel = 10 * np.log10(float(np.mean(10 ** (st / 10)))) - 20.0
+    st = st[st > rel]
+    return float(np.percentile(st, 95) - np.percentile(st, 10)) if len(st) else 0.0
+
+
+def true_peak(x: np.ndarray, oversample: int = TP_OVERSAMPLE) -> float:
+    """True peak in dBTP: the highest sample of the signal oversampled `oversample` times (band-limited interpolation
+    by zero-padding the spectrum, ITU-R BS.1770-4 Annex 2). Any channel; FLOOR_DB for silence."""
+    x = _channels(x)
+    n = len(x)
+    if n == 0 or not x.any():
+        return FLOOR_DB
+    peak = 0.0
+    for c in range(x.shape[1]):
+        spec = np.fft.rfft(x[:, c])
+        up = np.zeros(n * oversample // 2 + 1, dtype=complex)
+        up[: len(spec)] = spec
+        peak = max(peak, float(np.abs(np.fft.irfft(up, n * oversample) * oversample).max()))
+    return to_db(peak)
+
+
+def measure(x: np.ndarray) -> dict:
+    """{"integrated_lufs", "true_peak_dbtp", "lra_lu"} of a mono or stereo signal."""
+    return {"integrated_lufs": round(gated_lufs(x), 2), "true_peak_dbtp": round(true_peak(x), 2),
+            "lra_lu": round(loudness_range(x), 2)}  # fmt: skip
+
+
+def compress(x: np.ndarray, max_reduction_db: float = 3.0, ratio: float = 3.0, attack_s: float = 0.01,
+             release_s: float = 0.15) -> np.ndarray:  # fmt: skip
+    """A gentle, linked-stereo RMS compressor. The threshold is chosen from the signal so the deepest gain reduction
+    is `max_reduction_db` (for a ratio of 3 the loudest 20 ms is brought down by that much, quieter parts by less or
+    not at all). The level is measured per 10 ms block, the gain follows it with the given attack and release and is
+    interpolated between blocks, so there is no per-sample loop."""
+    x = np.asarray(x, dtype=np.float64)
+    blk = max(round(0.01 * SR), 1)
+    n = len(x)
+    nb = -(-n // blk)
+    if n == 0 or not x.any() or nb < 2:
+        return x
+    xs = x if x.ndim == 2 else x[:, None]
+    pad = np.concatenate([xs, np.zeros((nb * blk - n, xs.shape[1]))])
+    ms = (pad**2).reshape(nb, blk, xs.shape[1]).mean(axis=(1, 2))
+    ms = (ms + np.concatenate([[ms[0]], ms[:-1]])) / 2  # RMS over 20 ms (this block and the one before)
+    level = 10 * np.log10(np.maximum(ms, 1e-12))
+    slope = 1.0 - 1.0 / ratio
+    thresh = float(level.max()) - max_reduction_db / slope
+    target = np.maximum(level - thresh, 0.0) * slope  # the gain reduction wanted, dB
+    a_att, a_rel = np.exp(-0.01 / attack_s), np.exp(-0.01 / release_s)
+    gr = np.zeros(nb)
+    cur = 0.0
+    for i in range(nb):  # a few thousand blocks
+        a = a_att if target[i] > cur else a_rel
+        cur = a * cur + (1 - a) * target[i]
+        gr[i] = cur
+    centres = (np.arange(nb) + 0.5) * blk
+    gain = 10 ** (-np.interp(np.arange(n), centres, gr) / 20)
+    return x * (gain[:, None] if x.ndim == 2 else gain)

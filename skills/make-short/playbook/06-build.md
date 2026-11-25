@@ -318,7 +318,8 @@ Frame the heroes around the overlays the edit draws (`bsa/layout.py`, `bsa/blend
 - **Safe area:** x 60-940, y 220-1500. The bottom 420 px and the right 140 px are under the platform's buttons.
 - **Caption band: rows about 1165-1395 (61-73% down the frame)** whenever a caption shows, full safe width. That
   is a two-line card (default 64 px captions: a card wraps at about 22 characters, so most cards are two lines) with
-  its box; a one-line card covers about 1245-1395. A larger `style.caption.size` makes the band taller upward. Keep
+  its box (with `caption.style outline` there is no box and a card is as wide as its text, but the band is the same
+  height: plan for it as if the box were there); a one-line card covers about 1245-1395. A larger `style.caption.size` makes the band taller upward. Keep
   heroes, the parts the line talks about, scale figures and comparison bars out of this band while captions show:
   the band is not the bottom fifth, it is two-thirds of the way down.
 - **Badge: top-left, rows about 221-297**, x from 61 to about 100 + 17 px per character (about 400 for "MOTION
@@ -420,6 +421,34 @@ sourced number** (a period, a peak, a speed, a ratio from your facts) with the `
 or your own check; note the comparison in `source/notes.md`. If you had to simplify (2D for 3D, a lumped mass, a
 slowed-down process), the shot carries a badge ("Simplified" / "Motion slowed"). Build the motion from the model's
 output, exactly as with a ready-made helper.
+
+## Loop endings
+
+A short can end seamlessly back into its first frame, so the picture repeats with no visible seam. Turn it on with
+`"loop": true` in short.json, `CLI settings set loop true` for every short, or a style preset that has it
+(`fast-loop`); the short's own value wins over the preset, the preset over the setting. With loop on there is no
+end card and no closing card (the last shot is not held longer for one), and `CLI mix` wraps the room tone and
+effects bed: their last 150 ms fade into the start, the voice is untouched.
+
+Build the picture to loop:
+
+- Start every motion already running at frame 1, at the speed it has at the end. A move that begins from rest and
+  ends moving jumps when the short repeats.
+- Write cyclic values as a function of the frames from the end: `from bsa.blender.loop import loop_phase,
+  whole_turns, hermite_join`; `e = loop_phase(frame, n_frames)` is 0 on the last frame and negative before it. A
+  value that is a function of `e` meets itself at the loop.
+- Turn things a whole number of times: `whole_turns(rate, n_frames)` gives the turn rate nearest to the one you
+  want that completes whole turns, so a wheel or a fan is where it started.
+- A move that does not return by itself (a slide, a zoom) is brought back with `hermite_join(v_end, d_end,
+  v_start, d_start, t)` over the last frames, matching the slopes at both ends.
+- Keep the camera in the loop too: its position, rotation, focal length and focus distance are measured.
+
+The check: `loop` (see the checks) predicts the frame after the last one from the last two and compares it with
+frame 1, for the camera, every animated object, shape keys and the bones of armatures: positions within 0.5% of the
+scene's size, rotations within 0.5 degrees (whole turns count as equal), focal length within 0.5 mm, shape keys
+within 0.01. It warns, naming the object, the channel and the frames; fix it in build.py. It also warns when the
+speed changes at the loop point. A short whose first and last shots are in different scenes cannot be measured:
+look at the last frame next to the first.
 
 ## Sound mix
 

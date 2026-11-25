@@ -280,6 +280,44 @@ def test_brand_caption_colours():
     assert edit.caption_colours(short, {})[1] == edit.BOX_COLOR  # no box given: the default see-through box
 
 
+def _caption_cards(scene):
+    return sorted((s for s in scene.sequence_editor.strips_all if s.type == "IMAGE" and s.name.startswith("K_caption")),
+                  key=lambda s: s.frame_final_start)  # fmt: skip
+
+
+def test_plain_captions_with_a_highlight_or_the_outline_style_are_card_images_without_asterisks():
+    short, tl, frames, wav, out = _fixture()
+    boxed = _captions(edit.build_edit(short, tl, frames, wav, out, {}, preset="preview"))[0]
+    assert boxed.use_box and boxed.text == "Hello there everybody"  # no highlight, box style: the text strips, as ever
+    tl.cards[0].text = "Hello *there*"
+    scene = edit.build_edit(short, tl, frames, wav, out, {}, preset="preview")
+    assert not _captions(scene) or all(s.frame_final_start != 3 for s in _captions(scene))
+    assert [s.frame_final_start for s in _caption_cards(scene)] == [3, 18]  # a highlight: every caption is a card
+    tl.cards[0].text = "Hello there"
+    brand = {"brand": {"mode": "brand", "caption": {"style": "outline", "box": "#10203080"}}}
+    scene = edit.build_edit(short, tl, frames, wav, out, brand, preset="preview")
+    assert not _captions(scene) and len(_caption_cards(scene)) == 2  # the outline style: cards, no text strip
+    own = short.style.setdefault("caption", {})
+    own["style"] = "box"  # a short's own style.caption.style wins over the brand
+    assert _captions(edit.build_edit(short, tl, frames, wav, out, brand, preset="preview"))[0].use_box
+
+
+def test_a_plain_caption_card_sits_on_the_text_strips_bottom_anchor_centred():
+    from bsa.overlays import caption_size, captions
+
+    short, tl, frames, wav, out = _fixture()
+    short.style["caption"] = {"style": "outline", "size": 66}
+    scene = edit.build_edit(short, tl, frames, wav, out, {}, preset="preview")
+    row = captions(short, tl)[0]
+    card = _caption_cards(scene)[0]
+    assert caption_size(short) == 66
+    w, h = card.elements[0].orig_width, card.elements[0].orig_height
+    top_px = edit.H - (card.transform.offset_y + edit.H / 2 + h / 2)  # image centre -> top row from the top
+    assert abs(top_px + h - (row[4] + 1 + 6)) < 40, (top_px, h, row[4])  # its bottom: the text bottom + the effects' margin
+    safe = edit.safe_rect()
+    assert abs(card.transform.offset_x - (safe.x + safe.w / 2 - edit.W / 2)) < 1.0 and w < safe.w  # centred, hugging
+
+
 def test_font_with_a_weight_loads_the_downloaded_static_file():
     """style.font "Family@600" loads <workspace>/.assets-cache/fonts/Family-600.ttf (what CLI assets downloads),
     found from the short's folder (out_mp4 is <short>/out/<slug>.mp4)."""

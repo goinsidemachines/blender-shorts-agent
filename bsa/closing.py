@@ -59,10 +59,12 @@ def resolve(s: dict, short=None) -> dict | None:
     "website", "handle", "seconds" (clamped to MIN_S..MAX_S), "voice_line"}. The short's own `closing` wins: false
     turns it off, an object overrides image, seconds, voice_line or website (an "image" of null makes the brand card
     instead of the user's image). With no image and no website there is no card: a user with only a handle keeps the
-    overlay end card (bsa.settings.end_card), as before."""
+    overlay end card (bsa.settings.end_card), as before. A looping short (bsa.presets.loop_on) has no closing card."""
+    from bsa import presets
+
     s = s or {}
     own = getattr(short, "closing", None)
-    if own is False:
+    if own is False or presets.loop_on(s, short):  # a looping short ends back on frame 1: no card after the story
         return None
     base = s.get("closing") if isinstance(s.get("closing"), dict) else {}
     cfg = {"image": base.get("image"), "seconds": base.get("seconds"), "voice_line": base.get("voice_line"),

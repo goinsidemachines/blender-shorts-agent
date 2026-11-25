@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import platform
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -21,9 +22,9 @@ import numpy as np
 from bsa import fonts
 from bsa.closing import on_colour
 from bsa.layout import safe_rect
-from bsa.overlays import NEAR_WRAP_PX, hex_colour
+from bsa.overlays import NEAR_WRAP_PX, hex_colour, marked, plain
 
-CARD_VERSION = 2  # in every cache key: bump when the drawing changes
+CARD_VERSION = 3  # in every cache key: bump when the drawing changes
 
 SIZES = {"badge": 30, "category": 34, "step": 34, "label": 40, "measure": 40, "logo_name": 36, "title": 90,
          "title_highlight": 120, "bar": 34, "verdict": 36, "lead": 56, "website": 84, "handle": 52, "thumb_fact": 44,
@@ -38,6 +39,11 @@ DOT_GAP = 16  # between the dot and the text (and between a bar and its value, t
 BAR_H = 28
 BAR_GAP = 18
 TIGHT_BAR_SCALE = 0.75  # `bars(tight=True)`: the bar thickness, times BAR_H
+OUTLINE_REF_SIZE = 70  # the "no box" caption's stroke_px is for this size and scales with the caption size
+SHADOW_DY_REF = 6  # its drop shadow: offset down, blur sigma and opacity (offset and sigma scale with the size too)
+SHADOW_SIGMA_REF = 3.0
+SHADOW_ALPHA = 0.6
+BOLD_EXTRA_EM = 0.046  # use_bold (the sequencer's synthetic bold) widens each character by this, measured in Blender 5.3
 TIGHT_GAP_SCALE = 0.5  # and the gap between rows, times BAR_GAP
 BAR_LABEL_SHARE = 0.32  # of a bars card's inner width, for the labels
 BAR_LABEL_MIN = 24  # a bar label shrinks to fit down to this size, then wraps (its row grows)
@@ -63,6 +69,21 @@ class Run:
     x: float
     y: float
     anchor: str
+    marks: tuple = ()  # ((start, end), ...): the words of `text` (character ranges) drawn in `mark` instead of `colour`
+    mark: str | None = None
+
+
+@dataclass(frozen=True)
+class TextFx:
+    """How a "no box" caption's text is drawn: bold, a `stroke` colour outline `stroke_px` thick and (when `shadow_dy`
+    > 0) a soft shadow of the same colour moved `shadow_dy` down, blurred by `shadow_sigma`, at `shadow_alpha`."""
+
+    stroke_px: int
+    stroke: str
+    shadow_dy: int
+    shadow_sigma: float
+    shadow_alpha: float
+    bold: bool = True
 
 
 @dataclass(frozen=True)
@@ -85,6 +106,8 @@ class CardSpec:
     logo: str | None = None
     logo_rect: tuple | None = None
     bars: tuple = ()
+    fx: TextFx | None = None  # a caption without a box: its text's outline and shadow (drawn from the text's shape)
+    bold: bool = False  # the text drawn bold (a caption with a box that is bold, as the plain text captions are)
 
 
 # --------------------------------------------------------------------------- fonts and measuring
@@ -110,21 +133,22 @@ def card_font_and_note(kit, cache_dirs=None) -> tuple[Path | None, str | None]:
     return None, None
 
 
-def measure(text: str, size: float, font) -> float:
+def measure(text: str, size: float, font, bold: bool = False) -> float:
     """The width of `text` at `size` px in `font` (its advance widths); for Blender's own font (None) and a font whose
-    widths can't be read, BLENDER_CHAR_W per character (exact for Blender's own font, a guess for the other)."""
+    widths can't be read, BLENDER_CHAR_W per character (exact for Blender's own font, a guess for the other). `bold`:
+    as the sequencer draws it with use_bold, BOLD_EXTRA_EM wider per character."""
     em = fonts.advance_em(font, text) if font else None
-    return (em if em is not None else len(text) * BLENDER_CHAR_W) * size
+    return ((em if em is not None else len(text) * BLENDER_CHAR_W) + (len(text) * BOLD_EXTRA_EM if bold else 0)) * size
 
 
-def wrap(text: str, size: float, font, width: float) -> list[str]:
+def wrap(text: str, size: float, font, width: float, bold: bool = False) -> list[str]:
     """`text` in lines no wider than `width`, greedy by words (a word wider than `width` gets its own line)."""
     lines: list[str] = []
     for para in str(text).split("\n"):
         line = ""
         for word in para.split():
             cand = f"{line} {word}" if line else word
-            if not line or measure(cand, size, font) <= width:
+            if not line or measure(cand, size, font, bold) <= width:
                 line = cand
             else:
                 lines.append(line)
@@ -133,13 +157,13 @@ def wrap(text: str, size: float, font, width: float) -> list[str]:
     return [ln for ln in lines if ln] or [""]
 
 
-def _break(lines: list[str], size: float, font, width: float) -> list[str]:
+def _break(lines: list[str], size: float, font, width: float, bold: bool = False) -> list[str]:
     """`lines` with any line wider than `width` (a long word) broken by characters, so no line overflows its card."""
     out = []
     for line in lines:
         part = ""
         for ch in line:
-            if part and measure(part + ch, size, font) > width:
+            if part and measure(part + ch, size, font, bold) > width:
                 out.append(part.rstrip())
                 part = ch.lstrip()
             else:
@@ -148,8 +172,8 @@ def _break(lines: list[str], size: float, font, width: float) -> list[str]:
     return [ln for ln in out if ln] or [""]
 
 
-def _lines(text: str, size: float, font, width: float) -> list[str]:
-    return _break(wrap(text, size, font, width), size, font, width)
+def _lines(text: str, size: float, font, width: float, bold: bool = False) -> list[str]:
+    return _break(wrap(text, size, font, width, bold), size, font, width, bold)
 
 
 def metrics(font) -> tuple[float, float]:
@@ -222,18 +246,116 @@ def _max_w(width) -> int:
 # --------------------------------------------------------------------------- the builders
 
 
-def caption(kit, text: str, font, width) -> CardSpec:
-    """A caption box: the full `width` (the safe width at most), in the kit's caption colours, size and padding."""
+def outline_fx(kit) -> TextFx:
+    """The text effects of a "no box" caption from the kit: the stroke (`caption.stroke_px` at OUTLINE_REF_SIZE,
+    scaled with `caption.size`) and the shadow (`caption.shadow`), both in the caption box colour (the dark one)."""
     cap = kit.caption
-    w, size, pad = _max_w(width), int(cap["size"]), cap["pad_px"]
-    font, _ = font_for(text, font)
-    lines = _lines(text, size, font, w - 2 * pad)
+    k = int(cap["size"]) / OUTLINE_REF_SIZE
+    px = float(cap.get("stroke_px", 4))
+    stroke = max(1, round(px * k)) if px > 0 else 0
+    on = bool(cap.get("shadow", True))
+    return TextFx(stroke, cap["box"][:7], max(1, round(SHADOW_DY_REF * k)) if on else 0, SHADOW_SIGMA_REF * k, SHADOW_ALPHA)
+
+
+def caption_pad(kit) -> int:
+    """The margin round a caption's text inside its card: `caption.pad_px` for a box; for a "no box" caption just
+    what its stroke and shadow need, so the card is the text's area plus its effects."""
+    if kit.caption.get("style") != "outline":
+        return int(kit.caption["pad_px"])
+    fx = outline_fx(kit)
+    return fx.stroke_px + 1 + (fx.shadow_dy + math.ceil(2 * fx.shadow_sigma) if fx.shadow_dy else 0)
+
+
+def _flags(text: str) -> list[bool]:
+    """Whether each non-space character of `text` (with its *highlight* asterisks) is highlighted, in order."""
+    return [hl for piece, hl in marked(text) for ch in piece if not ch.isspace()]
+
+
+def _runs(lines: list[str], flags: list[bool], ys: list[float], off: float, w: float, size: int, colour: str,
+          highlight: str) -> tuple[Run, ...]:  # fmt: skip
+    """The caption's runs: one centred Run per line, exactly as plain text is laid out. The words with a highlighted
+    character (`flags`: one per non-space character, in order) are listed in the run's `marks` and drawn in
+    `highlight` by the renderer, which finds where the sequencer put them (bsa.blender.cards): measuring them here
+    drifted a few pixels from the real layout, a visible gap before the word."""
+    runs, at = [], 0
+    for ln, y in zip(lines, ys, strict=True):
+        marks = []
+        for m in re.finditer(r"\S+", ln):
+            word = flags[at : at + len(m.group())]
+            at += len(m.group())
+            if any(word):
+                marks.append((m.start(), m.end()))
+        runs.append(Run(ln, size, colour, w / 2, off + y, "CENTER", tuple(marks), highlight if marks else None))
+    return tuple(runs)
+
+
+def mark_boxes(spec: CardSpec, coverage) -> list[tuple[int, int, int, int, str]]:
+    """Where each highlighted word of `spec` is on the card: (x0, x1, y0, y1, colour), pixel columns x0..x1 and rows
+    y0..y1 (end excluded) to take from a drawing of the card with the words in their colour. `coverage` is the text
+    as Blender drew it ((h, w) floats 0..1, every run in white). A run's words are its ink clusters in its row band;
+    the run's widest gaps are the spaces between the words, each cut half-way across its gap (the first word's box
+    reaches the card's left edge, the last one's the right edge). Where the ink has fewer clusters than the run has
+    words (a word wider apart than the spaces, say), the words are placed by their measured widths over the run's ink."""
+    cov = np.asarray(coverage, dtype=np.float64)
+    h, w = cov.shape
+    pitch = metrics(spec.font)[0]
+    out = []
+    for run in spec.runs:
+        if not run.marks:
+            continue
+        mid = run.y + text_drop(spec.font) * run.size
+        y0, y1 = max(0, math.floor(mid - pitch * run.size / 2)), min(h, math.ceil(mid + pitch * run.size / 2))
+        xs = np.flatnonzero((cov[y0:y1] > 0.25).any(axis=0)) if y1 > y0 else np.array([], dtype=int)
+        words = [m.span() for m in re.finditer(r"\S+", run.text)]
+        if not len(xs) or not words:
+            continue
+        runs = np.split(xs, np.flatnonzero(np.diff(xs) > 1) + 1)
+        spans = [(int(r[0]), int(r[-1]) + 1) for r in runs]  # each cluster's ink columns, end excluded
+        if len(spans) >= len(words):
+            gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
+            cuts = sorted(sorted(range(len(gaps)), key=lambda i: -gaps[i])[: len(words) - 1])
+            groups, first = [], 0
+            for c in [*cuts, len(spans) - 1]:
+                groups.append((spans[first][0], spans[c][1]))
+                first = c + 1
+        else:  # the words by their measured widths, scaled to the run's ink
+            font = Path(spec.font) if spec.font else None
+            total = measure(run.text, run.size, font, bool(spec.bold or (spec.fx and spec.fx.bold))) or 1.0
+            left, right = spans[0][0], spans[-1][1]
+            groups = [(left + (right - left) * measure(run.text[:a], run.size, font) / total,
+                       left + (right - left) * measure(run.text[:b], run.size, font) / total) for a, b in words]  # fmt: skip
+        for i, word in enumerate(words):
+            if word not in run.marks:
+                continue
+            x0 = 0 if i == 0 else round((groups[i - 1][1] + groups[i][0]) / 2)
+            x1 = w if i == len(words) - 1 else round((groups[i][1] + groups[i + 1][0]) / 2)
+            out.append((x0, x1, y0, y1, run.mark))
+    return out
+
+
+def caption(kit, text: str, font, width) -> CardSpec:
+    """A caption card: in the kit's caption colours, size and padding. Style "box" (the default): the box, the full
+    `width` (the safe width at most), the text wrapped inside the padding. Style "outline": no box, the card as wide
+    as the text (one line when it fits the safe width) with just the margin its stroke and shadow need. A word in
+    asterisks (`every *crossing*`) is drawn in `caption.highlight` (else the palette accent), the asterisks not."""
+    cap = kit.caption
+    outline = cap.get("style") == "outline"
+    bold = outline or bool(cap.get("bold"))  # the plain text captions (no kit) are bold, with a box too
+    hug = outline or bool(cap.get("hug"))  # the card as wide as its text
+    size, pad, maxw = int(cap["size"]), caption_pad(kit), _max_w(width)
+    shown = plain(text)
+    font, _ = font_for(shown, font)
+    lines = _lines(shown, size, font, maxw - 2 * pad, bold)
+    w = min(maxw, math.ceil(max(measure(ln, size, font, bold) for ln in lines)) + 2 * pad) if hug else maxw
     total, ys = _stack([size] * len(lines), font)
     box_h = round(total + 2 * pad)
     off = (box_h - total) / 2
-    runs = tuple(Run(ln, size, cap["color"], w / 2, off + y, "CENTER") for ln, y in zip(lines, ys, strict=True))
+    runs = _runs(lines, _flags(text), ys, off, w, size, cap["color"], cap.get("highlight") or kit.palette["accent"])
+    if outline:
+        return CardSpec("caption", w, box_h, box_h, None, None, 0, 0, 0, runs, str(font) if font else None,
+                        fx=outline_fx(kit), bold=True)  # fmt: skip
     return CardSpec("caption", w, box_h, box_h, _hexa(cap["box"], cap["opacity"]), None, 0, 0, cap["corner_px"], runs,
-                    str(font) if font else None)  # fmt: skip
+                    str(font) if font else None, bold=bold)  # fmt: skip
 
 
 def title(kit, lines, highlight: int | None, font, width, size: int | None = None) -> CardSpec:
@@ -458,6 +580,55 @@ def shape_rgba(spec: CardSpec) -> np.ndarray:
     for x, y, w, h, colour in spec.bars:
         if w > 0:
             _over(img, colour, _cover(_sdf(xs, ys, x, y, w, h, h / 2)))
+    return np.clip(np.round(img * 255), 0, 255).astype(np.uint8)
+
+
+def _shift(a, dy: int, dx: int):
+    """`a` moved down `dy` and right `dx` pixels (zeros come in at the far edge, nothing wraps)."""
+    out = np.zeros_like(a)
+    h, w = a.shape
+    out[max(dy, 0) : h + min(dy, 0), max(dx, 0) : w + min(dx, 0)] = a[max(-dy, 0) : h - max(dy, 0),
+                                                                       max(-dx, 0) : w - max(dx, 0)]  # fmt: skip
+    return out
+
+
+def _dilate(a, r: int):
+    """`a` (0..1 coverage) grown by `r` pixels all round: the maximum under a disc, its edge softened by a pixel."""
+    out = a.copy()
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if (dy or dx) and math.hypot(dy, dx) <= r + 0.25:
+                out = np.maximum(out, _shift(a, dy, dx))
+    soft = out / 2 + (_shift(out, 1, 0) + _shift(out, -1, 0) + _shift(out, 0, 1) + _shift(out, 0, -1)) / 8
+    return np.maximum(a, soft)
+
+
+def _blur(a, sigma: float):
+    """A gaussian blur of `a`, separable, edges treated as empty."""
+    if sigma <= 0:
+        return a
+    n = math.ceil(3 * sigma)
+    k = np.exp(-0.5 * (np.arange(-n, n + 1) / sigma) ** 2)
+    k /= k.sum()
+    for axis in (0, 1):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (n, n)
+        p = np.pad(a, pad)
+        a = sum(w * np.take(p, range(i, i + a.shape[axis]), axis=axis) for i, w in enumerate(k))
+    return a
+
+
+def fx_shape_rgba(spec: CardSpec, glyph) -> np.ndarray:
+    """A "no box" caption's shapes as an (h, w, 4) uint8 straight-alpha image: the soft shadow, then the outline,
+    both from `glyph`, the text's coverage ((h, w) floats 0..1, as Blender drew it). The text itself goes on top."""
+    fx = spec.fx
+    img = np.zeros((spec.h, spec.w, 4))
+    glyph = np.clip(np.asarray(glyph, dtype=np.float64), 0.0, 1.0)
+    stroke = _dilate(glyph, fx.stroke_px) if fx.stroke_px > 0 else glyph
+    if fx.shadow_dy > 0:
+        _over(img, fx.stroke, np.clip(_blur(_shift(stroke, fx.shadow_dy, 0), fx.shadow_sigma) * fx.shadow_alpha, 0, 1))
+    if fx.stroke_px > 0:
+        _over(img, fx.stroke, stroke)
     return np.clip(np.round(img * 255), 0, 255).astype(np.uint8)
 
 

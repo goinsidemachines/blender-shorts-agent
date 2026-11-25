@@ -219,3 +219,32 @@ def test_default_code_and_the_test_kit_raise_no_cvd_warning():
     assert kit.cvd_problems(kit.DEFAULT_CODE) == []
     assert kit.cvd_problems(KIT["categories"]) == []
     assert kit.cvd_problems({}) == []
+
+
+def test_caption_style_stroke_shadow_and_highlight_keys():
+    assert kit.PLAIN["caption"]["style"] == "box" and kit.kit_from({"style": "toon"}).caption["style"] == "box"
+    assert kit.check("caption.style", " Outline ") == "outline" and kit.check("caption.style", "box") == "box"
+    assert kit.check("caption.stroke_px", "6") == 6 and kit.check("caption.shadow", "false") is False
+    assert kit.check("caption.highlight", "#ffcc59") == "#FFCC59"
+    for key, bad, msg in (("caption.style", "glow", "must be box .* or outline"),
+                          ("caption.stroke_px", 13, "from 0 to 12"), ("caption.shadow", "maybe", "true or false"),
+                          ("caption.highlight", "gold", "must be a colour")):
+        with pytest.raises(ValueError, match=msg):
+            kit.check(key, bad)
+    k = kit.kit_from({"style": "toon", "caption": {"style": "outline", "stroke_px": 5, "shadow": False}})
+    assert (k.caption["style"], k.caption["stroke_px"], k.caption["shadow"]) == ("outline", 5, False)
+    assert k.caption["size"] == 64 and k.caption["pad_px"] == 35  # the other caption keys keep their defaults
+    assert all(kit.json_scalar(f"brand.caption.{n}") for n in ("stroke_px", "shadow"))
+    assert not kit.json_scalar("brand.caption.style")
+
+
+def test_a_short_s_own_caption_style_overrides_the_brand():
+    from bsa.short import Short
+
+    settings = {"brand": {"style": "toon", "caption": {"style": "outline"}}}
+    assert kit.kit_for(settings).caption["style"] == "outline"
+    own = Short(slug="x", title="X", length_s=1, style={"caption": {"style": "box"}})
+    assert kit.kit_for(settings, own).caption["style"] == "box"
+    bad = Short(slug="x", title="X", length_s=1, style={"caption": {"style": "neon"}})
+    assert kit.kit_for(settings, bad).caption["style"] == "outline"  # a bad value is left out
+    assert any("caption.style" in p for p in kit.problems(settings, bad))

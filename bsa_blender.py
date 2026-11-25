@@ -69,11 +69,13 @@ def _load(sdir: Path):
 
 
 def _timeline(sdir: Path, short):
+    from bsa import timing
     from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import build_timeline
 
     durations = takes_durations(sdir, short)
-    tl = build_timeline(short, durations, settings.has_end_card(settings.load_settings(), short),
+    s = settings.load_settings()
+    tl = build_timeline(short, durations, settings.has_end_card(s, short), timing=timing.resolve(s, short),
                         onsets=takes_onsets(sdir, short) if durations is not None else None)  # fmt: skip
     return tl, freshness.check_timeline(sdir, tl, _short_key(sdir))  # (timeline, hash): must match timeline.json
 
@@ -1082,6 +1084,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     full = getattr(args, "full", False)
     reuse = {} if full else freshness.reusable_checks(sdir, stamp)
     partial = {} if full else freshness.partial_checks(sdir, stamp)  # changed shots: the objects that did not change
+    reuse = {sid: [f for f in rows_ if f.get("check") not in ("loop", "target")] for sid, rows_ in reuse.items()}  # made again below
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,
                  "done": span.f1 - span.f0 + 1 if shot.id in reuse else 0,
@@ -1153,6 +1156,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         finished.append(shot.id)
         save_progress()
     run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
+    rows += _loop_rows(data, short, plan, tl_hash)
     out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
                         OVERLAP_MAX_FINDINGS, checked=checked, kept=kept,
                         **({"partial": partly} if partly else {}))  # fmt: skip
@@ -1161,6 +1165,57 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     if not getattr(args, "in_chain", False):  # beside the preview render the chain marks it (one writer of state)
         jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
     return out
+
+
+def _loop_rows(data, short, plan, tl_hash: str) -> list[dict]:
+    """The loop check's rows (bsa.blender.loopcheck) when the short loops (bsa.presets.loop_on), attached to the last
+    shot: always measured again (four frames), never kept from an earlier run. Warnings only."""
+    from bsa import presets
+
+    if not plan or not presets.loop_on(settings.load_settings(), short):
+        return []
+    from bsa.blender.checks import Finding
+    from bsa.blender.loopcheck import loop_findings
+
+    (first, f_span), (last, l_span) = plan[0], plan[-1]
+    _, first_scene = _scene(data, short, first.id, tl_hash)
+    _, last_scene = _scene(data, short, last.id, tl_hash)
+    if first_scene.name != last_scene.name:
+        found = [Finding("loop", "warning", None, l_span.f1,
+                         f"loop: the last shot ({last.id}) and the first ({first.id}) are in different scenes "
+                         f"({last_scene.name!r}, {first_scene.name!r}), so the join cannot be measured: look at "
+                         "the last frame and the first together")]  # fmt: skip
+    else:
+        found = loop_findings(last_scene, f_span.f0, l_span.f1)
+    return [_check_row(f, last.id, last_scene.name) for f in found]
+
+
+def _target_rows(sdir: Path, data, short, plan, tl_hash: str) -> list[dict]:
+    """The motion_at_frame_1 target (bsa.targets) when it is set: a warning row (check "target") on the first shot when
+    nothing moves between frame 1 and 2, and the measured row in review/targets.json. Measured again every run (two
+    frames), never kept. Nothing set: nothing happens."""
+    from bsa import targets
+
+    values = targets.resolved(settings.load_settings(), short)
+    if "motion_at_frame_1" not in values or not plan:
+        return []
+    from bsa.blender.checks import Finding
+    from bsa.blender.targetcheck import moving_at_start
+
+    (first, f_span) = plan[0]
+    _, scene = _scene(data, short, first.id, tl_hash)
+    moving = moving_at_start(scene, f_span.f0)
+    text = "nothing moves between frame 1 and frame 2 (the camera and every rendered object stand still)"
+    result = targets.row("motion_at_frame_1", "final", moving or "nothing moving", "something moving", bool(moving),
+                         text if not moving else "")  # fmt: skip
+    try:
+        targets.write_rows(sdir, [result])
+    except OSError as exc:
+        print(f"review/targets.json not written: {exc}", file=sys.stderr, flush=True)
+    if moving:
+        return []
+    return [_check_row(Finding("target", "warning", None, f_span.f0, f"target motion_at_frame_1: {text}"),
+                       first.id, scene.name)]  # fmt: skip
 
 
 def _rendered(sdir: Path, short, preset: str, tl, fps: dict | None, run=None) -> list:
@@ -1515,8 +1570,48 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
             out["captions"] = captions.write_files(sdir, short, s)
         except Exception as exc:  # noqa: BLE001 - auxiliary output: never lose the recorded MP4 result
             warnings.append(f"caption files not written: {exc}")
+        if mix.is_file():
+            out["loudness"], found = _loudness_check(sdir, short, s, path)
+            warnings += found
         warnings += _after_final(sdir, short, out, s, tl_hash)
     return {**out, "warnings": warnings} if warnings else out
+
+
+def _loudness_check(sdir: Path, short, s: dict, mp4: Path) -> tuple[dict, list[str]]:
+    """(the record, warnings) of measuring the audio of the final video as a viewer gets it: integrated loudness, true
+    peak and loudness range against the master settings. Written to review/loudness.json. Never blocks: a miss (more
+    than 0.5 LU off, a true peak more than 0.2 dB over the ceiling, a range over `max_lra_lu`) or a video that can't be
+    measured is a warning. With master.enabled false the numbers are recorded without a verdict."""
+    from bsa import presets
+    from bsa.audio import decode
+    from bsa.audio import master as audio_master
+
+    values, _ = presets.master_resolved(s, short)
+    record: dict = {"integrated_lufs": None, "true_peak_dbtp": None, "lra_lu": None, "ok": None,
+                    "targets": audio_master.targets(values) if values["enabled"] else None}  # fmt: skip
+    warnings: list[str] = []
+    try:
+        from bsa.audio import dsp
+
+        measured = dsp.measure(decode.load(mp4))
+        record.update(integrated_lufs=measured["integrated_lufs"], true_peak_dbtp=measured["true_peak_dbtp"],
+                      lra_lu=measured["lra_lu"])  # fmt: skip
+        if values["enabled"]:
+            record["ok"], problems = audio_master.verdict(measured, values)
+            if problems:
+                record["problems"] = problems
+                warnings.append("the final video's sound is off its master targets: " + "; ".join(problems)
+                                + ". Run CLI mix SHORT and the final edit again, or change the master settings.")  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - a measuring problem never fails the final
+        record["error"] = str(exc)
+        warnings.append(f"the final video's loudness was not measured: {exc}")
+    try:
+        review = sdir / "review"
+        review.mkdir(parents=True, exist_ok=True)
+        (review / "loudness.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except OSError as exc:
+        warnings.append(f"review/loudness.json not written: {exc}")
+    return record, warnings
 
 
 def _after_final(sdir: Path, short, out: dict, s: dict, tl_hash: str) -> list[str]:

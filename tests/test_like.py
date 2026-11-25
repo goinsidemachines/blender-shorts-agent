@@ -140,7 +140,7 @@ def test_like_copies_look_pace_closing_and_voice_only(tmp_path, monkeypatch, cap
     assert data["narrator"] == {"take_mode": "paragraph", "lead_in": 0.4, "voice": "af_test", "speed": 1.2,
                                 "voice_for": "kokoro"}
     assert data["like"]["short"] == other.name and data["like"]["at"].endswith("Z")
-    assert data["like"]["copied"] == list(like.COPY_KEYS) == out["copied"]
+    assert data["like"]["copied"] == [k for k in like.COPY_KEYS if k not in ("preset", "loop")] == out["copied"]
     assert data["like"]["title"] == "Big Ben" and data["like"]["style_keys"] == like.style_keys(data["style"])
     assert out["like"] == other.name and out["notes"] == ["this short keeps Big Ben's look as its own"]
     assert out["skipped"] == ["look", "length", "pace", "closing", "voice"]
@@ -409,3 +409,24 @@ def test_copied_params_are_dropped_when_the_provider_changes_later():
     assert nrun.narrator_for({"narrator": {"provider": "chatterbox"}}, short)["params"] == {"exaggeration": 0.6}
     assert "params" not in nrun.narrator_for({"narrator": {"provider": "kokoro"}}, short)
     assert nrun.own_voice_dropped({"narrator": {"provider": "kokoro"}}, short) == "chatterbox"
+
+
+def test_like_copies_the_loop_setting_only_when_it_differs(tmp_path):
+    from bsa.short import load_short
+
+    other = _rich(tmp_path, record=_KOKORO)
+    path = other / "source" / "short.json"
+    short = load_short(path)
+    values, copied, _ = like.copy_from(other, _SAME)
+    assert "loop" not in values and "loop" not in copied  # None: nothing to copy
+    short.loop = True
+    save_short(short, path)
+    values, copied, _ = like.copy_from(other, _SAME)
+    assert values["loop"] is True and "loop" in copied
+    assert like.skipped_questions(["loop"]) == []
+    values, copied, _ = like.copy_from(other, {**_SAME, "loop": True})
+    assert "loop" not in values  # the settings already give a loop
+    short.loop = False
+    save_short(short, path)
+    values, _, _ = like.copy_from(other, {**_SAME, "loop": True})
+    assert values["loop"] is False

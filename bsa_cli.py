@@ -57,14 +57,17 @@ def load(sdir: Path):
 def current_timeline(sdir: Path, short):
     """The timeline from the takes when narration finished with a voice, else from reading time. A one-take short's
     window too short for its lines is a CliError (its cause the WindowOverrun): one plain line saying what to fix."""
+    from bsa import timing
     from bsa.narrate.run import takes_durations, takes_onsets
     from bsa.timeline import WindowOverrun, build_timeline
 
     durations = takes_durations(sdir, short)
-    end_card = settings.has_end_card(settings.load_settings(), short)
+    s = settings.load_settings()
+    end_card = settings.has_end_card(s, short)
     onsets = takes_onsets(sdir, short) if durations is not None else None  # captions wait for the voice
     try:
-        return build_timeline(short, durations, end_card=end_card, onsets=onsets), durations is not None
+        return build_timeline(short, durations, end_card=end_card, onsets=onsets,
+                              timing=timing.resolve(s, short)), durations is not None
     except WindowOverrun as exc:
         raise CliError(str(exc)) from exc
 
@@ -221,7 +224,10 @@ def cmd_settings(args) -> dict:
         from bsa import kit
 
         s = settings.load_settings()
-        return {"advice": kit.advice(s), "problems": kit.problems(s) + settings.narrator_problems(s)}
+        from bsa import presets
+
+        return {"advice": kit.advice(s),
+                "problems": kit.problems(s) + settings.narrator_problems(s) + presets.problems(s)}  # fmt: skip
     # set
     if not args.key or args.value is None:
         raise CliError("usage: settings set KEY VALUE (for example: settings set render.engine cycles)")
@@ -261,6 +267,48 @@ def cmd_settings(args) -> dict:
 
         out["font_check"] = fonts.brand_font_check(font)
     return out
+
+
+def cmd_preset(args) -> dict:
+    from bsa import presets
+
+    s = settings.load_settings()
+    if args.action == "list":
+        return {"presets": presets.listing(s), "active": presets.active_name(s),
+                "chosen_by": "settings style_preset" if presets.chosen(s) else "built-in default"}  # fmt: skip
+    short = load(short_dir(args.short)) if getattr(args, "short", None) else None
+    if args.action == "show":
+        if not args.name:
+            raise CliError("usage: preset show NAME [--short SHORT]")
+        merged = presets.all_presets(s)
+        try:
+            names = presets.chain(args.name, merged)
+        except presets.PresetError as exc:
+            raise CliError(str(exc)) from exc
+        # the values as this preset would give them (the chosen name replaced), with the settings and the short around it
+        probe = {**s, "style_preset": args.name}
+        if short is not None:
+            short = copy.copy(short)
+            short.preset = None
+        values, where = presets.resolved(probe, short)
+        return {"preset": args.name, "source": presets.source_of(args.name, s), "chain": names,
+                "values": values, "from": where, "short": getattr(short, "slug", None)}  # fmt: skip
+    # save
+    if not args.name or not args.source:
+        raise CliError("usage: preset save NAME --from SHORT [--force]")
+    bad = presets.name_problem(args.name)
+    if bad:
+        raise CliError(bad)
+    own = presets.user_presets(s)
+    if args.name in own and not args.force:
+        raise CliError(f"preset {args.name!r} already exists in your settings: use --force to replace it")
+    if args.name in presets.SHIPPED and args.name not in own and not args.force:
+        raise CliError(f"{args.name!r} is a shipped preset: pick another name, or --force to replace it for you")
+    source = load(short_dir(args.source))
+    preset = presets.from_short(s, source)
+    value = settings.check_value(f"presets.{args.name}", preset)
+    settings.set_value(f"presets.{args.name}", value)
+    return {"saved": args.name, "from": source.slug, "preset": preset}
 
 
 def cmd_machine(args) -> dict:
@@ -775,9 +823,10 @@ def _doctor_checks(sdir: Path | None, ws: Path | None, server: dict | None, save
             short = None  # a bad spec is validate's finding; the font check falls back to the brand font
     if cheap and sdir is not None:
         checks = doctor.run_cheap(settings.load_settings(), ws, short, server=server,
-                                  cache_dirs=fonts.font_caches(sdir), saved=doctor.saved_checks(sdir))  # fmt: skip
+                                  cache_dirs=fonts.font_caches(sdir), saved=doctor.saved_checks(sdir), sdir=sdir)  # fmt: skip
     else:
-        checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir))
+        checks = doctor.run(settings.load_settings(), ws, short, server=server, cache_dirs=fonts.font_caches(sdir),
+                            sdir=sdir)
     if save and sdir is not None:
         doctor.save(sdir, checks)
     return checks
@@ -831,17 +880,21 @@ def _font_and_sound_warnings(sdir: Path, short) -> list[str]:
 
 def _pacing(short, tl) -> tuple[list, list]:
     """(per-shot spoken vs silent seconds, warnings for shots that are mostly silent)."""
+    from bsa import timing
     from bsa.timeline import pacing, pacing_warnings
 
     end_card = settings.has_end_card(settings.load_settings(), short)
-    return pacing(short, tl, end_card), pacing_warnings(short, tl, end_card)
+    t = timing.resolve(settings.load_settings(), short)
+    return pacing(short, tl, end_card, t), pacing_warnings(short, tl, end_card, t)
 
 
 def _reading_timeline(short):
     """The timeline at reading pace (no takes)."""
+    from bsa import timing
     from bsa.timeline import build_timeline
 
-    return build_timeline(short, None, settings.has_end_card(settings.load_settings(), short))
+    s = settings.load_settings()
+    return build_timeline(short, None, settings.has_end_card(s, short), timing=timing.resolve(s, short))
 
 
 def cmd_validate(args) -> dict:
@@ -856,6 +909,9 @@ def cmd_validate(args) -> dict:
     rule_errors, rule_warnings = _rule_problems(short, sdir)
     errors = validate(short) + rule_errors
     post_errors, post_warnings = post.problems(short, settings.load_settings())
+    from bsa import presets
+
+    errors += presets.problems(settings.load_settings(), short)
     errors += post_errors + kit.errors(settings.load_settings(), short, sdir)  # cards the kit can't lay out
     warnings = spoken_warnings(short) if not errors else []
     warnings += rule_warnings + post_warnings
@@ -899,6 +955,7 @@ def cmd_validate(args) -> dict:
         rows, pace_warnings = _pacing(short, tl)
         warnings += pace_warnings
         source = "takes" if from_takes else "reading pace"
+        warnings += _targets_report(sdir, short)["warnings"]  # only when some target is set
     warnings += _font_and_sound_warnings(sdir, short)
     warnings += kit.problems(settings.load_settings(), short)
     out = {"ok": not errors, "errors": errors, "warnings": warnings, "pacing": rows, "pacing_from": source}
@@ -1015,7 +1072,14 @@ def _prepare_retake(sdir: Path, short, voiced, s: dict, args) -> dict | None:
 
 
 def cmd_narrate(args) -> dict:
-    from bsa.narrate.run import HEARD_FILE, check_line_ids, clear_stale_takes, narrate, narrator_for
+    from bsa.narrate.run import (
+        HEARD_FILE,
+        check_line_ids,
+        clear_stale_takes,
+        narrate,
+        narrator_for,
+        with_timing,
+    )
 
     sdir = short_dir(args.short)
     if "storyboard" not in jobstate.load_state(sdir)["stages"]:  # binding: narration (paid credit) only after a yes
@@ -1027,7 +1091,7 @@ def cmd_narrate(args) -> dict:
     from bsa import closing
 
     voiced = closing.with_voice_line(short, closing.resolve(s, short))  # the closing line, in the same voice
-    narrator = narrator_for(s, short)
+    narrator = with_timing(narrator_for(s, short), s, short)
     try:
         check_line_ids(voiced)  # before anything is deleted or spoken
     except ValueError as exc:
@@ -1106,6 +1170,9 @@ def cmd_narrate(args) -> dict:
             "provider"), message=message)  # fmt: skip
         out.update(status="captions-only", durations=None, message=message)
         out["timeline"] = cmd_timeline(args)
+    report = _targets_report(sdir, short)  # only when some target is set; warnings never block
+    if report["warnings"]:
+        out.setdefault("warnings", []).extend(report["warnings"])
     return out
 
 
@@ -1141,18 +1208,32 @@ def cmd_mix(args) -> dict:
     library = _sound_library(sdir)  # recorded clips by sfx kind; synthesis is the fallback
     s = settings.load_settings()
     policy = recorded.sound_policy(short, s)
-    from bsa import closing
+    from bsa import closing, presets
 
     card = closing.resolve(s, short)
     end = closing.plan(card, tl.n_frames + 1, tl.fps, closing.take_seconds(takes))
     tail = (end["n_frames"], closing.take(takes), end["line_f0"]) if end else None
     room_db = settings.room_db(s)
     stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail,
-                         room_db=room_db, reverb=settings.reverb_on(s))  # fmt: skip
+                         room_db=room_db, reverb=settings.reverb_on(s),
+                         loop=presets.loop_on(s, short))  # fmt: skip
+    master_values, _ = presets.master_resolved(s, short)
+    mastered = None
+    if master_values["enabled"]:  # the whole mix to the target loudness (bsa.audio.master); off = the mix as mixed
+        import numpy as np
+
+        from bsa.audio import master as audio_master
+
+        stereo, mastered = audio_master.master(stereo, master_values)
+        if mastered["applied"]:  # the levels are as heard in the file: the whole mix moved by the master's gain
+            shift = mastered["gain_db"]
+            levels = {k: (None if v is None else round(v + shift, 2)) for k, v in levels.items()}
+            levels["peak_dbfs"] = round(float(20 * np.log10(max(float(np.abs(stereo).max()), 1e-9))), 2)
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
     out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
+           "master": mastered if mastered is not None else {"applied": False, "note": "master.enabled is false"},
            "sfx": recorded.report(recorded.resolve(short, library, policy),
                                   recorded.room_status(library, policy, room_db))}  # fmt: skip
     if end:
@@ -1161,6 +1242,9 @@ def cmd_mix(args) -> dict:
         if card["voice_line"] and from_takes and not end["line_f0"]:
             out["warnings"] = [("the closing line has no take yet, so the closing card is silent: run CLI narrate "
                                 "SHORT again (it makes only the missing take), then mix")]  # fmt: skip
+    report = _targets_report(sdir, short, "final")  # the pause target again, on the mixed voice; only when set
+    if report["warnings"]:
+        out.setdefault("warnings", []).extend(report["warnings"])
     return out
 
 
@@ -1183,6 +1267,35 @@ def _one_page(sdir: Path, stage: str, open_: bool) -> dict:
         return {"page": None, "stage": stage,
                 "page_hint": f"The review page isn't running: CLI page SHORT --stage {stage} opens it."}  # fmt: skip
     return {"page": launch.page_url(info, sdir.name, stage), "stage": stage}
+
+
+def _targets_report(sdir: Path, short, stage: str = "narration") -> dict:
+    """Measure the script and edit targets that are set (bsa.targets) on what exists now, write review/targets.json and
+    return {"rows", "warnings", "notes"}. Nothing set: the empty report, no file. A problem measuring is a note, never
+    an error: a target only ever warns."""
+    from bsa import targets
+
+    s = settings.load_settings()
+    try:
+        if not targets.resolved(s, short):
+            return targets.report(sdir, short, s)
+        try:
+            tl, narrated = current_timeline(sdir, short)
+        except Exception:  # noqa: BLE001 - broken takes or a window overrun: the voice targets wait, narrate says why
+            tl, narrated = None, False
+        return targets.report(sdir, short, s, tl, sdir / "audio" / "vo", narrated, stage)
+    except Exception as exc:  # noqa: BLE001 - targets never block
+        return {"rows": [], "warnings": [], "notes": [f"targets were not measured: {_one_line(exc)}"]}
+
+
+def cmd_check_targets(args) -> dict:
+    """Every script and edit target that is set and measurable now: rows of target, measured, wanted and ok (ok null:
+    not measurable yet, the row's text says when). Always succeeds; writes review/targets.json."""
+    sdir = short_dir(args.short)
+    report = _targets_report(sdir, load(sdir))
+    if not report["rows"] and not report["notes"]:
+        report["note"] = "no targets are set (settings targets, a preset's targets or the short's own targets)"
+    return report
 
 
 def cmd_captions(args) -> dict:
@@ -1872,6 +1985,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--part-of", default=None, help="the broad rule this concrete rule spells out")
     sp.set_defaults(fn=cmd_settings)
 
+    sp = sub.add_parser("preset", help="list | show NAME [--short SHORT] | save NAME --from SHORT [--force]: named style "
+                        "presets (timing and caption values)")  # fmt: skip
+    sp.add_argument("action", choices=["list", "show", "save"])
+    sp.add_argument("name", nargs="?")
+    sp.add_argument("--short", default=None, help="show: resolve with this short's own values on top")
+    sp.add_argument("--from", dest="source", default=None, help="save: the short whose resolved values to keep")
+    sp.add_argument("--force", action="store_true", help="save: replace an existing preset")
+    sp.set_defaults(fn=cmd_preset)
+
     sp = sub.add_parser("machine", help="CPU, RAM, GPUs and free video memory")
     sp.add_argument("--need-gb", type=float, default=None, help="warn if no GPU has this much video memory free")
     sp.set_defaults(fn=cmd_machine)
@@ -1936,6 +2058,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("captions", help="SHORT: write the final video's SRT, VTT and transcript beside it")
     sp.add_argument("short")
     sp.set_defaults(fn=cmd_captions)
+
+    sp = sub.add_parser("check-targets", help="SHORT: measure the optional script and edit targets that are set "
+                        "(wpm, pauses, numbers, cuts, length, hook, payoff) and list them; never fails")  # fmt: skip
+    sp.add_argument("short")
+    sp.set_defaults(fn=cmd_check_targets)
 
     sp = sub.add_parser("post", help="SHORT: write out/post-pack.md with every post field and file; lists problems")
     sp.add_argument("words", nargs="+")
