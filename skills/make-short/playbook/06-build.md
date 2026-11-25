@@ -60,6 +60,17 @@ wrote `source/build.py` for the storyboard; now finish it and rebuild, because n
   `bsa.timeline`). Every `BLENDER` command recomputes the timing from `short.json` and the takes, compares it with
   `source/timeline.json` and with each scene's stamp, and refuses a mismatch with "timing changed: run CLI timeline
   SHORT, then rebuild" (or "built for another timing"): run `CLI timeline SHORT`, rebuild, then carry on;
+- **Callouts:** call `bsa.blender.callouts.glow(short_dir)` at the very end of `build()`, after the styles and
+  materials and before the save (as the skeleton below does; with no callouts in short.json it does nothing).
+  It reads `source/callouts.json` (made by `CLI timeline SHORT`), gives each named object its own copy of its
+  materials (only that object glows, even when its mesh is shared with scattered copies) and adds an Emission to the
+  existing shader, keyed to the callout's frames; the part's own look and emission are never changed. It returns
+  notes for a part that cannot glow (no shader): the build step lists them under `callouts` in its result, tell the
+  user. It refuses (stale) when `callouts.json` is missing or made for another timing: run `CLI timeline SHORT`,
+  then rebuild. Re-timing the narration moves the glow, so rebuild after `narrate`; only the shots whose callout
+  frames moved render again. A callout's object must exist, be rendered and not scaled to nothing at the frame the
+  word is said (the checks name it otherwise). The glow strength and colour follow `brand.callout.glow` and
+  `brand.callout.color` (default: the caption highlight colour);
 - give every object that a `near` label points at exactly that name (`{"text": "Light", "near": "Light bob"}`); to
   point at a spot on it use the label's `"at": [x, y, z]` (local space) or an Empty there, never a helper sphere
   (it would show in the video);
@@ -98,6 +109,7 @@ from bsa.kit import kit_for
 from bsa.settings import load_settings
 from bsa.short import load_short
 from bsa.timeline import timeline_hash, timeline_from_json
+from bsa.blender import callouts  # the callouts' glow (only does anything when short.json has callouts)
 
 STYLE = int(os.environ.get("BSA_STYLE", "0") or 0)
 ENGINE = "cycles"  # the engine approved at the engine stage (or the saved preference); "eevee" if that was chosen
@@ -126,6 +138,7 @@ def build(short_dir):
         styles.apply(sc, kit, target=hero, size=size_m, key=[hero.name])  # last: restyles the finished scene
         sc.frame_start, sc.frame_end = 1, tl["n_frames"]
         sc["bsa_timeline"] = timeline_hash(tl)  # the Blender commands refuse a scene built for another timing
+    callout_notes = callouts.glow(short_dir)  # last, after styles and materials: keys the glow of every callout
     bpy.ops.wm.save_as_mainfile(filepath=str(short_dir / "blend" / "short.blend"))
 
 

@@ -47,6 +47,20 @@ captions, sound and edit. Click one to watch it with sound.</sub>
 - **A real Blender project** you can open: `blend/short.blend`, built by a `build.py` you can read and change.
 - **Checks you can trust**: the scene, the motion and every rendered frame are checked before you see anything.
 
+## What's new in 0.8.0
+
+Callouts: the picture catches up with the narration.
+
+- **Name a part, see it light up.** A shot's `callouts` tie a label to a spoken word. When the narrator says it, a
+  label pops in near the part with an arrow, and the part glows in the render. The part's own look is never changed.
+- **One culprit, marked.** `"culprit": true` gives the part a thicker arrow and a pulsing glow (use it once a short).
+- **Checked like everything else.** `validate` refuses a word that is not in the narration, and the checks flag a part
+  that is hidden at its cue, off screen, or a label that lands on a caption.
+
+```json
+"callouts": [{"text": "Slip blind", "near": "Valve body", "on": "slip-blind", "culprit": true}]
+```
+
 ## What's new in 0.7.2
 
 A small fix release.

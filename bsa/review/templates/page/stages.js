@@ -372,6 +372,10 @@
         }),
         (s.labels || []).length ? ctx.el("p", { class: "cards" }, ctx.el("span", { class: "muted" }, "On screen: "),
           s.labels.map(function (l) { return ctx.el("span", { class: "capcard" }, String(l)); })) : null,
+        (s.callouts || []).length ? ctx.el("p", { class: "cards" }, ctx.el("span", { class: "muted" }, "Callouts: "),
+          s.callouts.map(function (c) {
+            return ctx.el("span", { class: "capcard" }, String(c.text) + " (on “" + String(c.on) + "”" + (c.culprit ? ", culprit" : "") + ")");
+          })) : null,
         ctx.el("div", { class: "shot-notes" },
           ctx.noteButton("shot", s.id, "+ Note on shot " + s.id),
           s.still ? ctx.noteButton("still", s.id, "+ Note on still " + s.id) : null)));
@@ -837,6 +841,16 @@
         onclick: function () { ctx.decide("final", "approve"); } }, ctx.offline ? "Copy: Looks good" : "Looks good · go to Post"));
   }
 
+  // The callouts: the label, the word it shows on and the second it shows at (an estimated second says so).
+  function calloutsBlock(ctx, list) {
+    if (!list || !list.length) return null;
+    return section(ctx, "Callouts", ctx.el("ul", { class: "callouts" }, list.map(function (c) {
+      var when = typeof c.at_s === "number" ? " at " + oneDecimal(c.at_s) + " s" + (c.estimated ? " (estimated)" : "") : "";
+      return ctx.el("li", null, ctx.el("span", { class: "capcard" }, String(c.text)),
+        " on “" + String(c.on) + "”" + when + " · shot " + String(c.shot));
+    })));
+  }
+
   BSA.stages.final = function (content, ctx) {
     var size = typeof content.size_mb === "number" ? " · " + content.size_mb.toFixed(1) + " MB" : "";
     var node = content.video ? video(ctx, content.video, content.captions) : null;
@@ -850,6 +864,7 @@
       ackBlock(ctx, content),
       targetsBlock(ctx, content.targets),
       section(ctx, "Checks", findingsBlock(ctx, content)),
+      calloutsBlock(ctx, content.callouts),
       factsPanel(ctx, content.facts_panel),
       rulesPanel(ctx, content.rules, "How this short keeps each of your rules."),
       closingInfo(ctx, content.closing));

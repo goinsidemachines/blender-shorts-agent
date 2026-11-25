@@ -36,7 +36,8 @@ and (for no-brand users) a choice of look. Read `craft-short-form.md` and `hones
   object's exact name in build.py, so label the things the picture shows by name). To point at one spot on an
   object, add `"at": [x, y, z]`, that point in the object's local space (`{"text": "Stop", "near": "Tape", "at":
   [0, 0.01, 0.002]}`), or name an Empty placed there (it anchors at its origin): either instead of a helper sphere,
-  which would show in the video; `badge` is the honesty
+  which would show in the video; `callouts` make one part stand out at the moment the narrator says its word: a
+  label pops in near the part with an arrow, and the part glows in the render (below); `badge` is the honesty
   badge ("Motion exaggerated", "Simplified") or `null`. Set `time_scale` on any shot whose motion runs at another
   speed than real time (from the model's factor: 0.25 is four times slower, 2 is twice as fast). Its badge must say so
   ("Slowed down", "Sped up"), and `validate` refuses it when it does not. Join two notes with a dot: "Simplified ·
@@ -64,6 +65,19 @@ and (for no-brand users) a choice of look. Read `craft-short-form.md` and `hones
 }
 ```
 
+- **Callouts** (optional, in a shot): `{"text": "Slip blind", "near": "Valve body", "on": "slip-blind"}`. `text` is
+  the label, `near` the object's exact name in build.py (as a near label), `on` the word that triggers it as the
+  narrator says it (case, punctuation, hyphens and `*highlight*` asterisks don't matter; `"valve#2"` is the second
+  time it is said). It must be in a line of the same shot, or `validate` refuses it. Optional: `at` `[x, y, z]` (a
+  point on the part, as for near labels), `hold_s` (how long it stays, default to the end of the shot), `glow`
+  (`false` for the label and arrow only) and `culprit` (`true` marks the part the video is about: a thicker arrow, a
+  pulsing glow, the highlight colour as the label's plate; use it at most once in a short, `validate` warns about
+  more). Name the part in the line: a callout is the picture catching up with the narration, so keep it to the parts
+  the line names, not decoration. A callout and a near label on the same object in one shot is a check warning:
+  keep the callout. The fact check does not read callout text yet: a number in it must also be in a line that cites
+  a fact, and say it in the narration.
+  The cue frames are made with the timeline (`CLI timeline SHORT`, also run by `narrate`): from the voice take's word
+  times when they are known, else estimated from the line's reading time (the check says which).
 - `style.font` must be installed on this computer: check it with `CLI fonts "NAME"` (`installed`, plus
   `suggestions` of installed fonts). Pick one that ships with the OS when in doubt ("Segoe UI" on Windows, "Helvetica
   Neue" on macOS, "DejaVu Sans" on Linux); a missing font falls back to those, then to Blender's own.

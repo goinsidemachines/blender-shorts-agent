@@ -98,5 +98,9 @@ def test_checks_in_blender(blender_run):
         "test_volume_fills_round_solids_but_still_pops",
         "test_a_volume_still_pops_in_and_must_stay_in_the_frame",
         "test_kept_objects_are_not_checked_again_but_others_are",
+        "test_a_callout_naming_a_missing_object_is_an_error",
+        "test_a_callout_object_not_rendered_at_its_cue_is_an_error",
+        "test_a_callout_object_scaled_to_nothing_at_its_cue_is_an_error",
+        "test_callout_cues_are_read_from_the_file_beside_the_blend",
     ):
         assert f"PASS {name}" in result.stdout

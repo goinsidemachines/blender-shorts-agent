@@ -170,6 +170,7 @@ def test_part_without_a_shader_gets_a_note():
         mat.node_tree.nodes.remove(n)
     sdir, _ = _sdir(_short())
     assert glow.glow(sdir, sc) == ["Valve: no Principled/output shader, no glow"]
+    assert list(sc[glow.NOTES_PROP]) == ["Valve: no Principled/output shader, no glow"]  # the build step lists it
 
 
 def test_changed_cue_frames_change_the_shot_fingerprint():

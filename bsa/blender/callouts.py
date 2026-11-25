@@ -25,6 +25,7 @@ PULSE_LOW = 0.5  # the culprit's pulse never goes below this share of the streng
 EMISSION = "bsa_callout_emission"
 ADD = "bsa_callout_add"
 COPY_PROP = "bsa_callout_of"  # on a material copy: the object it belongs to
+NOTES_PROP = "bsa_callout_notes"  # on a scene: the notes glow() returned, for the build step to list
 SOURCE_PROP = "bsa_callout_source"  # on a material copy: the name of the material it was copied from
 
 
@@ -265,4 +266,8 @@ def glow(short_dir, scene=None) -> list[str]:
             notes.append(f"{near}: not in the scene, no glow")
             continue
         notes += _glow_object(obj, rgb, strength_keys(per_object[near], strength, fps, last))
+    if notes:  # kept on the scene, as the framing notes are: the build step (bsa_blender) names them to the user
+        scene[NOTES_PROP] = list(notes)
+    elif NOTES_PROP in scene:
+        del scene[NOTES_PROP]
     return notes

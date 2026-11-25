@@ -16,9 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from bsa import callouts as callouts_mod
 from bsa import captions, engine_runs, feedback, jobstate, messages, presets, render_status, rules, targets, timing
 from bsa import closing as closing_mod
 from bsa import settings as settings_mod
+from bsa.callouts import callouts_of
 from bsa.layout import H, W, caption_rect, safe_rect
 from bsa.narrate.run import HEARD_FILE
 from bsa.review import decisions, facts, notes, pages, stages, store, track, versions, voice
@@ -357,19 +359,21 @@ def _storyboard(ctx: Ctx) -> dict | None:
                     "cards": [c.text.replace("*", "") for c in tl.cards if c.line_id == ln.id],
                 }
             )
-        shots.append(
-            {
-                "id": shot.id,
-                "n": i,
-                "title": shot.title,
-                "badge": shot.badge,
-                "time": "not timed yet" if span is None else f"{(span.f0 - 1) / fps:.1f} s to {span.f1 / fps:.1f} s",
-                "flex": span.f1 - span.f0 + 1 if span else 1,
-                "still": still_ref(ctx.sdir, shot.id),
-                "lines": lines,
-                "labels": [label_text(t) for t in shot.labels],
-            }
-        )
+        row = {
+            "id": shot.id,
+            "n": i,
+            "title": shot.title,
+            "badge": shot.badge,
+            "time": "not timed yet" if span is None else f"{(span.f0 - 1) / fps:.1f} s to {span.f1 / fps:.1f} s",
+            "flex": span.f1 - span.f0 + 1 if span else 1,
+            "still": still_ref(ctx.sdir, shot.id),
+            "lines": lines,
+            "labels": [label_text(t) for t in shot.labels],
+        }
+        if callouts_of(shot):  # the key exists only for a shot with callouts: every other storyboard is as before
+            row["callouts"] = [{"text": c.text, "on": c.on, "near": c.near, "culprit": c.culprit}
+                               for c in callouts_of(shot)]  # fmt: skip
+        shots.append(row)
     out = {
         "lead": f"{len(shots)} shots, {total:.1f} s in total. Check the pictures and the captions.",
         "total_s": round(total, 1),
@@ -644,6 +648,27 @@ def _final_writing(ctx: Ctx) -> bool:
     return bool(status) and status.get("state") == "running" and render_status.is_alive(status)
 
 
+def _final_callouts(ctx: Ctx, short: Short) -> list[dict]:
+    """Every callout of the short with the word it is on and the second it shows at (source/callouts.json, when it
+    is there and has the cue); [] for a short without callouts."""
+    if not any(s.callouts for s in short.shots):
+        return []
+    try:
+        fps = _reading_timeline(ctx, short).fps
+        cues = json.loads((ctx.sdir / "source" / callouts_mod.FILE).read_text(encoding="utf-8"))["shots"]
+    except Exception:  # noqa: BLE001 - no cue file yet: the callouts are listed without a time
+        fps, cues = None, {}
+    out = []
+    for shot in short.shots:
+        rows = cues.get(shot.id) if isinstance(cues, dict) else None
+        for i, c in enumerate(callouts_of(shot)):
+            cue = next((r for r in rows or [] if isinstance(r, dict) and r.get("i") == i), None)
+            at = round((int(cue["f_on"]) - 1) / fps, 1) if cue and fps and isinstance(cue.get("f_on"), int) else None
+            out.append({"shot": shot.id, "text": c.text, "on": c.on, "at_s": at,
+                        "estimated": bool(cue and cue.get("estimated"))})  # fmt: skip
+    return out
+
+
 def _final(ctx: Ctx) -> dict | None:
     """The final video, the checks' findings (each with a stable id for a note), the hard rules and the closing
     card. Whether the user said it looks good (`acked`) is added after the version is taken (see _stage). While the
@@ -682,6 +707,7 @@ def _final(ctx: Ctx) -> dict | None:
         "timeline": timeline,
         "facts_panel": facts.panel(short),
         **({"timeline_problem": timeline_problem} if timeline_problem else {}),
+        **({"callouts": callouts_rows} if (callouts_rows := _final_callouts(ctx, short)) else {}),
     }
 
 

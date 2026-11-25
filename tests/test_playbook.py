@@ -537,3 +537,12 @@ def test_release_steps_are_in_the_playbook():
     post = _flat(_read("playbook/09-post.md"))
     assert "post-pack.generated.md" in post and "instagram-post.md" in post and "Pinned comment" in post
     assert "CLI workspace rename SHORT NEW-SLUG" in _read("SKILL.md")
+
+
+def test_callouts_are_documented_where_they_are_written_built_and_checked():
+    story = _flat(_read("playbook/02-story.md"))
+    assert "`callouts`" in story and '"on": "slip-blind"' in story and "culprit" in story
+    build = _flat(_read("playbook/06-build.md"))
+    assert "callouts.glow(short_dir)" in build and "end of `build()`" in build
+    checks = _flat(_read("playbook/07-checks.md"))
+    assert "`callout` (not rendered at its cue)" in checks and "`callout` (placement)" in checks
