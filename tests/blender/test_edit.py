@@ -280,6 +280,20 @@ def test_brand_caption_colours():
     assert edit.caption_colours(short, {})[1] == edit.BOX_COLOR  # no box given: the default see-through box
 
 
+def test_plain_caption_style_outline_drops_the_box_and_a_highlight_shows_no_asterisks():
+    short, tl, frames, wav, out = _fixture()
+    tl.cards[0].text = "Hello *there*"
+    boxed = _captions(edit.build_edit(short, tl, frames, wav, out, {}, preset="preview"))[0]
+    assert boxed.use_box and boxed.text == "Hello there"  # the asterisks are never drawn, in either style
+    brand = {"brand": {"mode": "brand", "caption": {"style": "outline", "box": "#10203080"}}}
+    cap = _captions(edit.build_edit(short, tl, frames, wav, out, brand, preset="preview"))[0]
+    assert not cap.use_box and cap.use_outline and cap.use_shadow and cap.text == "Hello there"
+    assert [round(c, 3) for c in cap.outline_color] == [round(v / 255, 3) for v in (0x10, 0x20, 0x30)] + [1.0]
+    own = short.style.setdefault("caption", {})
+    own["style"] = "box"  # a short's own style.caption.style wins over the brand
+    assert _captions(edit.build_edit(short, tl, frames, wav, out, brand, preset="preview"))[0].use_box
+
+
 def test_font_with_a_weight_loads_the_downloaded_static_file():
     """style.font "Family@600" loads <workspace>/.assets-cache/fonts/Family-600.ttf (what CLI assets downloads),
     found from the short's folder (out_mp4 is <short>/out/<slug>.mp4)."""

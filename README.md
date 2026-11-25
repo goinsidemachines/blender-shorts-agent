@@ -267,6 +267,10 @@ A **brand kit** is your colours, fonts, handle, end card, a look and a set, save
   fixed in the kit.
 - **See it first**: the storyboard page carries a look preview (three stills with your cards, plus the kit sheet), and
   `style-sample` tiles any styles on any set.
+- **Captions with or without a box**: `brand.caption.style` is `box` (the default) or `outline`: bold white text with a
+  dark outline and a soft shadow, no box, so it hides less of the picture (`brand.caption.stroke_px`,
+  `brand.caption.shadow`). Wrap a word in asterisks in a line (`and every *crossing*`) and it is drawn in
+  `brand.caption.highlight` (default your accent) in either style.
 - **Your engine, your choice**: EEVEE or Cycles is always yours to pick; every style looks right in both. These
   samples were rendered with EEVEE.
 

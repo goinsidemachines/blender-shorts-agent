@@ -135,6 +135,14 @@ def test_setting_the_whole_brand_keeps_mode_exposure_and_prose_keys(home):
     assert run(home, "settings", "set", "brand", '{"mode": "loud"}').returncode != 0
     assert ok(run(home, "settings", "set", "brand.caption.box", "#14161A99"))["settings"]["brand"]["caption"][
         "box"] == "#14161A99"  # fmt: skip
+    cap = ok(run(home, "settings", "set", "brand.caption.style", "outline"))["settings"]["brand"]["caption"]
+    assert cap["style"] == "outline" and cap["box"] == "#14161A99"  # the other caption keys stay
+    assert ok(run(home, "settings", "set", "brand.caption.stroke_px", "6"))["settings"]["brand"]["caption"][
+        "stroke_px"] == 6  # fmt: skip
+    assert ok(run(home, "settings", "set", "brand.caption.shadow", "false"))["settings"]["brand"]["caption"][
+        "shadow"] is False  # fmt: skip
+    assert run(home, "settings", "set", "brand.caption.style", "glow").returncode != 0
+    assert run(home, "settings", "set", "brand.caption.stroke_px", "40").returncode != 0
 
 
 def test_the_kit_is_turned_off_from_the_command_line_keeping_the_rest_of_the_brand(home, tmp_path):

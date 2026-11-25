@@ -49,12 +49,46 @@ def caption_colours(short, settings: dict) -> tuple[tuple, tuple]:
     return text, box
 
 
+_HIGHLIGHT = re.compile(r"\*([^*]+)\*")
+
+
+def plain(text: str) -> str:
+    """`text` as shown and spoken: the asterisks of a highlight (`and every *crossing*`) removed, the words kept.
+    Everything that measures, spells out or compares a caption's words uses this, never the marked-up text."""
+    return str(text).replace("*", "")
+
+
+def marked(text: str) -> list[tuple[str, bool]]:
+    """`text` as (piece, highlighted) in order: the words between a pair of asterisks are highlighted, the asterisks
+    themselves are dropped (a stray one is dropped too). A highlight stays inside one caption card."""
+    out, at = [], 0
+    for m in _HIGHLIGHT.finditer(text):
+        out += [(text[at : m.start()], False), (m.group(1), True)]
+        at = m.end()
+    out.append((text[at:], False))
+    return [(plain(t), hl) for t, hl in out if plain(t)] or [("", False)]
+
+
+def caption_style(short, settings: dict) -> str:
+    """"box" or "outline": `caption.style` of the short's own `style.caption`, else of `brand.caption` (as
+    caption_colours reads them); "box" when neither says "outline"."""
+    from bsa.settings import brand_for
+
+    style = "box"
+    for src in (brand_for(settings, short).get("caption"), (short.style or {}).get("caption")):
+        if isinstance(src, dict) and str(src.get("style") or "").strip().lower() in ("box", "outline"):
+            style = str(src["style"]).strip().lower()
+    return style
+
+
 def est_lines(text: str, size_px: float, wrap_px: float) -> int:
+    text = plain(text)
     per_line = max(1, int(wrap_px / (size_px * CHAR_W)))
     return max(1, sum(max(1, math.ceil(len(part) / per_line)) for part in text.split("\n")))
 
 
 def est_width(text: str, size_px: float, wrap_px: float) -> float:
+    text = plain(text)
     longest = max(len(part) for part in text.split("\n"))
     return min(wrap_px, longest * size_px * CHAR_W)
 
@@ -198,7 +232,7 @@ def shot_boxes(short, tl, shot, span, anchors: dict | None = None, heroes: dict 
     corner = [(kind, text, corner_rect(kind, text, x, y)) for kind, text, _, x, y in corner_stack(shot)]
     out: dict[int, list] = {f: [] for f in frames}
     for f in frames:
-        out[f] += [("caption", tl.cards[i].text, None, c[3]) for i, c in enumerate(caps) if c[0] <= f <= c[1]]
+        out[f] += [("caption", plain(tl.cards[i].text), None, c[3]) for i, c in enumerate(caps) if c[0] <= f <= c[1]]
         out[f] += [(kind, text, None, rect) for kind, text, rect in corner]
     placed: dict = {}
     for label in getattr(shot, "labels", None) or []:

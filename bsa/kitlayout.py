@@ -153,7 +153,7 @@ def caption_lines(short, tl, kit, font) -> int:
     if not texts:
         return 2
     width = safe_rect().w
-    return max(1, min(2, max(len(cards.caption(kit, t, font, width).runs) for t in texts)))
+    return max(1, min(2, max(len({r.y for r in cards.caption(kit, t, font, width).runs}) for t in texts)))
 
 
 def bottom_limit(kit, lines: int = 2) -> float:
@@ -339,15 +339,15 @@ def _captions(short, tl, kit, font, notes: list[str], frames=None) -> tuple[list
     if not rows:
         return [], []
     s = safe_rect()
-    pad = kit.caption["pad_px"]
+    pad = cards.caption_pad(kit)
     out = []
     for card, (f0, f1, _, _, bottom) in zip(tl.cards, rows, strict=True):
         if frames is not None and not any(f0 <= f <= f1 for f in frames):
             continue
         spec = cards.caption(kit, card.text, font, s.w)
         _note(spec, font, notes)
-        out.append(Placed(spec, f0, f1, CH["caption"], at=Rect(s.x, bottom + pad - spec.box_h, spec.w, spec.h),
-                          text=card.text))  # fmt: skip
+        out.append(Placed(spec, f0, f1, CH["caption"], text=overlays.plain(card.text),
+                          at=Rect(s.x + (s.w - spec.w) / 2, bottom + pad - spec.box_h, spec.w, spec.h)))  # fmt: skip
     return rows, out
 
 
@@ -527,7 +527,7 @@ def sample(kit, font) -> KitOverlay:
                 title_card={"lines": ["Lever lifts more"], "highlight": 0}, bars=SAMPLE_BARS,
                 labels=[{"text": "Pivot", "near": "Pivot"}, {"text": "1.4 m", "kind": "measure"}])  # fmt: skip
     short = Short(slug="sample", title="Sample", length_s=1, shots=[shot])
-    tl = Timeline(30, 1, [Span("sample", 1, 1)], [], [Card("Your captions look like this.", "sample", 1, 1)])
+    tl = Timeline(30, 1, [Span("sample", 1, 1)], [], [Card("Captions look like *this*.", "sample", 1, 1)])
     anchors = {"sample": {"Pivot": {"f0": 1, "points": [[700, 400]], "category": category}}}
     ov = build(short, tl, kit, font, anchors)
     if ov.progress is not None:  # frame 1 of 0..4: 2 / 5 = 40 %

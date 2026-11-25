@@ -40,10 +40,12 @@ from bsa.overlays import (  # noqa: F401 - the text sizes, estimates and colours
     STACK_GAP_PX,
     caption_colours,
     caption_size,
+    caption_style,
     captions,
     corner_stack,
     follow,
     hero_rects,
+    plain,
 )
 from bsa.overlays import est_lines as _est_lines
 from bsa.overlays import est_width as _est_width
@@ -146,7 +148,7 @@ class _Texts:
         return self.font
 
     def add(self, text, f0, f1, channel, size, loc, anchor, margin, color=(1, 1, 1, 1), bold=True, wrap_px=None,
-            box=BOX_COLOR, frame=(W, H)):
+            box=BOX_COLOR, frame=(W, H), outline=False):
         """A text strip. `loc` is normalised by `frame` (the render's size: the edit's by default) and the text
         wraps at `wrap_px` (default: the safe width less the box), as a share of the frame's width. `margin` is the
         strip's box_margin as given (Blender takes it as a share of the image width)."""
@@ -163,10 +165,17 @@ class _Texts:
         s.alignment_x = anchor[0]
         s.wrap_width = (wrap_px if wrap_px is not None else safe_rect().w - 2 * margin * H) / frame[0]
         s.use_shadow = False  # the box gives the contrast
-        s.use_box = True
+        s.use_box = not outline
         s.box_color = box
         s.box_margin = margin
         s.box_roundness = 0.4
+        if outline:  # caption.style "outline": no box, the dark colour as an outline and a soft shadow (Blender's own)
+            dark = (*tuple(box)[:3], 1.0)
+            s.use_outline, s.outline_color, s.outline_width = True, dark, 0.06
+            s.use_shadow, s.shadow_color = True, (*dark[:3], 0.6)
+            for name, value in (("shadow_offset", 0.05), ("shadow_blur", 0.5)):  # Blender builds without them: plain
+                if hasattr(s, name):
+                    setattr(s, name, value)
         s.blend_type = "ALPHA_OVER"
         return s
 
@@ -209,9 +218,10 @@ def _add_overlays(short: Short, tl: Timeline, texts: _Texts, settings: dict, anc
     cx = safe.x + safe.w / 2
     colour, box = caption_colours(short, settings)
     cards = captions(short, tl)  # near labels keep off the caption bands; none with style.caption.draw false
+    outline = caption_style(short, settings) == "outline"
     for card, (f0, f1, _, _, bottom) in zip(tl.cards if cards else [], cards, strict=True):
-        texts.add(card.text, f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
-                  color=colour, box=box)  # fmt: skip
+        texts.add(plain(card.text), f0, f1, CH_CAPTION, size, _norm(cx, bottom), ("CENTER", "BOTTOM"), CAPTION_MARGIN,
+                  color=colour, box=box, outline=outline)  # fmt: skip
 
     spans = {s.id: s for s in tl.shots}
     for shot in short.shots:

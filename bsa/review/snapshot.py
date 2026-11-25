@@ -351,9 +351,9 @@ def _storyboard(ctx: Ctx) -> dict | None:
             lines.append(
                 {
                     "id": ln.id,
-                    "text": ln.text,
+                    "text": ln.text.replace("*", ""),
                     "at_s": round((ls.f0 - 1) / fps, 1) if ls else None,
-                    "cards": [c.text for c in tl.cards if c.line_id == ln.id],
+                    "cards": [c.text.replace("*", "") for c in tl.cards if c.line_id == ln.id],
                 }
             )
         shots.append(

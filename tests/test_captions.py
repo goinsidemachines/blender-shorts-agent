@@ -415,3 +415,18 @@ def test_vtt_escapes_what_would_read_as_markup_or_timing():
     assert "Tom &amp; Jerry &lt;b>" in vtt and "a --&gt; b" in vtt
     assert vtt.count("-->") == 1  # only the cue's timing line
     assert "Tom & Jerry" in captions.to_srt(cs, 30)
+
+
+def test_highlight_asterisks_are_in_no_caption_file(tmp_path):
+    sdir = pagefix.make_short(tmp_path, "done")
+    path = sdir / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["lines"][0]["text"] = "Length sets the *beat*."
+    path.write_text(json.dumps(data), encoding="utf-8")
+    pagefix.write_timeline(sdir)
+    pagefix.record_edit(sdir, "final")
+    captions.write_files(sdir, _short(sdir), {})
+    files = [(sdir / "out" / f"pendulum{s}").read_text(encoding="utf-8") for s in (".srt", ".vtt", "-transcript.txt")]
+    assert all("beat" in t and "*" not in t for t in files), files
+    cs = captions.cues([Card("and every *crossing* counts", "l01", 1, 45)], 30)
+    assert cs[0].lines == ["and every crossing counts"]

@@ -537,7 +537,7 @@ def text_items(short, settings: dict) -> list[tuple[str, str]]:
     from bsa import kit
     from bsa.short import bar_items, bar_text, bar_verdict, category_text, label_text, step_text, title_lines
 
-    items = [(f"line {ln.id}", ln.text) for ln in short.lines]
+    items = [(f"line {ln.id}", ln.text.replace("*", "")) for ln in short.lines]
     for s in short.shots:
         items += [(f"shot {s.id} label", label_text(lb)) for lb in s.labels]
         items += [(f"shot {s.id} title card", line) for line in title_lines(s)[0]]

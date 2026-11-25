@@ -438,7 +438,7 @@ def near_anchors(short) -> list[tuple[str, str, str, str, tuple | None]]:
 def spoken_text(line) -> str:
     """The words the narrator speaks for a line: its `say` when set, else its caption `text`."""
     say = line.say if isinstance(line.say, str) else None
-    return say.strip() if say and say.strip() else line.text
+    return (say.strip() if say and say.strip() else line.text).replace("*", "")  # a *highlight*'s asterisks are not spoken
 
 
 # Characters a voice reads unpredictably ("×" as "x" or nothing): a line showing them on screen wants a `say`.
@@ -450,7 +450,7 @@ def spoken_warnings(short) -> list[str]:
     out = []
     for ln in short.lines:
         if ln.say is None:
-            bad = sorted({ch for ch in ln.text if ch in UNSPOKEN})
+            bad = sorted({ch for ch in ln.text.replace("*", "") if ch in UNSPOKEN})
             if bad:
                 out.append(f"line {ln.id} shows {' '.join(bad)}, which a voice reads unpredictably: add a \"say\" "
                            "with it spelled out in words (the caption keeps the symbols)")  # fmt: skip

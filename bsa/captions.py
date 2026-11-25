@@ -119,7 +119,7 @@ def cues(cards: list[timeline.Card], fps: int, closing: Cue | None = None) -> li
     under MIN_CUE_S are merged into or given frames by a neighbour. `closing` is appended last."""
     out: list[Cue] = []
     for card in cards:
-        lines = wrap(card.text)
+        lines = wrap(card.text.replace("*", ""))  # a *highlight* shows as colour, never as asterisks
         if lines and card.f1 >= card.f0:
             out += [Cue(card.f0, card.f1, lines)] if len(lines) <= MAX_LINES else _share(lines, card.f0, card.f1)
     out = _merge(out, math.ceil(round(MIN_CUE_S * fps, 6)))
@@ -158,7 +158,7 @@ def transcript(short, closing_line: str | None) -> str:
     then the closing line as its own paragraph."""
     paras = []
     for shot in short.shots:
-        text = " ".join(ln.text.strip() for ln in short.lines if ln.shot == shot.id and ln.text.strip())
+        text = " ".join(ln.text.replace("*", "").strip() for ln in short.lines if ln.shot == shot.id and ln.text.strip())
         if text:
             paras.append(text)
     if closing_line:
