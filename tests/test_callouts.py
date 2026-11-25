@@ -129,3 +129,17 @@ def test_brand_callout_keys():
     for key, bad in (("callout.glow", 51), ("callout.glow", -1), ("callout.color", "orange")):
         with pytest.raises(ValueError):
             kit.check(key, bad)
+
+
+def test_write_leaves_an_unchanged_file_alone(tmp_path):
+    (tmp_path / "source").mkdir()
+    short = _short([_call()])
+    tl = build_timeline(short, {"l01": 4.0, "l02": 1.0})
+    target = callouts.write(tmp_path, short, tl, None)
+    import os
+
+    os.utime(target, ns=(10**9, 10**9))
+    callouts.write(tmp_path, short, tl, None)
+    assert target.stat().st_mtime_ns == 10**9  # same frames: not rewritten, so the build is not made stale
+    callouts.write(tmp_path, short, build_timeline(short, {"l01": 5.0, "l02": 1.0}), None)
+    assert target.stat().st_mtime_ns != 10**9

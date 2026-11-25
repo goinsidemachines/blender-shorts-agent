@@ -186,7 +186,9 @@ def write(sdir, short, tl: Timeline, word_times: dict | None) -> Path | None:
         target.unlink(missing_ok=True)
         return None
     data = {"timeline_hash": timeline_hash(json.loads(json.dumps(to_json(tl)))), "shots": shots}
-    target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    text = json.dumps(data, indent=2) + "\n"
+    if not target.is_file() or target.read_text(encoding="utf-8") != text:  # same frames: keep the file and its time
+        target.write_text(text, encoding="utf-8")
     return target
 
 

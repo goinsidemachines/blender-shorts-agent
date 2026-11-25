@@ -128,6 +128,7 @@ class _Hasher:
             self._extra(idb, h)
             if isinstance(idb, bpy.types.Object):
                 self._nodes_inputs(idb, h, mine)
+                self._object_materials(idb, h, mine)
             self.id_hash[k], self.children[k] = h.digest(), mine
         found += self.children[k]
         return self.id_hash[k]
@@ -154,6 +155,15 @@ class _Hasher:
             self._file(idb.filepath, idb, h)
         if isinstance(idb, (bpy.types.Sound, bpy.types.MovieClip, bpy.types.CacheFile, bpy.types.Volume)):
             self._file(getattr(idb, "filepath", ""), idb, h)
+
+    def _object_materials(self, obj, h, found: list) -> None:
+        """The materials an object's slots link by OBJECT (a callout's glow copy, bsa.blender.callouts): walked like
+        any datablock, so their nodes and keys count. Nothing at all for an object without such a slot, so its hash
+        is what it was before."""
+        for i, slot in enumerate(obj.material_slots):
+            if slot.link == "OBJECT" and slot.material is not None:
+                h.update(b"object-material:%d:" % i + repr(self.key(slot.material)).encode())
+                found.append(slot.material)
 
     def _nodes_inputs(self, obj, h, found: list) -> None:
         """The values of `obj`'s geometry nodes modifier inputs (an ID input by identity: it is walked like any

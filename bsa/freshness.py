@@ -127,7 +127,8 @@ def build_inputs(short_dir: Path) -> list[Path]:
                 seen.add(key)
                 out.append(f)
                 todo.append(f)
-    return [build, *sorted(out)]
+    callouts = src / "callouts.json"  # the glow is keyed from it: re-timed callouts make the scene stale
+    return [build, *sorted(out), *([callouts] if callouts.is_file() else [])]
 
 
 def stale_build_file(short_dir: Path) -> Path | None:
@@ -159,6 +160,8 @@ def build_changed_message(short_dir: Path, stale: Path | None = None) -> str:
     src = Path(short_dir) / "source"
     if f is None or f == src / "build.py":
         return BUILD_CHANGED
+    if f == src / "callouts.json":
+        return "source/callouts.json (the callouts' timing) changed since the scene was built: rebuild"
     rel = Path(os.path.relpath(f, src)).as_posix()
     return f"source/{rel} (imported by build.py) changed since the scene was built: rebuild"
 
