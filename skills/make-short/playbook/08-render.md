@@ -322,6 +322,20 @@ The single steps, when you need one on its own:
      needs `render.deliver_dir`. It stops after 5 minutes, so a longer job (a full upload or backup) should start its
      work in the background and return. `hook` in the result has its `exit_code` and `output`; a
      failure is a warning, never a failed final.
+   - **Loudness master.** `CLI mix SHORT` brings the whole finished mix to a target loudness before it goes into the
+     video (the voice/bed balance is never touched, only the whole mix moves). Defaults are the public streaming
+     norm: `master.integrated_lufs` -14 (integrated loudness, ITU-R BS.1770-4 / EBU R128, range -30 to -6),
+     `master.true_peak_dbtp` -1 (true-peak ceiling, -9 to 0), `master.max_lra_lu` null (no limit on loudness range;
+     1 to 20 sets one), `master.enabled` true (false writes the mix exactly as it was mixed). To use your own level,
+     for example quieter for a broadcast norm: `CLI settings set master.integrated_lufs -23`. A style preset or one
+     short can carry its own `master` object the same way (`"master": {"integrated_lufs": -16}` in the preset or in
+     short.json; the short wins over the preset, the preset over the settings). It scales to the target; if the true
+     peak would pass the ceiling, or the range passes `max_lra_lu`, it first runs one gentle compressor (3:1, at most
+     about 3 dB), then the peak limiter, and repeats up to three times until it lands within 0.5 LU. The `mix` result
+     has `master` (before, after, targets). The final edit then measures the audio of the finished MP4 and writes
+     `review/loudness.json` (`integrated_lufs`, `true_peak_dbtp`, `lra_lu`, `targets`, `ok`); loudness more than
+     0.5 LU off, a true peak more than 0.2 dB over the ceiling or a range over `max_lra_lu` is a warning in the
+     edit's result, never a failed final. After changing a master setting, run `CLI mix SHORT` and the edit again.
 4. `BLENDER probe "<short>/out/<slug>.mp4"` if you want to double-check: width 1080, height 1920, fps 30, frames
    equal to the timeline's `n_frames`, `has_audio` true.
 

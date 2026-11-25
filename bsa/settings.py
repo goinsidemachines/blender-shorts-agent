@@ -10,7 +10,7 @@ import shlex
 import time
 from pathlib import Path
 
-from bsa import timing
+from bsa import master, timing
 
 DEFAULTS = {
     "workspace": None,
@@ -48,6 +48,8 @@ DEFAULTS = {
     # A short that ends seamlessly back into frame 1 (bsa.presets.loop_on): no end card, no closing card, a looped
     # sound bed, and a check that the last frame runs into the first. A preset or a short's own `loop` wins.
     "loop": False,
+    # The loudness master of the final mix (bsa.master): the defaults are the public streaming norm; set your own.
+    "master": master.defaults(),
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -326,6 +328,15 @@ def check_value(path: str, value):
         if wrong:
             raise ValueError("; ".join(wrong))
         return value
+    if path == master.GROUP:  # the whole object: every key checked as its own master.KEY
+        if not isinstance(value, dict):
+            raise ValueError(f"master must be an object of master settings, got {value!r}")
+        bad = master.problems_in(value)
+        if bad:
+            raise ValueError("; ".join(bad))
+        return {k: master.check(k, v) for k, v in value.items()}
+    if path.startswith("master.") and path.count(".") == 1:
+        return master.check(path.split(".")[1], value)
     if path in timing.GROUPS:  # the whole object: every key checked as its own timing.KEY / captions.KEY
         if not isinstance(value, dict):
             raise ValueError(f"{path} must be an object of {path} settings, got {value!r}")

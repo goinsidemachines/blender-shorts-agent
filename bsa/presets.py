@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import re
 
-from bsa import timing
+from bsa import master, timing
 
 # The groups a preset may hold. One place to extend: a new group is added here (and given its check in
 # `_group_problems` and its reader in `_valid_flat`) when its feature lands.
-GROUPS = ("timing", "captions", "loop")
+GROUPS = ("timing", "captions", "loop", "master")
 # `loop` is one yes/no value (a short that ends seamlessly back into frame 1), not an object like the other groups.
 FLAGS = ("loop",)
 EXTEND = "extend"
@@ -105,6 +105,8 @@ def active_name(settings: dict | None, short=None) -> str:
 def _group_problems(group: str, value) -> list[str]:
     if group in FLAGS:
         return [] if value is None or isinstance(value, bool) else [f"{group} must be true or false, got {value!r}"]
+    if group == master.GROUP:
+        return master.problems_in(value)
     if group in timing.GROUPS:
         return timing.problems_in(group, value)
     return [f"unsupported group {group!r}"]  # a group in GROUPS without a check here would be a bug
@@ -171,6 +173,8 @@ def problems(settings: dict | None = None, short=None) -> list[str]:
     own = _short_preset(short)
     if own is not None:
         out += [f"short.json {p}" for p in _name_known("preset", own, merged)]
+    out += _group_problems(master.GROUP, (settings or {}).get(master.GROUP))
+    out += [f"short.json {p}" for p in _group_problems(master.GROUP, _short_value(short, master.GROUP))]
     for flag in FLAGS:
         out += _group_problems(flag, (settings or {}).get(flag))
         out += [f"short.json {p}" for p in _group_problems(flag, _short_value(short, flag))]
@@ -251,6 +255,44 @@ def loop_on(settings: dict | None, short=None) -> bool:
     return loop_resolved(settings, short)[0]
 
 
+def _valid_master(source) -> dict:
+    """{key: checked value} of the `master` object in `source` (a dict); a bad value is left out."""
+    own = source.get(master.GROUP) if isinstance(source, dict) else None
+    out: dict = {}
+    for k, v in own.items() if isinstance(own, dict) else ():
+        if k in master.SPEC:
+            try:
+                out[k] = master.check(k, v)
+            except ValueError:
+                pass
+    return out
+
+
+def master_resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
+    """(the loudness master's values, where each came from): same order as the timing values, last wins: the built-in
+    defaults (`bsa.master.SPEC`), the settings' own `master` (a value equal to the default is no layer, as the settings
+    file holds every default), the chosen preset (its `extend` chain base first), the short's own `master`. Where:
+    "default", "settings", "preset:<name>", "short". A bad value is ignored here (validation reports it)."""
+    values = master.defaults()
+    where = {k: "default" for k in values}
+    own = {k: v for k, v in _valid_master(settings or {}).items() if v != values[k]}
+    stack: list[tuple[str, dict]] = [("settings", own)]
+    name = chosen(settings, short)
+    if name:
+        merged = all_presets(settings)
+        try:
+            names = chain(name, merged)
+        except PresetError:
+            names = []
+        stack += [(f"preset:{n}", _valid_master(merged[n])) for n in names]
+    mine = short if isinstance(short, dict) else {master.GROUP: getattr(short, master.GROUP, None)}
+    stack.append(("short", _valid_master(mine)))
+    for label, flat in stack:
+        for k, v in flat.items():
+            values[k], where[k] = v, label
+    return values, where
+
+
 def resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
     """(every timing/captions value, where each came from): "default", "settings", "preset:<name>" or "short"."""
     values = timing.Timing().as_dict()
@@ -302,4 +344,8 @@ def from_short(settings: dict | None, short) -> dict:
             out[group] = diff
     if loop_on(settings, short):
         out["loop"] = True
+    mvalues, _ = master_resolved(settings, short)
+    mdiff = {k: v for k, v in mvalues.items() if v != master.defaults()[k]}
+    if mdiff:
+        out[master.GROUP] = mdiff
     return out

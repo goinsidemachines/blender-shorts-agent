@@ -1213,10 +1213,23 @@ def cmd_mix(args) -> dict:
     stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail,
                          room_db=room_db, reverb=settings.reverb_on(s),
                          loop=presets.loop_on(s, short))  # fmt: skip
+    master_values, _ = presets.master_resolved(s, short)
+    mastered = None
+    if master_values["enabled"]:  # the whole mix to the target loudness (bsa.audio.master); off = the mix as mixed
+        import numpy as np
+
+        from bsa.audio import master as audio_master
+
+        stereo, mastered = audio_master.master(stereo, master_values)
+        if mastered["applied"]:  # the levels are as heard in the file: the whole mix moved by the master's gain
+            shift = mastered["gain_db"]
+            levels = {k: (None if v is None else round(v + shift, 2)) for k, v in levels.items()}
+            levels["peak_dbfs"] = round(float(20 * np.log10(max(float(np.abs(stereo).max()), 1e-9))), 2)
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
     out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,
            "sound_py": bed is not None, "events": len(built), "levels": levels, "sound_policy": policy,
+           "master": mastered if mastered is not None else {"applied": False, "note": "master.enabled is false"},
            "sfx": recorded.report(recorded.resolve(short, library, policy),
                                   recorded.room_status(library, policy, room_db))}  # fmt: skip
     if end:

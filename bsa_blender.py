@@ -1542,8 +1542,48 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
             out["captions"] = captions.write_files(sdir, short, s)
         except Exception as exc:  # noqa: BLE001 - auxiliary output: never lose the recorded MP4 result
             warnings.append(f"caption files not written: {exc}")
+        if mix.is_file():
+            out["loudness"], found = _loudness_check(sdir, short, s, path)
+            warnings += found
         warnings += _after_final(sdir, short, out, s, tl_hash)
     return {**out, "warnings": warnings} if warnings else out
+
+
+def _loudness_check(sdir: Path, short, s: dict, mp4: Path) -> tuple[dict, list[str]]:
+    """(the record, warnings) of measuring the audio of the final video as a viewer gets it: integrated loudness, true
+    peak and loudness range against the master settings. Written to review/loudness.json. Never blocks: a miss (more
+    than 0.5 LU off, a true peak more than 0.2 dB over the ceiling, a range over `max_lra_lu`) or a video that can't be
+    measured is a warning. With master.enabled false the numbers are recorded without a verdict."""
+    from bsa import presets
+    from bsa.audio import decode
+    from bsa.audio import master as audio_master
+
+    values, _ = presets.master_resolved(s, short)
+    record: dict = {"integrated_lufs": None, "true_peak_dbtp": None, "lra_lu": None, "ok": None,
+                    "targets": audio_master.targets(values) if values["enabled"] else None}  # fmt: skip
+    warnings: list[str] = []
+    try:
+        from bsa.audio import dsp
+
+        measured = dsp.measure(decode.load(mp4))
+        record.update(integrated_lufs=measured["integrated_lufs"], true_peak_dbtp=measured["true_peak_dbtp"],
+                      lra_lu=measured["lra_lu"])  # fmt: skip
+        if values["enabled"]:
+            record["ok"], problems = audio_master.verdict(measured, values)
+            if problems:
+                record["problems"] = problems
+                warnings.append("the final video's sound is off its master targets: " + "; ".join(problems)
+                                + ". Run CLI mix SHORT and the final edit again, or change the master settings.")  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - a measuring problem never fails the final
+        record["error"] = str(exc)
+        warnings.append(f"the final video's loudness was not measured: {exc}")
+    try:
+        review = sdir / "review"
+        review.mkdir(parents=True, exist_ok=True)
+        (review / "loudness.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except OSError as exc:
+        warnings.append(f"review/loudness.json not written: {exc}")
+    return record, warnings
 
 
 def _after_final(sdir: Path, short, out: dict, s: dict, tl_hash: str) -> list[str]:
