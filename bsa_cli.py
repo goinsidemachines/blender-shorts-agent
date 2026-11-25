@@ -1204,14 +1204,15 @@ def cmd_mix(args) -> dict:
     library = _sound_library(sdir)  # recorded clips by sfx kind; synthesis is the fallback
     s = settings.load_settings()
     policy = recorded.sound_policy(short, s)
-    from bsa import closing
+    from bsa import closing, presets
 
     card = closing.resolve(s, short)
     end = closing.plan(card, tl.n_frames + 1, tl.fps, closing.take_seconds(takes))
     tail = (end["n_frames"], closing.take(takes), end["line_f0"]) if end else None
     room_db = settings.room_db(s)
     stereo, levels = mix(tl, short, takes, extra_bed=bed, library=library, policy=policy, closing=tail,
-                         room_db=room_db, reverb=settings.reverb_on(s))  # fmt: skip
+                         room_db=room_db, reverb=settings.reverb_on(s),
+                         loop=presets.loop_on(s, short))  # fmt: skip
     path = sdir / "audio" / "mix.wav"
     write_wav(path, stereo)
     out = {"path": str(path), "n_frames": tl.n_frames + (end["n_frames"] if end else 0), "voice": from_takes,

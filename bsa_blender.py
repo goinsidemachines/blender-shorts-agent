@@ -1084,6 +1084,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     full = getattr(args, "full", False)
     reuse = {} if full else freshness.reusable_checks(sdir, stamp)
     partial = {} if full else freshness.partial_checks(sdir, stamp)  # changed shots: the objects that did not change
+    reuse = {sid: [f for f in rows_ if f.get("check") != "loop"] for sid, rows_ in reuse.items()}  # made again below
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,
                  "done": span.f1 - span.f0 + 1 if shot.id in reuse else 0,
@@ -1155,6 +1156,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         finished.append(shot.id)
         save_progress()
     run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
+    rows += _loop_rows(data, short, plan, tl_hash)
     out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
                         OVERLAP_MAX_FINDINGS, checked=checked, kept=kept,
                         **({"partial": partly} if partly else {}))  # fmt: skip
@@ -1163,6 +1165,29 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
     if not getattr(args, "in_chain", False):  # beside the preview render the chain marks it (one writer of state)
         jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
     return out
+
+
+def _loop_rows(data, short, plan, tl_hash: str) -> list[dict]:
+    """The loop check's rows (bsa.blender.loopcheck) when the short loops (bsa.presets.loop_on), attached to the last
+    shot: always measured again (four frames), never kept from an earlier run. Warnings only."""
+    from bsa import presets
+
+    if not plan or not presets.loop_on(settings.load_settings(), short):
+        return []
+    from bsa.blender.checks import Finding
+    from bsa.blender.loopcheck import loop_findings
+
+    (first, f_span), (last, l_span) = plan[0], plan[-1]
+    _, first_scene = _scene(data, short, first.id, tl_hash)
+    _, last_scene = _scene(data, short, last.id, tl_hash)
+    if first_scene.name != last_scene.name:
+        found = [Finding("loop", "warning", None, l_span.f1,
+                         f"loop: the last shot ({last.id}) and the first ({first.id}) are in different scenes "
+                         f"({last_scene.name!r}, {first_scene.name!r}), so the join cannot be measured: look at "
+                         "the last frame and the first together")]  # fmt: skip
+    else:
+        found = loop_findings(last_scene, f_span.f0, l_span.f1)
+    return [_check_row(f, last.id, last_scene.name) for f in found]
 
 
 def _rendered(sdir: Path, short, preset: str, tl, fps: dict | None, run=None) -> list:

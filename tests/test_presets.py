@@ -74,7 +74,7 @@ def test_render_engine_and_unknown_groups_are_refused():
     msg = "render engine is always the user's choice per short; presets can't set it"
     assert any(msg in p for p in presets.preset_problems("p", {"render": {"engine": "cycles"}}))
     assert any(msg in p for p in presets.preset_problems("p", {"engine": "cycles"}))
-    assert any("unknown groups" in p for p in presets.preset_problems("p", {"loop": True}))
+    assert any("unknown groups" in p for p in presets.preset_problems("p", {"bogus": True}))
     assert any("unknown groups" in p for p in presets.preset_problems("p", {"colours": {}}))
     with pytest.raises(ValueError, match="render engine"):
         settings.check_value("presets.x", {"render": {"engine": "eevee"}})

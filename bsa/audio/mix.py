@@ -49,6 +49,7 @@ ROOM_DB = -50.0  # default sound.room_db: room tone, LUFS-ish
 ROOM_FADE_S = 0.5  # room tone fades in over this at the start ...
 ROOM_FADE_OUT_S = 1.0  # ... and out over this at the very end of the mix (under the closing card)
 ROOM_XFADE_S = 1.0
+LOOP_XFADE_S = 0.15  # a looping short: the last 150 ms of the room tone and effects bed wrap into the start
 EVENT_CREST_DB = 26.0  # safety: an event's peak never ends more than this above its level_db
 BUS_FADE_S = 1.0  # the bus ends on an equal-power fade-out that finishes exactly where the story ends
 DUCK_S = 0.25  # "clear of speech" in the levels: this far from any speech
@@ -201,7 +202,7 @@ def _joins(short: Short, uses: list[dict], starts: list[int]) -> dict[int, int]:
     return joined
 
 
-def _room(library, policy: str, room_db: float, n: int) -> np.ndarray | None:
+def _room(library, policy: str, room_db: float, n: int, fades: bool = True) -> np.ndarray | None:
     """The room tone floor, stereo (n, 2), or None when there is no room clip to use. Each channel loops the clip from
     its own seeded start, so the floor has a little width. It runs the whole mix (the closing card included): faded in
     over ROOM_FADE_S and out over the last ROOM_FADE_OUT_S."""
@@ -215,19 +216,21 @@ def _room(library, policy: str, room_db: float, n: int) -> np.ndarray | None:
     x = x * _db(room_db - dsp.integrated_lufs(x))
     seed = zlib.crc32(clip["path"].encode())
     room = np.zeros((n, 2))
-    fi = min(round(ROOM_FADE_S * SR), n // 2)
-    fo = min(round(ROOM_FADE_OUT_S * SR), n // 2)
+    fi = min(round(ROOM_FADE_S * SR), n // 2) if fades else 0
+    fo = min(round(ROOM_FADE_OUT_S * SR), n // 2) if fades else 0  # a loop wraps instead (mix: circular_xfade)
     for c in range(2):
         y = dsp.loop_to_length(x, n, seed=seed + c, xfade_s=ROOM_XFADE_S)
-        y[:fi] *= dsp.fade_in_curve(fi)
-        y[n - fo :] *= dsp.fade_out_curve(fo)
+        if fi:
+            y[:fi] *= dsp.fade_in_curve(fi)
+        if fo:
+            y[n - fo :] *= dsp.fade_out_curve(fo)
         room[:, c] = y
     return room
 
 
 def mix(tl: Timeline, short: Short, takes_dir: Path | None, extra_bed: np.ndarray | None = None, library=None,
         policy: str = "any", closing: tuple[int, Path | None, int | None] | None = None,
-        room_db: float | None = ROOM_DB, reverb: bool = True):  # fmt: skip
+        room_db: float | None = ROOM_DB, reverb: bool = True, loop: bool = False):  # fmt: skip
     """(stereo float64 mix in [-1, 1] of shape (n_samples, 2), levels). n_samples = round(n_frames / fps * SR).
     levels: voice_dbfs (the mix while speaking, None without a voice), bed_dbfs (the mix where the bed sounds clear of
     speech, else where it sounds; None without a bed) and peak_dbfs. `library` (bsa.audio.recorded.Library): sfx
@@ -236,13 +239,17 @@ def mix(tl: Timeline, short: Short, takes_dir: Path | None, extra_bed: np.ndarra
     under the story at that loudness; `reverb` puts the effects bus (`extra_bed` included) through one shared room.
     `closing` (frames, take or None, the take's first frame) adds the closing card's frames after the story
     (bsa.closing): the closing line in the voice, normalised with the story's lines; no effects bed there (the bus
-    ends with the story, after a 1 s fade) but the room tone runs on under the card and fades out over the last second."""
+    ends with the story, after a 1 s fade) but the room tone runs on under the card and fades out over the last second.
+    `loop` (a looping short, no closing card): the room tone and the effects bed (everything but the voice) neither
+    fade in nor out at the ends; their last LOOP_XFADE_S wraps into the start (dsp.circular_xfade), so the loop point
+    does not click or dip. The voice is untouched and the length is the same."""
     n_story = round(tl.n_frames / tl.fps * SR)
     n = round((tl.n_frames + (closing[0] if closing else 0)) / tl.fps * SR)
     bed = _bed(tl, short, n, extra_bed, library, policy)
     bed[n_story:] = 0.0
+    loop = loop and not closing
     bed = dsp.effects_bus(bed, reverb=reverb)
-    fade = min(round(BUS_FADE_S * SR), n_story)
+    fade = 0 if loop else min(round(BUS_FADE_S * SR), n_story)
     bed[n_story - fade : n_story] *= dsp.fade_out_curve(fade)[:, None]
     bed[n_story:] = 0.0  # the effects end with the story (after a 1 s fade): no reverb tail into the closing card
     vo = _voice(tl, takes_dir, n)
@@ -259,7 +266,14 @@ def mix(tl: Timeline, short: Short, takes_dir: Path | None, extra_bed: np.ndarra
     bed *= _bed_gain(bed, active)
     duck = dsp.duck_gain(speech, DUCK_DB, DUCK_LOOKAHEAD_S, DUCK_ATTACK_S, DUCK_RELEASE_S)
     out = bed * duck[:, None] + vo[:, None]
-    if room_db is not None:
+    if loop:
+        out = bed * duck[:, None]
+        if room_db is not None:
+            floor = _room(library, policy, room_db, n, fades=False)
+            if floor is not None:
+                out += floor
+        out = dsp.circular_xfade(out, round(LOOP_XFADE_S * SR)) + vo[:, None]  # the voice is not wrapped
+    elif room_db is not None:
         floor = _room(library, policy, room_db, n)
         if floor is not None:
             out += floor  # the floor: not ducked

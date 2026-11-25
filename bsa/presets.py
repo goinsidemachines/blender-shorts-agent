@@ -1,5 +1,5 @@
-"""Named style presets: a reusable block of the values that give a short its feel (today the `timing` and `captions`
-groups). Stdlib only.
+"""Named style presets: a reusable block of the values that give a short its feel (the `timing` and `captions` groups
+and the `loop` flag). Stdlib only.
 
 A preset is an object with any of the groups in `GROUPS` and optionally `"extend": "<other preset name>"` (that preset
 is applied first, then this one on top). Shipped presets are neutral; a user adds their own under the settings key
@@ -14,6 +14,8 @@ Order of precedence, last wins (`layers`, used by `bsa.timing.resolve`):
   2. the settings' own top-level `timing` / `captions` (the user's global tweaks)
   3. the chosen preset, its `extend` chain applied base first
   4. the short's own `timing` / `captions` in short.json
+The `loop` flag (true: the short ends seamlessly back into frame 1) resolves the same way: settings top-level `loop`
+(default false), the preset chain, the short's own `loop` (`loop_on`).
 """
 
 from __future__ import annotations
@@ -24,7 +26,9 @@ from bsa import timing
 
 # The groups a preset may hold. One place to extend: a new group is added here (and given its check in
 # `_group_problems` and its reader in `_valid_flat`) when its feature lands.
-GROUPS = ("timing", "captions")
+GROUPS = ("timing", "captions", "loop")
+# `loop` is one yes/no value (a short that ends seamlessly back into frame 1), not an object like the other groups.
+FLAGS = ("loop",)
 EXTEND = "extend"
 DEFAULT_NAME = "explainer"
 # Keys that choose the render engine are refused anywhere in a preset.
@@ -34,11 +38,12 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
 SHIPPED: dict[str, dict] = {
     # Today's defaults: nothing overridden.
     "explainer": {},
-    # Tight pacing and short caption cards for a loop that restarts straight away. (Whether the short loops joins this
-    # preset together with the loop feature.)
+    # Tight pacing, short caption cards and a seamless loop (no end card, a looped sound bed) for a short that
+    # restarts straight away.
     "fast-loop": {
         "timing": {"lead_in_s": 0.05, "gap_s": 0.2, "tail_s": 0.1, "take_tail_s": 0.12, "end_card_s": 0.0},
         "captions": {"max_words": 3, "max_chars": 18, "orphan_max_chars": 6},
+        "loop": True,
     },
 }
 
@@ -98,6 +103,8 @@ def active_name(settings: dict | None, short=None) -> str:
 
 
 def _group_problems(group: str, value) -> list[str]:
+    if group in FLAGS:
+        return [] if value is None or isinstance(value, bool) else [f"{group} must be true or false, got {value!r}"]
     if group in timing.GROUPS:
         return timing.problems_in(group, value)
     return [f"unsupported group {group!r}"]  # a group in GROUPS without a check here would be a bug
@@ -164,11 +171,15 @@ def problems(settings: dict | None = None, short=None) -> list[str]:
     own = _short_preset(short)
     if own is not None:
         out += [f"short.json {p}" for p in _name_known("preset", own, merged)]
+    for flag in FLAGS:
+        out += _group_problems(flag, (settings or {}).get(flag))
+        out += [f"short.json {p}" for p in _group_problems(flag, _short_value(short, flag))]
     return out
 
 
 def _valid_flat(source) -> dict:
-    """{key: checked value} of the `timing` / `captions` objects in `source` (a dict); a bad value is left out."""
+    """{key: checked value} of the `timing` / `captions` objects in `source` (a dict); a bad value is left out. (The
+    `loop` flag is not here: see `loop_resolved`.)"""
     out: dict = {}
     if not isinstance(source, dict):
         return out
@@ -203,6 +214,41 @@ def layers(settings: dict | None, short=None) -> list[tuple[str, dict]]:
     own = short if isinstance(short, dict) else {g: getattr(short, g, None) for g in GROUPS}
     out.append(("short", _valid_flat(own)))
     return out
+
+
+def _short_value(short, key: str):
+    return short.get(key) if isinstance(short, dict) else getattr(short, key, None)
+
+
+def loop_resolved(settings: dict | None, short=None) -> tuple[bool, str]:
+    """(loop on?, where it came from): same order as the timing values, last wins: the settings' own top-level `loop`
+    (default off), the chosen preset (its `extend` chain base first), then the short's own `loop`. A value that is not
+    true or false is ignored here (validation reports it). Where: "default", "settings", "preset:<name>", "short"."""
+    value, where = False, "default"
+    own = (settings or {}).get("loop")
+    if isinstance(own, bool):
+        value, where = own, "settings"
+    name = chosen(settings, short)
+    if name:
+        merged = all_presets(settings)
+        try:
+            names = chain(name, merged)
+        except PresetError:
+            names = []
+        for n in names:
+            flag = merged[n].get("loop") if isinstance(merged[n], dict) else None
+            if isinstance(flag, bool):
+                value, where = flag, f"preset:{n}"
+    mine = _short_value(short, "loop")
+    if isinstance(mine, bool):
+        value, where = mine, "short"
+    return value, where
+
+
+def loop_on(settings: dict | None, short=None) -> bool:
+    """True when the short ends seamlessly back into frame 1 (see `loop_resolved`): it has no end card and no
+    closing card, and its sound bed wraps. Off unless something turns it on."""
+    return loop_resolved(settings, short)[0]
 
 
 def resolved(settings: dict | None, short=None) -> tuple[dict, dict]:
@@ -254,4 +300,6 @@ def from_short(settings: dict | None, short) -> dict:
         diff = {k: values[k] for k in timing.SPEC[group] if values[k] != base[k]}
         if diff:
             out[group] = diff
+    if loop_on(settings, short):
+        out["loop"] = True
     return out

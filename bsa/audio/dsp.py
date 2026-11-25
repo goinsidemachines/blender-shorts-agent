@@ -109,6 +109,24 @@ def fade_out_curve(n: int) -> np.ndarray:
     return fade_in_curve(n)[::-1]
 
 
+def circular_xfade(x: np.ndarray, n: int) -> np.ndarray:
+    """`x` made to wrap: its last `n` samples fade out to silence (equal power) and are laid, under a bump that is zero
+    at both of its ends, on the first `n` samples, which fade in from silence. The result has the same length, is
+    silent at both ends (so it is continuous where the end meets the start) and keeps its level through the seam,
+    because the tail carries on under the head's fade-in. Works on (n_samples,) and (n_samples, channels)."""
+    x = np.asarray(x, dtype=np.float64)
+    n = min(int(n), len(x) // 2)
+    if n < 2:
+        return x.copy()
+    shape = (n,) + (1,) * (x.ndim - 1)
+    fin = fade_in_curve(n).reshape(shape)
+    fout = fade_out_curve(n).reshape(shape)
+    out = x.copy()
+    out[:n] = x[:n] * fin + x[-n:] * fout * fin
+    out[-n:] = x[-n:] * fout
+    return out
+
+
 def loop_to_length(x: np.ndarray, n: int, seed: int = 0, xfade_s: float = 1.0) -> np.ndarray:
     """`x` repeated to exactly n samples, seamless: copies are joined with equal-power crossfades of up to `xfade_s`
     (a quarter of the clip at most), and the start is a random (seeded) point inside the clip."""

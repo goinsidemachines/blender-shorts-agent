@@ -45,6 +45,9 @@ DEFAULTS = {
     # every short uses (null = the built-in "explainer"); a short's own `preset` wins.
     "presets": {},
     "style_preset": None,
+    # A short that ends seamlessly back into frame 1 (bsa.presets.loop_on): no end card, no closing card, a looped
+    # sound bed, and a check that the last frame runs into the first. A preset or a short's own `loop` wins.
+    "loop": False,
 }
 SECRET_KEYS = ("freesound.api_key",)
 
@@ -85,7 +88,7 @@ def narrator_problems(s: dict) -> list[str]:
 
 
 # Settings that are true or false (JSON booleans on the command line).
-BOOLEANS = ("page.lan", "post_format_asked", "sound.reverb")
+BOOLEANS = ("page.lan", "post_format_asked", "sound.reverb", "loop")
 
 # sound.room_db: the room tone floor under the story, in LUFS-ish; null turns it off.
 ROOM_DB_RANGE = (-80.0, -20.0)
@@ -377,10 +380,10 @@ def end_card(s: dict, short=None) -> dict:
     """What the end card shows: {"handle", "text", "second"} (each None when absent). The short's own `end_card`
     ("line", or {"text", "second"}) wins over the `end_card` setting. With no handle and no card of the short's own
     there is no end card at all (every value None): the setting's line never shows on its own. A short that ends on a
-    closing card (bsa.closing) has no end card: the card says it."""
-    from bsa import closing
+    closing card (bsa.closing) has no end card: the card says it. A looping short (bsa.presets.loop_on) has neither."""
+    from bsa import closing, presets
 
-    if closing.active(s, short):
+    if presets.loop_on(s, short) or closing.active(s, short):  # a looping short ends on frame 1: no card at all
         return {"handle": None, "text": None, "second": None}
     handle = str(s.get("handle") or "").strip().lstrip("@") or None
     own = getattr(short, "end_card", None)
