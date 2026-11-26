@@ -3423,3 +3423,22 @@ def test_anchors_json_has_a_callouts_key_only_for_a_short_with_callouts(home, pe
     out = anchors_json()
     shot = spec["shots"][0]["id"]
     assert out["callouts"][shot]["0"]["points"][0] == [7, 8] and shot in out["heroes"]
+
+
+def test_validate_judges_one_take_windows_by_the_takes_once_narrated(home, pendulum):
+    """A fast voice fits a window the reading pace would not: once narration finished, validate goes by the takes."""
+    path = pendulum / "source" / "short.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["camera"] = {"style": "one-take", "seconds": 13}
+    for shot, at in zip(data["shots"], (0, 3.5, 6.5), strict=True):  # s02: 3 s for two lines
+        shot["at"] = at
+    path.write_text(json.dumps(data), encoding="utf-8")
+    proc = run(home, "validate", "pendulum")  # at reading pace s02's lines don't fit
+    assert proc.returncode == 1
+    assert any(e.startswith("s02's lines need ") for e in json.loads(proc.stdout)["errors"])
+    for lid in ("l01", "l02", "l03", "l04"):
+        _write_take(pendulum / "audio" / "vo" / f"{lid}.wav", 0.5)
+    jobstate.mark_done(pendulum, "narration", status="ok", provider="kokoro")
+    out = ok(run(home, "validate", "pendulum"))
+    assert out["ok"] is True and out["pacing_from"] == "takes"
+    ok(run(home, "timeline", "pendulum"))  # and the timeline agrees

@@ -928,7 +928,13 @@ def cmd_validate(args) -> dict:
     tr_errors, tr_warnings = translations.problems(short, settings.load_settings())
     errors += tr_errors
     warnings += tr_warnings
-    if not errors:  # a one-take short's window too short for its lines, at reading pace
+    from bsa.narrate.run import takes_durations
+
+    try:  # narration finished with a voice: the takes, not the reading pace, decide what fits
+        has_takes = takes_durations(sdir, short) is not None
+    except Exception:  # noqa: BLE001 - broken takes: judged at reading pace (narrate reports the takes)
+        has_takes = False
+    if not errors and not has_takes:  # a one-take short's window too short for its lines, at reading pace
         try:
             _reading_timeline(short)
         except WindowOverrun as exc:
@@ -942,7 +948,7 @@ def cmd_validate(args) -> dict:
         closing_s = closing.card_seconds(card, take_s, short.fps)
         if card:
             closing_out = {"seconds": closing_s, "set_seconds": card["seconds"]}
-        if short.length_s > 0:
+        if short.length_s > 0 and not has_takes:
             msg = length_warning(short, _reading_timeline(short), extra_s=closing_s or 0)
             if msg:
                 warnings.append(msg)
@@ -954,9 +960,16 @@ def cmd_validate(args) -> dict:
         except Exception as exc:  # noqa: BLE001 - broken takes: pace it at reading speed (narrate reports the takes)
             if isinstance(exc.__cause__, WindowOverrun):  # the takes overrun a window: CLI timeline would refuse
                 errors.append(f"with the narration's takes, {exc}")
-            tl, from_takes = _reading_timeline(short), False
-        rows, pace_warnings = _pacing(short, tl)
-        warnings += pace_warnings
+                tl, from_takes = None, True  # no timeline to pace: the error says what to fix
+            else:
+                try:
+                    tl, from_takes = _reading_timeline(short), False
+                except WindowOverrun as overrun:  # broken takes and the reading pace overruns too
+                    errors.append(str(overrun))
+                    tl, from_takes = None, False
+        if tl is not None:
+            rows, pace_warnings = _pacing(short, tl)
+            warnings += pace_warnings
         source = "takes" if from_takes else "reading pace"
         warnings += _targets_report(sdir, short)["warnings"]  # only when some target is set
     warnings += _font_and_sound_warnings(sdir, short)
