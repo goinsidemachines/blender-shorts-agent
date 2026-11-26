@@ -114,11 +114,14 @@ Tolerances (scene units are metres):
   shot, naming the frames: a prop the saved arrangement kept that a new timing or motion now puts in the way.
 - names: object names ending in ".001" (Blender renamed a duplicate: object names are one namespace across
   scenes) are one warning naming them; a contact tag naming no object in the scene, a hero tag naming a shot
-  short.json does not have, or a near label naming an object its shot's scene does not have, is an error.
+  short.json does not have, or a near label or callout naming an object its shot's scene does not have, is an error.
+- callout: a callout's object (its `near`) that is not rendered at the callout's cue frame in its shot (hidden for
+  render, in a hidden collection, or scaled to nothing) is an error: its glow and arrow would point at nothing.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -156,6 +159,7 @@ from bsa.blender.bake import (
     tags,
 )
 from bsa.blender.styles import BEVEL as STYLE_BEVEL
+from bsa.callouts import callouts_of
 from bsa.findings import cap_pairs, metres, not_listed
 from bsa.image_checks import Finding
 from bsa.layout import Rect
@@ -286,7 +290,7 @@ def live_booleans(obj) -> list:
 
 def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=None,
                rules: list[dict] | None = None, cap: bool = True,
-               keep_objects: set[str] | None = None) -> list[Finding]:  # fmt: skip
+               keep_objects: set[str] | None = None, cues: dict | None = None) -> list[Finding]:  # fmt: skip
     """Run every check over each shot (every `sample_every` frames plus the shot's first and last; overlaps of moving
     objects and pops use every frame). `short` (the Short, for its near labels and shot ids) defaults to the
     short.json next to the open .blend (<short>/blend/short.blend), when there is one. Errors come first.
@@ -296,7 +300,8 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
     the findings of the first OVERLAP_MAX_FINDINGS overlapping pairs only (the CLI caps over every shot instead).
     `keep_objects`: objects whose own findings from the last checks still hold (bsa.freshness.partial_checks: their
     keys did not change): their one-object checks (bsa.freshness.OBJECT_CHECKS) are not run, nor the overlap of a
-    pair of two of them; every other check runs as usual."""
+    pair of two of them; every other check runs as usual. `cues` ({shot id: [callout cue, ...]}, bsa.callouts.load)
+    gives the frame each callout shows at; without it source/callouts.json beside the open blend is read, if any."""
     original = scene.frame_current
     bevels: list[tuple] = []
     try:
@@ -305,6 +310,7 @@ def run_checks(scene, tl: Timeline, sample_every: int = 5, short=None, progress=
         run.keep = set(keep_objects or ())
         short = _short_beside_blend() if short is None else short
         run.short, run.tl = short, tl
+        run.cues = _cues_beside_blend() if cues is None else cues
         run.kit, run.kit_font = _kit_and_font(short)
         if scene.world and scene.world.node_tree:
             for problem in _image_problems(scene.world.node_tree):
@@ -367,6 +373,18 @@ def _short_beside_blend():
         return None
 
 
+def _cues_beside_blend() -> dict:
+    """{shot id: [cue, ...]} of source/callouts.json of the short whose blend/short.blend is open, or {}."""
+    if not bpy.data.filepath:
+        return {}
+    path = Path(bpy.data.filepath).resolve().parent.parent / "source" / "callouts.json"
+    try:
+        shots = json.loads(path.read_text(encoding="utf-8"))["shots"] if path.is_file() else {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return shots if isinstance(shots, dict) else {}
+
+
 def _cap_overlaps(findings: list[Finding]) -> list[Finding]:
     kept, held, more = cap_pairs(findings, OVERLAP_MAX_FINDINGS)
     return [*kept, not_listed(more, summary=False, held=held)] if more else kept  # no overlap_summary here
@@ -405,6 +423,7 @@ class _Run:
         self.states: dict[str, str] = {}  # each object's _box_state at the last sampled frame ("in", "partial", "out")
         self.short = None  # the Short (its labels and badge) and the Timeline (its captions), set by run_checks
         self.tl = None
+        self.cues: dict = {}  # {shot id: [callout cue]}, set by run_checks: the callout check reads the cue frames
         self.kit = None  # the brand kit and its card font, set by run_checks: the covered check measures its cards
         self.kit_font = None
         self.keep: set[str] = set()  # objects whose own checks still hold (run_checks keep_objects): not run again
@@ -459,11 +478,13 @@ class _Run:
         if shot.f0 - 1 in refs:
             self.track_positions(shot.f0 - 1, positions)  # how each object came into the shot: a reference for pops
         shown: dict[str, bool] = {}  # each object at the frame before: rendered and not scaled to nothing
+        cue_frames = self.cue_frames(shot)
         for frame in range(shot.f0, shot.f1 + 1):
             self.scene.frame_set(frame)
             self.depsgraph.update()  # a scene that is not the context scene is not evaluated by frame_set alone
             objs = _render_meshes(self.scene, self.view_layer)
             shown = self.pop_in(shot, frame, objs, shown)
+            self.callouts_shown(shot, frame, cue_frames)
             for obj in objs:
                 moved = obj.evaluated_get(self.depsgraph).matrix_world.translation
                 positions.setdefault(obj.name, []).append((frame, np.array(moved)))
@@ -490,6 +511,35 @@ class _Run:
         fps = self.tl.fps if self.tl is not None else 30
         for f in viewer.edge_findings(shot.id, views, max(1, every), fps):  # in the shot: it must stay in the frame
             self.add(f.check, f.severity, f.obj, f.frame, f.message, key=(f.obj, shot.id))
+
+    def cue_frames(self, shot) -> dict[int, list[tuple[str, str]]]:
+        """{frame: [(callout text, object name)]} of the callouts this shot shows, by the frame each one cues in (a
+        cue frame is clipped into the shot)."""
+        out: dict[int, list[tuple[str, str]]] = {}
+        for cue in self.cues.get(shot.id) or []:
+            if isinstance(cue, dict) and isinstance(cue.get("f_on"), int) and isinstance(cue.get("near"), str):
+                f_on = min(max(cue["f_on"], shot.f0), shot.f1)
+                out.setdefault(f_on, []).append((str(cue.get("text")), cue["near"]))
+        return out
+
+    def callouts_shown(self, shot, frame, cue_frames) -> None:
+        """At a callout's cue frame its object must render: not hidden for render, not in a hidden collection, not
+        scaled to nothing. An object the scene lacks is names' error."""
+        for text, name in cue_frames.get(frame, ()):
+            obj = self.scene.objects.get(name)
+            if obj is None:
+                continue
+            world = np.array(obj.evaluated_get(self.depsgraph).matrix_world, dtype=np.float64)
+            if obj.name not in {o.name for o in _render_meshes(self.scene, self.view_layer, (obj.type,))}:
+                why = "hidden for render (or in a hidden collection)"
+            elif float(np.linalg.norm(world[:3, :3], axis=0).max()) <= POP_IN_SCALE:
+                why = "scaled to nothing"
+            else:
+                continue
+            self.add("callout", "error", name, frame,
+                     f"shot {shot.id!r} callout {text!r} is near {name!r}, which is {why} at frame {frame} where "
+                     "the callout appears: its glow and arrow would point at nothing. Show the part by then, or "
+                     "name another part", key=(shot.id, name, text))  # fmt: skip
 
     def pop_in(self, shot, frame, objs, before: dict[str, bool]) -> dict[str, bool]:
         """Warn about an object (not an overlay) that switches on inside the camera frame after its shot's first
@@ -1197,6 +1247,11 @@ class _Run:
                     self.add("names", "error", name, None, f"shot {shot.id!r} label {label_text(label)!r} is near "
                              f"{name!r}, which scene {self.scene.name!r} does not have"
                              f"{_did_you_mean(name, present)}", key=(shot.id, name))  # fmt: skip
+            for call in callouts_of(shot):
+                if call.near not in present:
+                    self.add("names", "error", call.near, None, f"shot {shot.id!r} callout {call.text!r} is near "
+                             f"{call.near!r}, which scene {self.scene.name!r} does not have"
+                             f"{_did_you_mean(call.near, present)}", key=(shot.id, call.near, call.text))  # fmt: skip
 
     def floating(self, frame, name, geos):
         geo = geos[name]

@@ -212,7 +212,8 @@ def near_label_size(text: str) -> tuple[float, float]:
 
 def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), placed: dict | None = None,
            heroes: dict | None = None, near: str | None = None, frames=None,
-           size: tuple[float, float] | None = None) -> dict[int, tuple[float, float, Rect]]:  # fmt: skip
+           size: tuple[float, float] | None = None,
+           gap: float = NEAR_GAP_PX) -> dict[int, tuple[float, float, Rect]]:  # fmt: skip
     """{frame: (centre x, text bottom y, box)} of a near label at each frame of its shot (`frames`, default f0..f1):
     just above its object's top on screen (`points`: {"f0", "points": [[x, y] or None per frame]}), inside the safe
     area and never on a caption shown at that frame (`caption_bands`: (f0, f1, band) or captions() rows), the shot's
@@ -220,7 +221,8 @@ def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), p
     which this label's own box is added to). It keeps off the shot's heroes too where it can (`heroes`: the shot's
     {"f0", "boxes"}), except its own object `near` and a hero whose box holds the anchor (the assembly the part
     belongs to). Frames where the object is behind the camera keep the last position. `size`: the label's (w, h) in
-    px instead of the estimate from its text (a kit card's size; its box is still SMALL_MARGIN * H around it)."""
+    px instead of the estimate from its text (a kit card's size; its box is still SMALL_MARGIN * H around it). `gap`:
+    how far above the object's top the label's box sits (a callout leaves room for its arrow)."""
     w, h = near_label_size(text) if size is None else size
     m = SMALL_MARGIN * H
     pts = list(points.get("points") or [])
@@ -235,7 +237,7 @@ def follow(text: str, points: dict, f0: int, f1: int, caption_bands, fixed=(), p
         last = p
         avoid = [c[2] for c in caption_bands if c[0] <= frame <= c[1]] + list(fixed) + placed.get(frame, [])
         prefer = hero_rects(heroes, frame, skip=near, anchor=p)
-        x, bottom = place_label((p[0], p[1]), (w, h), m, NEAR_GAP_PX, avoid, prefer)
+        x, bottom = place_label((p[0], p[1]), (w, h), m, gap, avoid, prefer)
         box = Rect(x - w / 2 - m, bottom - h - m, w + 2 * m, h + 2 * m)
         placed.setdefault(frame, []).append(box)
         out[frame] = (x, bottom, box)

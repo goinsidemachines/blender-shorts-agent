@@ -1944,3 +1944,71 @@ def test_kept_objects_are_not_checked_again_but_others_are():
     assert not found({"N", "P", "Q"}), found({"N", "P", "Q"})
     again = found({"N", "P"})
     assert [(f.check, tuple(f.pair)) for f in again] == [("overlap", ("P", "Q"))], again
+
+
+def _callout_short(near="Valve", **extra):
+    call = {"text": "Valve", "near": near, "on": "valve", **extra}
+    return SimpleNamespace(shots=[SimpleNamespace(id="s1", labels=[], callouts=[call])])
+
+
+def _callout_cue(f_on, near="Valve"):
+    return {"s1": [{"i": 0, "text": "Valve", "near": near, "f_on": f_on, "f_off": N, "glow": True, "culprit": False}]}
+
+
+def test_a_callout_naming_a_missing_object_is_an_error():
+    sc = _scene()
+    _cube("Valve.001", (0, 0, 0.5))
+    found = [f for f in checks.run_checks(sc, _timeline(), short=_callout_short(), cues={})
+             if f.check == "names" and f.severity == "error"]
+    assert len(found) == 1 and found[0].severity == "error", found
+    assert "callout 'Valve'" in found[0].message and "did you mean 'Valve.001'" in found[0].message, found
+
+
+def test_a_callout_object_not_rendered_at_its_cue_is_an_error():
+    sc = _scene()
+    valve = _cube("Valve", (0, 0, 0.5))
+    valve.hide_render = True
+    valve.keyframe_insert("hide_render", frame=1)
+    valve.hide_render = False
+    valve.keyframe_insert("hide_render", frame=20)  # shown from frame 20
+    short = _callout_short()
+
+    def found(f_on):
+        return [f for f in checks.run_checks(sc, _timeline(), short=short, cues=_callout_cue(f_on))
+                if f.check == "callout"]  # fmt: skip
+
+    early = found(10)
+    assert len(early) == 1 and early[0].severity == "error" and early[0].frame == 10, early
+    assert "hidden for render" in early[0].message and "'Valve'" in early[0].message, early
+    assert not found(25)
+
+
+def test_a_callout_object_scaled_to_nothing_at_its_cue_is_an_error():
+    sc = _scene()
+    valve = _cube("Valve", (0, 0, 0.5))
+    valve.scale = (0, 0, 0)
+    valve.keyframe_insert("scale", frame=1)
+    valve.scale = (1, 1, 1)
+    valve.keyframe_insert("scale", frame=20)
+    short = _callout_short()
+    for fc in bake._fcurves(valve.animation_data.action):
+        for kp in fc.keyframe_points:
+            kp.interpolation = "CONSTANT"
+    early = [f for f in checks.run_checks(sc, _timeline(), short=short, cues=_callout_cue(5)) if f.check == "callout"]
+    assert len(early) == 1 and "scaled to nothing" in early[0].message, early
+    assert not [f for f in checks.run_checks(sc, _timeline(), short=short, cues=_callout_cue(22)) if f.check == "callout"]
+
+
+def test_callout_cues_are_read_from_the_file_beside_the_blend():
+    import json
+
+    sc = _scene()
+    valve = _cube("Valve", (0, 0, 0.5))
+    valve.hide_render = True
+    short_dir = Path(tempfile.mkdtemp()) / "01-valve"
+    (short_dir / "blend").mkdir(parents=True)
+    (short_dir / "source").mkdir()
+    (short_dir / "source" / "callouts.json").write_text(json.dumps({"timeline_hash": "x", "shots": _callout_cue(5)}))
+    bpy.ops.wm.save_as_mainfile(filepath=str(short_dir / "blend" / "short.blend"))
+    found = [f for f in checks.run_checks(sc, _timeline(), short=_callout_short()) if f.check == "callout"]
+    assert len(found) == 1 and found[0].frame == 5, found

@@ -103,11 +103,13 @@ def build_short(short_dir: Path | str, plugin_root: Path | str = PLUGIN_ROOT, fo
     showing = show_scene(bpy, first) if bpy is not None and first else None
     heavy = []  # what makes the scene heavy (bsa.blender.scenescan), told now, before any render
     framing = []  # the framing warnings build.py's frame_objects / frame_box kept on the scenes (also check findings)
+    glow = []  # the notes bsa.blender.callouts.glow kept on the scenes (a part that cannot glow)
     if bpy is not None:
         from bsa.findings import framing_notes
 
         framing = [f"scene {sc.name}: camera {n.get('camera')}: {n.get('message')}" for sc in bpy.data.scenes
                    for n in framing_notes(sc)]  # fmt: skip
+        glow = list(dict.fromkeys(str(n) for sc in bpy.data.scenes for n in (getattr(sc, "get", lambda *_: None)("bsa_callout_notes") or [])))
         try:
             from bsa.blender import scenescan
 
@@ -115,4 +117,5 @@ def build_short(short_dir: Path | str, plugin_root: Path | str = PLUGIN_ROOT, fo
         except Exception as exc:  # noqa: BLE001 - a warning aid must not fail the build
             heavy = [f"the heavy-scene scan did not run: {exc}"]
     return {"short": str(short_dir), "reloaded": len(dropped), "blend": str(short_dir / "blend" / "short.blend"),
-            "showing": showing, "framing": framing, "heavy": heavy}  # fmt: skip
+            "showing": showing, "framing": framing, "heavy": heavy,
+            **({"callouts": glow} if glow else {})}  # fmt: skip

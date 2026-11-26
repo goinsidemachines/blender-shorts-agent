@@ -127,7 +127,8 @@ def build_inputs(short_dir: Path) -> list[Path]:
                 seen.add(key)
                 out.append(f)
                 todo.append(f)
-    return [build, *sorted(out)]
+    callouts = src / "callouts.json"  # the glow is keyed from it: re-timed callouts make the scene stale
+    return [build, *sorted(out), *([callouts] if callouts.is_file() else [])]
 
 
 def stale_build_file(short_dir: Path) -> Path | None:
@@ -159,6 +160,8 @@ def build_changed_message(short_dir: Path, stale: Path | None = None) -> str:
     src = Path(short_dir) / "source"
     if f is None or f == src / "build.py":
         return BUILD_CHANGED
+    if f == src / "callouts.json":
+        return "source/callouts.json (the callouts' timing) changed since the scene was built: rebuild"
     rel = Path(os.path.relpath(f, src)).as_posix()
     return f"source/{rel} (imported by build.py) changed since the scene was built: rebuild"
 
@@ -340,11 +343,11 @@ def reusable_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str) -
     (same timing and fingerprint): the anchors are projected again only for the others."""
     data = read_anchors(short_dir) or {}
     out: dict = {"shots": {}, "heroes": {}}
-    for key in ("shots", "heroes"):
+    for key in ("shots", "heroes", "callouts"):
         entries = data.get(key)
         for shot, entry in entries.items() if isinstance(entries, dict) else ():
             if _anchors_current(data.get("stamp"), fingerprints, tl_hash, [shot]):
-                out[key][shot] = entry
+                out.setdefault(key, {})[shot] = entry  # "callouts" only exists when the file holds some
     return out
 
 
@@ -374,6 +377,18 @@ def load_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str, need=
         if name not in (shots.get(shot_id) or {}):
             raise StaleError(f"no anchors for label {text!r} near {name!r} in shot {shot_id}: {_ANCHORS_AGAIN}")
     return shots
+
+
+def load_callout_anchors(short_dir: Path, fingerprints: dict | None, tl_hash: str, need=()) -> dict:
+    """source/anchors.json's "callouts" ({shot: {str(callout index): {"f0", "points"}}}), which must be from this
+    timing and each needed shot's current fingerprint, and hold every (shot id, callout index, callout text) in
+    `need`."""
+    data = _read_anchors(short_dir, fingerprints, tl_hash, sorted({s for s, _, _ in need}))
+    found = data.get("callouts") if isinstance(data.get("callouts"), dict) else {}
+    for shot_id, i, text in need:
+        if str(i) not in (found.get(shot_id) or {}):
+            raise StaleError(f"no anchors for callout {text!r} in shot {shot_id}: {_ANCHORS_AGAIN}")
+    return found
 
 
 # --------------------------------------------------------------------------- rendered frames
@@ -544,11 +559,12 @@ _BSA = Path(__file__).resolve().parent
 # the code the scene checks' findings come from: the checks, the viewer checks (framing, covered) and the edit's text
 # boxes they measure, the framing band they measure against, the framing_call notes (findings, camera), the hard-rule
 # words (rules) and the object tags (bake: hero, overlay, may-exit)
-# short.py: the near labels' anchors (label_at, label_anchor); kitlayout.py: a kit's card boxes (covered)
+# short.py: the near labels' anchors (label_at, label_anchor); kitlayout.py: a kit's card boxes (covered);
+# callouts.py: a shot's callouts (names, the part is on screen at its cue)
 _CHECKS_CODE = (_BSA / "blender" / "checks.py", _BSA / "viewer.py", _BSA / "overlays.py", _BSA / "layout.py",
                 _BSA / "findings.py", _BSA / "blender" / "camera.py", _BSA / "rules.py",
                 _BSA / "blender" / "bake.py", _BSA / "pops.py", _BSA / "blender" / "anchors.py",
-                _BSA / "short.py", _BSA / "kitlayout.py")  # fmt: skip
+                _BSA / "short.py", _BSA / "kitlayout.py", _BSA / "callouts.py")  # fmt: skip
 
 
 def checks_code() -> str:
@@ -581,7 +597,7 @@ def shot_check_key(fingerprint: str | None, span: Span, shot: dict) -> str:
 
 def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=(), parts: dict | None = None,
                       rules: list | None = None, caption_size: int | None = None,
-                      objects: dict | None = None) -> dict:  # fmt: skip
+                      objects: dict | None = None, cues: list | None = None) -> dict:  # fmt: skip
     """What one shot's scene checks depend on, and nothing else: its content (fingerprint), its frames, the fields
     of its short.json entry the checks read (CHECKED_FIELDS: not its title, picture or still_at), the shot
     ids (hero tags name them) and, only when a hard rule scans scene names, those rules (bsa.rules.scene_key). Post
@@ -590,10 +606,17 @@ def shot_check_inputs(fingerprint: str | None, span: Span, shot: dict, shot_ids=
     find but are not in the fingerprint, since they change no pixel. `caption_size` (bsa.overlays.caption_size: the
     short's style.caption.size) sizes the caption box the covered check measures, so it is in the key too.
     `objects` ({"objects": {name: key}, "rest": key}, load_fingerprint_objects) is information too, recorded under
-    "objects" and "rest": which objects of the shot changed."""
+    "objects" and "rest": which objects of the shot changed. A shot with callouts also keys on them and on their cue
+    frames (`cues`: bsa.callouts.cue_frames' rows for the shot): the callout checks read both. A shot without callouts
+    has exactly the inputs it had before callouts existed."""
+    entry = {k: shot.get(k) for k in CHECKED_FIELDS}
+    if shot.get("callouts"):
+        entry["callouts"] = shot["callouts"]
     out = {"fingerprint": fingerprint, "frames": [span.f0, span.f1],
-           "entry": {k: shot.get(k) for k in CHECKED_FIELDS}, "shot_ids": sorted(shot_ids),
+           "entry": entry, "shot_ids": sorted(shot_ids),
            "parts": dict(parts or {}), "legacy": shot_check_key(fingerprint, span, shot)}  # fmt: skip
+    if cues:
+        out["cues"] = [[c.get("f_on"), c.get("f_off")] for c in cues]
     if rules:
         out["rules"] = rules
     if caption_size is not None:

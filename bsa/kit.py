@@ -20,7 +20,7 @@ ROLES = ("background", "ink", "card", "text", "accent", "highlight")
 LOGO_PLACES = ("top-left", "top-right")
 RANGES = {"outline_px": (0, 12), "shadow_px": (0, 24), "corner_px": (0, 80), "pill_corner_px": (0, 80),
           "caption.size": (32, 120), "caption.opacity": (0.0, 1.0), "caption.corner_px": (0, 80),
-          "caption.pad_px": (0, 60), "caption.stroke_px": (0, 12)}  # fmt: skip
+          "caption.pad_px": (0, 60), "caption.stroke_px": (0, 12), "callout.glow": (0.0, 50.0)}  # fmt: skip
 BOOLS = ("progress", "outline_3d", "caption.draw", "caption.shadow")
 CAPTION_STYLES = ("box", "outline")
 # Handled elsewhere (mode, exposure, look) or prose Claude reads: never validated here.
@@ -140,6 +140,14 @@ def check(key: str, value, *, _must_exist: bool = True):
     if key == "":
         return {k: check(k, v, _must_exist=_must_exist) for k, v in _dict("", value, "settings").items()}
     top, _, rest = key.partition(".")
+    if top == "callout":  # callouts (bsa.callouts): the glow's colour and strength; not part of the Kit
+        if not rest:
+            return {k: check(f"callout.{k}", v) for k, v in _dict(key, value, "callout settings").items()}
+        if rest == "color":
+            return _hex(key, value)
+        if rest == "glow":
+            return _number(key, value)
+        return value
     if top in PASS or top not in _KIT_KEYS:
         return value
     if key == "style":  # null, "" or "none": no kit (settings.set_value deletes the key)

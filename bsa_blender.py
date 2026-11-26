@@ -237,17 +237,33 @@ def _objects(sdir: Path, fps: dict | None) -> dict:
     return freshness.load_fingerprint_objects(sdir, fps)
 
 
-def _check_keys(short, tl, fps: dict | None, parts: dict | None = None, objects: dict | None = None) -> dict:
+def _cue_rows(sdir: Path | None) -> dict:
+    """{shot id: [cue, ...]} as source/callouts.json holds them (not checked against the timing: the stage that uses
+    them does that), {} when there is none or it can't be read."""
+    from bsa import callouts as callouts_mod
+
+    try:
+        shots = json.loads(callouts_mod.path(sdir).read_text(encoding="utf-8"))["shots"] if sdir else {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return shots if isinstance(shots, dict) else {}
+
+
+def _check_keys(short, tl, fps: dict | None, parts: dict | None = None, objects: dict | None = None,
+                sdir: Path | None = None) -> dict:
     """{shot id: what its scene checks depend on} (freshness.shot_check_inputs). `objects` (from the fingerprint
-    cache, freshness.load_fingerprint_objects) adds each shot's object keys, as information."""
+    cache, freshness.load_fingerprint_objects) adds each shot's object keys, as information. `sdir`: the short's
+    folder, so a shot with callouts also keys on their cue frames."""
     spans = {s.id: s for s in tl.shots}
     ids = [s.id for s in short.shots]
     from bsa.overlays import caption_size
 
     rule_key = rules.scene_key(_hard_rules(short), short)
     size = caption_size(short)
+    cues = _cue_rows(sdir) if any(s.callouts for s in short.shots) else {}
     return {s.id: freshness.shot_check_inputs((fps or {}).get(s.id), spans[s.id], asdict(s), ids,
-                                              (parts or {}).get(s.id), rule_key, size, (objects or {}).get(s.id))
+                                              (parts or {}).get(s.id), rule_key, size, (objects or {}).get(s.id),
+                                              cues.get(s.id))
             for s in short.shots}  # fmt: skip
 
 
@@ -428,6 +444,16 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
     ("scenery": the end card keeps off them after the heroes). Each near label's object records its "category" tag
     (bsa.blender.bake.category, or None), read again on every run. Returns its path, how many labels it places and
     which shots it projected again."""
+    out, projected, labels, n_heroes = _anchors_data(sdir, short, tl, tl_hash, data, fps)
+    path = sdir / "source" / freshness.ANCHORS
+    path.write_text(json.dumps(out) + chr(10), encoding="utf-8")
+    return {"path": str(path), "labels": labels, "heroes": n_heroes, "projected": sorted(projected)}
+
+
+def _anchors_data(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None = None, skip_missing: bool = False):
+    """anchors.json's content, (content, the shots projected again, near labels placed, heroes of the last shot),
+    without writing it (the check stage reads it too and must not race the render that writes it). `skip_missing`:
+    a callout whose object the scene lacks is left out (the checks name it) instead of stopping."""
     from bsa.blender.anchors import hero_boxes, project, scenery_boxes
     from bsa.blender.anchors import heroes as hero_names
     from bsa.blender.bake import category
@@ -456,9 +482,11 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
                 raise CliError(str(exc)) from exc
         entry["category"] = category(scene.objects.get(name))  # read fresh every run: a retag needs no projection
         shots.setdefault(shot_id, {})[key] = entry
+    callout_anchors = _callout_anchors(sdir, short, tl, tl_hash, data, reuse.get("callouts") or {}, projected,
+                                       skip_missing)
     last = short.shots[-1]  # the end card shows over the last shot: it must stay off that shot's heroes
     heroes: dict[str, dict] = {}
-    for shot_id in [*sorted(shots), last.id]:  # near labels keep off the other heroes of their shot
+    for shot_id in [*sorted(set(shots) | set(callout_anchors)), last.id]:  # labels keep off the other heroes
         if shot_id in heroes:
             continue
         _, scene = _scene(data, short, shot_id, tl_hash)
@@ -478,10 +506,48 @@ def _write_anchors(sdir: Path, short, tl, tl_hash: str, data, fps: dict | None =
         except ValueError as exc:
             raise CliError(str(exc)) from exc
     out = {"stamp": freshness.anchors_stamp(fps, tl_hash), "shots": shots, "heroes": heroes}
-    path = sdir / "source" / freshness.ANCHORS
-    path.write_text(json.dumps(out) + chr(10), encoding="utf-8")
-    return {"path": str(path), "labels": sum(len(v) for v in shots.values()), "heroes": len(heroes[last.id]["boxes"]),
-            "projected": sorted(projected)}  # fmt: skip
+    if callout_anchors:  # only a short with callouts has the key
+        out["callouts"] = callout_anchors
+    return out, projected, sum(len(v) for v in shots.values()), len(heroes[last.id]["boxes"])
+
+
+def _callout_anchors(sdir: Path, short, tl, tl_hash: str, data, reuse: dict, projected: set,
+                     skip_missing: bool = False) -> dict:
+    """{shot: {str(callout index): {"f0", "points"}}}: each callout's part (its `near` object, or its `at` point on
+    it) projected through its shot's camera at every frame of the shot; {} when the short has no callouts. Shots
+    unchanged since the last anchors keep theirs. Adds the shots it projected to `projected`."""
+    from bsa import callouts as callouts_mod
+    from bsa.blender.anchors import project
+
+    wanted = {s.id: callouts_mod.callouts_of(s) for s in short.shots}
+    wanted = {k: v for k, v in wanted.items() if v}
+    if not wanted:
+        return {}
+    try:
+        callouts_mod.load(sdir, tl_hash)  # the cue file must be this timing's (the edit reads it)
+    except freshness.StaleError as exc:
+        raise CliError(str(exc)) from exc
+    spans = {s.id: s for s in tl.shots}
+    out: dict[str, dict] = {}
+    for shot_id, calls in wanted.items():
+        prior = reuse.get(shot_id) or {}
+        _, scene = _scene(data, short, shot_id, tl_hash)
+        for i, c in enumerate(calls):
+            if scene.objects.get(c.near) is None:
+                if skip_missing:
+                    continue
+                raise CliError(f"shot {shot_id} callout {c.text!r} is near {c.near!r}, which scene {scene.name!r} does "
+                               "not have (use the object's exact name)")  # fmt: skip
+            if isinstance(prior.get(str(i)), dict) and set(prior) == {str(k) for k in range(len(calls))}:
+                out.setdefault(shot_id, {})[str(i)] = prior[str(i)]
+                continue
+            projected.add(shot_id)
+            try:
+                out.setdefault(shot_id, {})[str(i)] = project(scene, [c.near], spans[shot_id].f0, spans[shot_id].f1,
+                                                               c.at)[c.near]  # fmt: skip
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+    return out
 
 
 def cmd_anchors(args) -> dict:
@@ -602,7 +668,7 @@ def _cmd_render(args, sdir: Path, short, run) -> dict:
     engine = side.engine
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
     parts = _parts(sdir, fps)
-    check_keys = _check_keys(short, tl, fps, parts, _objects(sdir, fps))
+    check_keys = _check_keys(short, tl, fps, parts, _objects(sdir, fps), sdir)
     in_chunk = getattr(args, "in_chunk", False)
     if in_chunk:  # the parent did these before it started this child
         failed = None
@@ -1078,13 +1144,14 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
 
     tl, tl_hash = _timeline(sdir, short)
     data = _open_blend(sdir)
+    cues = _callout_cues(sdir, short, tl_hash)
     fps = _fingerprints(sdir, short, tl, tl_hash, data)
-    keys = _check_keys(short, tl, fps, _parts(sdir, fps), _objects(sdir, fps))  # the object keys: information
+    keys = _check_keys(short, tl, fps, _parts(sdir, fps), _objects(sdir, fps), sdir)  # the object keys: information
     stamp = freshness.checks_stamp(tl_hash, keys, args.every)
     full = getattr(args, "full", False)
     reuse = {} if full else freshness.reusable_checks(sdir, stamp)
     partial = {} if full else freshness.partial_checks(sdir, stamp)  # changed shots: the objects that did not change
-    reuse = {sid: [f for f in rows_ if f.get("check") not in ("loop", "target")] for sid, rows_ in reuse.items()}  # made again below
+    reuse = {sid: [f for f in rows_ if f.get("check") not in ("loop", "target", "callout")] for sid, rows_ in reuse.items()}  # made again below
     plan = [(shot, span) for items in _by_scene(short, tl).values() for shot, span in items]
     progress = [{"id": shot.id, "scene": shot.scene, "total": span.f1 - span.f0 + 1,
                  "done": span.f1 - span.f0 + 1 if shot.id in reuse else 0,
@@ -1146,7 +1213,7 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
 
         found = run_checks(scene, replace(tl, shots=[span]), sample_every=args.every, short=short,
                            progress=_progress_cb(on_frame), rules=hard_rules, cap=False,
-                           keep_objects=keep)  # fmt: skip
+                           keep_objects=keep, cues=cues)  # fmt: skip
         found += framing_findings(scene, shot.id, span.f0, span.f1)  # the build's framing warnings
         item["state"], item["done"] = "done", item["total"]
         counted[0] += item["total"]
@@ -1157,14 +1224,61 @@ def _cmd_check(args, sdir: Path, short, run) -> dict:
         save_progress()
     run.progress(counted[0], total, current=line if checked else None, force=True)  # the last shot it checked
     rows += _loop_rows(data, short, plan, tl_hash)
+    callout_rows, notes = _callout_rows(sdir, data, short, tl, tl_hash, fps, cues)
+    rows += callout_rows
     out = _write_checks(sdir / "review" / "checks.json", _merge_findings(rows), stamp, [s.id for s in short.shots],
                         OVERLAP_MAX_FINDINGS, checked=checked, kept=kept,
-                        **({"partial": partly} if partly else {}))  # fmt: skip
+                        **({"partial": partly} if partly else {}),
+                        **({"notes": notes} if notes else {}))  # fmt: skip
     if out["errors"]:
         raise CliError(f"{out['errors']} check error(s); see review/checks.json and fix them before rendering", out)
     if not getattr(args, "in_chain", False):  # beside the preview render the chain marks it (one writer of state)
         jobstate.mark_done(sdir, "checks", warnings=out["warnings"])
     return out
+
+
+def _callout_cues(sdir: Path, short, tl_hash: str) -> dict:
+    """{shot id: [cue, ...]} of source/callouts.json for this timing, {} for a short without callouts. A stale or
+    missing file is a CliError saying to run CLI timeline (the cue frames the checks and the edit use)."""
+    from bsa import callouts as callouts_mod
+
+    if not any(s.callouts for s in short.shots):
+        return {}
+    try:
+        return callouts_mod.load(sdir, tl_hash)
+    except freshness.StaleError as exc:
+        raise CliError(str(exc)) from exc
+
+
+def _callout_rows(sdir: Path, data, short, tl, tl_hash: str, fps: dict | None,
+                  cues: dict) -> tuple[list[dict], list[str]]:
+    """The callouts' checks that are not about the scene (bsa.callout_checks): a near label and a callout on one object,
+    more than one culprit, a part outside the safe area at its cue, a label overlapping a caption or another label,
+    as warning rows (check "callout"), and the estimated cues as notes. Measured again every run (cheap: the part's
+    screen positions are the ones anchors.json holds when it is current), never kept. ([], []) for a short without
+    callouts. The scene's own callout findings (object missing or not rendered at its cue) come from run_checks."""
+    from bsa import callout_checks, kit
+    from bsa.fonts import font_caches
+    from bsa.image_checks import Finding
+
+    if not any(s.callouts for s in short.shots):
+        return [], []
+    found = [*callout_checks.duplicates(short), *callout_checks.culprits(short)]
+    notes = callout_checks.estimated(cues)
+    try:
+        anchors = _anchors_data(sdir, short, tl, tl_hash, data, fps, skip_missing=True)[0]
+        k = kit.kit_for(settings.load_settings(), short)
+        font = None
+        if k is not None:
+            from bsa import cards
+
+            font = cards.card_font_and_note(k, font_caches(sdir))[0]
+        found += callout_checks.layout(short, tl, cues, anchors, k, font)
+    except (CliError, ValueError) as exc:  # a near label or kit the other checks name: the layout isn't measured
+        notes.append(f"callout label placement was not checked: {_one_line(exc)}")
+    scenes = {s.id: _scene(data, short, s.id, tl_hash)[1].name for s in short.shots}
+    return ([_check_row(Finding("callout", sev, obj, frame, msg), sid, scenes[sid]) for sid, sev, obj, frame, msg in found],
+            notes)
 
 
 def _loop_rows(data, short, plan, tl_hash: str) -> list[dict]:
@@ -1505,13 +1619,20 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     fps = _fingerprints(sdir, short, tl, tl_hash, reset_after=True)
     _rendered(sdir, short, args.preset, tl, fps, side)  # every shot's exact frames, from this timing, engine, content
     if args.preset == "final":
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), "the final edit",
-                                 key=_short_key(sdir))
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps), sdir=sdir),
+                                 "the final edit", key=_short_key(sdir))
     from bsa.short import near_anchors
 
     need = [(shot_id, text, key) for shot_id, text, _name, key, _at in near_anchors(short)]
     anchors = freshness.load_anchors(sdir, fps, tl_hash, need) if need else None
-    label_heroes = _label_heroes(sdir, fps, tl_hash, need)
+    from bsa import callouts as callouts_mod
+
+    callout_need = [(sh.id, i, c.text) for sh in short.shots for i, c in enumerate(callouts_mod.callouts_of(sh))]
+    callouts = None
+    if callout_need:  # a short with callouts: their cue frames and anchors (stale ones refuse the edit, as labels do)
+        callouts = {"cues": callouts_mod.load(sdir, tl_hash),
+                    "anchors": freshness.load_callout_anchors(sdir, fps, tl_hash, callout_need)}  # fmt: skip
+    label_heroes = _label_heroes(sdir, fps, tl_hash, [*need, *callout_need])
     warnings, heroes = [], None
     if settings.has_end_card(s, short):  # the end card is polish: without anchors it is only warned
         try:
@@ -1536,7 +1657,8 @@ def _cmd_edit(args, sdir: Path, short, run, edit) -> dict:
     scene = edit.build_edit(short, tl, engine_runs.frames_root(sdir, args.preset, side), mix if mix.is_file() else None,
                             out_mp4,
                             s, preset=args.preset, anchors=anchors, hero_boxes=heroes,
-                            label_heroes=label_heroes, closing=end)  # fmt: skip
+                            label_heroes=label_heroes, closing=end,
+                            **({"callouts": callouts} if callouts else {}))  # fmt: skip
     run.progress(0, n_frames, current="encoding the MP4", force=True)
     path = edit.encode(scene, progress=lambda done, n: run.progress(done, n, current="encoding the MP4"))
     info = edit.probe(path)
@@ -2379,6 +2501,18 @@ def _framing_notes(sdir: Path) -> list[str]:
             for n in framing_notes(sc)]  # fmt: skip
 
 
+def _callout_notes(sdir: Path) -> list[str]:
+    """The notes bsa.blender.callouts.glow kept on the scenes of blend/short.blend (a part that cannot glow, a callout's
+    object that is not in the scene), one line each; [] for a short without callouts."""
+    from bsa.blender.callouts import NOTES_PROP
+
+    try:
+        data = _open_blend(sdir)
+        return list(dict.fromkeys(str(n) for sc in data.scenes for n in (sc.get(NOTES_PROP) or [])))
+    except Exception:  # noqa: BLE001 - a note aid must not fail the build
+        return []
+
+
 def _heavy_notes(sdir: Path) -> list[str]:
     """The fast heavy-scene scan of the built blend (bsa.blender.scenescan), one line each. Never stops a build."""
     try:
@@ -2394,7 +2528,9 @@ def _build_and_reopen(sdir: Path) -> dict:
     anything that makes the scene heavy."""
     blend = _build_script_mode(sdir)
     _reopen(sdir)
-    return {"blend": str(blend), "framing": _framing_notes(sdir), "heavy": _heavy_notes(sdir)}
+    glow = _callout_notes(sdir)
+    return {"blend": str(blend), "framing": _framing_notes(sdir), "heavy": _heavy_notes(sdir),
+            **({"callouts": glow} if glow else {})}  # fmt: skip
 
 
 def _reopen(sdir: Path) -> None:
@@ -2433,7 +2569,8 @@ def _checks_current(sdir: Path, short, tl, tl_hash: str) -> bool:
     """The checks passed on every shot as it is now and this timing (and the checks stage is marked)."""
     try:
         fps = _fingerprints(sdir, short, tl, tl_hash)
-        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)), key=_short_key(sdir))
+        freshness.require_checks(sdir, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps), sdir=sdir),
+                                 key=_short_key(sdir))
     except freshness.StaleError:
         return False
     return "checks" in jobstate.load_state(sdir)["stages"]
@@ -2511,7 +2648,9 @@ def _preview_chain(args, sdir: Path, short, chain, bsa_cli) -> dict:
                       "run BLENDER preview SHORT --no-build again")  # fmt: skip
     if why:
         run("build", _build_and_reopen, sdir, summary=lambda o: {"why": why, "framing": o.get("framing"),
-                                                                  "heavy": o.get("heavy")})
+                                                                  "heavy": o.get("heavy"),
+                                                                  **({"callouts": o["callouts"]}
+                                                                     if o.get("callouts") else {})})
     else:
         skip("build", "the .blend is current")
     if why or not _marked_after(sdir, "build", _blend(sdir)):
@@ -2582,7 +2721,7 @@ def _failed_checks_after(sdir: Path, short, tl, tl_hash: str, errors: int) -> st
     """The warning the preview carries when the checks beside its render found errors: _failed_checks_warning from
     the review/checks.json they wrote, or (should that not read as this build's) the count alone."""
     fps = _fingerprints(sdir, short, tl, tl_hash)
-    line = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps)))
+    line = _failed_checks_warning(sdir, short, tl_hash, _check_keys(short, tl, fps, _parts(sdir, fps), sdir=sdir))
     return line or (f"the checks found {errors} error(s) (review/checks.json): the final render will refuse until "
                     f"these are fixed and checked again (BLENDER check {_short_key(sdir)})")  # fmt: skip
 

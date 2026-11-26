@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bsa import freshness
+from bsa import camtest, freshness
 from bsa.short import load_short
 from bsa.timeline import Span, build_timeline, timeline_hash, to_json
 
@@ -731,3 +731,21 @@ def test_partial_reuse_drops_deleted_and_renamed_objects(sdir):
     kept, kept_rows = freshness.partial_checks(sdir, renamed)["s01"]
     assert kept == {"A", "B", "C"} and "E" not in kept
     assert kept_rows == [rows[0], rows[1], rows[3], rows[5]]  # nothing of D, nor of the pair A-D
+
+
+def test_callouts_json_joins_the_build_inputs_only_when_it_exists(sdir):
+    src = sdir / "source"
+    _write(src / "build.py", "X = 1\n")
+    blend = _write(sdir / "blend" / "short.blend", "blend")
+    t = blend.stat().st_mtime_ns - 10**9
+    os.utime(src / "build.py", ns=(t, t))
+    assert freshness.build_inputs(sdir) == [src / "build.py"]  # a short without callouts: exactly as before
+    stamp_without = camtest.build_stamp(sdir)
+    cues = _write(src / "callouts.json", "{}")
+    os.utime(cues, ns=(t, t))
+    assert freshness.build_inputs(sdir) == [src / "build.py", cues]
+    assert not freshness.build_changed(sdir)
+    assert camtest.build_stamp(sdir) != stamp_without
+    _touch_newer(cues, blend)  # re-timed after the scene was built
+    assert freshness.stale_build_file(sdir) == cues
+    assert "callouts.json" in freshness.build_changed_message(sdir) and "rebuild" in freshness.build_changed_message(sdir)
